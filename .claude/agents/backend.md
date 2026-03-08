@@ -73,3 +73,97 @@ Always use migration files — never `sync: true`, `alter: true`, or any auto-sy
 - Migrations must be reversible (have an `up` and `down`)
 - Never drop a column or table in the same migration that removes code depending on it — deprecate first
 - Run migrations on startup only in dev/CI; in production, run as a separate step before deploying
+
+## Python Stack (FastAPI)
+
+When the project uses Python, follow these conventions:
+
+**Project structure:**
+```
+backend/
+  app/
+    main.py          # FastAPI app factory
+    routers/         # APIRouter per resource
+    models/          # SQLAlchemy ORM models
+    schemas/         # Pydantic request/response schemas
+    services/        # Business logic (no DB access)
+    repositories/    # DB access layer (no business logic)
+    core/
+      config.py      # Settings via pydantic-settings
+      security.py    # Auth utilities
+  alembic/           # Migration files
+  tests/
+    conftest.py      # Shared pytest fixtures
+    unit/
+    integration/
+  alembic.ini
+  requirements.txt
+  pyproject.toml     # Tool config (mypy, pytest, ruff)
+```
+
+**Pydantic v2:**
+- Use `model_config = ConfigDict(from_attributes=True)` for ORM models
+- Use `model_validate(obj)` not `from_orm(obj)` (v1 is deprecated)
+- Separate request schemas (`UserCreate`) from response schemas (`UserResponse`) — never expose ORM models directly
+
+**Alembic migrations:**
+```bash
+alembic revision --autogenerate -m "add users table"  # generate from models
+alembic upgrade head                                   # apply all pending
+alembic downgrade -1                                   # rollback one
+```
+One logical change per migration file. Never edit an applied migration.
+
+**pytest setup:**
+```python
+# tests/conftest.py
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from fastapi.testclient import TestClient
+from app.main import app
+from app.core.config import settings
+
+@pytest.fixture(scope="session")
+def db_engine():
+    engine = create_engine(settings.DATABASE_URL)
+    yield engine
+    engine.dispose()
+
+@pytest.fixture
+def db_session(db_engine):
+    Session = sessionmaker(bind=db_engine)
+    session = Session()
+    yield session
+    session.rollback()
+    session.close()
+
+@pytest.fixture
+def client():
+    return TestClient(app)
+```
+
+Use `pytest-asyncio` for async FastAPI routes. Mark async tests with `@pytest.mark.asyncio`.
+
+**mypy:**
+```toml
+# pyproject.toml
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+```
+
+Add `py.typed` marker file to the package root to declare it type-complete.
+
+**Dev server:**
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 3000
+```
+
+**Dependency security:**
+```bash
+pip-audit                          # scan for known CVEs
+pip-audit --requirement requirements.txt
+```
+
+Run `pip-audit` before submission. Fix or document any findings.

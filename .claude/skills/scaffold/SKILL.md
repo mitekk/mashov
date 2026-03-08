@@ -19,6 +19,8 @@ Delegate to the `planner` agent with the full requirements text. The planner wil
 
 Do not proceed to Step 2 until the architecture is confirmed.
 
+> **Time-saving tip**: Steps 2 and 3 are independent — they can run in parallel once the API contract is finalized. Use `superpowers:dispatching-parallel-agents` to dispatch backend and frontend agents simultaneously. Only do this when the API contract table is precise enough that both agents can work without blocking each other.
+
 ### Step 2 — Backend (backend)
 
 Delegate to the `backend` agent with:

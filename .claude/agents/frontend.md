@@ -69,3 +69,43 @@ frontend/src/
 **Error and loading states**: every async operation needs a loading skeleton, an error state, and an empty state. These are features, not polish.
 
 **Performance**: invoke `/vercel-react-best-practices` skill for deeper optimization (waterfalls, bundle size, re-renders).
+
+## Caching
+
+**TanStack Query cache config** — set `staleTime` explicitly on every query; never rely on the default (0ms):
+
+```ts
+// Reference data that rarely changes — cache aggressively
+useQuery({ queryKey: ['categories'], queryFn: fetchCategories, staleTime: 5 * 60 * 1000 })
+
+// Mutation-sensitive data — always fresh
+useQuery({ queryKey: ['cart'], queryFn: fetchCart, staleTime: 0 })
+
+// User profile — moderate cache
+useQuery({ queryKey: ['user', id], queryFn: () => fetchUser(id), staleTime: 60_000 })
+```
+
+`gcTime` (formerly `cacheTime`): how long inactive data stays in memory. Default 5min is fine; reduce for memory-sensitive lists.
+
+**Optimistic updates** — for snappy UX on mutations:
+```ts
+useMutation({
+  mutationFn: updateItem,
+  onMutate: async (newItem) => {
+    await queryClient.cancelQueries({ queryKey: ['items'] })
+    const previous = queryClient.getQueryData(['items'])
+    queryClient.setQueryData(['items'], (old) => [...old, newItem])
+    return { previous }
+  },
+  onError: (_err, _newItem, context) => {
+    queryClient.setQueryData(['items'], context.previous)
+  },
+  onSettled: () => queryClient.invalidateQueries({ queryKey: ['items'] })
+})
+```
+
+**Browser storage strategy:**
+- Auth tokens: httpOnly cookies only — never `localStorage` (XSS risk)
+- Transient UI state (current tab, drawer open): `sessionStorage` or URL query params
+- User preferences (theme, language): `localStorage` is fine — not sensitive
+- Large offline datasets: IndexedDB via `idb` library — never raw `localStorage` for arrays

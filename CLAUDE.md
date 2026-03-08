@@ -51,13 +51,24 @@ npm run typecheck            # TypeScript check
 ## Definition of Done
 
 - [ ] All unit and integration tests pass
-- [ ] TypeScript compiles / Python types valid (`mypy`)
+- [ ] TypeScript compiles / Python types valid (`mypy --strict`)
 - [ ] Lint clean (no errors)
 - [ ] `docker compose up --build` succeeds and stack is healthy
 - [ ] E2E suite passes against dockerized stack
 - [ ] No `.env` committed; `.env.example` provided
 - [ ] No secrets or credentials in source code
+- [ ] `npm audit --audit-level=high` (or `pip-audit`) passes — no high/critical CVEs
 - [ ] README has: setup steps, env vars, how to run tests
+
+## Time-Boxing
+
+Ask the planner: **"How much time do you have?"** If unspecified, assume 3 hours.
+
+Tag every task **[MVP]** or **[NICE]**:
+- **[MVP]**: must ship to satisfy stated requirements and pass the DoD
+- **[NICE]**: polish, extras, edge cases — only if time allows
+
+When time is tight, cut **[NICE]** tasks before cutting tests or Docker. A working, tested, containerized app beats a feature-rich one that doesn't run.
 
 ## Skills
 
@@ -66,6 +77,7 @@ npm run typecheck            # TypeScript check
 | `/scaffold` | Starting a new challenge — intake, architecture, full stack setup |
 | `/review` | Pre-submission DoD checklist |
 | `/test` | Full test suite run with layered failure report |
+| `/debug` | Stack won't start, tests fail unexpectedly, CI is red |
 | `/vercel-react-best-practices` | React/Next.js performance deep-dive (58 rules) |
 
 ## Agents

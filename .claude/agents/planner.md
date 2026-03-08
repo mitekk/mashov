@@ -38,6 +38,16 @@ For feature planning, produce:
 4. **Tasks** — ordered list, each small enough to complete in one session
 5. **Risks** — unknowns, dependencies, things that could go wrong
 6. **Open questions** — what needs to be decided before or during implementation
+7. **API Contract** — table of all endpoints; this is the source of truth for frontend and QA agents:
+
+```
+| Method | Path | Request Body | Response Body | Auth? |
+|--------|------|--------------|---------------|-------|
+| POST   | /api/v1/auth/register | { email, password, name } | { user, token } | No |
+| GET    | /api/v1/users/me | — | { user } | Yes |
+```
+
+Every endpoint must be listed. Include auth status, the full path, and concrete field names. Vague entries ("some user fields") are not acceptable — both backend and frontend agents will code directly against this table.
 
 ## Architecture Principles
 

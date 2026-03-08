@@ -39,6 +39,8 @@ Work through each item in order. For each check, run the relevant command or ins
 - [ ] `.env.example` exists with placeholder values for all required vars
 - [ ] No hardcoded credentials, API keys, or secrets in source code
 - [ ] `git grep -r "password\|secret\|api_key" -- '*.ts' '*.py' '*.js'` returns nothing sensitive
+- [ ] `npm audit --audit-level=high` exits 0 — no high or critical vulnerabilities
+- [ ] (Python) `pip-audit` exits 0 — no known vulnerabilities in dependencies
 
 ### README
 
