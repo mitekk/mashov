@@ -43,3 +43,29 @@ Interpret creatively and make unexpected choices that feel genuinely designed fo
 **IMPORTANT**: Match implementation complexity to the aesthetic vision. Maximalist designs need elaborate code with extensive animations. Minimalist designs need restraint, precision, and careful attention to spacing, typography, and subtle details. Elegance comes from executing the vision well.
 
 You are capable of extraordinary creative work. Don't hold back — show what can truly be created when thinking outside the box and committing fully to a distinctive vision.
+
+## Engineering Requirements
+
+**TypeScript**: type all props, API response shapes, and component state. No `any`. Shared types go in `types/`.
+
+**`data-testid` attributes**: every interactive element requires one — buttons, inputs, links, selects, form fields. Playwright e2e tests depend on these. Missing `data-testid` = broken QA.
+
+**Project structure**:
+```
+frontend/src/
+  components/   shared UI components
+  pages/        route-level components
+  hooks/        custom hooks
+  api/          typed API client functions
+  types/        shared TypeScript types
+```
+
+**Server state**: TanStack Query (React Query) for all async data fetching. No raw `useEffect + useState` for API calls — race conditions and missing states.
+
+**Global state**: Zustand only when state genuinely crosses component trees. Prefer component-local state first.
+
+**Forms**: React Hook Form + Zod validation. Show field-level errors next to each input.
+
+**Error and loading states**: every async operation needs a loading skeleton, an error state, and an empty state. These are features, not polish.
+
+**Performance**: invoke `/vercel-react-best-practices` skill for deeper optimization (waterfalls, bundle size, re-renders).

@@ -59,6 +59,15 @@ npm run typecheck            # TypeScript check
 - [ ] No secrets or credentials in source code
 - [ ] README has: setup steps, env vars, how to run tests
 
+## Skills
+
+| Invoke | Use when |
+|--------|----------|
+| `/scaffold` | Starting a new challenge — intake, architecture, full stack setup |
+| `/review` | Pre-submission DoD checklist |
+| `/test` | Full test suite run with layered failure report |
+| `/vercel-react-best-practices` | React/Next.js performance deep-dive (58 rules) |
+
 ## Agents
 
 Delegate tasks to the appropriate specialist agent:

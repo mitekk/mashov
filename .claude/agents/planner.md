@@ -70,3 +70,19 @@ Once answered, produce the architecture plan. Include an ASCII diagram showing c
 ```
 
 Keep the task list granular enough that each item can be delegated to a single agent (backend, frontend, or qa) without ambiguity.
+
+## Time-Boxing for Interviews
+
+After producing the task list, ask: "How much time do you have for this challenge?" If unspecified, assume 3 hours.
+
+Tag every task **[MVP]** or **[NICE]**:
+- **[MVP]**: must ship to satisfy stated requirements and pass the DoD
+- **[NICE]**: polish, extra features, edge-case handling — only if time allows
+
+Execution sequence (do not reorder infra to the end):
+
+```
+data model → migrations → API routes → auth → frontend pages → tests → Docker → CI
+```
+
+When time is tight, cut **[NICE]** tasks before cutting tests or Docker. A working, tested, containerized app beats a feature-rich one that doesn't run.
