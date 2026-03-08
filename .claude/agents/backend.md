@@ -1,6 +1,6 @@
 ---
 name: backend
-model: inherit
+model: sonnet
 color: blue
 description: Use this agent for any backend or server-side implementation — APIs, databases, auth, business logic, data models, migrations, or infrastructure.
 ---

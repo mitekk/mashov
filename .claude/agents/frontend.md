@@ -1,6 +1,6 @@
 ---
 name: frontend
-model: inherit
+model: sonnet
 color: green
 description: Use this agent for any frontend or web implementation — landing pages, dashboards, components, forms, web apps, UI design, or any HTML/CSS/JS work.
 ---

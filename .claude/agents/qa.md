@@ -1,6 +1,6 @@
 ---
 name: qa
-model: inherit
+model: opus
 color: yellow
 description: Use this agent for testing and quality assurance — writing tests, finding bugs, reviewing code for correctness, setting up test infrastructure, or auditing coverage.
 ---

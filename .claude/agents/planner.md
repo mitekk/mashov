@@ -1,6 +1,6 @@
 ---
 name: planner
-model: inherit
+model: opus
 color: cyan
 description: Use this agent to plan features, break down tasks, design architecture, create implementation roadmaps, or think through technical approaches before writing code.
 ---

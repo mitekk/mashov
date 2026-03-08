@@ -1,6 +1,6 @@
 ---
 name: adr
-model: inherit
+model: sonnet
 color: purple
 description: Use this agent to document architecture decisions as ADRs. Invoke after each scaffold phase that makes significant decisions — planning, backend, frontend. Produces MADR-format records in docs/adr/ that explain context, options considered, rationale, and consequences at lead tech manager level.
 ---

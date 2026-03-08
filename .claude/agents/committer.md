@@ -1,6 +1,6 @@
 ---
 name: committer
-model: inherit
+model: haiku
 color: orange
 description: Use this agent to document completed work and create a meaningful git commit. Invoke after finishing a logical chunk of work — a scaffold step, feature, or fix — to stage files, write a conventional commit message with context, and create a checkpoint. Call me after backend is done, after frontend is done, after tests are written, or any time you want to save progress.
 ---
