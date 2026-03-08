@@ -23,6 +23,8 @@ backend/         API server
 docs/
   architecture.md   Architecture plan (produced by planner, consumed by backend/frontend/qa)
   api-contract.md   API contract (planner → backend updates → frontend, qa)
+  adr/              Architecture Decision Records (one per significant decision)
+    README.md       ADR index
 tests/
   integration/   Integration tests
   e2e/           Playwright end-to-end tests
@@ -83,3 +85,4 @@ Delegate tasks to the appropriate specialist agent:
 | `qa` | Writing tests, finding bugs, reviewing code for correctness, auditing coverage |
 | `planner` | Planning features, designing architecture, breaking down tasks, evaluating approaches |
 | `committer` | Documenting completed work, staging files, writing conventional commits with context |
+| `adr` | Documenting architecture decisions — stack selection, auth strategy, key trade-offs |

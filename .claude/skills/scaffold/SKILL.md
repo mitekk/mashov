@@ -14,6 +14,7 @@ Each phase produces files in `docs/`. These survive session boundaries and are t
 |----------|-------------|-------------|------|
 | Architecture Plan | planner (Step 1) | backend, frontend, qa | `docs/architecture.md` |
 | API Contract | planner (initial), backend (updates) | frontend, qa | `docs/api-contract.md` |
+| ADRs | adr (Steps 1, 2, 3) | all agents resuming session, reviewers | `docs/adr/` |
 
 ### API Contract format (`docs/api-contract.md`)
 
@@ -49,6 +50,16 @@ The planner must present this checklist to the human before Step 2 is dispatched
 
 Do not proceed until the human replies with explicit confirmation.
 
+#### ADR — Strategic Decisions
+
+Once the human confirms, invoke the `adr` agent with the contents of `docs/architecture.md`. Ask it to produce ADRs for:
+- Stack selection (language, framework, runtime)
+- Database choice and schema approach
+- Auth strategy
+- Caching strategy (if applicable)
+
+ADRs go in `docs/adr/`. Include them in the Step 1 committer commit — rename it to: `docs: add architecture plan, API contract, and initial ADRs`
+
 ### Parallelism Gate
 
 Before dispatching backend and frontend, evaluate all of the following:
@@ -80,6 +91,16 @@ The backend agent delivers:
 
 > **docker-compose.yml ownership**: backend owns the root `docker-compose.yml`. It defines all infrastructure services (db, redis) and the backend service. The frontend agent does NOT touch `docker-compose.yml` — it only produces its `Dockerfile`.
 
+#### ADR — Backend Implementation Decisions
+
+Once backend is complete, invoke the `adr` agent with context from the implementation. Document:
+- ORM / query builder choice (if a real trade-off existed)
+- Migration tool selection
+- Any schema design decisions that had alternatives
+- Rate limiting approach and library
+
+Only write ADRs where a real alternative existed — skip trivial or forced choices. Include `docs/adr/` in the `feat(backend)` committer commit.
+
 ### Step 3 — Frontend (frontend)
 
 Delegate to the `frontend` agent with:
@@ -94,6 +115,15 @@ The frontend agent delivers:
 - State management
 - `Dockerfile` only — the frontend service entry is added to `docker-compose.yml` in Step 3.5
 - `data-testid` attributes on all interactive elements
+
+#### ADR — Frontend Architecture Decisions
+
+Once frontend is complete, invoke the `adr` agent with context from the implementation. Document:
+- State management scope decision (what was kept local vs. Zustand)
+- Form validation library choice (if alternatives were considered)
+- Any significant component architecture trade-offs
+
+Include `docs/adr/` in the `feat(frontend)` committer commit.
 
 ### Step 3.5 — Compose Assembly + API Contract Reconciliation
 
@@ -116,6 +146,8 @@ If any `Status = changed` entries exist:
 3. Once confirmed green, proceed to Step 4
 
 If no `changed` entries: proceed directly to Step 4.
+
+If `changed` entries existed and were resolved: invoke the `adr` agent to document the design decision that drove the contract change and why the updated design was accepted.
 
 ### Step 4 — Static Review (/review --static)
 
@@ -209,7 +241,7 @@ git log --oneline -10      # what was last committed?
 
 | Last commit message contains | Re-enter at |
 |------------------------------|-------------|
-| `docs: add architecture` | Step 2 (Backend) |
+| `docs: add architecture` or `docs: add architecture plan, API contract, and initial ADRs` | Step 2 (Backend) |
 | `feat(backend)` | Step 3 (Frontend) — check if it was also dispatched |
 | `feat(frontend)` | Step 3.5 (Compose assembly + contract reconciliation) |
 | `fix: address static review` | Step 5 (QA) |
