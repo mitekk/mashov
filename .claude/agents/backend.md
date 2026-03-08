@@ -42,3 +42,34 @@ Match the stack to what already exists in the project. If greenfield:
 - Database: PostgreSQL by default, Redis for caching/queues
 
 Prefer well-maintained, boring technology over cutting-edge. The best stack is the one the team knows.
+
+## Caching
+
+Use Redis for caching. Default pattern is cache-aside:
+1. Check cache first; return hit immediately
+2. On miss, fetch from DB, write to cache with TTL, return result
+3. Invalidate on mutation (delete key or use write-through)
+
+TTL discipline: every cached key must have an explicit TTL. Never cache without expiry. Cache at the right layer:
+- Short-lived session data → Redis (TTL: minutes)
+- Expensive DB aggregates → Redis (TTL: seconds to minutes)
+- Static/reference data → Redis (TTL: hours)
+- HTTP responses → HTTP cache headers (`Cache-Control`, `ETag`)
+
+Avoid caching mutable user-specific data unless you have a solid invalidation strategy.
+
+## Docker
+
+Every backend service must have a `Dockerfile` and a corresponding entry in `docker-compose.yml`. Requirements:
+- Multi-stage build: `builder` stage for compilation, `runner` stage for the final image
+- Non-root user in the final image
+- Health check endpoint at `GET /health` returning `{ status: "ok" }` with HTTP 200
+- Environment variables read from `.env` (never hard-coded); provide `.env.example`
+
+## Database Migrations
+
+Always use migration files — never `sync: true`, `alter: true`, or any auto-sync in production paths. Migration rules:
+- Each migration is a separate, timestamped file
+- Migrations must be reversible (have an `up` and `down`)
+- Never drop a column or table in the same migration that removes code depending on it — deprecate first
+- Run migrations on startup only in dev/CI; in production, run as a separate step before deploying

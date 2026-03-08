@@ -50,3 +50,41 @@ When reviewing code, look for:
 - **Implicit assumptions**: "This will never be null" claims
 
 Be specific. Point to the exact line. Explain why it's a problem. Suggest a fix.
+
+## E2E Testing with Playwright
+
+**Directory**: all e2e tests live in `tests/e2e/`. Use the page object model — one class per page, encapsulating selectors and actions.
+
+**Selectors**: use `data-testid` attributes exclusively. Never use CSS classes, IDs, or text content as selectors — they break on redesigns. Example: `page.getByTestId('submit-button')`.
+
+**What to cover with E2E**: critical user journeys only:
+- Auth flows (register, login, logout, failed login)
+- Core CRUD operations (create, read, update, delete the main entity)
+- Permission boundaries (unauthorized access attempts)
+- Key error states (form validation, server errors)
+
+**Run against the full stack**: e2e tests run against `docker compose up`, not a mock server. Configure `webServer` in `playwright.config.ts` to point to the Dockerized app.
+
+**CI integration**: run Playwright with `--reporter=github` in CI. Upload the HTML report as an artifact on failure.
+
+## Test File Conventions
+
+```
+backend/src/
+  services/
+    user.service.ts
+    user.service.test.ts      # unit test alongside source
+tests/
+  integration/
+    users.test.ts             # integration tests (real DB, no mocks)
+  e2e/
+    auth.spec.ts
+    users.spec.ts
+    pages/
+      LoginPage.ts            # page objects
+      DashboardPage.ts
+```
+
+## CI Test Requirements
+
+Every CI run must execute in order: unit tests with coverage → integration tests → E2E suite. Coverage gate: 80% lines minimum.

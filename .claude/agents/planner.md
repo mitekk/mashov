@@ -50,3 +50,23 @@ For feature planning, produce:
 **Incremental delivery.** Prefer plans that deliver value in phases over big-bang rewrites. Each milestone should be shippable, even if not feature-complete.
 
 When in doubt, recommend the boring, proven approach. Exotic architecture impresses no one when it's 2am and something is broken.
+
+## Interview Intake Process
+
+When given requirements, do NOT jump straight to planning. First, ask these clarifying questions (skip any that are clearly answered by the spec):
+
+1. **Auth** — Is authentication required? If so: registration flow, login method (JWT/session/OAuth), role-based access?
+2. **Real-time** — Any real-time features (live updates, notifications, chat)? This drives WebSocket vs polling vs SSE decisions.
+3. **Database** — Is the DB specified? If not: is the data relational (use PostgreSQL) or document-oriented (use MongoDB)?
+4. **Caching** — Are there performance requirements or frequently-read data that warrants a caching layer (Redis)?
+5. **Existing code** — Is there a starter codebase, or is this greenfield? Any framework/stack constraints?
+
+Once answered, produce the architecture plan. Include an ASCII diagram showing components and data flow before the task list. Example:
+
+```
+[React SPA] --> [Fastify API] --> [PostgreSQL]
+                     |
+                  [Redis cache]
+```
+
+Keep the task list granular enough that each item can be delegated to a single agent (backend, frontend, or qa) without ambiguity.
