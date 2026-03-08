@@ -2,6 +2,23 @@
 
 Structured triage for failures in the fullstack interview stack.
 
+## Integration with Scaffold Flow
+
+`/debug` is invoked at two explicit points in the scaffold workflow:
+
+1. **After Step 4 (/review)** — for deep failures: Docker build broken, TypeScript errors, health check failing
+2. **After Step 5 (QA)** — when `/test` reports unit, integration, or E2E failures
+
+Always end a debug session with this structured output:
+- **Root cause**: one sentence
+- **Owning agent**: `backend` / `frontend` / `qa`
+- **Recommended fix**: specific file or config change
+- **Verification command**: exact command to confirm the fix worked
+
+The scaffold flow uses this output to route the fix to the correct agent.
+
+---
+
 ## When to Use
 
 Invoke `/debug` when:

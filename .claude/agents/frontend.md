@@ -68,7 +68,7 @@ frontend/src/
 
 **Error and loading states**: every async operation needs a loading skeleton, an error state, and an empty state. These are features, not polish.
 
-**Performance**: invoke `/vercel-react-best-practices` skill for deeper optimization (waterfalls, bundle size, re-renders).
+**Performance**: the QA phase runs `/vercel-react-best-practices` as a gate. During implementation, proactively apply the CRITICAL rules (`async-*`, `bundle-*`) to avoid QA failures.
 
 ## Caching
 

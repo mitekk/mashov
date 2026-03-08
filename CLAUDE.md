@@ -41,12 +41,13 @@ npm run typecheck            # TypeScript check
 
 ## Interview Workflow
 
-1. **Intake** — paste requirements; delegate to `planner` to ask clarifying questions and produce architecture
-2. **Backend** — delegate to `backend` for API, DB schema, migrations, Docker service
-3. **Frontend** — delegate to `frontend` for pages, routing, API client, state
-4. **QA** — delegate to `qa` for unit, integration, and e2e tests; CI workflow
-5. **Review** — run `/review` skill for pre-submission checklist
-6. **Ship** — run `/test` to verify full suite is green
+1. **Intake** — paste requirements; delegate to `planner` → architecture + `docs/api-contract.md` → `committer` (`docs`)
+2/3. **Backend + Frontend** — parallel if API contract is complete; if gaps exist, resolve with planner first then parallelize
+   - `backend` → `committer` (`feat(backend)`)
+   - `frontend` → `committer` (`feat(frontend)`)
+4. **Review** — run `/review` (pre-QA gate: Docker, types, lint, secrets, README) → `committer` (`fix`, if needed)
+5. **QA** — delegate to `qa` → all test layers green → `committer` (`test`)
+6. **Ship** — `committer` after `/test` green + docs verified (`chore: verify ship`)
 
 ## Definition of Done
 
@@ -62,13 +63,7 @@ npm run typecheck            # TypeScript check
 
 ## Time-Boxing
 
-Ask the planner: **"How much time do you have?"** If unspecified, assume 3 hours.
-
-Tag every task **[MVP]** or **[NICE]**:
-- **[MVP]**: must ship to satisfy stated requirements and pass the DoD
-- **[NICE]**: polish, extras, edge cases — only if time allows
-
-When time is tight, cut **[NICE]** tasks before cutting tests or Docker. A working, tested, containerized app beats a feature-rich one that doesn't run.
+Managed by the `planner` agent. See [`.claude/agents/planner.md`](.claude/agents/planner.md) for the [MVP]/[NICE] protocol, the 3-hour default, and the execution sequence.
 
 ## Skills
 
@@ -90,3 +85,4 @@ Delegate tasks to the appropriate specialist agent:
 | `backend` | APIs, databases, auth, business logic, data models, migrations, infrastructure |
 | `qa` | Writing tests, finding bugs, reviewing code for correctness, auditing coverage |
 | `planner` | Planning features, designing architecture, breaking down tasks, evaluating approaches |
+| `committer` | Documenting completed work, staging files, writing conventional commits with context |

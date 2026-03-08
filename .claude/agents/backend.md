@@ -167,3 +167,12 @@ pip-audit --requirement requirements.txt
 ```
 
 Run `pip-audit` before submission. Fix or document any findings.
+
+## Completion Handoff
+
+When implementation is done, update `docs/api-contract.md`:
+- Set `Status = implemented` for every route built
+- Add any routes created during implementation that weren't in the original plan
+- Flag deviations with `Status = changed` + a one-line note explaining the change
+
+Note: in parallel dispatch, the frontend agent already started from the planner's initial contract. The updated contract (with `Status = implemented`) is consumed by QA — any `changed` entries may require a follow-up fix to the frontend.

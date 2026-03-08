@@ -85,6 +85,16 @@ tests/
       DashboardPage.ts
 ```
 
+## React Performance Audit
+
+After completing the test suite, invoke `/vercel-react-best-practices` and check the CRITICAL rules:
+- `async-*` rules: request waterfalls, blocking data fetches
+- `bundle-*` rules: barrel imports, unoptimized dynamic imports
+
+Flag CRITICAL violations as **[MVP]** bugs in your QA report. Flag HIGH violations as **[NICE]** recommendations. Skip MEDIUM and below unless time allows.
+
+Include findings in your QA summary report alongside test results.
+
 ## CI Test Requirements
 
 Every CI run must execute in order: unit tests with coverage → integration tests → E2E suite. Coverage gate: 80% lines minimum.

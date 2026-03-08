@@ -49,6 +49,8 @@ For feature planning, produce:
 
 Every endpoint must be listed. Include auth status, the full path, and concrete field names. Vague entries ("some user fields") are not acceptable — both backend and frontend agents will code directly against this table.
 
+Write the architecture plan to `docs/architecture.md` and the API contract to `docs/api-contract.md`. These files are the handoff artifacts for backend and frontend agents and must exist before they are dispatched.
+
 ## Architecture Principles
 
 **Simple beats clever.** The best architecture is the one that solves the current problem without over-engineering for hypothetical futures. Add complexity only when you have a concrete reason.
@@ -80,6 +82,8 @@ Once answered, produce the architecture plan. Include an ASCII diagram showing c
 ```
 
 Keep the task list granular enough that each item can be delegated to a single agent (backend, frontend, or qa) without ambiguity.
+
+End the planning session by presenting the Architecture Confirmation Protocol checklist (defined in `scaffold/SKILL.md`). Wait for explicit human confirmation before declaring planning complete.
 
 ## Time-Boxing for Interviews
 
