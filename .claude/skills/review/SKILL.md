@@ -21,6 +21,16 @@ Work through each item in order. For each check, run the relevant command or ins
 - [ ] `npm run typecheck` (or `mypy`) exits 0 — no type errors
 - [ ] `npm run lint` exits 0 — no lint errors or warnings
 
+### API Conventions
+
+> Standards defined in `.claude/rules/api.md` — check compliance before marking review passed.
+
+- [ ] All API endpoints under `/api/v1/` prefix (no unversioned routes)
+- [ ] Every error response uses the required shape: `{ error: { code, message, details } }`
+- [ ] All list endpoints return the pagination envelope: `{ data, pagination: { page, limit, total, totalPages } }`
+- [ ] No JWT or auth tokens stored in `localStorage` — `git grep -r "localStorage" -- 'frontend/src'` returns nothing auth-related
+- [ ] CORS origin is an explicit allow-list — no `Access-Control-Allow-Origin: *` in backend config
+
 ### Docker
 
 - [ ] `docker compose build` exits 0 — all images build successfully

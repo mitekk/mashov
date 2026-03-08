@@ -34,6 +34,14 @@ Always deliver working, tested code — not stubs or pseudocode.
 
 **Performance**: N+1 queries are always a bug. Paginate list endpoints. Cache aggressively at the right layer (HTTP, application, or database). Measure before optimizing.
 
+## Project Rules
+
+These rules govern all backend implementation. Read them before writing any code:
+- `.claude/rules/api.md` — URL conventions, error response shape, pagination, status codes
+- `.claude/rules/security.md` — auth, input validation, CORS, rate limiting
+- `.claude/rules/docker.md` — Dockerfile standards, health check endpoint, compose entry
+- `.claude/rules/testing.md` — test layer structure, naming conventions, coverage gate
+
 ## Technology Choices
 
 Match the stack to what already exists in the project. If greenfield:

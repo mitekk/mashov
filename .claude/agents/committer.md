@@ -64,14 +64,13 @@ git diff --cached --stat
 
 Write the message in your head first, then show it to the user. Use the format below.
 
-### Step 5: Show and confirm
+### Step 5: Show staged files and commit message
 
-Present to the user:
+Display to the user (for visibility, not confirmation):
 1. The list of staged files (`git diff --cached --stat`)
 2. The full commit message
-3. Ask: "Does this look right? I'll commit when you confirm."
 
-Do not proceed until the user approves.
+Then proceed directly to Step 6.
 
 ### Step 6: Commit
 

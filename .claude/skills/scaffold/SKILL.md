@@ -93,13 +93,32 @@ The frontend agent delivers:
 - `Dockerfile` + `docker-compose.yml` service entry
 - `data-testid` attributes on all interactive elements
 
+### Step 3.5 — API Contract Reconciliation
+
+Before running `/review`, check whether the backend updated the contract during parallel dispatch:
+
+```bash
+grep -i "changed" docs/api-contract.md
+```
+
+If any `Status = changed` entries exist:
+1. Identify which endpoints changed (path, method, request/response fields)
+2. Delegate to the `frontend` agent with the specific changed entries — fix only those routes
+3. Once confirmed green, proceed to Step 4
+
+If no `changed` entries: proceed directly to Step 4.
+
 ### Step 4 — Review (/review)
 
 Run `/review` to check Docker, TypeScript, lint, secrets, and README before the test suite runs. Fixing these first gives QA a clean baseline.
 
 **On failure:**
 - Surface issues (missing README section, lint errors, un-committed `.env.example`) → fix directly → `committer` (`fix`) → re-run `/review`
-- Deep issues (Docker build broken, type errors) → invoke `/debug` → route fix to the owning agent → `committer` (`fix`) → re-run `/review`
+- Deep issues (Docker build broken, type errors) → invoke `/debug` → read the structured output:
+  - **Owning agent: `backend`** → re-enter Step 2 with the recommended fix as context
+  - **Owning agent: `frontend`** → re-enter Step 3 with the recommended fix as context
+  - **Owning agent: `qa`** → re-enter Step 5 with the recommended fix as context
+  - Run the **Verification command** from the debug output to confirm the fix → `committer` (`fix`) → re-run `/review`
 - See Rollback Protocol for failure-type routing table
 
 ### Step 5 — QA & CI (qa)
@@ -115,9 +134,13 @@ The QA agent delivers:
 - `playwright.config.ts`
 - Coverage configuration
 
-**On test failure:** run `/test` for a structured failure report. Then:
-- Unit/integration failures → invoke `/debug` → route fix to backend or frontend agent → re-run `/test`
-- E2E failures → invoke `/debug` with Playwright trace + Docker logs → route fix → re-run `/test`
+**On test failure:** run `/test` for a structured failure report. Then invoke `/debug` and read the structured output:
+- **Owning agent: `backend`** → re-enter Step 2 with the recommended fix as context
+- **Owning agent: `frontend`** → re-enter Step 3 with the recommended fix as context
+- **Owning agent: `qa`** → fix directly in the test files
+- Run the **Verification command** from the debug output to confirm the fix → re-run `/test`
+
+For E2E failures, pass Playwright trace + Docker logs to `/debug` for evidence.
 
 The qa agent confirms all layers green. `committer` commits only when `/test` passes: `test: add test suite and CI workflow`
 
@@ -147,3 +170,33 @@ Rules:
 2. Commit the fix before re-running `/review`
 3. Re-run `/review` from the top — never skip items that passed before
 4. Maximum 2 rollback cycles; if still failing, escalate to the human for scope reduction
+
+---
+
+## Resuming an Interrupted Session
+
+If the challenge was interrupted (context cleared, session ended), determine which step was last completed and re-enter there.
+
+### Step 1: Check existing artifacts
+
+```bash
+ls docs/                   # architecture.md and/or api-contract.md present?
+git log --oneline -10      # what was last committed?
+```
+
+### Step 2: Map last commit to workflow step
+
+| Last commit message contains | Re-enter at |
+|------------------------------|-------------|
+| `docs: add architecture` | Step 2 (Backend) |
+| `feat(backend)` | Step 3 (Frontend) — check if it was also dispatched |
+| `feat(frontend)` | Step 3.5 (Contract reconciliation) |
+| `fix: address review` | Step 5 (QA) |
+| `test: add test suite` | Step 6 (Ship) |
+
+### Step 3: Re-enter with context
+
+When delegating to an agent mid-workflow, provide:
+- The relevant `docs/` artifact(s) as context
+- The git log showing what's already complete
+- The specific tasks remaining (from the architecture plan task list)

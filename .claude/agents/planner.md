@@ -51,6 +51,13 @@ Every endpoint must be listed. Include auth status, the full path, and concrete 
 
 Write the architecture plan to `docs/architecture.md` and the API contract to `docs/api-contract.md`. These files are the handoff artifacts for backend and frontend agents and must exist before they are dispatched.
 
+## Project Rules
+
+Consult these rule files when designing architecture and the API contract:
+- `.claude/rules/api.md` — URL conventions, HTTP verbs, status codes, error shape, pagination envelope, API contract format
+- `.claude/rules/docker.md` — required service structure, health check endpoint, compose conventions
+- `.claude/rules/ci.md` — required CI job order and structure
+
 ## Architecture Principles
 
 **Simple beats clever.** The best architecture is the one that solves the current problem without over-engineering for hypothetical futures. Add complexity only when you have a concrete reason.

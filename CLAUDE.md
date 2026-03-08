@@ -41,13 +41,7 @@ npm run typecheck            # TypeScript check
 
 ## Interview Workflow
 
-1. **Intake** — paste requirements; delegate to `planner` → architecture + `docs/api-contract.md` → `committer` (`docs`)
-2/3. **Backend + Frontend** — parallel if API contract is complete; if gaps exist, resolve with planner first then parallelize
-   - `backend` → `committer` (`feat(backend)`)
-   - `frontend` → `committer` (`feat(frontend)`)
-4. **Review** — run `/review` (pre-QA gate: Docker, types, lint, secrets, README) → `committer` (`fix`, if needed)
-5. **QA** — delegate to `qa` → all test layers green → `committer` (`test`)
-6. **Ship** — `committer` after `/test` green + docs verified (`chore: verify ship`)
+Run `/scaffold` — it orchestrates the full 6-step sequence (intake → backend → frontend → review → QA → ship). See `.claude/skills/scaffold/SKILL.md` for the authoritative steps and commit sequence.
 
 ## Definition of Done
 
