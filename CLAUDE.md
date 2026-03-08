@@ -20,6 +20,9 @@ Fullstack interview coding challenge workspace. Requirements arrive as specs; ou
 ```
 frontend/        React app
 backend/         API server
+docs/
+  architecture.md   Architecture plan (produced by planner, consumed by backend/frontend/qa)
+  api-contract.md   API contract (planner → backend updates → frontend, qa)
 tests/
   integration/   Integration tests
   e2e/           Playwright end-to-end tests

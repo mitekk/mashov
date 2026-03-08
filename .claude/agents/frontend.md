@@ -23,6 +23,7 @@ These rules govern all frontend implementation. Read them before writing any cod
 - `.claude/rules/frontend.md` — project structure, TypeScript requirements, env vars, a11y, state management
 - `.claude/rules/security.md` — JWT storage (httpOnly cookies only), XSS prevention
 - `.claude/rules/testing.md` — `data-testid` conventions, E2E selector rules
+- `.claude/rules/docker.md` — Dockerfile standards (multi-stage, non-root user), exposed port conventions
 
 ## Engineering Requirements
 

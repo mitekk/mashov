@@ -74,9 +74,11 @@ The backend agent delivers:
 - API routes with validation and error handling
 - Auth implementation (if required)
 - Redis caching layer (if required)
-- `Dockerfile` + `docker-compose.yml` service entry
+- `Dockerfile` + `docker-compose.yml` (owns the full compose file: db, redis, backend services)
 - `GET /health` endpoint
 - Unit tests for business logic
+
+> **docker-compose.yml ownership**: backend owns the root `docker-compose.yml`. It defines all infrastructure services (db, redis) and the backend service. The frontend agent does NOT touch `docker-compose.yml` — it only produces its `Dockerfile`.
 
 ### Step 3 — Frontend (frontend)
 
@@ -90,12 +92,19 @@ The frontend agent delivers:
 - Page components and routing
 - API client (typed, with error handling)
 - State management
-- `Dockerfile` + `docker-compose.yml` service entry
+- `Dockerfile` only — the frontend service entry is added to `docker-compose.yml` in Step 3.5
 - `data-testid` attributes on all interactive elements
 
-### Step 3.5 — API Contract Reconciliation
+### Step 3.5 — Compose Assembly + API Contract Reconciliation
 
-Before running `/review`, check whether the backend updated the contract during parallel dispatch:
+**First: add the frontend service to docker-compose.yml**
+
+The frontend agent produced only a `Dockerfile` — its compose entry must be added now:
+1. Inspect `frontend/Dockerfile` to confirm the exposed port
+2. Add the frontend service entry to the existing `docker-compose.yml` following `.claude/rules/docker.md`
+3. Set `depends_on: backend: condition: service_healthy`
+
+**Then: check for API contract drift**
 
 ```bash
 grep -i "changed" docs/api-contract.md
@@ -108,17 +117,16 @@ If any `Status = changed` entries exist:
 
 If no `changed` entries: proceed directly to Step 4.
 
-### Step 4 — Review (/review)
+### Step 4 — Static Review (/review --static)
 
-Run `/review` to check Docker, TypeScript, lint, secrets, and README before the test suite runs. Fixing these first gives QA a clean baseline.
+Run `/review --static` — lint, types, API conventions, security, README. No running stack needed. Fixes here give QA a type-clean, API-correct baseline.
 
 **On failure:**
-- Surface issues (missing README section, lint errors, un-committed `.env.example`) → fix directly → `committer` (`fix`) → re-run `/review`
-- Deep issues (Docker build broken, type errors) → invoke `/debug` → read the structured output:
+- Surface issues (missing README section, lint errors, un-committed `.env.example`) → fix directly → `committer` (`fix: address static review`) → re-run `/review --static`
+- Type errors or API convention violations → invoke `/debug` → read the structured output:
   - **Owning agent: `backend`** → re-enter Step 2 with the recommended fix as context
   - **Owning agent: `frontend`** → re-enter Step 3 with the recommended fix as context
-  - **Owning agent: `qa`** → re-enter Step 5 with the recommended fix as context
-  - Run the **Verification command** from the debug output to confirm the fix → `committer` (`fix`) → re-run `/review`
+  - Run the **Verification command** from the debug output to confirm the fix → `committer` (`fix`) → re-run `/review --static`
 - See Rollback Protocol for failure-type routing table
 
 ### Step 5 — QA & CI (qa)
@@ -144,11 +152,23 @@ For E2E failures, pass Playwright trace + Docker logs to `/debug` for evidence.
 
 The qa agent confirms all layers green. `committer` commits only when `/test` passes: `test: add test suite and CI workflow`
 
+### Step 5.5 — Full Review (/review)
+
+Run `/review` (full mode, no flag) after QA completes. Now all checks are meaningful: tests exist, Docker images are built, E2E suite is written.
+
+**On failure:**
+- Surface issues → fix directly → `committer` (`fix: address full review`) → re-run `/review`
+- Deep issues → invoke `/debug` → read the structured output:
+  - **Owning agent: `backend`** → re-enter Step 2 with the recommended fix as context
+  - **Owning agent: `frontend`** → re-enter Step 3 with the recommended fix as context
+  - **Owning agent: `qa`** → fix directly in the test files
+  - Run the **Verification command** from the debug output to confirm the fix → re-run `/review`
+- See Rollback Protocol for failure-type routing table
+
 ### Step 6 — Ship (committer)
 
-1. Run `/test` — all layers must be green (final confirmation)
-2. Verify README is complete: setup steps, env vars table, how to run tests
-3. `committer`: `chore: verify ship — tests green, docs complete`
+1. Verify README is complete: setup steps, env vars table, how to run tests
+2. `committer`: `chore: verify ship — tests green, docs complete`
 
 ---
 
@@ -156,14 +176,15 @@ The qa agent confirms all layers green. `committer` commits only when `/test` pa
 
 When Step 4 (/review) or Step 5 (QA) surfaces a deep failure, use this table to re-enter the correct phase:
 
-| Failure type | Re-enter | Agent |
-|---|---|---|
-| Docker build broken | Step 2 or 3 | `backend` or `frontend` |
-| TypeScript / lint errors | Step 2 or 3 | `backend` or `frontend` |
-| Missing `.env.example` / incomplete README | Step 4 in place | direct edit |
-| Test coverage < 80% | Step 5 | `qa` |
-| E2E tests failing | Step 5, then Step 3 if UI issue | `qa`, then `frontend` |
-| High CVE in dependencies | Step 2 | `backend` |
+| Failure type | Surfaces at | Re-enter | Agent |
+|---|---|---|---|
+| TypeScript / lint errors | Step 4 | Step 2 or 3 | `backend` or `frontend` |
+| API convention violations | Step 4 | Step 2 or 3 | `backend` or `frontend` |
+| Missing `.env.example` / incomplete README | Step 4 | Step 4 in place | direct edit |
+| Docker build broken | Step 5.5 | Step 2 or 3 | `backend` or `frontend` |
+| Test coverage < 80% | Step 5.5 | Step 5 | `qa` |
+| E2E tests failing | Step 5.5 | Step 5, then Step 3 if UI issue | `qa`, then `frontend` |
+| High CVE in dependencies | Step 5.5 | Step 2 | `backend` |
 
 Rules:
 1. Fix the specific failure only — no adjacent refactoring
@@ -190,9 +211,10 @@ git log --oneline -10      # what was last committed?
 |------------------------------|-------------|
 | `docs: add architecture` | Step 2 (Backend) |
 | `feat(backend)` | Step 3 (Frontend) — check if it was also dispatched |
-| `feat(frontend)` | Step 3.5 (Contract reconciliation) |
-| `fix: address review` | Step 5 (QA) |
-| `test: add test suite` | Step 6 (Ship) |
+| `feat(frontend)` | Step 3.5 (Compose assembly + contract reconciliation) |
+| `fix: address static review` | Step 5 (QA) |
+| `test: add test suite` | Step 5.5 (Full review) |
+| `fix: address full review` | Step 6 (Ship) |
 
 ### Step 3: Re-enter with context
 
