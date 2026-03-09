@@ -55,6 +55,7 @@ git add frontend/src/
 
 # Or by specific files
 git add backend/src/routes/users.ts backend/src/services/auth.ts
+git add docs/.scaffold-state.json  # required on scaffold checkpoint commits
 
 # Check what will be committed
 git diff --cached --stat
@@ -200,5 +201,7 @@ Step 5.7 (smoke)  → no commit here — fixes are committed in Step 5.9
 Step 5.9 (retro)  → committer: "fix: address smoke test findings" (only if fixes needed, includes ADRs)
 Step 6 (ship)     → committer: "chore: verify ship — tests green, docs complete"
 ```
+
+For every scaffold checkpoint commit, include `docs/.scaffold-state.json` in the staged files so `/resume` remains deterministic across sessions.
 
 This keeps the history clean and recoverable at every stage.

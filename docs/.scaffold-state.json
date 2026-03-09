@@ -1,0 +1,11 @@
+{
+  "workflow": "scaffold",
+  "schema_version": 1,
+  "status": "blocked",
+  "last_completed_step": 1,
+  "next_step": 1,
+  "updated_at": "2026-03-10T00:00:00Z",
+  "blockers": [
+    "Workflow not initialized. Run /scaffold to initialize workflow state."
+  ]
+}

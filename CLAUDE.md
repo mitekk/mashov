@@ -23,6 +23,7 @@ backend/         API server
 docs/
   architecture.md   Architecture plan (produced by planner, consumed by backend/frontend/qa)
   api-contract.md   API contract (planner → backend updates → frontend, qa)
+  .scaffold-state.json  Scaffold workflow checkpoint marker (source of truth for /resume)
   adr/              Architecture Decision Records (one per significant decision)
     README.md       ADR index
 tests/
@@ -47,6 +48,7 @@ npm run typecheck            # TypeScript check
 ## Interview Workflow
 
 Run `/scaffold` — it orchestrates the full sequence (intake → backend → frontend → review → QA → smoke test → retrospective → ship). See `.claude/skills/scaffold/SKILL.md` for the authoritative steps and commit sequence.
+If the workflow is interrupted, run `/resume` to get the exact re-entry step from `docs/.scaffold-state.json`.
 
 ## Definition of Done
 
@@ -72,6 +74,7 @@ Managed by the `planner` agent. See [`.claude/agents/planner.md`](.claude/agents
 | Invoke | Use when |
 |--------|----------|
 | `/scaffold` | Starting a new challenge — intake, architecture, full stack setup |
+| `/resume` | Resume an interrupted scaffold workflow from the committed marker state |
 | `/review` | Pre-submission DoD checklist |
 | `/test` | Full test suite run with layered failure report |
 | `/debug` | Stack won't start, tests fail unexpectedly, CI is red |

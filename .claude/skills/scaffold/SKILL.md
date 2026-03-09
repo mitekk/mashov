@@ -24,11 +24,79 @@ Required columns: `Method` | `Path` | `Auth?` | `Request Body` | `Response Body`
 
 No vague entries — every field name and type must be explicit. Vague entries ("some user fields") block frontend dispatch.
 
+### Workflow State Marker (`docs/.scaffold-state.json`)
+
+`/scaffold` must create and maintain this file. `/resume` reads this marker only (no git-log or artifact inference fallback).
+
+Schema:
+
+```json
+{
+  "workflow": "scaffold",
+  "schema_version": 1,
+  "status": "in_progress",
+  "last_completed_step": 1,
+  "next_step": 1,
+  "updated_at": "2026-03-10T00:00:00Z",
+  "blockers": [],
+  "last_commit": "abc1234"
+}
+```
+
+Constraints:
+- `workflow` must be `"scaffold"`
+- `schema_version` must be `1`
+- `status` must be `in_progress`, `blocked`, or `completed`
+- `last_completed_step` and `next_step` must be one of: `1, 2, 3, 3.5, 4, 5, 5.5, 5.7, 5.9, 6`
+- `blockers` is optional; if present, it must be an array of strings
+- `last_commit` is optional; if present, it must be a non-empty string
+
 ---
 
 ## Execution Steps
 
 Run these steps in sequence. Each step delegates to the appropriate specialist agent.
+
+### State Initialization (before Step 1)
+
+At workflow start, initialize `docs/.scaffold-state.json`:
+
+```bash
+mkdir -p docs
+cat > docs/.scaffold-state.json <<'EOF'
+{
+  "workflow": "scaffold",
+  "schema_version": 1,
+  "status": "in_progress",
+  "last_completed_step": 1,
+  "next_step": 1,
+  "updated_at": "2026-03-10T00:00:00Z",
+  "blockers": []
+}
+EOF
+```
+
+### State Transition Rules
+
+Update `docs/.scaffold-state.json` before each scaffold checkpoint commit. Include this file in every scaffold checkpoint commit.
+
+| Event | status | last_completed_step | next_step | blockers |
+|---|---|---:|---:|---|
+| Step 1 complete | `in_progress` | 1 | 2 | `[]` |
+| Step 2+3 dispatched in parallel | `blocked` | 1 | 2 | `["Parallel phase active: wait for both Step 2 and Step 3 completion commits."]` |
+| Step 2 complete, Step 3 pending | `blocked` | 1 | 3 | `["Step 2 complete; waiting for Step 3 frontend completion."]` |
+| Step 3 complete, Step 2 pending | `blocked` | 1 | 2 | `["Step 3 complete; waiting for Step 2 backend completion."]` |
+| Step 2 and Step 3 both complete | `in_progress` | 3 | 3.5 | `[]` |
+| Step 3.5 complete | `in_progress` | 3.5 | 4 | `[]` |
+| Step 4 complete | `in_progress` | 4 | 5 | `[]` |
+| Step 5 complete | `in_progress` | 5 | 5.5 | `[]` |
+| Step 5.5 complete | `in_progress` | 5.5 | 5.7 | `[]` |
+| Step 5.7 complete | `in_progress` | 5.7 | 5.9 | `[]` |
+| Step 5.9 complete | `in_progress` | 5.9 | 6 | `[]` |
+| Step 6 complete | `completed` | 6 | 6 | `[]` |
+
+Rollback/re-entry rule:
+- When routing a failure back to an earlier phase, set `status` to `blocked`, set `next_step` to the corrective re-entry step, and set `blockers` to the failure summary before re-dispatching.
 
 ### Step 1 — Intake & Architecture (planner)
 
@@ -256,39 +324,25 @@ When Step 4 (/review) or Step 5 (QA) surfaces a deep failure, use this table to 
 | Shallow E2E tests flagged | Step 5.7 | Step 5 | `qa` |
 
 Rules:
-1. Fix the specific failure only — no adjacent refactoring
-2. Commit the fix before re-running `/review`
-3. Re-run `/review` from the top — never skip items that passed before
-4. Maximum 2 rollback cycles; if still failing, escalate to the human for scope reduction
+1. Before re-entering any step, update `docs/.scaffold-state.json` to `status: "blocked"` with the corrective `next_step` and blocker summary
+2. Fix the specific failure only — no adjacent refactoring
+3. Commit the fix before re-running `/review`
+4. Re-run `/review` from the top — never skip items that passed before
+5. Maximum 2 rollback cycles; if still failing, escalate to the human for scope reduction
 
 ---
 
-## Resuming an Interrupted Session
+## Resume Command Contract (`/resume`)
 
-If the challenge was interrupted (context cleared, session ended), determine which step was last completed and re-enter there.
+Use `/resume` for all interrupted scaffold workflows.
 
-### Step 1: Check existing artifacts
-
-```bash
-ls docs/                   # architecture.md and/or api-contract.md present?
-git log --oneline -10      # what was last committed?
-```
-
-### Step 2: Map last commit to workflow step
-
-| Last commit message contains | Re-enter at |
-|------------------------------|-------------|
-| `docs: add architecture` or `docs: add architecture plan, API contract, and initial ADRs` | Step 2 (Backend) |
-| `feat(backend)` | Step 3 (Frontend) — check if it was also dispatched |
-| `feat(frontend)` | Step 3.5 (Compose assembly + contract reconciliation) |
-| `fix: address static review` | Step 5 (QA) |
-| `test: add test suite` | Step 5.5 (Full review) |
-| `fix: address full review` | Step 5.7 (Smoke test) |
-| `fix: address smoke test` | Step 5.9 (Retrospective) or Step 6 (Ship) |
-
-### Step 3: Re-enter with context
-
-When delegating to an agent mid-workflow, provide:
-- The relevant `docs/` artifact(s) as context
-- The git log showing what's already complete
-- The specific tasks remaining (from the architecture plan task list)
+`/resume` must:
+1. Read only `docs/.scaffold-state.json` (no fallback inference)
+2. Validate schema and step values exactly
+3. Validate required artifacts for the marker `next_step`
+4. Output a **Resume Report** with:
+   - Current marker fields (`status`, `last_completed_step`, `next_step`, `updated_at`, optional `last_commit`)
+   - Artifact check results
+   - Required re-entry context
+   - Exact next command/delegation payload
+5. Stop after guidance (never auto-dispatch)
