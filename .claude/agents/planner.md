@@ -112,3 +112,42 @@ data model → migrations → API routes → auth → frontend pages → tests �
 ```
 
 When time is tight, cut **[NICE]** tasks before cutting tests or Docker. A working, tested, containerized app beats a feature-rich one that doesn't run.
+
+## Developer Experience Requirements
+
+Every architecture plan must address local development workflow. These are **[MVP]** — a project that can't be developed locally without rebuilding containers is broken.
+
+### Hot Reload
+
+- [ ] **Backend**: file watcher restarts the server on code change (e.g., `tsx watch`, `nodemon`, `uvicorn --reload`)
+- [ ] **Frontend**: Vite HMR is enabled and works through Docker (WebSocket proxy configured if needed)
+- [ ] Both must work inside Docker, not just outside
+
+### docker-compose.override.yml
+
+Every project must provide a `docker-compose.override.yml` for development that:
+- Mounts source code as volumes (so changes are reflected without rebuild)
+- Overrides the CMD to use the dev server with file watching
+- Exposes debug ports if applicable (e.g., Node.js `--inspect` on port 9229)
+- Does NOT require `docker compose build` after every code change
+
+Example:
+```yaml
+services:
+  backend:
+    volumes:
+      - ./backend/src:/app/src
+    command: ["npx", "tsx", "watch", "src/index.ts"]
+  frontend:
+    volumes:
+      - ./frontend/src:/app/src
+    command: ["npm", "run", "dev"]
+```
+
+### README DX Section
+
+The README must include a "Local Development" section explaining:
+- How to start the stack with hot reload (`docker compose up`)
+- How to run tests locally (not just in Docker)
+- How to access logs and debug
+- Which ports map to which services

@@ -195,6 +195,9 @@ Step 2 (backend)  → committer: "feat(backend): ..."
 Step 3 (frontend) → committer: "feat(frontend): ..."
 Step 4 (/review)  → committer: "fix: address review findings" (only if fixes needed)
 Step 5 (qa)       → committer: "test: add test suite and CI workflow" (only when all tests green)
+Step 5.5 (/review)→ committer: "fix: address full review" (only if fixes needed)
+Step 5.7 (smoke)  → no commit here — fixes are committed in Step 5.9
+Step 5.9 (retro)  → committer: "fix: address smoke test findings" (only if fixes needed, includes ADRs)
 Step 6 (ship)     → committer: "chore: verify ship — tests green, docs complete"
 ```
 

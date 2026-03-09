@@ -191,6 +191,32 @@ pip-audit --requirement requirements.txt
 
 Run `pip-audit` before submission. Fix or document any findings.
 
+## Data Integrity Gate
+
+Before marking implementation complete, verify these at the database level — not just application-level validation. The `verifier` agent (Step 5.7) will check these against the running database and flag violations.
+
+- [ ] **Unique constraints**: every business-unique field has a `UNIQUE` constraint or unique index at the DB level (e.g., user emails, pokemon numbers, product SKUs). Application-level uniqueness checks alone are insufficient — concurrent inserts can bypass them.
+- [ ] **NOT NULL constraints**: required fields are `NOT NULL` at the DB level, not just validated in application code
+- [ ] **Foreign keys**: all references between tables have FK constraints with appropriate `ON DELETE` behavior (`CASCADE`, `SET NULL`, or `RESTRICT` — never unconstrained)
+- [ ] **Seed/import data quality**: if the app seeds or imports data, verify the data passes all constraints:
+  - Run the import with constraints enabled — it must not silently skip or duplicate records
+  - Check for missing required fields (e.g., `sprite_url` is NULL for some records)
+  - Check for duplicate values in unique fields (e.g., two pokemon with the same number)
+- [ ] **No orphaned records**: verify that deleting a parent record handles child records correctly (via FK cascade or application logic)
+
+```bash
+# Example verification queries (adapt to actual schema):
+
+# Check for duplicates on unique fields
+SELECT unique_field, COUNT(*) FROM table_name GROUP BY unique_field HAVING COUNT(*) > 1;
+
+# Check for NULLs in required fields
+SELECT COUNT(*) FROM table_name WHERE required_field IS NULL;
+
+# Check for orphaned records
+SELECT c.id FROM child_table c LEFT JOIN parent_table p ON c.parent_id = p.id WHERE p.id IS NULL;
+```
+
 ## Completion Handoff
 
 When implementation is done, update `docs/api-contract.md`:

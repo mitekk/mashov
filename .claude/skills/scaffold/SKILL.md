@@ -197,6 +197,38 @@ Run `/review` (full mode, no flag) after QA completes. Now all checks are meanin
   - Run the **Verification command** from the debug output to confirm the fix → re-run `/review`
 - See Rollback Protocol for failure-type routing table
 
+### Step 5.7 — Smoke Test (/smoke-test)
+
+Run `/smoke-test` after the full review passes. This is a **runtime verification** step — the `verifier` agent boots the Docker stack, interacts with the app via Playwright MCP, and finds bugs that automated tests missed.
+
+The verifier runs 5 phases:
+1. Infrastructure health (Docker services, Redis memory, DB connectivity, error logs)
+2. Data integrity (unique constraints, required fields, FK references)
+3. API contract compliance (hit every endpoint, verify response shapes match `docs/api-contract.md`)
+4. UI interaction testing (search/filter behavior, image loading, state consistency, navigation)
+5. Cross-cutting concerns (loading states, error recovery, empty states)
+
+**On PASS:** proceed to Step 5.9.
+
+**On FAIL:** each issue includes an owning agent. Route fixes:
+- **Owning agent: `backend`** → re-enter Step 2 with the specific issue
+- **Owning agent: `frontend`** → re-enter Step 3 with the specific issue
+- **Owning agent: `qa`** → fix directly (e.g., shallow E2E tests flagged)
+- **Owning agent: `infrastructure`** → fix in `docker-compose.yml` or Dockerfiles
+
+After fixes, re-run `/smoke-test`. Maximum 2 fix cycles; escalate to human if still failing.
+
+### Step 5.9 — Retrospective & Fix ADRs
+
+This step always runs, even if smoke test passed clean.
+
+1. **If smoke test found issues that were fixed:** invoke the `adr` agent to document each significant fix as an ADR — what went wrong, why it wasn't caught earlier, what was changed. `committer`: `fix: address smoke test findings`
+2. **If smoke test passed clean:** proceed directly to Step 6 — no commit needed.
+
+The retrospective ADRs serve two purposes:
+- Document the fix decisions for reviewers
+- Surface process gaps (e.g., "search filter bug wasn't caught because E2E tests were too shallow") that should feed back into agent/skill improvements
+
 ### Step 6 — Ship (committer)
 
 1. Verify README is complete: setup steps, env vars table, how to run tests
@@ -217,6 +249,11 @@ When Step 4 (/review) or Step 5 (QA) surfaces a deep failure, use this table to 
 | Test coverage < 80% | Step 5.5 | Step 5 | `qa` |
 | E2E tests failing | Step 5.5 | Step 5, then Step 3 if UI issue | `qa`, then `frontend` |
 | High CVE in dependencies | Step 5.5 | Step 2 | `backend` |
+| Stale UI state / cache bugs | Step 5.7 | Step 3 | `frontend` |
+| Data integrity (duplicates, NULLs) | Step 5.7 | Step 2 | `backend` |
+| Infrastructure (Redis OOM, disk full) | Step 5.7 | Step 3.5 | direct edit (compose/config) |
+| API response doesn't match contract | Step 5.7 | Step 2 | `backend` |
+| Shallow E2E tests flagged | Step 5.7 | Step 5 | `qa` |
 
 Rules:
 1. Fix the specific failure only — no adjacent refactoring
@@ -246,7 +283,8 @@ git log --oneline -10      # what was last committed?
 | `feat(frontend)` | Step 3.5 (Compose assembly + contract reconciliation) |
 | `fix: address static review` | Step 5 (QA) |
 | `test: add test suite` | Step 5.5 (Full review) |
-| `fix: address full review` | Step 6 (Ship) |
+| `fix: address full review` | Step 5.7 (Smoke test) |
+| `fix: address smoke test` | Step 5.9 (Retrospective) or Step 6 (Ship) |
 
 ### Step 3: Re-enter with context
 

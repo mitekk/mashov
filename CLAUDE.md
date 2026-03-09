@@ -46,7 +46,7 @@ npm run typecheck            # TypeScript check
 
 ## Interview Workflow
 
-Run `/scaffold` — it orchestrates the full 6-step sequence (intake → backend → frontend → review → QA → ship). See `.claude/skills/scaffold/SKILL.md` for the authoritative steps and commit sequence.
+Run `/scaffold` — it orchestrates the full sequence (intake → backend → frontend → review → QA → smoke test → retrospective → ship). See `.claude/skills/scaffold/SKILL.md` for the authoritative steps and commit sequence.
 
 ## Definition of Done
 
@@ -59,6 +59,9 @@ Run `/scaffold` — it orchestrates the full 6-step sequence (intake → backend
 - [ ] No secrets or credentials in source code
 - [ ] `npm audit --audit-level=high` (or `pip-audit`) passes — no high/critical CVEs
 - [ ] README has: setup steps, env vars, how to run tests
+- [ ] Smoke test passes — verifier agent finds no critical/high issues
+- [ ] Data integrity verified — unique constraints, no NULLs in required fields
+- [ ] Hot reload works in Docker (docker-compose.override.yml provided)
 
 ## Time-Boxing
 
@@ -72,6 +75,7 @@ Managed by the `planner` agent. See [`.claude/agents/planner.md`](.claude/agents
 | `/review` | Pre-submission DoD checklist |
 | `/test` | Full test suite run with layered failure report |
 | `/debug` | Stack won't start, tests fail unexpectedly, CI is red |
+| `/smoke-test` | Runtime verification — boot the app, interact with it, find bugs tests missed |
 | `/vercel-react-best-practices` | React/Next.js performance deep-dive (58 rules) |
 
 ## Agents
@@ -86,3 +90,4 @@ Delegate tasks to the appropriate specialist agent:
 | `planner` | Planning features, designing architecture, breaking down tasks, evaluating approaches |
 | `committer` | Documenting completed work, staging files, writing conventional commits with context |
 | `adr` | Documenting architecture decisions — stack selection, auth strategy, key trade-offs |
+| `verifier` | Runtime smoke testing — adversarial user interaction via Playwright MCP |

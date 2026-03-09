@@ -74,6 +74,30 @@ Be specific. Point to the exact line. Explain why it's a problem. Suggest a fix.
 
 **CI integration**: run Playwright with `--reporter=github` in CI. Upload the HTML report as an artifact on failure.
 
+### E2E Minimum Depth Requirements
+
+Each E2E test must go beyond "page loads" and verify actual behavior. The `verifier` agent (Step 5.7) will flag shallow tests.
+
+**Every E2E test MUST verify:**
+1. **Data content** — assert that rendered data matches expected values (not just "element exists")
+2. **State change** — after a user action, verify the UI reflects the change (count updates, list filters, item appears/disappears)
+3. **Consistency** — filtered/searched results must assert BOTH the count AND the visible items match
+4. **Persistence** — mutations must survive a page reload (navigate away and back, or reload)
+5. **Error feedback** — invalid actions produce visible, meaningful error messages
+
+**Anti-patterns (tests that will be flagged as shallow):**
+- Navigating to a page and only checking the page title or heading
+- Asserting an element exists without checking its content
+- Testing search by typing a term but only verifying the input value changed
+- Testing a form submit without verifying the created/updated data appears
+- Testing a list without verifying item count or content matches expectations
+
+**Depth checklist per test file:**
+- [ ] At least one test asserts actual data values from the API (not just DOM structure)
+- [ ] At least one test verifies a user action changes visible state
+- [ ] At least one test verifies state after page reload
+- [ ] At least one test covers an error/edge case (not just happy path)
+
 ## Test File Conventions
 
 ```
