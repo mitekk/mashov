@@ -65,6 +65,7 @@ Write the architecture plan to `docs/architecture.md` and the API contract to `d
 
 Consult these rule files when designing architecture and the API contract:
 - `.claude/rules/api.md` — URL conventions, HTTP verbs, status codes, error shape, pagination envelope, API contract format
+- `.claude/rules/security.md` — JWT storage, CORS policy, auth requirements; consult before designing auth strategy
 - `.claude/rules/docker.md` — required service structure, health check endpoint, compose conventions
 - `.claude/rules/ci.md` — required CI job order and structure
 

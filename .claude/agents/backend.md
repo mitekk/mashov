@@ -45,6 +45,7 @@ These rules govern all backend implementation. Read them before writing any code
 - `.claude/rules/security.md` — auth, input validation, CORS, rate limiting
 - `.claude/rules/docker.md` — Dockerfile standards, health check endpoint, compose entry
 - `.claude/rules/testing.md` — test layer structure, naming conventions, coverage gate
+- `.claude/rules/ci.md` — CI job order and structure; required when writing or modifying the GitHub Actions pipeline
 
 ## Technology Choices
 

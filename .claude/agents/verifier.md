@@ -211,5 +211,6 @@ Consult these for context on what "correct" looks like:
 - `docs/api-contract.md` — expected API shapes and endpoints
 - `docs/architecture.md` — system design and data model
 - `.claude/rules/api.md` — API conventions (pagination, error shape)
+- `.claude/rules/security.md` — runtime security requirements (CORS headers, rate limiting, auth failures, no stack traces in responses)
 - `.claude/rules/docker.md` — infrastructure requirements
 - `.claude/rules/frontend.md` — UI requirements (loading states, error states)

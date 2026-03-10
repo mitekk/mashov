@@ -22,6 +22,7 @@ These rules define the testing and CI standards for this project:
 - `.claude/rules/testing.md` — test layers, coverage gate (80%), naming conventions, Playwright conventions
 - `.claude/rules/ci.md` — required CI job order (lint → unit → integration → e2e → build), CI structure
 - `.claude/rules/api.md` — API contract shapes to validate in integration tests
+- `.claude/rules/security.md` — security requirements to verify in code review (SQL injection, XSS, auth, exposed secrets)
 
 ## Testing Philosophy
 

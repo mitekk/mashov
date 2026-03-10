@@ -24,6 +24,7 @@ These rules govern all frontend implementation. Read them before writing any cod
 - `.claude/rules/security.md` — JWT storage (httpOnly cookies only), XSS prevention
 - `.claude/rules/testing.md` — `data-testid` conventions, E2E selector rules
 - `.claude/rules/docker.md` — Dockerfile standards (multi-stage, non-root user), exposed port conventions
+- `.claude/rules/ci.md` — CI job order and structure; required when adding or modifying the frontend CI job
 
 ## Engineering Requirements
 
