@@ -49,7 +49,11 @@ frontend/src/
 
 **Error and loading states**: every async operation needs a loading skeleton, an error state, and an empty state. These are features, not polish.
 
-**Performance**: the QA phase runs `/vercel-react-best-practices` as a gate. During implementation, proactively apply the CRITICAL rules (`async-*`, `bundle-*`) to avoid QA failures.
+**Performance**: apply the Vite Performance Checklist below during implementation. These are the rules that apply to a React + Vite stack — Next.js/RSC-specific patterns do not apply here.
+
+**Plugins**:
+- Use the `context7` plugin when working with unfamiliar library APIs before implementing — it provides up-to-date docs and avoids hallucinated APIs.
+- Use the `frontend-design` plugin for creative/visual direction and aesthetic inspiration. `frontend.md` technical rules take precedence for all structural and engineering patterns.
 
 ## Caching
 
@@ -119,3 +123,30 @@ Interpret creatively and make unexpected choices that feel genuinely designed fo
 **IMPORTANT**: Match implementation complexity to the aesthetic vision. Maximalist designs need elaborate code with extensive animations. Minimalist designs need restraint, precision, and careful attention to spacing, typography, and subtle details. Elegance comes from executing the vision well.
 
 You are capable of extraordinary creative work. Don't hold back — show what can truly be created when thinking outside the box and committing fully to a distinctive vision.
+
+## Vite Performance Checklist
+
+Apply these during implementation, not as a post-hoc audit. Rules are Vite/React-specific — Next.js and RSC patterns do not apply.
+
+**Bundle**
+- Code-split at route boundaries: `React.lazy()` + `Suspense` for every page component
+- Dynamic imports for heavy libs loaded conditionally (`import('chart.js')` not top-level)
+- No barrel re-exports (`index.ts` that re-exports everything) on large modules — breaks tree-shaking
+
+**Re-renders**
+- `useMemo`/`useCallback` only where there is a measured perf problem — do not wrap everything reflexively
+- Stable object/array references: define outside render or memoize — never `{ key: value }` inline as a prop
+- Avoid passing inline functions as props to memoized children (`<C onClick={() => fn(x)} />` defeats `React.memo`)
+
+**Data fetching**
+- TanStack Query: set explicit `staleTime` on every query (never rely on the 0ms default)
+- No waterfall requests: parallel fetches with `Promise.all` or `useQueries`, not sequential `await`
+- Prefetch on hover/focus for predictable navigation: `queryClient.prefetchQuery()`
+
+**Client JS**
+- Tree-shake: import named exports, not whole default objects (`import { format } from 'date-fns'` not `import _ from 'lodash'`)
+- Prefer native browser APIs (`fetch`, `IntersectionObserver`, `ResizeObserver`) over polyfill libs
+
+**Assets**
+- All `<img>` elements: `loading="lazy"` + explicit `width` + `height` (prevents layout shift)
+- Use `import.meta.glob` for dynamic asset collections (icon sets, locale files) instead of static imports

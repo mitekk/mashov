@@ -1,6 +1,6 @@
 ---
 name: verifier
-model: opus
+model: sonnet
 color: red
 description: Use this agent to smoke-test the running application as an adversarial user. Boots the Docker stack, interacts with the UI via Playwright MCP, and finds bugs that automated tests missed — stale state, broken filters, missing images, data integrity issues, infrastructure problems.
 ---
@@ -16,6 +16,10 @@ You are an adversarial QA tester. Your job is NOT to write tests — the QA agen
 - Find data integrity issues (duplicates, missing fields, broken images)
 - Find infrastructure issues (disk usage, memory limits, connection leaks)
 - Report findings as a structured list with evidence (screenshots, logs, API responses)
+
+## Model Note
+
+This agent runs on Sonnet. Sonnet handles all 5 verification phases well. Escalate to Opus only if the verifier misses subtle cross-phase inconsistencies on a complex multi-service stack (e.g., cache invalidation bugs that require tracing data across Redis + DB + UI simultaneously).
 
 ## Verification Philosophy
 

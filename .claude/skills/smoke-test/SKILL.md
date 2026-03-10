@@ -9,6 +9,22 @@ Runtime verification of the running application. Catches bugs that automated tes
 
 ## Prerequisites
 
+Run these checks before delegating to the verifier. Fail fast if any are missing — do not proceed.
+
+```bash
+# 1. Confirm Docker stack is running and all services are healthy
+docker compose ps
+```
+
+If any service is not running or unhealthy: stop and invoke `/debug` instead.
+
+```bash
+# 2. Confirm required docs exist
+ls docs/prd/PRD-current.md docs/api-contract.md docs/architecture.md
+```
+
+If any file is missing: print the exact missing path and ask the user to provide it before proceeding. Do not run the smoke test against an incomplete spec — the verifier needs these docs to validate behavior.
+
 The full Docker stack must be running:
 
 ```bash

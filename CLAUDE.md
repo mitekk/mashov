@@ -83,12 +83,23 @@ Use [docs/model-routing-policy.md](docs/model-routing-policy.md) as the default 
 | Invoke | Use when |
 |--------|----------|
 | `/scaffold` | Starting a new challenge — intake, architecture, full stack setup |
+| `/plan` | Run intake + architecture planning standalone (reads PRD, produces architecture + API contract) |
 | `/resume` | Resume an interrupted scaffold workflow from the committed marker state |
 | `/review` | Pre-submission DoD checklist |
 | `/test` | Full test suite run with layered failure report |
 | `/debug` | Stack won't start, tests fail unexpectedly, CI is red |
 | `/smoke-test` | Runtime verification — boot the app, interact with it, find bugs tests missed |
-| `/vercel-react-best-practices` | React/Next.js performance deep-dive (58 rules) |
+| `/adr` | Document an architecture decision as a MADR file (callable at any point) |
+| `/commit` | Stage, draft, and create a conventional commit (project-aware checkpoint sequence) |
+
+## Skill Priority (Superpowers vs Local)
+
+For this project, local skills take precedence over superpowers equivalents where they overlap:
+- `/debug` > `superpowers:systematic-debugging` — local routes failures to the correct scaffold step and owning agent
+- `/plan` > `superpowers:writing-plans` — local reads `docs/prd/PRD-current.md` and runs the Architecture Confirmation Protocol
+- `/review` > `superpowers:requesting-code-review` — local checks the project's specific Definition of Done
+
+All other superpowers skills have no local equivalent and should be used freely: `brainstorming`, `using-git-worktrees`, `receiving-code-review`, `subagent-driven-development`, `verification-before-completion`, `finishing-a-development-branch`.
 
 ## Agents
 

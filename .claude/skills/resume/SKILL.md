@@ -42,6 +42,12 @@ If validation fails, stop and return:
 - the expected values/shape
 - repair action: update `docs/.scaffold-state.json`, then run `/resume` again
 
+**Corruption recovery** — if the file is unparseable JSON or has unrecoverable structure:
+1. Print the raw file contents so the user can inspect it
+2. Run `git log --oneline -10` and look for the last commit message matching a scaffold checkpoint pattern (e.g., `docs: add architecture`, `feat(backend)`, `feat(frontend)`, `test:`, `chore: verify ship`)
+3. Infer `next_step` from the last checkpoint found and tell the user: "Based on git history, you appear to be at step N. To resume, manually set `next_step` to N in `docs/.scaffold-state.json` and re-run `/resume`."
+4. If git log is also unhelpful, list the artifact check table above and ask the user which artifacts exist to determine the likely step.
+
 ## Required Artifact Checks by `next_step`
 
 Before producing final guidance, validate artifacts for the marker `next_step`.
