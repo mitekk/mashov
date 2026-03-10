@@ -12,9 +12,19 @@ Each phase produces files in `docs/`. These survive session boundaries and are t
 
 | Artifact | Produced by | Consumed by | File |
 |----------|-------------|-------------|------|
+| PRD Snapshot | human + planner intake | planner, backend, frontend, qa, verifier | `docs/prd/PRD-current.md` |
 | Architecture Plan | planner (Step 1) | backend, frontend, qa | `docs/architecture.md` |
 | API Contract | planner (initial), backend (updates) | frontend, qa | `docs/api-contract.md` |
 | ADRs | adr (Steps 1, 2, 3) | all agents resuming session, reviewers | `docs/adr/` |
+
+### PRD Versioning (`docs/prd/`)
+
+`/scaffold` is PRD-driven. Requirements must be persisted on disk before planning starts.
+
+- Create a versioned snapshot: `docs/prd/PRD-vN.md` (`v1`, `v2`, ...)
+- Update `docs/prd/PRD-current.md` to the latest accepted PRD snapshot
+- Maintain `docs/prd/README.md` with version history and short notes
+- Never plan from chat-only context when `docs/prd/PRD-current.md` exists
 
 ### API Contract format (`docs/api-contract.md`)
 
@@ -35,10 +45,13 @@ Schema:
   "workflow": "scaffold",
   "schema_version": 1,
   "status": "in_progress",
-  "last_completed_step": 1,
+  "last_completed_step": 0,
   "next_step": 1,
-  "updated_at": "2026-03-10T00:00:00Z",
+  "updated_at": "2026-03-10T12:34:56Z",
   "blockers": [],
+  "prd_version": "v1",
+  "prd_path": "docs/prd/PRD-current.md",
+  "parallel_pending_steps": [],
   "last_commit": "abc1234"
 }
 ```
@@ -47,8 +60,13 @@ Constraints:
 - `workflow` must be `"scaffold"`
 - `schema_version` must be `1`
 - `status` must be `in_progress`, `blocked`, or `completed`
-- `last_completed_step` and `next_step` must be one of: `1, 2, 3, 3.5, 4, 5, 5.5, 5.7, 5.9, 6`
+- `last_completed_step` must be one of: `0, 1, 2, 3, 3.5, 4, 5, 5.5, 5.7, 5.9, 6`
+- `next_step` must be one of: `1, 2, 3, 3.5, 4, 5, 5.5, 5.7, 5.9, 6`
+- `updated_at` must be an ISO-8601 UTC timestamp and updated on every transition
 - `blockers` is optional; if present, it must be an array of strings
+- `prd_version` is optional; if present, it must match `v[0-9]+`
+- `prd_path` is optional; if present, it must be a non-empty string path
+- `parallel_pending_steps` is optional; if present, values must be a subset of `[2, 3]`
 - `last_commit` is optional; if present, it must be a non-empty string
 
 ---
@@ -57,21 +75,55 @@ Constraints:
 
 Run these steps in sequence. Each step delegates to the appropriate specialist agent.
 
-### State Initialization (before Step 1)
+### PRD Snapshot Initialization (before Step 1)
+
+At workflow start, persist requirements to `docs/prd/` first:
+
+```bash
+mkdir -p docs/prd
+
+# Write intake requirements to docs/prd/PRD-v1.md (copy/paste from prompt)
+cat > docs/prd/PRD-v1.md <<'EOF'
+# PRD v1
+
+## Source
+- Captured at scaffold initialization
+
+## Requirements
+- Replace with the actual PRD text
+EOF
+
+cp docs/prd/PRD-v1.md docs/prd/PRD-current.md
+
+TODAY_UTC="$(date -u +%Y-%m-%d)"
+cat > docs/prd/README.md <<EOF
+# PRD Versions
+
+| Version | Date (UTC) | Notes |
+|---|---|---|
+| v1 | $TODAY_UTC | Initial scaffold intake |
+EOF
+```
+
+### State Initialization (before Step 1 dispatch)
 
 At workflow start, initialize `docs/.scaffold-state.json`:
 
 ```bash
 mkdir -p docs
-cat > docs/.scaffold-state.json <<'EOF'
+NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > docs/.scaffold-state.json <<EOF
 {
   "workflow": "scaffold",
   "schema_version": 1,
   "status": "in_progress",
-  "last_completed_step": 1,
+  "last_completed_step": 0,
   "next_step": 1,
-  "updated_at": "2026-03-10T00:00:00Z",
-  "blockers": []
+  "updated_at": "$NOW_UTC",
+  "blockers": [],
+  "prd_version": "v1",
+  "prd_path": "docs/prd/PRD-current.md",
+  "parallel_pending_steps": []
 }
 EOF
 ```
@@ -80,27 +132,31 @@ EOF
 
 Update `docs/.scaffold-state.json` before each scaffold checkpoint commit. Include this file in every scaffold checkpoint commit.
 
-| Event | status | last_completed_step | next_step | blockers |
-|---|---|---:|---:|---|
-| Step 1 complete | `in_progress` | 1 | 2 | `[]` |
-| Step 2+3 dispatched in parallel | `blocked` | 1 | 2 | `["Parallel phase active: wait for both Step 2 and Step 3 completion commits."]` |
-| Step 2 complete, Step 3 pending | `blocked` | 1 | 3 | `["Step 2 complete; waiting for Step 3 frontend completion."]` |
-| Step 3 complete, Step 2 pending | `blocked` | 1 | 2 | `["Step 3 complete; waiting for Step 2 backend completion."]` |
-| Step 2 and Step 3 both complete | `in_progress` | 3 | 3.5 | `[]` |
-| Step 3.5 complete | `in_progress` | 3.5 | 4 | `[]` |
-| Step 4 complete | `in_progress` | 4 | 5 | `[]` |
-| Step 5 complete | `in_progress` | 5 | 5.5 | `[]` |
-| Step 5.5 complete | `in_progress` | 5.5 | 5.7 | `[]` |
-| Step 5.7 complete | `in_progress` | 5.7 | 5.9 | `[]` |
-| Step 5.9 complete | `in_progress` | 5.9 | 6 | `[]` |
-| Step 6 complete | `completed` | 6 | 6 | `[]` |
+| Event | status | last_completed_step | next_step | blockers | parallel_pending_steps |
+|---|---|---:|---:|---|---|
+| Workflow initialized | `in_progress` | 0 | 1 | `[]` | `[]` |
+| Step 1 complete | `in_progress` | 1 | 2 | `[]` | `[]` |
+| Step 2+3 dispatched in parallel | `blocked` | 1 | 2 | `["Parallel phase active: wait for both Step 2 and Step 3 completion commits."]` | `[2, 3]` |
+| Step 2 complete, Step 3 pending | `blocked` | 2 | 3 | `["Step 2 complete; waiting for Step 3 frontend completion."]` | `[3]` |
+| Step 3 complete, Step 2 pending | `blocked` | 3 | 2 | `["Step 3 complete; waiting for Step 2 backend completion."]` | `[2]` |
+| Step 2 and Step 3 both complete | `in_progress` | 3 | 3.5 | `[]` | `[]` |
+| Step 3.5 complete | `in_progress` | 3.5 | 4 | `[]` | `[]` |
+| Step 4 complete | `in_progress` | 4 | 5 | `[]` | `[]` |
+| Step 5 complete | `in_progress` | 5 | 5.5 | `[]` | `[]` |
+| Step 5.5 complete | `in_progress` | 5.5 | 5.7 | `[]` | `[]` |
+| Step 5.7 complete | `in_progress` | 5.7 | 5.9 | `[]` | `[]` |
+| Step 5.9 complete | `in_progress` | 5.9 | 6 | `[]` | `[]` |
+| Step 6 complete | `completed` | 6 | 6 | `[]` | `[]` |
+
+PRD update rule:
+- When a new PRD version is introduced mid-workflow, write `docs/prd/PRD-vN.md`, update `docs/prd/PRD-current.md`, set `prd_version: "vN"` and `prd_path: "docs/prd/PRD-current.md"`, set `status: "blocked"`, set `next_step: 1`, and add blocker `["PRD updated to vN: architecture/task re-plan required."]`.
 
 Rollback/re-entry rule:
-- When routing a failure back to an earlier phase, set `status` to `blocked`, set `next_step` to the corrective re-entry step, and set `blockers` to the failure summary before re-dispatching.
+- When routing a failure back to an earlier phase, set `status` to `blocked`, set `next_step` to the corrective re-entry step, set `blockers` to the failure summary, clear `parallel_pending_steps` unless waiting on a parallel step, and refresh `updated_at`.
 
 ### Step 1 — Intake & Architecture (planner)
 
-Delegate to the `planner` agent with the full requirements text. The planner will:
+Delegate to the `planner` agent with `docs/prd/PRD-current.md` (and any explicit deltas). The planner will:
 1. Ask clarifying questions (auth, real-time, DB choice, caching, existing codebase)
 2. Wait for your answers
 3. Produce: Goal, Scope, Architecture diagram, ordered task list, Risks, Open questions
@@ -110,6 +166,7 @@ Delegate to the `planner` agent with the full requirements text. The planner wil
 The planner must present this checklist to the human before Step 2 is dispatched:
 
 - [ ] Goal statement agreed
+- [ ] PRD snapshot committed and current (`docs/prd/PRD-current.md`, `docs/prd/README.md`)
 - [ ] Stack choices confirmed (language, DB, cache)
 - [ ] All 5 intake questions answered (auth, real-time, DB, caching, existing code)
 - [ ] API contract table complete — no TBD entries, all field names and types explicit
@@ -324,7 +381,7 @@ When Step 4 (/review) or Step 5 (QA) surfaces a deep failure, use this table to 
 | Shallow E2E tests flagged | Step 5.7 | Step 5 | `qa` |
 
 Rules:
-1. Before re-entering any step, update `docs/.scaffold-state.json` to `status: "blocked"` with the corrective `next_step` and blocker summary
+1. Before re-entering any step, update `docs/.scaffold-state.json` to `status: "blocked"` with the corrective `next_step`, blocker summary, refreshed `updated_at`, and aligned `parallel_pending_steps`
 2. Fix the specific failure only — no adjacent refactoring
 3. Commit the fix before re-running `/review`
 4. Re-run `/review` from the top — never skip items that passed before
@@ -341,7 +398,7 @@ Use `/resume` for all interrupted scaffold workflows.
 2. Validate schema and step values exactly
 3. Validate required artifacts for the marker `next_step`
 4. Output a **Resume Report** with:
-   - Current marker fields (`status`, `last_completed_step`, `next_step`, `updated_at`, optional `last_commit`)
+   - Current marker fields (`status`, `last_completed_step`, `next_step`, `updated_at`, optional `last_commit`, `prd_version`, `prd_path`, `parallel_pending_steps`)
    - Artifact check results
    - Required re-entry context
    - Exact next command/delegation payload

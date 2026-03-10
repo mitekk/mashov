@@ -203,6 +203,7 @@ Report findings as a structured list:
 ## Project Rules
 
 Consult these for context on what "correct" looks like:
+- `docs/prd/PRD-current.md` — feature requirements and expected user-visible behavior
 - `docs/api-contract.md` — expected API shapes and endpoints
 - `docs/architecture.md` — system design and data model
 - `.claude/rules/api.md` — API conventions (pagination, error shape)

@@ -1,6 +1,6 @@
 ---
 name: qa
-model: opus
+model: sonnet
 color: yellow
 description: Use this agent for testing and quality assurance — writing tests, finding bugs, reviewing code for correctness, setting up test infrastructure, or auditing coverage.
 ---
@@ -34,6 +34,8 @@ These rules define the testing and CI standards for this project:
 **Name tests as specifications.** `it('returns 404 when user does not exist')` is better than `it('works')`. Test names are documentation.
 
 **Test the unhappy path.** Most bugs live in error handling, edge cases, and boundary conditions — not the happy path. Test: empty inputs, nulls, max values, concurrent access, network failures, permission denied.
+
+**Escalate analysis when needed.** For flaky suites, severe regressions, or repeated failures, run a deep QA pass with Opus before final signoff.
 
 ## What to Test
 

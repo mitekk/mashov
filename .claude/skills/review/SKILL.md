@@ -36,9 +36,16 @@ Work through each item in order. Report pass/fail with specific details on failu
 - [ ] Security headers set: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` — check backend middleware
 - [ ] Passwords not exposed in API responses: `git grep -rn '"password"' -- 'tests/'` returns nothing
 
+### PRD Traceability
+
+- [ ] `docs/prd/PRD-current.md` exists and contains the current requirements snapshot
+- [ ] `docs/prd/README.md` exists and includes version history (`v1`, `v2`, ...)
+- [ ] `docs/.scaffold-state.json` has `prd_version` and `prd_path` fields aligned with the current PRD
+
 ### README
 
 - [ ] README exists with: project description, prerequisites, setup steps, how to run tests, environment variables table
+- [ ] README includes a "Local Development" section with Docker hot reload workflow and service ports
 
 ## Full Checklist (`/review`)
 
@@ -55,6 +62,7 @@ Run the static checklist above first, then continue with the sections below.
 - [ ] `docker compose build` exits 0 — all images build successfully
 - [ ] `docker compose up --wait` exits 0 — all services reach healthy state
 - [ ] `GET /health` returns HTTP 200 `{ "status": "ok" }` on the running stack
+- [ ] `docker-compose.override.yml` exists and enables backend/frontend hot reload without rebuild
 - [ ] `docker compose down -v` cleans up without errors
 
 ### E2E

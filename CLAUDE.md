@@ -21,6 +21,10 @@ Fullstack interview coding challenge workspace. Requirements arrive as specs; ou
 frontend/        React app
 backend/         API server
 docs/
+  prd/
+    PRD-current.md     Latest accepted PRD snapshot (source for planning/resume)
+    README.md          PRD version history
+  model-routing-policy.md  Model profile + escalation gates for cost/quality balance
   architecture.md   Architecture plan (produced by planner, consumed by backend/frontend/qa)
   api-contract.md   API contract (planner → backend updates → frontend, qa)
   .scaffold-state.json  Scaffold workflow checkpoint marker (source of truth for /resume)
@@ -49,6 +53,7 @@ npm run typecheck            # TypeScript check
 
 Run `/scaffold` — it orchestrates the full sequence (intake → backend → frontend → review → QA → smoke test → retrospective → ship). See `.claude/skills/scaffold/SKILL.md` for the authoritative steps and commit sequence.
 If the workflow is interrupted, run `/resume` to get the exact re-entry step from `docs/.scaffold-state.json`.
+For PRD-driven delivery, keep `docs/prd/PRD-current.md` updated and versioned in `docs/prd/README.md`.
 
 ## Definition of Done
 
@@ -68,6 +73,10 @@ If the workflow is interrupted, run `/resume` to get the exact re-entry step fro
 ## Time-Boxing
 
 Managed by the `planner` agent. See [`.claude/agents/planner.md`](.claude/agents/planner.md) for the [MVP]/[NICE] protocol, the 3-hour default, and the execution sequence.
+
+## Model Routing
+
+Use [docs/model-routing-policy.md](docs/model-routing-policy.md) as the default routing and escalation policy to balance reliability, cost, and turnaround time.
 
 ## Skills
 

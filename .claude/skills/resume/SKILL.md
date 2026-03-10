@@ -28,9 +28,14 @@ Validate the marker before any recommendation:
 2. `workflow === "scaffold"`
 3. `schema_version === 1`
 4. `status` is one of: `in_progress`, `blocked`, `completed`
-5. `last_completed_step` and `next_step` are one of: `1, 2, 3, 3.5, 4, 5, 5.5, 5.7, 5.9, 6`
-6. `blockers` (if present) is an array of strings
-7. `last_commit` (if present) is a non-empty string
+5. `last_completed_step` is one of: `0, 1, 2, 3, 3.5, 4, 5, 5.5, 5.7, 5.9, 6`
+6. `next_step` is one of: `1, 2, 3, 3.5, 4, 5, 5.5, 5.7, 5.9, 6`
+7. `updated_at` is an ISO-8601 UTC timestamp
+8. `blockers` (if present) is an array of strings
+9. `last_commit` (if present) is a non-empty string
+10. `prd_version` (if present) matches `v[0-9]+`
+11. `prd_path` (if present) is a non-empty string
+12. `parallel_pending_steps` (if present) is an array containing only `2` and/or `3`
 
 If validation fails, stop and return:
 - exactly which field is invalid
@@ -43,14 +48,14 @@ Before producing final guidance, validate artifacts for the marker `next_step`.
 
 | next_step | Required artifacts |
 |---:|---|
-| 1 | none |
-| 2 | `docs/architecture.md`, `docs/api-contract.md` |
-| 3 | `docs/architecture.md`, `docs/api-contract.md` |
-| 3.5 | `frontend/Dockerfile`, `docs/api-contract.md`, `docker-compose.yml` |
-| 4 | `docs/api-contract.md` |
-| 5 | `docs/architecture.md`, `docs/api-contract.md` |
-| 5.5 | `.github/workflows/ci.yml` |
-| 5.7 | `.github/workflows/ci.yml`, `tests/e2e/` |
+| 1 | `docs/prd/PRD-current.md`, `docs/prd/README.md` |
+| 2 | `docs/prd/PRD-current.md`, `docs/architecture.md`, `docs/api-contract.md` |
+| 3 | `docs/prd/PRD-current.md`, `docs/architecture.md`, `docs/api-contract.md` |
+| 3.5 | `docs/prd/PRD-current.md`, `frontend/Dockerfile`, `docs/api-contract.md`, `docker-compose.yml` |
+| 4 | `docs/prd/PRD-current.md`, `docs/api-contract.md` |
+| 5 | `docs/prd/PRD-current.md`, `docs/architecture.md`, `docs/api-contract.md` |
+| 5.5 | `docs/prd/PRD-current.md`, `.github/workflows/ci.yml` |
+| 5.7 | `docs/prd/PRD-current.md`, `.github/workflows/ci.yml`, `tests/e2e/` |
 | 5.9 | none |
 | 6 | `README.md` |
 
@@ -72,6 +77,9 @@ Always output this structure:
 - Next step: <value>
 - Updated at: <timestamp>
 - Last commit: <hash|not set>
+- PRD version: <vN|not set>
+- PRD path: <path|not set>
+- Parallel pending steps: <[2,3]|[]>
 
 ### Artifact Check
 - PASS: <path>
@@ -90,7 +98,7 @@ Use this mapping for the final recommendation:
 
 | next_step | Recommended next action |
 |---:|---|
-| 1 | Run `/scaffold` and start Step 1 intake with the requirements text |
+| 1 | Run `/scaffold`, capture/update PRD snapshot in `docs/prd/`, and start Step 1 intake from `docs/prd/PRD-current.md` |
 | 2 | Delegate Step 2 to `backend` with `docs/architecture.md` + backend-tagged tasks |
 | 3 | Delegate Step 3 to `frontend` with `docs/architecture.md` + `docs/api-contract.md` |
 | 3.5 | Run Step 3.5 compose assembly + API contract reconciliation |

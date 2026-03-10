@@ -20,6 +20,7 @@ If the stack is not running, start it before proceeding. If it fails to start, i
 ## Execution
 
 Delegate the entire smoke test to the `verifier` agent. Provide it with:
+- The current PRD snapshot (`docs/prd/PRD-current.md`)
 - The API contract (`docs/api-contract.md`)
 - The architecture doc (`docs/architecture.md`)
 - The app URL (typically `http://localhost:5173` for frontend, `http://localhost:3000` for backend)
