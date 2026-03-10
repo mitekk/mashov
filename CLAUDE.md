@@ -51,7 +51,8 @@ npm run typecheck            # TypeScript check
 
 ## Interview Workflow
 
-Run `/scaffold` — it orchestrates the full sequence (intake → backend → frontend → review → QA → smoke test → retrospective → ship). See `.claude/skills/scaffold/SKILL.md` for the authoritative steps and commit sequence.
+1. Run `/prd` first — turn raw requirements (MD, PDF, text) into a versioned PRD snapshot (`docs/prd/PRD-vN.md`) and initialize workflow state.
+2. Run `/scaffold` — orchestrates the full sequence (intake → backend → frontend → review → QA → smoke test → retrospective → ship). See `.claude/skills/scaffold/SKILL.md` for the authoritative steps and commit sequence.
 If the workflow is interrupted, run `/resume` to get the exact re-entry step from `docs/.scaffold-state.json`.
 For PRD-driven delivery, keep `docs/prd/PRD-current.md` updated and versioned in `docs/prd/README.md`.
 
@@ -82,6 +83,7 @@ Use [docs/model-routing-policy.md](docs/model-routing-policy.md) as the default 
 
 | Invoke | Use when |
 |--------|----------|
+| `/prd` | Turn raw requirements (MD, PDF, text) into a versioned PRD snapshot — run before `/scaffold` |
 | `/scaffold` | Starting a new challenge — intake, architecture, full stack setup |
 | `/plan` | Run intake + architecture planning standalone (reads PRD, produces architecture + API contract) |
 | `/resume` | Resume an interrupted scaffold workflow from the committed marker state |
@@ -95,6 +97,7 @@ Use [docs/model-routing-policy.md](docs/model-routing-policy.md) as the default 
 ## Skill Priority (Superpowers vs Local)
 
 For this project, local skills take precedence over superpowers equivalents where they overlap:
+- `/prd` > any generic PRD creation approach — local versions the file, updates state, and prepares the exact artifact scaffold expects
 - `/debug` > `superpowers:systematic-debugging` — local routes failures to the correct scaffold step and owning agent
 - `/plan` > `superpowers:writing-plans` — local reads `docs/prd/PRD-current.md` and runs the Architecture Confirmation Protocol
 - `/review` > `superpowers:requesting-code-review` — local checks the project's specific Definition of Done
