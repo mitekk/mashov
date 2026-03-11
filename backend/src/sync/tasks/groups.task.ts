@@ -1,0 +1,97 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
+import { MashovHttpClient } from '../../session/mashov-http.client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { SyncRunService } from '../sync-run.service';
+
+interface MashovGroup {
+  groupId: number;
+  groupName: string;
+  subjectName: string;
+  groupTeachers: Array<{ teacherGuid: string; teacherName: string }>;
+  groupInactiveTeachers: Array<{ teacherGuid: string; teacherName: string }>;
+}
+
+@Injectable()
+export class GroupsTask {
+  private readonly logger = new Logger(GroupsTask.name);
+  public static readonly SOURCE = 'groups';
+
+  constructor(
+    private readonly mashovClient: MashovHttpClient,
+    private readonly prisma: PrismaService,
+    private readonly syncRunService: SyncRunService,
+  ) {}
+
+  @Cron('0 6 * * *')
+  async run(): Promise<void> {
+    return this.execute();
+  }
+
+  async execute(): Promise<void> {
+    const students = await this.prisma.student.findMany({ where: { isActive: true } });
+
+    for (const student of students) {
+      const source = `${GroupsTask.SOURCE}:${student.studentGuid}`;
+      const syncRun = await this.syncRunService.openRun(source);
+      let fetchedCount = 0;
+      let upsertCount = 0;
+
+      try {
+        const groups = await this.mashovClient.get<MashovGroup[]>(
+          `/api/students/${student.studentGuid}/groups`,
+          {
+            headers: {
+              'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behaveCounter`,
+            },
+          },
+        );
+
+        fetchedCount = groups.length;
+
+        for (const group of groups) {
+          try {
+            await this.prisma.subjectEnrollment.upsert({
+              where: {
+                studentGuid_groupId: {
+                  studentGuid: student.studentGuid,
+                  groupId: group.groupId,
+                },
+              },
+              create: {
+                studentGuid: student.studentGuid,
+                groupId: group.groupId,
+                groupName: group.groupName,
+                subjectName: group.subjectName,
+                teachers: group.groupTeachers as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                inactiveTeachers: group.groupInactiveTeachers as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                rawPayload: group as unknown as import('@prisma/client').Prisma.InputJsonValue,
+              },
+              update: {
+                groupName: group.groupName,
+                subjectName: group.subjectName,
+                teachers: group.groupTeachers as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                inactiveTeachers: group.groupInactiveTeachers as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                rawPayload: group as unknown as import('@prisma/client').Prisma.InputJsonValue,
+              },
+            });
+            upsertCount++;
+          } catch (itemErr) {
+            const msg = itemErr instanceof Error ? itemErr.message : String(itemErr);
+            this.logger.warn(`Failed to upsert group ${group.groupId}: ${msg}`);
+          }
+        }
+
+        await this.syncRunService.closeRun(syncRun.id, 'success', {
+          fetchedCount,
+          updatedCount: upsertCount,
+        });
+        this.logger.debug(`Groups sync ${student.fullName}: fetched=${fetchedCount} upserted=${upsertCount}`);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Groups sync failed for ${student.studentGuid}: ${msg}`);
+        await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+      }
+    }
+  }
+}
