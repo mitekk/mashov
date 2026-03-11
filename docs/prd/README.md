@@ -3,6 +3,7 @@
 | Version | Date (UTC) | Notes |
 |---|---|---|
 | v0 | 2026-03-10 | Placeholder before first scaffold run |
+| v1 | 2026-03-11 | Full PRD from requirements-v3.md + 18 API docs; Phase 1 (no auth) + Phase 2 (magic-link auth); CSRF bootstrap resolved; messageBoard + mail actions added; timetable deferred to Phase 2 |
 
 ## Update Protocol
 
