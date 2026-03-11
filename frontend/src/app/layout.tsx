@@ -1,6 +1,13 @@
 import type { Metadata, Viewport } from 'next';
+import { Assistant } from 'next/font/google';
 import './globals.css';
 import Providers from './providers';
+
+const assistant = Assistant({
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '600', '700'],
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'מרכז הורים',
@@ -25,19 +32,7 @@ interface RootLayoutProps {
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="he" dir="rtl" suppressHydrationWarning>
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          rel="preconnect"
-          href="https://fonts.gstatic.com"
-          crossOrigin="anonymous"
-        />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;500;600;700&display=swap"
-          rel="stylesheet"
-        />
-      </head>
-      <body>
+      <body className={assistant.className}>
         <Providers>{children}</Providers>
       </body>
     </html>
