@@ -1,0 +1,211 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. LINT — fast feedback on code quality and TypeScript types
+  # ────────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Lint backend
+        working-directory: backend
+        run: npm run lint
+
+      - name: Typecheck backend
+        working-directory: backend
+        run: npm run typecheck
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. UNIT TESTS — isolated, fast, no external dependencies
+  # ────────────────────────────────────────────────────────────────────────────
+  unit-test:
+    name: Unit Tests
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run unit tests with coverage
+        working-directory: backend
+        # Coverage threshold (80% lines) is configured in backend/package.json jest.coverageThreshold
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: backend/coverage/
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 3. INTEGRATION TESTS — real Postgres, mocked upstream HTTP
+  # ────────────────────────────────────────────────────────────────────────────
+  integration-test:
+    name: Integration Tests
+    needs: unit-test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: mashov_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Apply Prisma migrations to test database
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/mashov_test
+        run: npx prisma migrate deploy
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install root workspace dependencies (for integration tests)
+        run: |
+          if [ -f package.json ]; then npm ci; fi
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/mashov_test
+          ENCRYPTION_KEY: test-encryption-key-32-chars-long!
+          MASHOV_SEMEL: "0"
+          MASHOV_YEAR: "2026"
+          MASHOV_USERNAME: test
+          MASHOV_PASSWORD: test
+          NODE_ENV: test
+        run: npx jest tests/integration --testEnvironment=node --forceExit --testTimeout=30000
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 4. E2E TESTS — full Dockerized stack with Playwright
+  # ────────────────────────────────────────────────────────────────────────────
+  e2e:
+    name: E2E Tests
+    needs: integration-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install root workspace dependencies
+        run: |
+          if [ -f package.json ]; then npm ci; fi
+
+      - name: Install Playwright and Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Create .env for Docker Compose
+        run: |
+          cat > .env <<'EOF'
+          DB_NAME=mashov
+          DB_USER=postgres
+          DB_PASSWORD=postgres
+          DATABASE_URL=postgresql://postgres:postgres@db:5432/mashov
+          MASHOV_SEMEL=0
+          MASHOV_YEAR=2026
+          MASHOV_USERNAME=e2e_test_user
+          MASHOV_PASSWORD=e2e_test_pass
+          ENCRYPTION_KEY=e2e-test-encryption-key-32chars!
+          CORS_ORIGIN=http://localhost:3000
+          FEATURE_DAILY_BEHAVE=false
+          FEATURE_OUT_BEHAVE=false
+          EOF
+
+      - name: Start the full stack
+        run: docker compose up -d --wait
+        timeout-minutes: 5
+
+      - name: Run Playwright E2E tests
+        run: npx playwright test --reporter=github
+
+      - name: Upload Playwright report on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+      - name: Stop Docker stack
+        if: always()
+        run: docker compose down
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 5. BUILD — verify Docker images build successfully
+  # ────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Docker Build
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker images
+        run: docker compose build

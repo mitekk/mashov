@@ -64,9 +64,22 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "src/**/*.(t|j)s"
+      "src/**/*.(t|j)s",
+      "!src/main.ts",
+      "!src/**/*.module.ts",
+      "!src/**/*.controller.ts",
+      "!src/common/**",
+      "!src/prisma/prisma.service.ts",
+      "!src/sync/tasks/**",
+      "!src/session/mashov-http.client.ts",
+      "!src/session/encryption.service.ts"
     ],
     "coverageDirectory": "./coverage",
+    "coverageThreshold": {
+      "global": {
+        "lines": 80
+      }
+    },
     "testEnvironment": "node",
     "roots": [
       "<rootDir>/src/",
