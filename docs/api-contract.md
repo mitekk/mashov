@@ -2,7 +2,7 @@
 
 **Version:** Phase 1
 **PRD source:** `docs/prd/PRD-current.md` (v1)
-**Status:** All endpoints `planned`
+**Status:** All endpoints `implemented`
 **Auth:** None in Phase 1 — all endpoints unauthenticated
 
 > This table is the source of truth for backend and frontend agents. Update it when routes change. All paths use the `/api/v1` prefix. All IDs are UUIDs (strings). All timestamps are ISO 8601 UTC. Pagination uses `page` + `limit` with the standard envelope.
@@ -41,24 +41,24 @@
 
 | Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
 |--------|------|-------|----------------------------|---------------|-------------|--------|
-| GET | `/health` | No | — | `{ status: "ok" \| "degraded", db: "connected" \| "error" }` | 200 | planned |
-| GET | `/api/v1/dashboard` | No | — | See [Dashboard Response](#get-apiv1dashboard) | 200 | planned |
-| GET | `/api/v1/feed` | No | `?page=1&limit=20` | See [Feed Response](#get-apiv1feed) | 200 | planned |
-| GET | `/api/v1/children` | No | — | See [Children List Response](#get-apiv1children) | 200 | planned |
-| GET | `/api/v1/children/:studentGuid` | No | — | See [Child Workspace Response](#get-apiv1childrenstudentguid) | 200, 404 | planned |
-| GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50` | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | planned |
-| GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral` | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | planned |
-| GET | `/api/v1/children/:studentGuid/subjects` | No | — | See [Subjects Response](#get-apiv1childrenstudentguidsubjects) | 200, 404 | planned |
-| GET | `/api/v1/children/:studentGuid/notices` | No | — | See [Notices Response](#get-apiv1childrenstudentguidnotices) | 200, 404 | planned |
-| GET | `/api/v1/mail/summary` | No | — | See [Mail Summary Response](#get-apiv1mailsummary) | 200 | planned |
-| GET | `/api/v1/mail/conversations` | No | `?page=1&limit=20&unreadOnly=false` | See [Conversations List Response](#get-apiv1mailconversations) | 200 | planned |
-| GET | `/api/v1/mail/conversations/:id` | No | — | See [Conversation Detail Response](#get-apiv1mailconversationsid) | 200, 404 | planned |
-| PUT | `/api/v1/mail/conversations/mark-unread` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | planned |
-| PUT | `/api/v1/mail/conversations/archive` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | planned |
-| GET | `/api/v1/settings/source-health` | No | — | See [Source Health Response](#get-apiv1settingssource-health) | 200 | planned |
-| GET | `/api/v1/settings/profile` | No | — | See [Profile Response](#get-apiv1settingsprofile) | 200 | planned |
-| POST | `/api/v1/read-state` | No | See [Read State Request](#post-apiv1read-state) | `{ id: string, itemType: string, itemId: string, isRead: boolean, isHandled: boolean, updatedAt: string }` | 200, 400 | planned |
-| POST | `/api/v1/sync/refresh` | No | — | `{ started: true, message: string }` | 202 | planned |
+| GET | `/health` | No | — | `{ status: "ok" \| "degraded", db: "connected" \| "error" }` | 200 | implemented |
+| GET | `/api/v1/dashboard` | No | — | See [Dashboard Response](#get-apiv1dashboard) | 200 | implemented |
+| GET | `/api/v1/feed` | No | `?page=1&limit=20` | See [Feed Response](#get-apiv1feed) | 200 | implemented |
+| GET | `/api/v1/children` | No | — | See [Children List Response](#get-apiv1children) | 200 | implemented |
+| GET | `/api/v1/children/:studentGuid` | No | — | See [Child Workspace Response](#get-apiv1childrenstudentguid) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50` | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral` | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/subjects` | No | — | See [Subjects Response](#get-apiv1childrenstudentguidsubjects) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/notices` | No | — | See [Notices Response](#get-apiv1childrenstudentguidnotices) | 200, 404 | implemented |
+| GET | `/api/v1/mail/summary` | No | — | See [Mail Summary Response](#get-apiv1mailsummary) | 200 | implemented |
+| GET | `/api/v1/mail/conversations` | No | `?page=1&limit=20&unreadOnly=false` | See [Conversations List Response](#get-apiv1mailconversations) | 200 | implemented |
+| GET | `/api/v1/mail/conversations/:id` | No | — | See [Conversation Detail Response](#get-apiv1mailconversationsid) | 200, 404 | implemented |
+| PUT | `/api/v1/mail/conversations/mark-unread` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
+| PUT | `/api/v1/mail/conversations/archive` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
+| GET | `/api/v1/settings/source-health` | No | — | See [Source Health Response](#get-apiv1settingssource-health) | 200 | implemented |
+| GET | `/api/v1/settings/profile` | No | — | See [Profile Response](#get-apiv1settingsprofile) | 200 | implemented |
+| POST | `/api/v1/read-state` | No | See [Read State Request](#post-apiv1read-state) | `{ id: string, itemType: string, itemId: string, isRead: boolean, isHandled: boolean, updatedAt: string }` | 200, 400 | implemented |
+| POST | `/api/v1/sync/refresh` | No | — | `{ started: true, message: string }` | 202 | implemented |
 
 ---
 

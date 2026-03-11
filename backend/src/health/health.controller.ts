@@ -18,7 +18,7 @@ export class HealthController {
 
     return {
       status: 'ok',
-      db: dbStatus,
+      db: dbStatus === 'ok' ? 'connected' : 'error',
     };
   }
 }

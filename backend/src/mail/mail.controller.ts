@@ -1,9 +1,9 @@
 import { Controller, Get, Param, Put, Body, Query } from '@nestjs/common';
-import { IsArray, IsString, IsOptional, IsInt, Min, Max } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsArray, IsString, IsOptional, IsBoolean, IsInt, Min, Max } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 import { MailService } from './mail.service';
 
-class PaginationQueryDto {
+class ConversationsQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -16,6 +16,11 @@ class PaginationQueryDto {
   @Min(1)
   @Max(100)
   limit?: number = 20;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  unreadOnly?: boolean = false;
 }
 
 class MarkUnreadDto {
@@ -40,10 +45,11 @@ export class MailController {
   }
 
   @Get('conversations')
-  async getConversations(@Query() query: PaginationQueryDto) {
+  async getConversations(@Query() query: ConversationsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    return this.mailService.getConversations(page, limit);
+    const unreadOnly = query.unreadOnly ?? false;
+    return this.mailService.getConversations(page, limit, unreadOnly);
   }
 
   @Get('conversations/:id')

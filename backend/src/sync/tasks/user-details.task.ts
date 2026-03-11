@@ -45,11 +45,6 @@ export class UserDetailsTask {
         },
       );
 
-      // Get school name from household connection
-      const household = await this.prisma.householdConnection.findFirst({
-        where: { active: true },
-      });
-
       const existing = await this.prisma.parentProfile.findUnique({
         where: { upstreamUserId: details.userId },
       });
@@ -65,10 +60,6 @@ export class UserDetailsTask {
           },
         });
       } else {
-        const displayName = household?.upstreamUserId === details.userId
-          ? undefined
-          : undefined;
-
         await this.prisma.parentProfile.create({
           data: {
             upstreamUserId: details.userId,

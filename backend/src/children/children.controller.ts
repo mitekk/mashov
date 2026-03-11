@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
-import { IsInt, IsOptional, Min, Max } from 'class-validator';
+import { IsInt, IsOptional, IsIn, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ChildrenService } from './children.service';
 
@@ -16,6 +16,12 @@ class PaginationQueryDto {
   @Min(1)
   @Max(100)
   limit?: number = 20;
+}
+
+class BehaviorQueryDto extends PaginationQueryDto {
+  @IsOptional()
+  @IsIn(['all', 'attention', 'positive', 'neutral'])
+  bucket?: 'all' | 'attention' | 'positive' | 'neutral' = 'all';
 }
 
 @Controller('children')
@@ -43,8 +49,14 @@ export class ChildrenController {
   }
 
   @Get(':studentGuid/behavior')
-  async getBehavior(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getBehavior(studentGuid);
+  async getBehavior(
+    @Param('studentGuid') studentGuid: string,
+    @Query() query: BehaviorQueryDto,
+  ) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 50;
+    const bucket = query.bucket ?? 'all';
+    return this.childrenService.getBehavior(studentGuid, page, limit, bucket);
   }
 
   @Get(':studentGuid/subjects')

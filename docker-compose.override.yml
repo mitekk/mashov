@@ -6,7 +6,7 @@ services:
     volumes:
       - ./backend/src:/app/src
       - ./backend/prisma:/app/prisma
-    command: ["npx", "ts-node", "-r", "tsconfig-paths/register", "src/main.ts"]
+    command: ["npx", "tsx", "watch", "--tsconfig", "tsconfig.json", "src/main.ts"]
     environment:
       NODE_ENV: development
 

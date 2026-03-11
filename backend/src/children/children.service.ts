@@ -82,13 +82,38 @@ export class ChildrenService {
     };
   }
 
-  async getBehavior(studentGuid: string) {
+  async getBehavior(
+    studentGuid: string,
+    page: number,
+    limit: number,
+    bucket: 'all' | 'attention' | 'positive' | 'neutral',
+  ) {
     await this.requireStudent(studentGuid);
 
-    return this.prisma.behaviorItem.findMany({
-      where: { studentGuid },
-      orderBy: { eventAt: 'desc' },
-    });
+    const where = {
+      studentGuid,
+      ...(bucket !== 'all' ? { bucket } : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.behaviorItem.findMany({
+        where,
+        orderBy: { eventAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.behaviorItem.count({ where }),
+    ]);
+
+    return {
+      data: items,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async getSubjects(studentGuid: string) {

@@ -58,35 +58,45 @@ export class MailService {
   ) {}
 
   async getSummary() {
-    const [unreadCount, conversations] = await Promise.all([
+    const [unreadConversations, recentConversations, lastSync] = await Promise.all([
       this.prisma.mailConversation.count({ where: { isUnread: true } }),
       this.prisma.mailConversation.findMany({
+        where: { isUnread: true },
         orderBy: { sendTime: 'desc' },
         take: 3,
+      }),
+      this.prisma.syncRun.findFirst({
+        where: { source: 'mail_inbox', status: 'success' },
+        orderBy: { endedAt: 'desc' },
+        select: { endedAt: true },
       }),
     ]);
 
     return {
-      unreadCount,
-      preview: conversations.map((c) => ({
-        id: c.id,
+      unreadConversations,
+      recentConversations: recentConversations.map((c) => ({
         conversationId: c.conversationId,
         subject: c.subject,
         senderNamePreview: c.senderNamePreview,
         sendTime: c.sendTime.toISOString(),
         isUnread: c.isUnread,
+        hasAttachments: c.hasAttachments,
+        preventReply: c.preventReply,
       })),
+      lastSyncAt: lastSync?.endedAt?.toISOString() ?? null,
     };
   }
 
-  async getConversations(page: number, limit: number) {
+  async getConversations(page: number, limit: number, unreadOnly: boolean) {
+    const where = unreadOnly ? { isUnread: true } : {};
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
+        where,
         orderBy: { sendTime: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.mailConversation.count(),
+      this.prisma.mailConversation.count({ where }),
     ]);
 
     return {
@@ -232,6 +242,6 @@ export class MailService {
       }),
     );
 
-    return { archived: conversationIds.length };
+    return { updated: conversationIds.length };
   }
 }
