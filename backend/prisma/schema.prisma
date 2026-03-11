@@ -1,0 +1,245 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model HouseholdConnection {
+  id               String    @id @default(cuid())
+  schoolCode       Int
+  schoolYear       Int
+  username         String
+  encryptedPassword String
+  schoolName       String?
+  upstreamUserId   String?
+  cachedUnreadCount Int      @default(0)
+  lastLoginAt      DateTime?
+  active           Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@map("household_connection")
+}
+
+model ParentProfile {
+  id             String   @id @default(cuid())
+  upstreamUserId String   @unique
+  displayName    String?
+  email          String?
+  cellphone      String?
+  detailsState   Int      @default(0)
+  rawPayload     Json?
+  updatedAt      DateTime @updatedAt
+
+  @@map("parent_profile")
+}
+
+model Student {
+  id          String   @id @default(cuid())
+  studentGuid String   @unique
+  privateName String
+  familyName  String
+  fullName    String
+  classCode   String
+  classNum    Int
+  gender      String
+  groupsRaw   Json?
+  isActive    Boolean  @default(true)
+  rawPayload  Json?
+  updatedAt   DateTime @updatedAt
+
+  @@map("student")
+}
+
+model NotificationEvent {
+  id                     String   @id @default(cuid())
+  upstreamNotificationId Int?     @unique
+  fingerprint            String?  @unique
+  eventType              Int
+  eventText              String
+  eventKey               String?
+  eventKey2              String?
+  studentGuid            String?
+  eventAt                DateTime
+  addTime                DateTime?
+  readTime               DateTime?
+  parsedEventData        Json?
+  rawPayload             Json
+  updatedAt              DateTime @updatedAt
+
+  @@map("notification_event")
+}
+
+model MailConversation {
+  id                String    @id @default(cuid())
+  conversationId    String    @unique
+  subject           String
+  senderNamePreview String?
+  sendTime          DateTime
+  isUnread          Boolean   @default(false)
+  hasDrafts         Boolean   @default(false)
+  hasAttachments    Boolean   @default(false)
+  preventReply      Boolean   @default(false)
+  labels            Json      @default("[]")
+  rawPayload        Json?
+  lastFetchedAt     DateTime  @default(now())
+
+  messages          MailMessage[]
+
+  @@map("mail_conversation")
+}
+
+model MailMessage {
+  id                 String   @id @default(cuid())
+  messageId          String   @unique
+  conversationId     String
+  senderId           String
+  senderName         String
+  subject            String
+  bodyHtmlSanitized  String?
+  bodyTextPreview    String?
+  sendTime           DateTime
+  isUnread           Boolean  @default(false)
+  recipients         Json     @default("[]")
+  files              Json     @default("[]")
+  preventReply       Boolean  @default(false)
+  sentViaEmail       Boolean  @default(false)
+  sentViaSms         Boolean  @default(false)
+  rawPayload         Json?
+
+  conversation       MailConversation @relation(fields: [conversationId], references: [conversationId])
+
+  @@map("mail_message")
+}
+
+model HomeworkItem {
+  id           String   @id @default(cuid())
+  studentGuid  String
+  lessonId     Int
+  groupId      Int
+  lessonDate   DateTime
+  lesson       Int
+  subjectName  String
+  homeworkText String
+  remark       String?
+  files        Json     @default("[]")
+  rawPayload   Json?
+  updatedAt    DateTime @updatedAt
+
+  @@unique([studentGuid, lessonId])
+  @@map("homework_item")
+}
+
+model BehaviorItem {
+  id             String   @id @default(cuid())
+  studentGuid    String
+  lessonId       Int
+  groupId        Int
+  eventCode      Int
+  achvaCode      Int
+  achvaName      String
+  classification String   @default("neutral")
+  justifiable    Boolean  @default(false)
+  lessonDate     DateTime
+  lesson         Int?
+  subject        String
+  reporter       String
+  remark         String?
+  justification  String?
+  eventAt        DateTime
+  rawPayload     Json?
+  updatedAt      DateTime @updatedAt
+
+  @@unique([studentGuid, lessonId, eventCode])
+  @@map("behavior_item")
+}
+
+model SubjectEnrollment {
+  id               String   @id @default(cuid())
+  studentGuid      String
+  groupId          Int
+  groupName        String
+  subjectName      String
+  teachers         Json     @default("[]")
+  inactiveTeachers Json     @default("[]")
+  weeklyHours      Int      @default(0)
+  lessonsCount     Int      @default(0)
+  rawPayload       Json?
+  updatedAt        DateTime @updatedAt
+
+  @@unique([studentGuid, groupId])
+  @@map("subject_enrollment")
+}
+
+model BehaviorTypeReference {
+  id              String   @id @default(cuid())
+  code            Int      @unique
+  name            String
+  displayOrder    Int      @default(0)
+  justifiable     Boolean  @default(false)
+  hidden          Boolean  @default(false)
+  showInBehave    Boolean  @default(true)
+  hideFromStudents Boolean @default(false)
+  rawPayload      Json?
+  updatedAt       DateTime @updatedAt
+
+  @@map("behavior_type_reference")
+}
+
+model MessageBoardItem {
+  id             String   @id @default(cuid())
+  studentGuid    String
+  eventId        Int
+  eventText      String
+  expirationDate DateTime
+  inSite         Boolean  @default(false)
+  rawPayload     Json?
+  updatedAt      DateTime @updatedAt
+
+  @@unique([studentGuid, eventId])
+  @@map("message_board_item")
+}
+
+model ReadState {
+  id        String   @id @default(cuid())
+  itemType  String
+  itemId    String
+  scopeType String   @default("household")
+  scopeId   String   @default("default")
+  isRead    Boolean  @default(false)
+  isHandled Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  @@unique([itemType, itemId, scopeType, scopeId])
+  @@map("read_state")
+}
+
+model SyncRun {
+  id           String    @id @default(cuid())
+  source       String
+  status       String
+  startedAt    DateTime
+  endedAt      DateTime?
+  fetchedCount Int?
+  createdCount Int?
+  updatedCount Int?
+  errorMessage String?
+
+  @@map("sync_run")
+}
+
+model RecipientDirectory {
+  id          String   @id @default(cuid())
+  value       String
+  valueType   String
+  targetType  String
+  displayName String
+  comment     String?
+  rawPayload  Json?
+  updatedAt   DateTime @updatedAt
+
+  @@map("recipient_directory")
+}

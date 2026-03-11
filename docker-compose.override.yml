@@ -1,0 +1,23 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      target: builder
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/prisma:/app/prisma
+    command: ["npx", "ts-node", "-r", "tsconfig-paths/register", "src/main.ts"]
+    environment:
+      NODE_ENV: development
+
+  frontend:
+    build:
+      context: ./frontend
+      target: builder
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    command: ["npm", "run", "dev"]
+    environment:
+      NODE_ENV: development
+      BACKEND_URL: http://backend:3000
