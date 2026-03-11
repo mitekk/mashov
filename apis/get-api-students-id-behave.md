@@ -22,6 +22,12 @@ Retrieves all behavior and attendance events for a specific student, including a
 |-----------|-------------|
 | studentGuid | The student's unique UUID identifier |
 
+### Query Parameters
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| start | string (ISO 8601 datetime) | no | Returns behavior events from this UTC timestamp onward (example: `2026-02-25T00:00:00Z`) |
+| minimal | boolean | no | When `true`, requests a minimal response payload |
+
 ## Response
 
 ### Schema
@@ -100,4 +106,12 @@ curl 'https://web.mashov.info/api/students/{STUDENT_GUID}/behave' \
   -H 'X-Csrf-Token: {CSRF_TOKEN}' \
   -H 'Accept: application/json, text/plain, */*' \
   -H 'Referer: https://web.mashov.info/students/main/students/{STUDENT_GUID}/behave'
+```
+
+### cURL (with query string)
+```bash
+curl 'https://web.mashov.info/api/students/{STUDENT_GUID}/behave?start=2026-02-25T00:00:00Z&minimal=true' \
+  -H 'X-Csrf-Token: {CSRF_TOKEN}' \
+  -H 'Accept: application/json, text/plain, */*' \
+  -H 'Referer: https://web.mashov.info/students/main/dashboard'
 ```
