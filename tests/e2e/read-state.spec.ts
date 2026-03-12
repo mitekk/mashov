@@ -12,7 +12,7 @@ import { HomePage } from './pages/HomePage';
  * via the Mashov sync is not possible in the E2E environment.
  */
 test.describe('Read-state: mark handled via API', () => {
-  const BACKEND_URL = 'http://localhost:3001';
+  const BACKEND_URL = process.env.PLAYWRIGHT_BACKEND_URL ?? 'http://localhost:3001';
 
   test('POST /api/v1/read-state creates a read-state record that persists', async () => {
     const apiContext = await playwrightRequest.newContext({

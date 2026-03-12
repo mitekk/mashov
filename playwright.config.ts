@@ -9,6 +9,8 @@ import { defineConfig, devices } from '@playwright/test';
  * Frontend: http://localhost:3000 (Next.js)
  * Backend:  http://localhost:3001 (NestJS)
  */
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
+
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: '**/*.spec.ts',
@@ -32,7 +34,7 @@ export default defineConfig({
 
   use: {
     // All tests run against the Dockerized frontend
-    baseURL: 'http://localhost:3000',
+    baseURL,
 
     // Capture trace on first retry for debugging
     trace: 'on-first-retry',
@@ -55,7 +57,7 @@ export default defineConfig({
   // Do not start webServer here; CI workflow handles docker compose startup
   webServer: {
     command: 'echo "Expecting Docker stack to be running. Run: docker compose up -d --wait"',
-    url: 'http://localhost:3000',
+    url: baseURL,
     reuseExistingServer: true,
     timeout: 120_000,
   },

@@ -1,7 +1,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { Mail, AlertTriangle, BookOpen, AlertCircle } from 'lucide-react';
-import type { NeedsAttentionItem, NeedsAttentionType } from '@/types/api';
+import type { NeedsAttentionItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 
@@ -9,7 +9,7 @@ interface NeedsAttentionCardProps {
   item: NeedsAttentionItem;
 }
 
-function getTypeStyles(type: NeedsAttentionType): {
+function getTypeStyles(type: string | null | undefined): {
   border: string;
   icon: React.ReactNode;
   iconColor: string;
@@ -39,15 +39,25 @@ function getTypeStyles(type: NeedsAttentionType): {
         icon: <AlertCircle className="w-4 h-4" />,
         iconColor: 'text-red-400',
       };
+    default:
+      return {
+        border: 'border-s-4 border-s-slate-300',
+        icon: <AlertCircle className="w-4 h-4" />,
+        iconColor: 'text-slate-500',
+      };
   }
 }
 
 export function NeedsAttentionCard({ item }: NeedsAttentionCardProps) {
   const { border, icon, iconColor } = getTypeStyles(item.type);
+  const safeHref =
+    typeof item.linkPath === 'string' && item.linkPath.trim().length > 0
+      ? item.linkPath
+      : '/home';
 
   return (
     <Link
-      href={item.linkPath}
+      href={safeHref}
       data-testid={`attention-card-${item.id}`}
       className={cn(
         'card-base p-4 flex gap-3 items-start tap-target hover:bg-accent/30 transition-colors',

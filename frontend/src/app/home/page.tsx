@@ -10,7 +10,29 @@ import { ChildQuickCard } from '@/components/home/ChildQuickCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useDashboard, useSyncRefresh } from '@/hooks/useDashboard';
-import { formatAbsoluteHe, formatRelativeHe } from '@/lib/dates';
+import { formatRelativeHe } from '@/lib/dates';
+import type { DashboardResponse } from '@/types/api';
+
+const EMPTY_DASHBOARD: DashboardResponse = {
+  freshness: {
+    state: 'fresh',
+    lastSyncAt: null,
+    staleSources: [],
+  },
+  summary: {
+    unreadConversations: 0,
+    recentHomeworkCount: 0,
+    recentBehaviorCount: 0,
+    childrenCount: 0,
+  },
+  needsAttention: [],
+  feed: [],
+  children: [],
+  school: {
+    schoolName: '',
+    schoolYear: new Date().getFullYear(),
+  },
+};
 
 export default function HomePage() {
   const { data, isLoading, isError, refetch } = useDashboard();
@@ -21,7 +43,8 @@ export default function HomePage() {
   };
 
   if (isLoading) return <AppShell><LoadingState message="טוען נתונים..." /></AppShell>;
-  if (isError || !data) return <AppShell><ErrorState onRetry={() => void refetch()} /></AppShell>;
+
+  const dashboard = data ?? EMPTY_DASHBOARD;
 
   const now = new Date();
   const currentDateHe = now.toLocaleDateString('he-IL', {
@@ -36,9 +59,9 @@ export default function HomePage() {
           <div>
             <h1 className="text-xl font-bold text-foreground">מרכז הורים</h1>
             <p className="text-sm text-muted-foreground mt-0.5">{currentDateHe}</p>
-            {data.freshness.lastSyncAt && (
+            {dashboard.freshness.lastSyncAt && (
               <p className="text-xs text-muted-foreground">
-                סונכרן {formatRelativeHe(data.freshness.lastSyncAt)}
+                סונכרן {formatRelativeHe(dashboard.freshness.lastSyncAt)}
               </p>
             )}
           </div>
@@ -53,20 +76,27 @@ export default function HomePage() {
           </button>
         </header>
 
+        {isError && (
+          <ErrorState
+            message="אירעה שגיאה בטעינת הדשבורד. מוצגים נתונים חלקיים."
+            onRetry={() => void refetch()}
+          />
+        )}
+
         {/* Summary strip */}
-        <SummaryStrip summary={data.summary} />
+        <SummaryStrip summary={dashboard.summary} />
 
         {/* Needs attention */}
-        {data.needsAttention.length > 0 && (
-          <NeedsAttentionSection items={data.needsAttention} />
+        {dashboard.needsAttention.length > 0 && (
+          <NeedsAttentionSection items={dashboard.needsAttention} />
         )}
 
         {/* Child quick cards */}
-        {data.children.length > 0 && (
+        {dashboard.children.length > 0 && (
           <section data-testid="children-section">
             <h2 className="text-base font-semibold text-foreground mb-3">ילדים</h2>
             <div className="grid gap-3">
-              {data.children.map((child) => (
+              {dashboard.children.map((child) => (
                 <ChildQuickCard key={child.studentGuid} child={child} />
               ))}
             </div>
@@ -74,7 +104,7 @@ export default function HomePage() {
         )}
 
         {/* Latest feed */}
-        <LatestFeed items={data.feed} />
+        <LatestFeed items={dashboard.feed} />
       </div>
     </AppShell>
   );

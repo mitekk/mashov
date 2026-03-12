@@ -5,3 +5,8 @@ frontend/.next
 .env
 .env.local
 .env.*.local
+backend/coverage
+playwright-report
+test-results
+.DS_Store
+frontend/tsconfig.tsbuildinfo

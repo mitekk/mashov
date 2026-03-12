@@ -4,35 +4,44 @@ import { FreshnessService } from '../sync/freshness.service';
 
 export interface NeedsAttentionItem {
   id: string;
-  type: string;
+  type: 'unread_conversation' | 'negative_behavior' | 'unhandled_homework' | 'sync_degraded';
   title: string;
-  childName: string | null;
+  summary: string;
+  studentGuid: string | null;
+  studentName: string | null;
   timestamp: string;
-  priority: string;
-  referenceId: string;
+  linkPath: string;
 }
 
 export interface FeedItem {
   id: string;
-  sourceType: string;
+  sourceType: 'homework' | 'behavior' | 'mail' | 'positive';
+  sourceId: string;
+  studentGuid: string | null;
+  studentName: string | null;
   title: string;
   summary: string;
-  childName: string | null;
-  timestamp: string;
+  category: string;
+  priority: 'high' | 'medium' | 'low';
+  isPositive: boolean;
   isUnread: boolean;
   isHandled: boolean;
-  category: string;
-  isPositive: boolean;
+  eventAt: string;
+  syncedAt: string;
+  linkPath: string;
 }
 
 export interface ChildCard {
   studentGuid: string;
+  privateName: string;
+  familyName: string;
   fullName: string;
   classCode: string;
   classNum: number;
+  recentHomeworkCount: number;
+  recentBehaviorCount: number;
   latestUpdateAt: string | null;
-  recentUpdateCount: number;
-  statusLine: string;
+  oneLineStatus: string;
 }
 
 @Injectable()
@@ -43,20 +52,22 @@ export class DashboardService {
   ) {}
 
   async getDashboard() {
-    const [students, summary, needsAttention, feed, freshness] = await Promise.all([
+    const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(),
       this.getSummary(),
-      this.getNeedsAttention(),
       this.getFeed(),
       this.getFreshness(),
+      this.getSchoolInfo(),
     ]);
+    const needsAttention = await this.getNeedsAttention(freshness);
 
     return {
+      freshness,
       summary,
       needsAttention,
       feed,
       children: students,
-      freshness,
+      school,
     };
   }
 
@@ -85,7 +96,11 @@ export class DashboardService {
     };
   }
 
-  private async getNeedsAttention(): Promise<NeedsAttentionItem[]> {
+  private async getNeedsAttention(freshness: {
+    state: 'fresh' | 'syncing' | 'stale' | 'degraded';
+    lastSyncAt: string | null;
+    staleSources: string[];
+  }): Promise<NeedsAttentionItem[]> {
     const items: NeedsAttentionItem[] = [];
 
     const students = await this.prisma.student.findMany({
@@ -103,12 +118,13 @@ export class DashboardService {
     for (const conv of conversations) {
       items.push({
         id: conv.id,
-        type: 'conversation',
+        type: 'unread_conversation',
         title: conv.subject,
-        childName: null,
+        summary: conv.senderNamePreview ?? 'הודעה שלא נקראה',
+        studentGuid: null,
+        studentName: null,
         timestamp: conv.sendTime.toISOString(),
-        priority: 'high',
-        referenceId: conv.conversationId,
+        linkPath: `/inbox/${conv.conversationId}`,
       });
     }
 
@@ -126,12 +142,13 @@ export class DashboardService {
     for (const b of behaviors) {
       items.push({
         id: b.id,
-        type: 'behavior',
+        type: 'negative_behavior',
         title: b.achvaName,
-        childName: studentMap.get(b.studentGuid) ?? null,
+        summary: b.remark ?? b.subject,
+        studentGuid: b.studentGuid,
+        studentName: studentMap.get(b.studentGuid) ?? null,
         timestamp: b.eventAt.toISOString(),
-        priority: 'medium',
-        referenceId: b.id,
+        linkPath: `/children/${b.studentGuid}`,
       });
     }
 
@@ -148,12 +165,29 @@ export class DashboardService {
     for (const hw of homework) {
       items.push({
         id: hw.id,
-        type: 'homework',
-        title: `${hw.subjectName} homework`,
-        childName: studentMap.get(hw.studentGuid) ?? null,
+        type: 'unhandled_homework',
+        title: `${hw.subjectName}: שיעורי בית`,
+        summary: hw.homeworkText,
+        studentGuid: hw.studentGuid,
+        studentName: studentMap.get(hw.studentGuid) ?? null,
         timestamp: hw.lessonDate.toISOString(),
-        priority: 'low',
-        referenceId: hw.id,
+        linkPath: `/children/${hw.studentGuid}`,
+      });
+    }
+
+    if (items.length < 5 && freshness.state === 'degraded') {
+      items.push({
+        id: 'sync-degraded',
+        type: 'sync_degraded',
+        title: 'סנכרון חלקי',
+        summary:
+          freshness.staleSources.length > 0
+            ? `מקורות מיושנים: ${freshness.staleSources.join(', ')}`
+            : 'חלק מהמקורות לא התעדכנו לאחרונה',
+        studentGuid: null,
+        studentName: null,
+        timestamp: freshness.lastSyncAt ?? new Date().toISOString(),
+        linkPath: '/more',
       });
     }
 
@@ -167,11 +201,7 @@ export class DashboardService {
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
 
-    const [notifications, homework, behaviors, conversations] = await Promise.all([
-      this.prisma.notificationEvent.findMany({
-        orderBy: { eventAt: 'desc' },
-        take: 20,
-      }),
+    const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
         orderBy: { lessonDate: 'desc' },
         take: 20,
@@ -188,68 +218,85 @@ export class DashboardService {
 
     const allItems: FeedItem[] = [];
 
-    for (const n of notifications) {
-      allItems.push({
-        id: n.id,
-        sourceType: 'notification',
-        title: n.eventText,
-        summary: n.eventText,
-        childName: n.studentGuid ? (studentMap.get(n.studentGuid) ?? null) : null,
-        timestamp: n.eventAt.toISOString(),
-        isUnread: n.readTime === null,
-        isHandled: false,
-        category: 'notification',
-        isPositive: false,
-      });
-    }
-
     for (const hw of homework) {
       allItems.push({
         id: hw.id,
+        sourceId: hw.id,
         sourceType: 'homework',
         title: `${hw.subjectName}: ${hw.homeworkText.substring(0, 60)}`,
         summary: hw.homeworkText,
-        childName: studentMap.get(hw.studentGuid) ?? null,
-        timestamp: hw.lessonDate.toISOString(),
+        studentGuid: hw.studentGuid,
+        studentName: studentMap.get(hw.studentGuid) ?? null,
+        category: 'homework',
+        priority: 'medium',
+        isPositive: false,
         isUnread: false,
         isHandled: false,
-        category: 'homework',
-        isPositive: false,
+        eventAt: hw.lessonDate.toISOString(),
+        syncedAt: hw.updatedAt.toISOString(),
+        linkPath: `/children/${hw.studentGuid}`,
       });
     }
 
     for (const b of behaviors) {
+      const isPositive = b.classification === 'positive';
       allItems.push({
         id: b.id,
-        sourceType: 'behavior',
+        sourceId: b.id,
+        sourceType: isPositive ? 'positive' : 'behavior',
         title: b.achvaName,
         summary: b.remark ?? b.achvaName,
-        childName: studentMap.get(b.studentGuid) ?? null,
-        timestamp: b.eventAt.toISOString(),
+        studentGuid: b.studentGuid,
+        studentName: studentMap.get(b.studentGuid) ?? null,
+        category: 'behavior',
+        priority: isPositive ? 'low' : 'high',
+        isPositive,
         isUnread: false,
         isHandled: false,
-        category: 'behavior',
-        isPositive: b.classification === 'positive',
+        eventAt: b.eventAt.toISOString(),
+        syncedAt: b.updatedAt.toISOString(),
+        linkPath: `/children/${b.studentGuid}`,
       });
     }
 
     for (const conv of conversations) {
       allItems.push({
         id: conv.id,
+        sourceId: conv.conversationId,
         sourceType: 'mail',
         title: conv.subject,
         summary: conv.senderNamePreview ?? conv.subject,
-        childName: null,
-        timestamp: conv.sendTime.toISOString(),
+        studentGuid: null,
+        studentName: null,
+        category: 'mail',
+        priority: conv.isUnread ? 'high' : 'medium',
+        isPositive: false,
         isUnread: conv.isUnread,
         isHandled: false,
-        category: 'mail',
-        isPositive: false,
+        eventAt: conv.sendTime.toISOString(),
+        syncedAt: conv.lastFetchedAt.toISOString(),
+        linkPath: `/inbox/${conv.conversationId}`,
       });
     }
 
-    allItems.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    return allItems.slice(0, 20);
+    allItems.sort((a, b) => new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime());
+    const sliced = allItems.slice(0, 20);
+
+    const readStateRows = await this.prisma.readState.findMany({
+      where: {
+        itemType: 'feed_item',
+        itemId: { in: sliced.map((item) => item.id) },
+        scopeType: 'household',
+        scopeId: 'default',
+      },
+      select: { itemId: true, isHandled: true },
+    });
+    const handledMap = new Map(readStateRows.map((row) => [row.itemId, row.isHandled]));
+
+    return sliced.map((item) => ({
+      ...item,
+      isHandled: handledMap.get(item.id) ?? false,
+    }));
   }
 
   private async getChildren(): Promise<ChildCard[]> {
@@ -262,12 +309,24 @@ export class DashboardService {
 
     const cards: ChildCard[] = await Promise.all(
       students.map(async (student) => {
-        const [recentHw, recentBehavior] = await Promise.all([
+        const [recentHw, recentBehavior, latestHomework, latestBehavior] = await Promise.all([
           this.prisma.homeworkItem.count({
             where: {
               studentGuid: student.studentGuid,
               lessonDate: { gte: sevenDaysAgo },
             },
+          }),
+          this.prisma.behaviorItem.count({
+            where: {
+              studentGuid: student.studentGuid,
+              lessonDate: { gte: sevenDaysAgo },
+              classification: { not: 'positive' },
+            },
+          }),
+          this.prisma.homeworkItem.findFirst({
+            where: { studentGuid: student.studentGuid },
+            orderBy: { lessonDate: 'desc' },
+            select: { lessonDate: true },
           }),
           this.prisma.behaviorItem.findFirst({
             where: { studentGuid: student.studentGuid },
@@ -276,21 +335,32 @@ export class DashboardService {
           }),
         ]);
 
-        const latestUpdateAt = student.updatedAt?.toISOString() ?? null;
+        const latestUpdateAt = [
+          student.updatedAt,
+          latestHomework?.lessonDate ?? null,
+          latestBehavior?.eventAt ?? null,
+        ]
+          .filter((value): value is Date => value instanceof Date)
+          .sort((a, b) => b.getTime() - a.getTime())[0]
+          ?.toISOString() ?? null;
 
         const statusParts: string[] = [];
         if (recentHw > 0) statusParts.push(`${recentHw} homework`);
-        if (recentBehavior) statusParts.push('behavior noted');
-        const statusLine = statusParts.length > 0 ? statusParts.join(', ') : 'No recent activity';
+        if (recentBehavior > 0) statusParts.push(`${recentBehavior} behavior`);
+        const oneLineStatus =
+          statusParts.length > 0 ? statusParts.join(', ') : 'No recent activity';
 
         return {
           studentGuid: student.studentGuid,
+          privateName: student.privateName,
+          familyName: student.familyName,
           fullName: student.fullName,
           classCode: student.classCode,
           classNum: student.classNum,
+          recentHomeworkCount: recentHw,
+          recentBehaviorCount: recentBehavior,
           latestUpdateAt,
-          recentUpdateCount: recentHw,
-          statusLine,
+          oneLineStatus,
         };
       }),
     );
@@ -301,9 +371,22 @@ export class DashboardService {
   private async getFreshness() {
     const result = await this.freshnessService.computeFreshness();
     return {
-      status: result.state,
-      lastSuccessfulSyncAt: result.lastSyncAt,
+      state: result.state,
+      lastSyncAt: result.lastSyncAt,
       staleSources: result.staleSources,
+    };
+  }
+
+  private async getSchoolInfo() {
+    const household = await this.prisma.householdConnection.findFirst({
+      where: { active: true },
+      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
+      select: { schoolName: true, schoolYear: true },
+    });
+
+    return {
+      schoolName: household?.schoolName ?? '',
+      schoolYear: household?.schoolYear ?? new Date().getFullYear(),
     };
   }
 }

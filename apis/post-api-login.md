@@ -18,6 +18,10 @@ Authenticates a parent/student user and returns a session, credential info, and 
 | Content-Type | application/json |
 | Accept | application/json, text/plain, */* |
 | Referer | https://web.mashov.info/students/login |
+| sec-ch-ua-platform | "macOS" |
+| sec-ch-ua | "Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145" |
+| sec-ch-ua-mobile | ?0 |
+| User-Agent | Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 |
 
 ### Body
 ```json
@@ -172,8 +176,12 @@ Authenticates a parent/student user and returns a session, credential info, and 
 ## cURL
 ```bash
 curl -X POST 'https://web.mashov.info/api/login' \
+  -H 'sec-ch-ua-platform: "macOS"' \
   -H 'X-Csrf-Token: {CSRF_TOKEN}' \
   -H 'Referer: https://web.mashov.info/students/login' \
+  -H 'sec-ch-ua: "Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36' \
   -H 'Accept: application/json, text/plain, */*' \
   -H 'Content-Type: application/json' \
   -d '{

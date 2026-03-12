@@ -30,12 +30,12 @@ export class InboxPage {
 
   async clickFilterAll(): Promise<void> {
     await this.filterAllButton.click();
-    await this.page.waitForLoadState('networkidle');
+    await this.page.waitForURL((url) => url.searchParams.get('filter') !== 'unread');
   }
 
   async clickFilterUnread(): Promise<void> {
     await this.filterUnreadButton.click();
-    await this.page.waitForLoadState('networkidle');
+    await this.page.waitForURL((url) => url.searchParams.get('filter') === 'unread');
   }
 
   async clickConversation(conversationId: string): Promise<void> {

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../prisma/prisma.module';
 import { SessionModule } from '../session/session.module';
 import { SyncRunService } from './sync-run.service';
@@ -20,7 +21,7 @@ import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
 
 @Module({
-  imports: [PrismaModule, SessionModule],
+  imports: [ConfigModule, PrismaModule, SessionModule],
   controllers: [SyncController],
   providers: [
     SyncRunService,

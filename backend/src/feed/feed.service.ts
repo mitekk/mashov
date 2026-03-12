@@ -3,15 +3,20 @@ import { PrismaService } from '../prisma/prisma.service';
 
 export interface FeedItem {
   id: string;
-  sourceType: string;
+  sourceType: 'homework' | 'behavior' | 'mail' | 'positive';
+  sourceId: string;
+  studentGuid: string | null;
+  studentName: string | null;
   title: string;
   summary: string;
-  childName: string | null;
-  timestamp: string;
+  category: string;
+  priority: 'high' | 'medium' | 'low';
+  isPositive: boolean;
   isUnread: boolean;
   isHandled: boolean;
-  category: string;
-  isPositive: boolean;
+  eventAt: string;
+  syncedAt: string;
+  linkPath: string;
 }
 
 @Injectable()
@@ -25,10 +30,7 @@ export class FeedService {
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
 
-    const [notifications, homework, behaviors, conversations] = await Promise.all([
-      this.prisma.notificationEvent.findMany({
-        orderBy: { eventAt: 'desc' },
-      }),
+    const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
         orderBy: { lessonDate: 'desc' },
       }),
@@ -42,75 +44,92 @@ export class FeedService {
 
     const allItems: FeedItem[] = [];
 
-    for (const n of notifications) {
-      allItems.push({
-        id: n.id,
-        sourceType: 'notification',
-        title: n.eventText,
-        summary: n.eventText,
-        childName: n.studentGuid ? (studentMap.get(n.studentGuid) ?? null) : null,
-        timestamp: n.eventAt.toISOString(),
-        isUnread: n.readTime === null,
-        isHandled: false,
-        category: 'notification',
-        isPositive: false,
-      });
-    }
-
     for (const hw of homework) {
       allItems.push({
         id: hw.id,
+        sourceId: hw.id,
         sourceType: 'homework',
+        studentGuid: hw.studentGuid,
+        studentName: studentMap.get(hw.studentGuid) ?? null,
         title: `${hw.subjectName}: ${hw.homeworkText.substring(0, 60)}`,
         summary: hw.homeworkText,
-        childName: studentMap.get(hw.studentGuid) ?? null,
-        timestamp: hw.lessonDate.toISOString(),
+        category: 'homework',
+        priority: 'medium',
+        isPositive: false,
         isUnread: false,
         isHandled: false,
-        category: 'homework',
-        isPositive: false,
+        eventAt: hw.lessonDate.toISOString(),
+        syncedAt: hw.updatedAt.toISOString(),
+        linkPath: `/children/${hw.studentGuid}`,
       });
     }
 
     for (const b of behaviors) {
+      const isPositive = b.classification === 'positive';
       allItems.push({
         id: b.id,
-        sourceType: 'behavior',
+        sourceId: b.id,
+        sourceType: isPositive ? 'positive' : 'behavior',
+        studentGuid: b.studentGuid,
+        studentName: studentMap.get(b.studentGuid) ?? null,
         title: b.achvaName,
         summary: b.remark ?? b.achvaName,
-        childName: studentMap.get(b.studentGuid) ?? null,
-        timestamp: b.eventAt.toISOString(),
+        category: 'behavior',
+        priority: isPositive ? 'low' : 'high',
+        isPositive,
         isUnread: false,
         isHandled: false,
-        category: 'behavior',
-        isPositive: b.classification === 'positive',
+        eventAt: b.eventAt.toISOString(),
+        syncedAt: b.updatedAt.toISOString(),
+        linkPath: `/children/${b.studentGuid}`,
       });
     }
 
     for (const conv of conversations) {
       allItems.push({
         id: conv.id,
+        sourceId: conv.conversationId,
         sourceType: 'mail',
+        studentGuid: null,
+        studentName: null,
         title: conv.subject,
         summary: conv.senderNamePreview ?? conv.subject,
-        childName: null,
-        timestamp: conv.sendTime.toISOString(),
+        category: 'mail',
+        priority: conv.isUnread ? 'high' : 'medium',
+        isPositive: false,
         isUnread: conv.isUnread,
         isHandled: false,
-        category: 'mail',
-        isPositive: false,
+        eventAt: conv.sendTime.toISOString(),
+        syncedAt: conv.lastFetchedAt.toISOString(),
+        linkPath: `/inbox/${conv.conversationId}`,
       });
     }
 
-    allItems.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    allItems.sort((a, b) => new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime());
 
     const total = allItems.length;
     const totalPages = Math.ceil(total / limit);
     const offset = (page - 1) * limit;
     const data = allItems.slice(offset, offset + limit);
 
+    const readStateRows = await this.prisma.readState.findMany({
+      where: {
+        itemType: 'feed_item',
+        itemId: { in: data.map((item) => item.id) },
+        scopeType: 'household',
+        scopeId: 'default',
+      },
+      select: { itemId: true, isHandled: true },
+    });
+    const handledMap = new Map(readStateRows.map((row) => [row.itemId, row.isHandled]));
+
+    const withReadState = data.map((item) => ({
+      ...item,
+      isHandled: handledMap.get(item.id) ?? false,
+    }));
+
     return {
-      data,
+      data: withReadState,
       pagination: {
         page,
         limit,

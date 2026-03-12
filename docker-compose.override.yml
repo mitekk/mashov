@@ -6,7 +6,12 @@ services:
     volumes:
       - ./backend/src:/app/src
       - ./backend/prisma:/app/prisma
-    command: ["npx", "tsx", "watch", "--tsconfig", "tsconfig.json", "src/main.ts"]
+    command:
+      [
+        "sh",
+        "-c",
+        "npx prisma db push --accept-data-loss --skip-generate && npm run start:dev",
+      ]
     environment:
       NODE_ENV: development
 

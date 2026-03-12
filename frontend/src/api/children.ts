@@ -1,5 +1,6 @@
 import { apiFetch } from './client';
 import type {
+  ChildListItem,
   ChildrenResponse,
   ChildWorkspaceResponse,
   HomeworkResponse,
@@ -9,8 +10,9 @@ import type {
   BehaviorBucket,
 } from '@/types/api';
 
-export function fetchChildren(): Promise<ChildrenResponse> {
-  return apiFetch<ChildrenResponse>('/children');
+export async function fetchChildren(): Promise<ChildrenResponse> {
+  const response = await apiFetch<ChildrenResponse | ChildListItem[]>('/children');
+  return Array.isArray(response) ? { data: response } : response;
 }
 
 export function fetchChild(studentGuid: string): Promise<ChildWorkspaceResponse> {

@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
-import * as sanitizeHtml from 'sanitize-html';
+import sanitizeHtml = require('sanitize-html');
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 

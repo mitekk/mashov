@@ -50,8 +50,11 @@ cd backend && npm run test:coverage
 # Frontend
 cd frontend && npm test
 
-# E2E (requires running Docker stack)
+# E2E from host (targets running Docker stack)
 npx playwright test
+
+# E2E inside Docker (Playwright runs in container)
+npm run test:e2e:docker
 ```
 
 ## Local Development (Hot Reload)

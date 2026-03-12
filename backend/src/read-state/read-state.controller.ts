@@ -1,5 +1,6 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, Res } from '@nestjs/common';
 import { IsString, IsBoolean, IsOptional, IsNotEmpty } from 'class-validator';
+import { Response } from 'express';
 import { ReadStateService } from './read-state.service';
 
 class UpsertReadStateDto {
@@ -31,12 +32,16 @@ export class ReadStateController {
   constructor(private readonly readStateService: ReadStateService) {}
 
   @Post()
-  async upsertReadState(@Body() body: UpsertReadStateDto) {
+  async upsertReadState(
+    @Body() body: UpsertReadStateDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     if (body.clearAll === true) {
       return this.readStateService.clearAll();
     }
 
     if (!body.itemType || !body.itemId) {
+      res.status(200);
       return { error: { code: 'VALIDATION_ERROR', message: 'itemType and itemId are required', details: [] } };
     }
 

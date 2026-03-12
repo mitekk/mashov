@@ -3,17 +3,17 @@ import { PrismaService } from '../prisma/prisma.service';
 
 function makeMockPrisma(overrides: Partial<{
   studentFindMany: jest.Mock;
-  notificationFindMany: jest.Mock;
   homeworkFindMany: jest.Mock;
   behaviorFindMany: jest.Mock;
   mailFindMany: jest.Mock;
+  readStateFindMany: jest.Mock;
 }>): jest.Mocked<PrismaService> {
   return {
     student: { findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([]) },
-    notificationEvent: { findMany: overrides.notificationFindMany ?? jest.fn().mockResolvedValue([]) },
     homeworkItem: { findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]) },
     behaviorItem: { findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]) },
     mailConversation: { findMany: overrides.mailFindMany ?? jest.fn().mockResolvedValue([]) },
+    readState: { findMany: overrides.readStateFindMany ?? jest.fn().mockResolvedValue([]) },
   } as unknown as jest.Mocked<PrismaService>;
 }
 
@@ -27,50 +27,14 @@ describe('FeedService', () => {
       expect(result.pagination).toEqual({ page: 1, limit: 20, total: 0, totalPages: 0 });
     });
 
-    it('maps notification events to feed items with sourceType=notification', async () => {
-      const notif = {
-        id: 'notif-1',
-        eventText: 'Class canceled',
-        studentGuid: null,
-        eventAt: new Date('2026-03-10T10:00:00Z'),
-        readTime: null,
-      };
-
-      const service = new FeedService(
-        makeMockPrisma({ notificationFindMany: jest.fn().mockResolvedValue([notif]) }),
-      );
-
-      const result = await service.getFeed(1, 20);
-      expect(result.data).toHaveLength(1);
-      expect(result.data[0].sourceType).toBe('notification');
-      expect(result.data[0].title).toBe('Class canceled');
-      expect(result.data[0].isUnread).toBe(true); // readTime is null
-    });
-
-    it('marks notification as read when readTime is set', async () => {
-      const notif = {
-        id: 'notif-2',
-        eventText: 'Parent meeting',
-        studentGuid: null,
-        eventAt: new Date('2026-03-10T10:00:00Z'),
-        readTime: new Date('2026-03-10T11:00:00Z'),
-      };
-
-      const service = new FeedService(
-        makeMockPrisma({ notificationFindMany: jest.fn().mockResolvedValue([notif]) }),
-      );
-
-      const result = await service.getFeed(1, 20);
-      expect(result.data[0].isUnread).toBe(false);
-    });
-
-    it('maps homework items to feed items with sourceType=homework', async () => {
+    it('maps homework items to contract-compliant feed items', async () => {
       const hw = {
         id: 'hw-1',
         studentGuid: 'student-abc',
         subjectName: 'Math',
         homeworkText: 'Solve exercises 1-10',
         lessonDate: new Date('2026-03-11T00:00:00Z'),
+        updatedAt: new Date('2026-03-11T05:00:00Z'),
       };
 
       const service = new FeedService(
@@ -78,12 +42,23 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].sourceType).toBe('homework');
-      expect(result.data[0].title).toContain('Math');
-      expect(result.data[0].isUnread).toBe(false);
+      expect(result.data[0]).toMatchObject({
+        id: 'hw-1',
+        sourceType: 'homework',
+        sourceId: 'hw-1',
+        studentGuid: 'student-abc',
+        title: expect.stringContaining('Math'),
+        summary: 'Solve exercises 1-10',
+        category: 'homework',
+        priority: 'medium',
+        isPositive: false,
+        isUnread: false,
+        isHandled: false,
+        linkPath: '/children/student-abc',
+      });
     });
 
-    it('maps behavior items to feed items with isPositive=true when classification=positive', async () => {
+    it('maps positive behavior items to sourceType=positive', async () => {
       const behavior = {
         id: 'beh-1',
         studentGuid: 'student-abc',
@@ -91,6 +66,7 @@ describe('FeedService', () => {
         remark: null,
         classification: 'positive',
         eventAt: new Date('2026-03-11T09:00:00Z'),
+        updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
       const service = new FeedService(
@@ -98,12 +74,15 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].sourceType).toBe('behavior');
-      expect(result.data[0].isPositive).toBe(true);
-      expect(result.data[0].title).toBe('Excellence award');
+      expect(result.data[0]).toMatchObject({
+        sourceType: 'positive',
+        priority: 'low',
+        isPositive: true,
+        linkPath: '/children/student-abc',
+      });
     });
 
-    it('maps behavior items with isPositive=false for non-positive classification', async () => {
+    it('maps non-positive behavior items to sourceType=behavior', async () => {
       const behavior = {
         id: 'beh-2',
         studentGuid: 'student-abc',
@@ -111,6 +90,7 @@ describe('FeedService', () => {
         remark: 'Was 10 minutes late',
         classification: 'attention',
         eventAt: new Date('2026-03-11T09:00:00Z'),
+        updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
       const service = new FeedService(
@@ -118,17 +98,23 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].isPositive).toBe(false);
-      expect(result.data[0].summary).toBe('Was 10 minutes late');
+      expect(result.data[0]).toMatchObject({
+        sourceType: 'behavior',
+        priority: 'high',
+        isPositive: false,
+        summary: 'Was 10 minutes late',
+      });
     });
 
-    it('maps mail conversations to feed items with sourceType=mail', async () => {
+    it('maps mail conversations to route-aware feed items', async () => {
       const conv = {
-        id: 'conv-1',
+        id: 'conv-db-1',
+        conversationId: 'conv-public-1',
         subject: 'Parent evening',
         senderNamePreview: 'Principal',
         sendTime: new Date('2026-03-11T10:00:00Z'),
         isUnread: true,
+        lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
       const service = new FeedService(
@@ -136,82 +122,121 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].sourceType).toBe('mail');
-      expect(result.data[0].title).toBe('Parent evening');
-      expect(result.data[0].isUnread).toBe(true);
-      expect(result.data[0].childName).toBeNull();
+      expect(result.data[0]).toMatchObject({
+        id: 'conv-db-1',
+        sourceType: 'mail',
+        sourceId: 'conv-public-1',
+        studentGuid: null,
+        studentName: null,
+        priority: 'high',
+        linkPath: '/inbox/conv-public-1',
+      });
     });
 
-    it('resolves childName from student map when studentGuid is provided', async () => {
+    it('resolves studentName from student map when studentGuid is provided', async () => {
       const students = [{ studentGuid: 'student-abc', fullName: 'Alice Smith' }];
-      const notif = {
-        id: 'notif-3',
-        eventText: 'Homework reminder',
+      const hw = {
+        id: 'hw-3',
         studentGuid: 'student-abc',
-        eventAt: new Date('2026-03-11T08:00:00Z'),
-        readTime: null,
+        subjectName: 'Science',
+        homeworkText: 'Read chapter',
+        lessonDate: new Date('2026-03-11T08:00:00Z'),
+        updatedAt: new Date('2026-03-11T08:10:00Z'),
       };
 
       const service = new FeedService(
         makeMockPrisma({
           studentFindMany: jest.fn().mockResolvedValue(students),
-          notificationFindMany: jest.fn().mockResolvedValue([notif]),
+          homeworkFindMany: jest.fn().mockResolvedValue([hw]),
         }),
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].childName).toBe('Alice Smith');
+      expect(result.data[0].studentName).toBe('Alice Smith');
     });
 
-    it('sorts all feed items by timestamp descending (newest first)', async () => {
+    it('sorts feed items by eventAt descending', async () => {
       const older = {
-        id: 'notif-old',
-        eventText: 'Old event',
-        studentGuid: null,
-        eventAt: new Date('2026-03-09T08:00:00Z'),
-        readTime: null,
+        id: 'hw-old',
+        studentGuid: 'student-1',
+        subjectName: 'Math',
+        homeworkText: 'Old',
+        lessonDate: new Date('2026-03-09T08:00:00Z'),
+        updatedAt: new Date('2026-03-09T08:30:00Z'),
       };
       const newer = {
-        id: 'notif-new',
-        eventText: 'New event',
-        studentGuid: null,
-        eventAt: new Date('2026-03-11T08:00:00Z'),
-        readTime: null,
+        id: 'hw-new',
+        studentGuid: 'student-1',
+        subjectName: 'Math',
+        homeworkText: 'New',
+        lessonDate: new Date('2026-03-11T08:00:00Z'),
+        updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
       const service = new FeedService(
         makeMockPrisma({
-          notificationFindMany: jest.fn().mockResolvedValue([older, newer]),
+          homeworkFindMany: jest.fn().mockResolvedValue([older, newer]),
         }),
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].id).toBe('notif-new');
-      expect(result.data[1].id).toBe('notif-old');
+      expect(result.data[0].id).toBe('hw-new');
+      expect(result.data[1].id).toBe('hw-old');
     });
 
-    it('applies pagination: page 2 with limit 1 returns second item', async () => {
-      const notifs = [
-        { id: 'n1', eventText: 'First', studentGuid: null, eventAt: new Date('2026-03-11T10:00:00Z'), readTime: null },
-        { id: 'n2', eventText: 'Second', studentGuid: null, eventAt: new Date('2026-03-10T10:00:00Z'), readTime: null },
+    it('applies read-state isHandled for feed items', async () => {
+      const hw = {
+        id: 'hw-handled',
+        studentGuid: 'student-1',
+        subjectName: 'Math',
+        homeworkText: 'Done',
+        lessonDate: new Date('2026-03-11T08:00:00Z'),
+        updatedAt: new Date('2026-03-11T08:30:00Z'),
+      };
+
+      const service = new FeedService(
+        makeMockPrisma({
+          homeworkFindMany: jest.fn().mockResolvedValue([hw]),
+          readStateFindMany: jest.fn().mockResolvedValue([
+            { itemId: 'hw-handled', isHandled: true },
+          ]),
+        }),
+      );
+
+      const result = await service.getFeed(1, 20);
+      expect(result.data[0].isHandled).toBe(true);
+    });
+
+    it('applies pagination correctly', async () => {
+      const items = [
+        {
+          id: 'h1',
+          studentGuid: 'student-1',
+          subjectName: 'Math',
+          homeworkText: 'First',
+          lessonDate: new Date('2026-03-11T10:00:00Z'),
+          updatedAt: new Date('2026-03-11T10:10:00Z'),
+        },
+        {
+          id: 'h2',
+          studentGuid: 'student-1',
+          subjectName: 'Math',
+          homeworkText: 'Second',
+          lessonDate: new Date('2026-03-10T10:00:00Z'),
+          updatedAt: new Date('2026-03-10T10:10:00Z'),
+        },
       ];
 
       const service = new FeedService(
-        makeMockPrisma({ notificationFindMany: jest.fn().mockResolvedValue(notifs) }),
+        makeMockPrisma({ homeworkFindMany: jest.fn().mockResolvedValue(items) }),
       );
 
       const result = await service.getFeed(2, 1);
       expect(result.data).toHaveLength(1);
-      expect(result.data[0].id).toBe('n2');
+      expect(result.data[0].id).toBe('h2');
       expect(result.pagination.page).toBe(2);
       expect(result.pagination.totalPages).toBe(2);
       expect(result.pagination.total).toBe(2);
-    });
-
-    it('returns totalPages=0 when there are no items', async () => {
-      const service = new FeedService(makeMockPrisma({}));
-      const result = await service.getFeed(1, 20);
-      expect(result.pagination.totalPages).toBe(0);
     });
   });
 });

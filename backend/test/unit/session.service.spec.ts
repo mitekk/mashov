@@ -87,40 +87,8 @@ describe('SessionService', () => {
     service = module.get<SessionService>(SessionService);
   });
 
-  describe('bootstrap', () => {
-    it('extracts CSRF token from initial GET response headers', async () => {
-      mockHttpInstance.get.mockResolvedValueOnce({
-        headers: { 'x-csrf-token': 'test-csrf-token-123' },
-        data: '',
-      });
-
-      const token = await service.bootstrap();
-
-      expect(token).toBe('test-csrf-token-123');
-      expect(mockHttpInstance.get).toHaveBeenCalledWith('/students/login', expect.objectContaining({
-        maxRedirects: 5,
-      }));
-    });
-
-    it('throws when X-Csrf-Token header is missing', async () => {
-      mockHttpInstance.get.mockResolvedValueOnce({
-        headers: {},
-        data: '',
-      });
-
-      await expect(service.bootstrap()).rejects.toThrow('X-Csrf-Token header not found');
-    });
-  });
-
   describe('login', () => {
     it('calls login POST with correct body shape', async () => {
-      // bootstrap
-      mockHttpInstance.get.mockResolvedValueOnce({
-        headers: { 'x-csrf-token': 'csrf-token-abc' },
-        data: '',
-      });
-
-      // login post
       mockHttpInstance.post.mockResolvedValueOnce({
         data: loginResponse,
         headers: {
@@ -147,16 +115,45 @@ describe('SessionService', () => {
           password: 'testpass',
           appName: 'info.mashov.students',
         }),
-        expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'X-Csrf-Token': '9c690c16-d0c8-ed43-9314-d622077e2e26',
+            'Content-Type': 'application/json',
+            'Referer': 'https://web.mashov.info/students/login',
+            'sec-ch-ua-platform': '"macOS"',
+            'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+            'sec-ch-ua-mobile': '?0',
+          }),
+        }),
+      );
+      expect(mockHttpInstance.get).not.toHaveBeenCalled();
+    });
+
+    it('sends fixed X-Csrf-Token header', async () => {
+      mockHttpInstance.post.mockResolvedValueOnce({
+        data: loginResponse,
+        headers: {
+          'set-cookie': [
+            'Csrf-Token=csrf-abc; Path=/',
+            'MashovAuthToken=auth-abc; Path=/',
+            'uniquId=uniq-abc; Path=/',
+          ],
+        },
+      });
+
+      mockPrismaService.student.upsert.mockResolvedValue({});
+      mockPrismaService.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrismaService.householdConnection.create.mockResolvedValue({});
+
+      await service.login();
+
+      const [, , config] = mockHttpInstance.post.mock.calls[0];
+      expect(config?.headers?.['X-Csrf-Token']).toBe(
+        '9c690c16-d0c8-ed43-9314-d622077e2e26',
       );
     });
 
     it('stores cookies after successful login', async () => {
-      mockHttpInstance.get.mockResolvedValueOnce({
-        headers: { 'x-csrf-token': 'csrf-token-abc' },
-        data: '',
-      });
-
       mockHttpInstance.post.mockResolvedValueOnce({
         data: loginResponse,
         headers: {
@@ -178,11 +175,6 @@ describe('SessionService', () => {
     });
 
     it('throws when required session cookies are missing from login response', async () => {
-      mockHttpInstance.get.mockResolvedValueOnce({
-        headers: { 'x-csrf-token': 'csrf-token-abc' },
-        data: '',
-      });
-
       mockHttpInstance.post.mockResolvedValueOnce({
         data: loginResponse,
         headers: {
@@ -196,11 +188,6 @@ describe('SessionService', () => {
 
   describe('getAuthHeaders', () => {
     it('re-authenticates and returns headers when session is not initialized', async () => {
-      mockHttpInstance.get.mockResolvedValueOnce({
-        headers: { 'x-csrf-token': 'fresh-csrf' },
-        data: '',
-      });
-
       mockHttpInstance.post.mockResolvedValueOnce({
         data: loginResponse,
         headers: {
@@ -226,11 +213,6 @@ describe('SessionService', () => {
 
   describe('refreshIfExpired', () => {
     it('clears session state and triggers re-authentication on 401', async () => {
-      mockHttpInstance.get.mockResolvedValueOnce({
-        headers: { 'x-csrf-token': 'refreshed-csrf' },
-        data: '',
-      });
-
       mockHttpInstance.post.mockResolvedValueOnce({
         data: loginResponse,
         headers: {

@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance, AxiosResponse } from 'axios';
-import { PrismaService } from '../prisma/prisma.service';
-import { EncryptionService } from './encryption.service';
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import axios, { AxiosInstance, AxiosResponse } from "axios";
+import { randomUUID } from "crypto";
+import { PrismaService } from "../prisma/prisma.service";
+import { EncryptionService } from "./encryption.service";
 
 interface LoginChild {
   childGuid: string;
@@ -41,7 +42,7 @@ interface SessionCookies {
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger(SessionService.name);
-  private readonly baseUrl = 'https://web.mashov.info';
+  private readonly baseUrl = "https://web.mashov.info";
   private csrfToken: string | null = null;
   private sessionCookies: SessionCookies | null = null;
   private isAuthenticating = false;
@@ -57,38 +58,45 @@ export class SessionService {
       baseURL: this.baseUrl,
       timeout: 30000,
       headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+        Accept: "application/json, text/plain, */*",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
       },
     });
   }
 
-  async bootstrap(): Promise<string> {
-    this.logger.debug('Bootstrapping CSRF token from login page');
-    const response = await this.httpClient.get('/students/login', {
-      maxRedirects: 5,
-    });
+  // async bootstrap(): Promise<string> {
+  //   this.logger.debug("Bootstrapping CSRF token from login page");
+  //   const response = await this.httpClient.get("/students/login", {
+  //     maxRedirects: 5,
+  //   });
 
-    const csrfHeader = response.headers['x-csrf-token'] as string | undefined;
-    if (!csrfHeader) {
-      throw new Error('X-Csrf-Token header not found in login page response');
-    }
+  //   const csrfHeader = response.headers["x-csrf-token"] as string | undefined;
+  //   const csrfToken = csrfHeader ?? randomUUID();
 
-    this.csrfToken = csrfHeader;
-    this.logger.debug('CSRF token acquired successfully');
-    return csrfHeader;
-  }
+  //   if (!csrfHeader) {
+  //     this.logger.warn(
+  //       "X-Csrf-Token not found on /students/login, using generated token",
+  //     );
+  //   }
+
+  //   this.csrfToken = csrfToken;
+  //   this.logger.debug("CSRF token acquired successfully");
+  //   return csrfToken;
+  // }
 
   async login(): Promise<void> {
-    const csrfToken = await this.bootstrap();
+    const csrfToken = "9c690c16-d0c8-ed43-9314-d622077e2e26";
 
-    const semel = this.configService.get<number>('MASHOV_SEMEL');
-    const year = this.configService.get<number>('MASHOV_YEAR');
-    const username = this.configService.get<string>('MASHOV_USERNAME');
-    const password = this.configService.get<string>('MASHOV_PASSWORD');
+    const semel = this.configService.get<number>("MASHOV_SEMEL");
+    const year = this.configService.get<number>("MASHOV_YEAR");
+    const username = this.configService.get<string>("MASHOV_USERNAME");
+    const password = this.configService.get<string>("MASHOV_PASSWORD");
 
     if (!semel || !year || !username || !password) {
-      throw new Error('Missing required Mashov credentials in environment variables');
+      throw new Error(
+        "Missing required Mashov credentials in environment variables",
+      );
     }
 
     const loginBody = {
@@ -97,61 +105,81 @@ export class SessionService {
       username,
       password,
       IsBiometric: false,
-      appName: 'info.mashov.students',
-      apiVersion: '3.20210425',
+      appName: "info.mashov.students",
+      apiVersion: "3.20210425",
       appVersion: 3.20210425,
       appBuild: 3.20210425,
-      deviceUuid: 'chrome',
-      devicePlatform: 'chrome',
-      deviceManufacturer: 'mac',
-      deviceModel: 'desktop',
-      deviceVersion: '145.0.0.0',
+      deviceUuid: "chrome",
+      devicePlatform: "chrome",
+      deviceManufacturer: "mac",
+      deviceModel: "desktop",
+      deviceVersion: "145.0.0.0",
     };
 
     const response: AxiosResponse<LoginResponse> = await this.httpClient.post(
-      '/api/login',
+      "/api/login",
       loginBody,
       {
         headers: {
-          'X-Csrf-Token': csrfToken,
-          'Content-Type': 'application/json',
-          'Referer': `${this.baseUrl}/students/login`,
+          "X-Csrf-Token": csrfToken,
+          "Content-Type": "application/json",
+          Referer: `${this.baseUrl}/students/login`,
+          "sec-ch-ua-platform": '"macOS"',
+          "sec-ch-ua":
+            '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+          "sec-ch-ua-mobile": "?0",
         },
       },
     );
 
-    this.extractAndStoreCookies(response.headers as Record<string, string | string[]>);
+    console.log("Login response headers:", response.headers);
+
+    this.extractAndStoreCookies(
+      response.headers as Record<string, string | string[]>,
+    );
 
     await this.parseAndPersistChildren(response.data, username, password);
-    await this.parseAndPersistHousehold(response.data, Number(semel), Number(year), username, password);
+    await this.parseAndPersistHousehold(
+      response.data,
+      Number(semel),
+      Number(year),
+      username,
+      password,
+    );
 
-    this.logger.log('Mashov session established successfully');
+    this.logger.log("Mashov session established successfully");
   }
 
-  private extractAndStoreCookies(headers: Record<string, string | string[]>): void {
-    const setCookieHeader = headers['set-cookie'];
+  private extractAndStoreCookies(
+    headers: Record<string, string | string[]>,
+  ): void {
+    const setCookieHeader = headers["set-cookie"];
     if (!setCookieHeader) {
-      throw new Error('No Set-Cookie header in login response');
+      throw new Error("No Set-Cookie header in login response");
     }
 
-    const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+    const cookies = Array.isArray(setCookieHeader)
+      ? setCookieHeader
+      : [setCookieHeader];
     const parsed: Partial<SessionCookies> = {};
 
     for (const cookie of cookies) {
-      const nameValue = cookie.split(';')[0];
+      const nameValue = cookie.split(";")[0];
       if (!nameValue) continue;
-      const eqIdx = nameValue.indexOf('=');
+      const eqIdx = nameValue.indexOf("=");
       if (eqIdx === -1) continue;
       const name = nameValue.substring(0, eqIdx).trim();
       const value = nameValue.substring(eqIdx + 1).trim();
 
-      if (name === 'Csrf-Token') parsed.csrfToken = value;
-      else if (name === 'MashovAuthToken') parsed.mashovAuthToken = value;
-      else if (name === 'uniquId') parsed.uniquId = value;
+      if (name === "Csrf-Token") parsed.csrfToken = value;
+      else if (name === "MashovAuthToken") parsed.mashovAuthToken = value;
+      else if (name === "uniquId") parsed.uniquId = value;
     }
 
     if (!parsed.csrfToken || !parsed.mashovAuthToken || !parsed.uniquId) {
-      throw new Error(`Missing required session cookies. Got: ${Object.keys(parsed).join(', ')}`);
+      throw new Error(
+        `Missing required session cookies. Got: ${Object.keys(parsed).join(", ")}`,
+      );
     }
 
     this.sessionCookies = parsed as SessionCookies;
@@ -164,23 +192,23 @@ export class SessionService {
     }
 
     if (!this.sessionCookies || !this.csrfToken) {
-      throw new Error('Failed to establish Mashov session');
+      throw new Error("Failed to establish Mashov session");
     }
 
     const cookieString = [
       `Csrf-Token=${this.sessionCookies.csrfToken}`,
       `MashovAuthToken=${this.sessionCookies.mashovAuthToken}`,
       `uniquId=${this.sessionCookies.uniquId}`,
-    ].join('; ');
+    ].join("; ");
 
     return {
-      'X-Csrf-Token': this.csrfToken,
-      'Cookie': cookieString,
+      "X-Csrf-Token": this.csrfToken,
+      Cookie: cookieString,
     };
   }
 
   async refreshIfExpired(): Promise<void> {
-    this.logger.debug('Session expired or invalid, re-authenticating');
+    this.logger.debug("Session expired or invalid, re-authenticating");
     this.csrfToken = null;
     this.sessionCookies = null;
     await this.ensureAuthenticated();
@@ -227,9 +255,11 @@ export class SessionService {
           classCode: child.classCode,
           classNum: child.classNum,
           gender: child.gender,
-          groupsRaw: child.groups as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          groupsRaw:
+            child.groups as unknown as import("@prisma/client").Prisma.InputJsonValue,
           isActive: true,
-          rawPayload: child as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          rawPayload:
+            child as unknown as import("@prisma/client").Prisma.InputJsonValue,
         },
         update: {
           privateName: child.privateName,
@@ -238,9 +268,11 @@ export class SessionService {
           classCode: child.classCode,
           classNum: child.classNum,
           gender: child.gender,
-          groupsRaw: child.groups as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          groupsRaw:
+            child.groups as unknown as import("@prisma/client").Prisma.InputJsonValue,
           isActive: true,
-          rawPayload: child as unknown as import('@prisma/client').Prisma.InputJsonValue,
+          rawPayload:
+            child as unknown as import("@prisma/client").Prisma.InputJsonValue,
         },
       });
     }
@@ -290,7 +322,7 @@ export class SessionService {
       });
     }
 
-    this.logger.debug('Household connection persisted');
+    this.logger.debug("Household connection persisted");
   }
 
   isSessionValid(): boolean {

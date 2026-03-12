@@ -8,11 +8,11 @@
  *
  * Run: DATABASE_URL=postgresql://test:test@localhost:5432/testdb npx jest tests/integration
  */
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigModule } from '@nestjs/config';
-import * as request from 'supertest';
-import { PrismaClient } from '@prisma/client';
+import { INestApplication, ValidationPipe } from '../../backend/node_modules/@nestjs/common';
+import { Test, TestingModule } from '../../backend/node_modules/@nestjs/testing';
+import { ConfigModule } from '../../backend/node_modules/@nestjs/config';
+import request from 'supertest';
+import { PrismaClient } from '../../backend/node_modules/@prisma/client';
 
 import { HealthModule } from '../../backend/src/health/health.module';
 import { ChildrenModule } from '../../backend/src/children/children.module';
@@ -22,6 +22,7 @@ import { SyncModule } from '../../backend/src/sync/sync.module';
 import { SettingsModule } from '../../backend/src/settings/settings.module';
 import { PrismaModule } from '../../backend/src/prisma/prisma.module';
 import { SessionModule } from '../../backend/src/session/session.module';
+import { DashboardModule } from '../../backend/src/dashboard/dashboard.module';
 import { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
 import { HttpExceptionFilter } from '../../backend/src/common/filters/http-exception.filter';
 
@@ -72,6 +73,7 @@ describe('API Integration Tests', () => {
         ReadStateModule,
         SyncModule,
         SettingsModule,
+        DashboardModule,
       ],
     })
       .overrideProvider(MashovHttpClient)
@@ -110,6 +112,87 @@ describe('API Integration Tests', () => {
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');
       expect(res.body.db).toBe('connected');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Dashboard
+  // ---------------------------------------------------------------------------
+  describe('GET /api/v1/dashboard', () => {
+    it('returns contract-aligned fields including feed linkPath and freshness.state', async () => {
+      await seedStudent(prisma);
+
+      await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 700,
+          groupId: 701,
+          lessonDate: new Date('2026-03-12T00:00:00Z'),
+          lesson: 2,
+          subjectName: 'Math',
+          homeworkText: 'Page 10 exercises',
+          rawPayload: {},
+        },
+      });
+
+      await prisma.behaviorItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 710,
+          groupId: 711,
+          eventCode: 11,
+          achvaCode: 11,
+          achvaName: 'Late',
+          classification: 'attention',
+          lessonDate: new Date('2026-03-12T00:00:00Z'),
+          lesson: 3,
+          subject: 'Math',
+          reporter: 'Teacher A',
+          eventAt: new Date('2026-03-12T09:00:00Z'),
+          rawPayload: {},
+        },
+      });
+
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-dashboard-001',
+          subject: 'Message from school',
+          senderNamePreview: 'School Office',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isUnread: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/dashboard');
+
+      expect(res.status).toBe(200);
+      expect(res.body.freshness).toHaveProperty('state');
+      expect(res.body.freshness).toHaveProperty('lastSyncAt');
+      expect(Array.isArray(res.body.freshness.staleSources)).toBe(true);
+
+      expect(res.body.school).toHaveProperty('schoolName');
+      expect(res.body.school).toHaveProperty('schoolYear');
+      expect(Array.isArray(res.body.feed)).toBe(true);
+
+      if (res.body.feed.length > 0) {
+        expect(res.body.feed[0]).toHaveProperty('sourceId');
+        expect(res.body.feed[0]).toHaveProperty('studentGuid');
+        expect(res.body.feed[0]).toHaveProperty('studentName');
+        expect(res.body.feed[0]).toHaveProperty('eventAt');
+        expect(res.body.feed[0]).toHaveProperty('syncedAt');
+        expect(typeof res.body.feed[0].linkPath).toBe('string');
+        expect(res.body.feed[0].linkPath.length).toBeGreaterThan(0);
+      }
+
+      expect(Array.isArray(res.body.children)).toBe(true);
+      if (res.body.children.length > 0) {
+        expect(res.body.children[0]).toHaveProperty('privateName');
+        expect(res.body.children[0]).toHaveProperty('familyName');
+        expect(res.body.children[0]).toHaveProperty('recentHomeworkCount');
+        expect(res.body.children[0]).toHaveProperty('recentBehaviorCount');
+        expect(res.body.children[0]).toHaveProperty('oneLineStatus');
+      }
     });
   });
 

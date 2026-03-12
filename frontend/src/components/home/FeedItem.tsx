@@ -13,6 +13,18 @@ interface FeedItemProps {
   item: FeedItemType;
 }
 
+function getSafeFeedHref(item: FeedItemType): string {
+  if (typeof item.linkPath === 'string' && item.linkPath.trim().length > 0) {
+    return item.linkPath;
+  }
+
+  if (item.sourceType === 'mail') return '/inbox';
+
+  if (item.studentGuid) return `/children/${item.studentGuid}`;
+
+  return '/home';
+}
+
 export function FeedItem({ item }: FeedItemProps) {
   const { markHandled, isPending } = useMarkHandled(
     'feed_item',
@@ -21,6 +33,7 @@ export function FeedItem({ item }: FeedItemProps) {
   );
 
   const isHandled = item.isHandled;
+  const safeHref = getSafeFeedHref(item);
 
   return (
     <div
@@ -31,7 +44,7 @@ export function FeedItem({ item }: FeedItemProps) {
       )}
     >
       <div className="flex-1 min-w-0">
-        <Link href={item.linkPath} className="block group">
+        <Link href={safeHref} className="block group">
           <div className="flex items-start gap-2 mb-1">
             <SourceTypeBadge type={item.sourceType} />
             <span className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap me-auto">
