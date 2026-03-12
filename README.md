@@ -38,23 +38,17 @@ docker compose up --build
 
 Copy `.env.example` to `.env` and fill in your values. Never commit `.env`.
 
-## Running Tests
+## Running Tests (Containers Only)
 
 ```bash
-# Backend unit + integration tests
-cd backend && npm test
+# Backend unit tests with coverage (inside container)
+npm run test:unit
 
-# Backend with coverage report
-cd backend && npm run test:coverage
+# Backend API integration tests (inside container)
+npm run test:integration
 
-# Frontend
-cd frontend && npm test
-
-# E2E from host (targets running Docker stack)
-npx playwright test
-
-# E2E inside Docker (Playwright runs in container)
-npm run test:e2e:docker
+# Full-stack E2E tests with Playwright (inside container)
+npm run test:e2e
 ```
 
 ## Local Development (Hot Reload)

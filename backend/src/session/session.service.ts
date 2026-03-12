@@ -1,7 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios, { AxiosInstance, AxiosResponse } from "axios";
-import { randomUUID } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { EncryptionService } from "./encryption.service";
 

@@ -3,10 +3,10 @@
  *
  * Requirements:
  * - DATABASE_URL must point to a real test PostgreSQL database
- * - The database must have Prisma migrations applied before running
+ * - The database schema must be synced from `backend/prisma/schema.prisma`
  * - MashovHttpClient is mocked — no real upstream HTTP calls
  *
- * Run: DATABASE_URL=postgresql://test:test@localhost:5432/testdb npx jest tests/integration
+ * Run: npm run test:integration
  */
 import { INestApplication, ValidationPipe } from '../../backend/node_modules/@nestjs/common';
 import { Test, TestingModule } from '../../backend/node_modules/@nestjs/testing';

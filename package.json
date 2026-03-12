@@ -3,9 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test:integration": "jest tests/integration --testEnvironment=node --forceExit --testTimeout=30000",
-    "test:e2e": "playwright test",
-    "test:e2e:docker": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from e2e e2e"
+    "lint": "npm run lint:backend && npm run lint:frontend && npm run lint:tests",
+    "lint:backend": "npm --prefix backend run lint",
+    "lint:frontend": "npm --prefix frontend run lint",
+    "lint:tests": "backend/node_modules/.bin/eslint --resolve-plugins-relative-to backend --config tests/.eslintrc.cjs \"tests/**/*.ts\" --max-warnings 0",
+    "format": "npm run format:backend && npm run format:frontend && npm run format:tests",
+    "format:backend": "npm --prefix backend run lint -- --fix",
+    "format:frontend": "npm --prefix frontend run lint -- --fix",
+    "format:tests": "backend/node_modules/.bin/eslint --resolve-plugins-relative-to backend --config tests/.eslintrc.cjs \"tests/**/*.ts\" --fix",
+    "test:unit": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from unit unit",
+    "test:integration": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from integration integration",
+    "test:e2e": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from e2e e2e"
   },
   "devDependencies": {
     "@nestjs/common": "^10.3.0",
