@@ -4,14 +4,19 @@ import { BookOpen, AlertTriangle } from 'lucide-react';
 import type { DashboardChildCard } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
+import { buildChildSectionHref } from '@/lib/child-routes';
+import { useSelectedChild } from '@/hooks/useSelectedChild';
+import { cn } from '@/lib/utils';
 
 interface ChildQuickCardProps {
   child: DashboardChildCard;
+  isSelected?: boolean;
 }
 
-export function ChildQuickCard({ child }: ChildQuickCardProps) {
+export function ChildQuickCard({ child, isSelected = false }: ChildQuickCardProps) {
+  const { setSelectedChildGuid } = useSelectedChild();
   const safeHref = getPhase1HrefOrNull(
-    child.studentGuid ? `/children/${child.studentGuid}` : null,
+    buildChildSectionHref(child.studentGuid, 'homework'),
   );
 
   const content = (
@@ -54,8 +59,12 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
     </>
   );
 
-  const className =
-    'card-base p-4 flex flex-col gap-2 tap-target transition-colors min-w-[160px] flex-shrink-0';
+  const className = cn(
+    'card-base p-4 flex flex-col gap-2 tap-target transition-colors min-w-[160px] flex-shrink-0',
+    isSelected
+      ? 'border-primary shadow-[0_0_0_1px_hsl(var(--primary))]'
+      : 'border-border',
+  );
 
   if (!safeHref) {
     return (
@@ -72,8 +81,9 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
   return (
     <Link
       href={safeHref}
+      onClick={() => setSelectedChildGuid(child.studentGuid)}
       data-testid={`child-card-${child.studentGuid}`}
-      className={`${className} hover:bg-accent/30`}
+      className={cn(className, 'hover:bg-accent/30')}
     >
       {content}
     </Link>

@@ -3,7 +3,8 @@ import { ChildrenPage } from './pages/ChildrenPage';
 import { ChildWorkspacePage } from './pages/ChildWorkspacePage';
 
 /**
- * E2E tests for the Children page (/children) and Child Workspace (/children/:studentGuid).
+ * E2E tests for the Children page (/children) and Child Workspace
+ * (/children/:studentGuid/:section).
  *
  * Empty-state checks use route mocking so results are deterministic.
  * Workspace tests verify navigation, section tab switching, and rendering.

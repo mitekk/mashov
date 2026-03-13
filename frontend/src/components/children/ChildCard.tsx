@@ -4,15 +4,20 @@ import { BookOpen, AlertTriangle, ChevronLeft } from 'lucide-react';
 import type { ChildListItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
+import { buildChildSectionHref } from '@/lib/child-routes';
+import { useSelectedChild } from '@/hooks/useSelectedChild';
+import { cn } from '@/lib/utils';
 
 interface ChildCardProps {
   child: ChildListItem;
 }
 
 export function ChildCard({ child }: ChildCardProps) {
+  const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
   const safeHref = getPhase1HrefOrNull(
-    child.studentGuid ? `/children/${child.studentGuid}` : null,
+    buildChildSectionHref(child.studentGuid, 'homework'),
   );
+  const isSelected = selectedChildGuid === child.studentGuid;
 
   const content = (
     <>
@@ -57,14 +62,19 @@ export function ChildCard({ child }: ChildCardProps) {
     </>
   );
 
-  const className = 'card-base p-4 flex items-center gap-3 tap-target transition-colors';
+  const className = cn(
+    'card-base p-4 flex items-center gap-3 tap-target transition-colors',
+    isSelected
+      ? 'border-primary shadow-[0_0_0_1px_hsl(var(--primary))]'
+      : 'border-border',
+  );
 
   if (!safeHref) {
     return (
       <div
         data-testid={`child-list-card-disabled-${child.studentGuid}`}
         aria-disabled
-        className={`${className} opacity-70 cursor-not-allowed`}
+        className={cn(className, 'opacity-70 cursor-not-allowed')}
       >
         {content}
       </div>
@@ -74,8 +84,9 @@ export function ChildCard({ child }: ChildCardProps) {
   return (
     <Link
       href={safeHref}
+      onClick={() => setSelectedChildGuid(child.studentGuid)}
       data-testid={`child-list-card-${child.studentGuid}`}
-      className={`${className} hover:bg-accent/30`}
+      className={cn(className, 'hover:bg-accent/30')}
     >
       {content}
     </Link>

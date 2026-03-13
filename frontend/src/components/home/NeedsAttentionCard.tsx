@@ -5,6 +5,7 @@ import type { NeedsAttentionItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
+import { buildChildSectionHref } from '@/lib/child-routes';
 
 interface NeedsAttentionCardProps {
   item: NeedsAttentionItem;
@@ -51,10 +52,24 @@ function getTypeStyles(type: string | null | undefined): {
 
 export function NeedsAttentionCard({ item }: NeedsAttentionCardProps) {
   const { border, icon, iconColor } = getTypeStyles(item.type);
-  const safeHref =
-    typeof item.linkPath === 'string' && item.linkPath.trim().length > 0
-      ? getPhase1HrefOrNull(item.linkPath)
-      : '/home';
+  const resolvedHref = (() => {
+    if (item.studentGuid) {
+      if (item.type === 'unhandled_homework') {
+        return buildChildSectionHref(item.studentGuid, 'homework');
+      }
+      if (item.type === 'negative_behavior') {
+        return buildChildSectionHref(item.studentGuid, 'behavior');
+      }
+      return buildChildSectionHref(item.studentGuid, 'homework');
+    }
+
+    if (typeof item.linkPath === 'string' && item.linkPath.trim().length > 0) {
+      return item.linkPath;
+    }
+    return '/home';
+  })();
+
+  const safeHref = getPhase1HrefOrNull(resolvedHref);
 
   const className = cn(
     'card-base p-4 flex gap-3 items-start tap-target transition-colors',

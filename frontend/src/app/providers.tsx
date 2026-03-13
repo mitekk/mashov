@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { SelectedChildProvider } from '@/hooks/useSelectedChild';
 
 function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -36,7 +37,9 @@ export default function Providers({ children }: ProvidersProps) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {children}
+      <SelectedChildProvider>
+        {children}
+      </SelectedChildProvider>
     </QueryClientProvider>
   );
 }

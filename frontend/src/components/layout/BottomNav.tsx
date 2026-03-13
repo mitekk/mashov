@@ -1,14 +1,17 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Home, Users, Mail, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useDashboard } from '@/hooks/useDashboard';
+import { useSelectedChild } from '@/hooks/useSelectedChild';
+import { getChildrenNavHref } from '@/lib/child-routes';
 
 interface NavItem {
   href: string;
+  activeRoot?: string;
   label: string;
   testId: string;
   icon: React.ReactNode;
@@ -18,7 +21,25 @@ interface NavItem {
 export function BottomNav() {
   const pathname = usePathname();
   const { data } = useDashboard();
+  const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
   const unreadCount = data?.summary.unreadConversations ?? 0;
+
+  const selectedChildExists = Boolean(
+    selectedChildGuid
+    && data?.children.some((child) => child.studentGuid === selectedChildGuid),
+  );
+
+  useEffect(() => {
+    if (!selectedChildGuid || !data) return;
+    if (!selectedChildExists) {
+      setSelectedChildGuid(null);
+    }
+  }, [selectedChildGuid, selectedChildExists, setSelectedChildGuid, data]);
+
+  const childrenHref = getChildrenNavHref(
+    selectedChildExists ? selectedChildGuid : null,
+    'homework',
+  );
 
   const navItems: NavItem[] = [
     {
@@ -28,7 +49,8 @@ export function BottomNav() {
       icon: <Home className="w-5 h-5" />,
     },
     {
-      href: '/children',
+      href: childrenHref,
+      activeRoot: '/children',
       label: 'ילדים',
       testId: 'nav-children',
       icon: <Users className="w-5 h-5" />,
@@ -56,11 +78,12 @@ export function BottomNav() {
     >
       <div className="flex items-stretch">
         {navItems.map((item) => {
+          const activeRoot = item.activeRoot ?? item.href;
           const isActive =
-            pathname === item.href || pathname.startsWith(item.href + '/');
+            pathname === activeRoot || pathname.startsWith(activeRoot + '/');
           return (
             <Link
-              key={item.href}
+              key={item.testId}
               href={item.href}
               data-testid={item.testId}
               className={cn(

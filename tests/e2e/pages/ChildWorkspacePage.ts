@@ -9,8 +9,11 @@ export class ChildWorkspacePage {
     this.workspaceContainer = page.getByTestId('child-workspace');
   }
 
-  async navigate(studentGuid: string): Promise<void> {
-    await this.page.goto(`/children/${studentGuid}`);
+  async navigate(
+    studentGuid: string,
+    section: 'homework' | 'behavior' | 'subjects' | 'notices' = 'homework',
+  ): Promise<void> {
+    await this.page.goto(`/children/${studentGuid}/${section}`);
     await this.page.waitForLoadState('networkidle');
   }
 

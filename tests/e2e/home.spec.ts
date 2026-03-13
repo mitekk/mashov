@@ -73,7 +73,7 @@ test.describe('Home page', () => {
     await expect(homePage.feedItem('feed-missing-link')).toBeVisible();
 
     const fallbackLink = homePage.feedItem('feed-missing-link').locator('a');
-    await expect(fallbackLink).toHaveAttribute('href', '/children/student-guid-1');
+    await expect(fallbackLink).toHaveAttribute('href', '/children/student-guid-1/homework');
     expect(hrefPropErrors).toHaveLength(0);
   });
 

@@ -9,19 +9,29 @@ import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { useMarkHandled } from '@/hooks/useReadState';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
+import { buildChildSectionHref } from '@/lib/child-routes';
 
 interface FeedItemProps {
   item: FeedItemType;
 }
 
 function getSafeFeedHref(item: FeedItemType): string | null {
+  if (item.studentGuid) {
+    if (item.sourceType === 'homework') {
+      return buildChildSectionHref(item.studentGuid, 'homework');
+    }
+    if (item.sourceType === 'behavior' || item.sourceType === 'positive') {
+      return buildChildSectionHref(item.studentGuid, 'behavior');
+    }
+  }
+
   if (typeof item.linkPath === 'string' && item.linkPath.trim().length > 0) {
     return getPhase1HrefOrNull(item.linkPath);
   }
 
   if (item.sourceType === 'mail') return '/inbox';
 
-  if (item.studentGuid) return `/children/${item.studentGuid}`;
+  if (item.studentGuid) return buildChildSectionHref(item.studentGuid, 'homework');
 
   return '/home';
 }

@@ -4,6 +4,9 @@ import React from 'react';
 import Link from 'next/link';
 import { Mail, BookOpen, AlertTriangle, Users } from 'lucide-react';
 import type { DashboardSummary } from '@/types/api';
+import { useSelectedChild } from '@/hooks/useSelectedChild';
+import { getChildrenNavHref } from '@/lib/child-routes';
+import { useDashboard } from '@/hooks/useDashboard';
 
 interface SummaryStripProps {
   summary: DashboardSummary;
@@ -38,6 +41,18 @@ function SummaryChip({ icon, count, label, href, variant = 'default' }: ChipProp
 }
 
 export function SummaryStrip({ summary }: SummaryStripProps) {
+  const { selectedChildGuid } = useSelectedChild();
+  const { data } = useDashboard();
+  const selectedChildExists = Boolean(
+    selectedChildGuid
+    && data?.children.some((child) => child.studentGuid === selectedChildGuid),
+  );
+  const effectiveSelectedChildGuid = selectedChildExists ? selectedChildGuid : null;
+
+  const homeworkHref = getChildrenNavHref(effectiveSelectedChildGuid, 'homework');
+  const behaviorHref = getChildrenNavHref(effectiveSelectedChildGuid, 'behavior');
+  const childrenHref = getChildrenNavHref(effectiveSelectedChildGuid, 'homework');
+
   return (
     <div
       data-testid="summary-strip"
@@ -55,21 +70,21 @@ export function SummaryStrip({ summary }: SummaryStripProps) {
         icon={<BookOpen className="w-4 h-4" />}
         count={summary.recentHomeworkCount}
         label="שיעורי בית"
-        href="/children"
+        href={homeworkHref}
         variant="default"
       />
       <SummaryChip
         icon={<AlertTriangle className="w-4 h-4" />}
         count={summary.recentBehaviorCount}
         label="התנהגות"
-        href="/children"
+        href={behaviorHref}
         variant={summary.recentBehaviorCount > 0 ? 'attention' : 'default'}
       />
       <SummaryChip
         icon={<Users className="w-4 h-4" />}
         count={summary.childrenCount}
         label="ילדים"
-        href="/children"
+        href={childrenHref}
         variant="default"
       />
     </div>

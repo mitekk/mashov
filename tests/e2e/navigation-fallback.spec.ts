@@ -237,7 +237,7 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page.getByTestId('home-header')).toBeVisible();
 
     await page.getByTestId(`child-card-${STUDENT_GUID}`).click();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}`);
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework`);
     await expect(page.getByTestId('child-workspace')).toBeVisible();
 
     await page.getByTestId('nav-inbox').click();
@@ -251,6 +251,10 @@ test.describe('Navigation and fallback hardening', () => {
     await page.getByTestId('nav-more').click();
     await expect(page).toHaveURL('/more');
     await expect(page.getByTestId('more-page')).toBeVisible();
+
+    await page.getByTestId('nav-children').click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework`);
+    await expect(page.getByTestId('child-workspace')).toBeVisible();
   });
 
   test('renders child workspace from legacy payload and allows section switching', async ({ page }) => {
@@ -337,17 +341,46 @@ test.describe('Navigation and fallback hardening', () => {
 
     await page.goto(`/children/${STUDENT_GUID}`);
     await expect(page.getByTestId('child-workspace')).toBeVisible();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework`);
     await expect(page.getByRole('heading', { level: 1 })).toContainText('Test Student');
 
     await page.getByTestId('section-tab-behavior').click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior`);
     await expect(page.getByTestId('behavior-section')).toBeVisible();
     await expect(page.getByTestId('behavior-item-beh-1')).toBeVisible();
 
     await page.getByTestId('section-tab-subjects').click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/subjects`);
     await expect(page.getByTestId('subjects-section')).toBeVisible();
 
     await page.getByTestId('section-tab-notices').click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/notices`);
     await expect(page.getByTestId('notices-section')).toBeVisible();
+
+    await page.goBack();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/subjects`);
+    await expect(page.getByTestId('subjects-section')).toBeVisible();
+
+    await page.goBack();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior`);
+    await expect(page.getByTestId('behavior-section')).toBeVisible();
+
+    await page.goForward();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/subjects`);
+  });
+
+  test('falls back to /children when selected child does not exist', async ({ page }) => {
+    await mockBaseRoutes(page);
+
+    await page.addInitScript(() => {
+      window.localStorage.setItem('mashov.selectedChildGuid', 'missing-guid');
+    });
+
+    await page.goto('/inbox');
+    await expect(page.getByTestId('inbox-page')).toBeVisible();
+
+    await page.getByTestId('nav-children').click();
+    await expect(page).toHaveURL('/children');
   });
 
   test('renders conversation detail from legacy nested payload with subject/body fallback', async ({
