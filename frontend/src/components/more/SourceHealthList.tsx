@@ -21,6 +21,13 @@ const SOURCE_LABELS: Record<string, string> = {
   user_details: 'פרטי משתמש',
 };
 
+const STATUS_PRIORITY: Record<SourceStatus, number> = {
+  fresh: 0,
+  stale: 1,
+  never_synced: 2,
+  failed: 3,
+};
+
 function StatusIcon({ status }: { status: SourceStatus }) {
   switch (status) {
     case 'fresh':
@@ -46,8 +53,84 @@ function statusLabel(status: SourceStatus): string {
   }
 }
 
+function getBaseSource(source: string): string {
+  const separatorIndex = source.indexOf(':');
+  return separatorIndex >= 0 ? source.slice(0, separatorIndex) : source;
+}
+
+function selectWorseStatus(current: SourceStatus, next: SourceStatus): SourceStatus {
+  return STATUS_PRIORITY[next] > STATUS_PRIORITY[current] ? next : current;
+}
+
+function maxIsoDate(first: string | null, second: string | null): string | null {
+  if (!first) return second;
+  if (!second) return first;
+  return new Date(first) >= new Date(second) ? first : second;
+}
+
+function normalizeSources(sources: SourceHealth[]): SourceHealth[] {
+  const groups = new Map<
+    string,
+    {
+      firstIndex: number;
+      baseEntries: SourceHealth[];
+      scopedEntries: SourceHealth[];
+    }
+  >();
+
+  sources.forEach((entry, index) => {
+    const baseSource = getBaseSource(entry.source);
+    const group = groups.get(baseSource) ?? {
+      firstIndex: index,
+      baseEntries: [],
+      scopedEntries: [],
+    };
+
+    if (entry.source.includes(':')) {
+      group.scopedEntries.push(entry);
+    } else {
+      group.baseEntries.push(entry);
+    }
+
+    groups.set(baseSource, group);
+  });
+
+  return Array.from(groups.entries())
+    .sort(([, a], [, b]) => a.firstIndex - b.firstIndex)
+    .map(([baseSource, group]) => {
+      const entries = group.scopedEntries.length > 0 ? group.scopedEntries : group.baseEntries;
+      const initial = entries[0];
+
+      return entries.slice(1).reduce<SourceHealth>(
+        (combined, current) => {
+          const status = selectWorseStatus(combined.status, current.status);
+          const latestSuccessAt = maxIsoDate(combined.lastSuccessAt, current.lastSuccessAt);
+          const latestAttemptAt = maxIsoDate(combined.lastAttemptAt, current.lastAttemptAt);
+          const lastErrorMessage =
+            status === 'failed'
+              ? current.lastErrorMessage ?? combined.lastErrorMessage
+              : combined.lastErrorMessage;
+
+          return {
+            source: baseSource,
+            status,
+            lastSuccessAt: latestSuccessAt,
+            lastAttemptAt: latestAttemptAt,
+            lastErrorMessage,
+            fetchedCount: null,
+            staleThresholdMinutes: combined.staleThresholdMinutes,
+          };
+        },
+        {
+          ...initial,
+          source: baseSource,
+        },
+      );
+    });
+}
+
 export function SourceHealthList({ sources }: SourceHealthListProps) {
-  const safeSources = sources ?? [];
+  const safeSources = normalizeSources(sources ?? []);
 
   return (
     <div data-testid="source-health-list" className="card-base divide-y divide-border">
