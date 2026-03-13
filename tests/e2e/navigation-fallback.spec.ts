@@ -381,14 +381,29 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page).toHaveURL(childUrl('subjects', 'positive'));
   });
 
-  test('uses replace history for behavior filter changes', async ({ page }) => {
+  test('uses replace history for behavior filter changes without full page reloads', async ({ page }) => {
     await mockBaseRoutes(page);
 
     await page.goto(childUrl('homework'));
     await expect(page.getByTestId('child-workspace')).toBeVisible();
+    await expect(page.getByTestId('homework-section')).toBeVisible();
+
+    const initialDocumentMarker = await page.evaluate(() => {
+      window.sessionStorage.setItem('__child_workspace_unload_count', '0');
+      window.addEventListener('beforeunload', () => {
+        const current = Number(
+          window.sessionStorage.getItem('__child_workspace_unload_count') ?? '0',
+        );
+        window.sessionStorage.setItem('__child_workspace_unload_count', String(current + 1));
+      });
+      const marker = window.crypto.randomUUID();
+      (window as Window & { __childWorkspaceDocumentMarker?: string }).__childWorkspaceDocumentMarker = marker;
+      return marker;
+    });
 
     await page.getByTestId('section-tab-behavior').click();
     await expect(page).toHaveURL(childUrl('behavior'));
+    await expect(page.getByTestId('behavior-section')).toBeVisible();
 
     await page.getByTestId('behavior-filter-attention').click();
     await expect(page).toHaveURL(childUrl('behavior', 'attention'));
@@ -404,6 +419,16 @@ test.describe('Navigation and fallback hardening', () => {
 
     await page.goBack();
     await expect(page).toHaveURL(childUrl('homework'));
+
+    const unloadCount = await page.evaluate(
+      () => window.sessionStorage.getItem('__child_workspace_unload_count'),
+    );
+    expect(unloadCount).toBe('0');
+
+    const finalDocumentMarker = await page.evaluate(
+      () => (window as Window & { __childWorkspaceDocumentMarker?: string }).__childWorkspaceDocumentMarker,
+    );
+    expect(finalDocumentMarker).toBe(initialDocumentMarker);
   });
 
   test('renders section/filter from deep-link query params', async ({ page }) => {

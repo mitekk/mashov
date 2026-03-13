@@ -1,7 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo } from 'react';
-import Link from 'next/link';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertTriangle, BookOpen, Bell, GraduationCap } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
@@ -50,10 +49,32 @@ export function ChildWorkspacePage({
     setSelectedChildGuid(studentGuid);
   }, [studentGuid, setSelectedChildGuid]);
 
-  const handleBehaviorFilterChange = (nextFilter: ChildBehaviorFilter) => {
-    const href = buildChildSectionHref(studentGuid, 'behavior', { behavior: nextFilter });
+  const updateWorkspaceQuery = useCallback((
+    section: ChildSectionId,
+    behavior: ChildBehaviorFilter,
+    mode: 'push' | 'replace',
+  ) => {
+    if (typeof window === 'undefined') return;
+    const href = buildChildSectionHref(studentGuid, section, { behavior });
     if (!href) return;
-    router.replace(href);
+
+    const currentHref = `${window.location.pathname}${window.location.search}`;
+    if (currentHref === href) return;
+
+    if (mode === 'replace') {
+      window.history.replaceState(null, '', href);
+      return;
+    }
+
+    window.history.pushState(null, '', href);
+  }, [studentGuid]);
+
+  const handleBehaviorFilterChange = (nextFilter: ChildBehaviorFilter) => {
+    updateWorkspaceQuery('behavior', nextFilter, 'replace');
+  };
+
+  const handleSectionChange = (nextSection: ChildSectionId) => {
+    updateWorkspaceQuery(nextSection, activeBehaviorFilter, 'push');
   };
 
   const handleChildChange = (nextStudentGuid: string) => {
@@ -114,17 +135,14 @@ export function ChildWorkspacePage({
         <div className="sticky top-0 z-10 mt-4 border-y border-border bg-background/95 backdrop-blur">
           <div className="flex overflow-x-auto px-4 gap-2 py-2.5 scrollbar-hide">
             {SECTIONS.map((section) => {
-              const href = buildChildSectionHref(studentGuid, section.id, {
-                behavior: activeBehaviorFilter,
-              });
-              if (!href) return null;
-
               return (
-                <Link
+                <button
                   key={section.id}
-                  href={href}
+                  type="button"
                   data-testid={`section-tab-${section.id}`}
+                  onClick={() => handleSectionChange(section.id)}
                   aria-current={activeSection === section.id ? 'page' : undefined}
+                  aria-pressed={activeSection === section.id}
                   className={cn(
                     'tap-target flex-shrink-0 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
                     'inline-flex items-center gap-1.5',
@@ -135,7 +153,7 @@ export function ChildWorkspacePage({
                 >
                   {section.icon}
                   {section.label}
-                </Link>
+                </button>
               );
             })}
           </div>
