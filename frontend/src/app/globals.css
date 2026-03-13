@@ -61,6 +61,18 @@
     min-height: 100dvh;
   }
 
+  select {
+    @apply rounded-md border border-input bg-card text-foreground;
+  }
+
+  select:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  select option {
+    @apply bg-card text-foreground;
+  }
+
   * {
     @apply border-border;
     box-sizing: border-box;

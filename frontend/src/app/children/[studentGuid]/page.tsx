@@ -1,14 +1,12 @@
-import { redirect } from 'next/navigation';
-import { buildChildSectionHref, DEFAULT_CHILD_SECTION } from '@/lib/child-routes';
+import { ChildWorkspacePage } from '@/components/child/ChildWorkspacePage';
 
-interface ChildWorkspaceRedirectPageProps {
+interface ChildWorkspacePageProps {
   params: Promise<{ studentGuid: string }>;
 }
 
-export default async function ChildWorkspaceRedirectPage({
+export default async function ChildWorkspacePageRoute({
   params,
-}: ChildWorkspaceRedirectPageProps) {
+}: ChildWorkspacePageProps) {
   const { studentGuid } = await params;
-  const targetHref = buildChildSectionHref(studentGuid, DEFAULT_CHILD_SECTION);
-  redirect(targetHref ?? '/children');
+  return <ChildWorkspacePage studentGuid={studentGuid} />;
 }

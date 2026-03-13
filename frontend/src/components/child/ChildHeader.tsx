@@ -2,20 +2,69 @@ import React from 'react';
 import { BookOpen, AlertTriangle, Clock } from 'lucide-react';
 import type { ChildStudent, ChildSummary } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/Select';
+
+export interface ChildHeaderOption {
+  studentGuid: string;
+  fullName: string;
+  isActive: boolean;
+}
 
 interface ChildHeaderProps {
   student: ChildStudent;
   summary: ChildSummary;
   lastSyncAt: string | null;
+  childOptions: ChildHeaderOption[];
+  selectedChildGuid: string;
+  onChildChange: (studentGuid: string) => void;
 }
 
-export function ChildHeader({ student, summary, lastSyncAt }: ChildHeaderProps) {
+export function ChildHeader({
+  student,
+  summary,
+  lastSyncAt,
+  childOptions,
+  selectedChildGuid,
+  onChildChange,
+}: ChildHeaderProps) {
 
   return (
     <header className="px-4 py-5 border-b border-border bg-gradient-to-b from-card to-background/70">
       <div className="flex items-start justify-between gap-2 mb-3">
         <div>
-          <h1 className="text-xl font-bold text-foreground">{student.fullName}</h1>
+          <Select
+            value={selectedChildGuid}
+            onValueChange={onChildChange}
+            disabled={childOptions.length === 0}
+            dir="rtl"
+          >
+            <SelectTrigger
+              id="child-header-selector"
+              aria-label="בחר ילד"
+              data-testid="child-header-selector"
+              className="tap-target h-auto max-w-[16rem] border-border py-1.5 text-xl font-bold"
+            >
+              <SelectValue placeholder="בחר ילד" className="truncate" />
+            </SelectTrigger>
+            <SelectContent align="start" className="max-h-72">
+              {childOptions.map((child) => (
+                <SelectItem
+                  key={child.studentGuid}
+                  value={child.studentGuid}
+                  className="text-base"
+                >
+                  {child.fullName}
+                  {child.isActive ? '' : ' (לא פעיל)'}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <p className="text-sm text-muted-foreground mt-0.5">
             כיתה {student.classCode}{student.classNum}
           </p>

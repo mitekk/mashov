@@ -6,13 +6,11 @@ import { AppShell } from '@/components/layout/AppShell';
 import { SummaryStrip } from '@/components/home/SummaryStrip';
 import { NeedsAttentionSection } from '@/components/home/NeedsAttentionSection';
 import { LatestFeed } from '@/components/home/LatestFeed';
-import { ChildQuickCard } from '@/components/home/ChildQuickCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useDashboard, useSyncRefresh } from '@/hooks/useDashboard';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { formatRelativeHe } from '@/lib/dates';
-import { cn } from '@/lib/utils';
 import type { DashboardResponse } from '@/types/api';
 
 const EMPTY_DASHBOARD: DashboardResponse = {
@@ -84,7 +82,7 @@ export default function HomePage() {
       <div className="px-4 pb-4 space-y-5">
         {/* Header strip */}
         <header data-testid="home-header" className="flex items-start justify-between pt-4 gap-3">
-          <div>
+          <div className="min-w-0 flex-1">
             <h1 className="text-xl font-bold text-foreground">מרכז הורים</h1>
             <p className="text-sm text-muted-foreground mt-0.5">{currentDateHe}</p>
             {dashboard.freshness.lastSyncAt && (
@@ -117,55 +115,6 @@ export default function HomePage() {
         {/* Needs attention */}
         {dashboard.needsAttention.length > 0 && (
           <NeedsAttentionSection items={dashboard.needsAttention} />
-        )}
-
-        {/* Child quick cards */}
-        {dashboard.children.length > 0 && (
-          <>
-            <section data-testid="home-child-selector" className="px-0">
-              <div className="card-base p-3 bg-gradient-to-b from-card to-background/70">
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <h2 className="text-sm font-semibold text-foreground">ניווט מהיר לפי ילד</h2>
-                  {selectedChild && (
-                    <p className="text-[11px] text-muted-foreground truncate">
-                      נבחר: {selectedChild.fullName}
-                    </p>
-                  )}
-                </div>
-                <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-                  {dashboard.children.map((child) => (
-                    <button
-                      key={child.studentGuid}
-                      type="button"
-                      data-testid={`home-select-child-${child.studentGuid}`}
-                      onClick={() => setSelectedChildGuid(child.studentGuid)}
-                      className={cn(
-                        'tap-target px-3 py-1.5 rounded-full border text-xs font-medium transition-colors whitespace-nowrap',
-                        selectedChild?.studentGuid === child.studentGuid
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
-                      )}
-                    >
-                      {child.privateName}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </section>
-
-            <section data-testid="children-section">
-              <h2 className="text-base font-semibold text-foreground mb-3">ילדים</h2>
-              <div className="grid gap-3">
-                {dashboard.children.map((child) => (
-                  <ChildQuickCard
-                    key={child.studentGuid}
-                    child={child}
-                    isSelected={selectedChild?.studentGuid === child.studentGuid}
-                  />
-                ))}
-              </div>
-            </section>
-          </>
         )}
 
         {/* Latest feed */}

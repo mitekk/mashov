@@ -1,8 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { AlertTriangle } from 'lucide-react';
-import type { BehaviorBucket } from '@/types/api';
 import { useChildBehavior } from '@/hooks/useChild';
 import { BehaviorItem } from './BehaviorItem';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -10,17 +9,21 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { FeedSkeleton } from '@/components/ui/LoadingState';
 import { cn } from '@/lib/utils';
 import { getBucketLabel } from '@/lib/behavior';
+import type { ChildBehaviorFilter } from '@/lib/child-routes';
 
 interface BehaviorSectionProps {
   studentGuid: string;
+  activeFilter: ChildBehaviorFilter;
+  onFilterChange: (filter: ChildBehaviorFilter) => void;
 }
 
-type FilterTab = BehaviorBucket | 'all';
+const FILTER_TABS: ChildBehaviorFilter[] = ['all', 'attention', 'positive', 'neutral'];
 
-const FILTER_TABS: FilterTab[] = ['all', 'attention', 'positive', 'neutral'];
-
-export function BehaviorSection({ studentGuid }: BehaviorSectionProps) {
-  const [activeFilter, setActiveFilter] = useState<FilterTab>('all');
+export function BehaviorSection({
+  studentGuid,
+  activeFilter,
+  onFilterChange,
+}: BehaviorSectionProps) {
   const { data, isLoading, isError, refetch } = useChildBehavior(
     studentGuid,
     1,
@@ -37,7 +40,7 @@ export function BehaviorSection({ studentGuid }: BehaviorSectionProps) {
           <button
             key={tab}
             data-testid={`behavior-filter-${tab}`}
-            onClick={() => setActiveFilter(tab)}
+            onClick={() => onFilterChange(tab)}
             className={cn(
               'px-3 py-1.5 rounded-full text-xs font-medium flex-shrink-0 border transition-colors tap-target',
               activeFilter === tab

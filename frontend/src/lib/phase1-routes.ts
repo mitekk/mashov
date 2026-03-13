@@ -1,6 +1,6 @@
 const PHASE1_ROUTE_PATTERNS = [
   /^\/home(?:[/?#].*)?$/,
-  /^\/children(?:\/[^/?#]+(?:\/(?:homework|behavior|subjects|notices))?)?(?:[/?#].*)?$/,
+  /^\/children(?:\/[^/?#]+)?(?:[/?#].*)?$/,
   /^\/inbox(?:\/[^/?#]+)?(?:[/?#].*)?$/,
   /^\/more(?:[/?#].*)?$/,
 ];

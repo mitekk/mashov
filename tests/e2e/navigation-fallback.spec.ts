@@ -7,6 +7,13 @@ function json(route: Route, body: unknown, status = 200) {
   return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
+function childUrl(
+  section: 'homework' | 'behavior' | 'subjects' | 'notices' = 'homework',
+  behavior: 'all' | 'attention' | 'positive' | 'neutral' = 'all',
+) {
+  return `/children/${STUDENT_GUID}?section=${section}&behavior=${behavior}`;
+}
+
 async function mockBaseRoutes(page: Page) {
   await page.route('**/api/v1/dashboard', (route) =>
     json(route, {
@@ -237,7 +244,7 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page.getByTestId('home-header')).toBeVisible();
 
     await page.getByTestId(`child-card-${STUDENT_GUID}`).click();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework`);
+    await expect(page).toHaveURL(childUrl('homework'));
     await expect(page.getByTestId('child-workspace')).toBeVisible();
 
     await page.getByTestId('nav-inbox').click();
@@ -253,11 +260,13 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page.getByTestId('more-page')).toBeVisible();
 
     await page.getByTestId('nav-children').click();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework`);
+    await expect(page).toHaveURL(childUrl('homework'));
     await expect(page.getByTestId('child-workspace')).toBeVisible();
   });
 
-  test('renders child workspace from legacy payload and allows section switching', async ({ page }) => {
+  test('renders child workspace from legacy payload and keeps section/filter in query params', async ({
+    page,
+  }) => {
     await page.route(`**/api/v1/children/${STUDENT_GUID}`, (route) =>
       json(route, {
         student: {
@@ -341,32 +350,78 @@ test.describe('Navigation and fallback hardening', () => {
 
     await page.goto(`/children/${STUDENT_GUID}`);
     await expect(page.getByTestId('child-workspace')).toBeVisible();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework`);
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}`);
     await expect(page.getByRole('heading', { level: 1 })).toContainText('Test Student');
 
     await page.getByTestId('section-tab-behavior').click();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior`);
+    await expect(page).toHaveURL(childUrl('behavior'));
     await expect(page.getByTestId('behavior-section')).toBeVisible();
     await expect(page.getByTestId('behavior-item-beh-1')).toBeVisible();
 
+    await page.getByTestId('behavior-filter-positive').click();
+    await expect(page).toHaveURL(childUrl('behavior', 'positive'));
+
     await page.getByTestId('section-tab-subjects').click();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/subjects`);
+    await expect(page).toHaveURL(childUrl('subjects', 'positive'));
     await expect(page.getByTestId('subjects-section')).toBeVisible();
 
     await page.getByTestId('section-tab-notices').click();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/notices`);
+    await expect(page).toHaveURL(childUrl('notices', 'positive'));
     await expect(page.getByTestId('notices-section')).toBeVisible();
 
     await page.goBack();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/subjects`);
+    await expect(page).toHaveURL(childUrl('subjects', 'positive'));
     await expect(page.getByTestId('subjects-section')).toBeVisible();
 
     await page.goBack();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior`);
+    await expect(page).toHaveURL(childUrl('behavior', 'positive'));
     await expect(page.getByTestId('behavior-section')).toBeVisible();
 
     await page.goForward();
-    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/subjects`);
+    await expect(page).toHaveURL(childUrl('subjects', 'positive'));
+  });
+
+  test('uses replace history for behavior filter changes', async ({ page }) => {
+    await mockBaseRoutes(page);
+
+    await page.goto(childUrl('homework'));
+    await expect(page.getByTestId('child-workspace')).toBeVisible();
+
+    await page.getByTestId('section-tab-behavior').click();
+    await expect(page).toHaveURL(childUrl('behavior'));
+
+    await page.getByTestId('behavior-filter-attention').click();
+    await expect(page).toHaveURL(childUrl('behavior', 'attention'));
+
+    await page.getByTestId('behavior-filter-positive').click();
+    await expect(page).toHaveURL(childUrl('behavior', 'positive'));
+
+    await page.getByTestId('section-tab-subjects').click();
+    await expect(page).toHaveURL(childUrl('subjects', 'positive'));
+
+    await page.goBack();
+    await expect(page).toHaveURL(childUrl('behavior', 'positive'));
+
+    await page.goBack();
+    await expect(page).toHaveURL(childUrl('homework'));
+  });
+
+  test('renders section/filter from deep-link query params', async ({ page }) => {
+    await mockBaseRoutes(page);
+
+    await page.goto(childUrl('behavior', 'attention'));
+    await expect(page.getByTestId('child-workspace')).toBeVisible();
+    await expect(page).toHaveURL(childUrl('behavior', 'attention'));
+    await expect(page.getByTestId('behavior-section')).toBeVisible();
+  });
+
+  test('legacy /children/:studentGuid/:section route no longer resolves', async ({ page }) => {
+    await mockBaseRoutes(page);
+
+    const response = await page.goto(`/children/${STUDENT_GUID}/behavior`);
+    expect(response).not.toBeNull();
+    expect(response?.status()).toBe(404);
+    await expect(page.getByTestId('child-workspace')).toHaveCount(0);
   });
 
   test('falls back to /children when selected child does not exist', async ({ page }) => {

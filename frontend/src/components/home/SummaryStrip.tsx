@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Mail, BookOpen, AlertTriangle, Users } from 'lucide-react';
+import { BookOpen, AlertTriangle } from 'lucide-react';
 import type { DashboardSummary } from '@/types/api';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { getChildrenNavHref } from '@/lib/child-routes';
@@ -51,7 +51,6 @@ export function SummaryStrip({ summary }: SummaryStripProps) {
 
   const homeworkHref = getChildrenNavHref(effectiveSelectedChildGuid, 'homework');
   const behaviorHref = getChildrenNavHref(effectiveSelectedChildGuid, 'behavior');
-  const childrenHref = getChildrenNavHref(effectiveSelectedChildGuid, 'homework');
 
   return (
     <div
@@ -59,13 +58,6 @@ export function SummaryStrip({ summary }: SummaryStripProps) {
       className="flex gap-2 overflow-x-auto px-4 py-3 -mx-0 scrollbar-hide"
       style={{ scrollbarWidth: 'none' }}
     >
-      <SummaryChip
-        icon={<Mail className="w-4 h-4" />}
-        count={summary.unreadConversations}
-        label="הודעות"
-        href="/inbox"
-        variant={summary.unreadConversations > 0 ? 'info' : 'default'}
-      />
       <SummaryChip
         icon={<BookOpen className="w-4 h-4" />}
         count={summary.recentHomeworkCount}
@@ -79,13 +71,6 @@ export function SummaryStrip({ summary }: SummaryStripProps) {
         label="התנהגות"
         href={behaviorHref}
         variant={summary.recentBehaviorCount > 0 ? 'attention' : 'default'}
-      />
-      <SummaryChip
-        icon={<Users className="w-4 h-4" />}
-        count={summary.childrenCount}
-        label="ילדים"
-        href={childrenHref}
-        variant="default"
       />
     </div>
   );

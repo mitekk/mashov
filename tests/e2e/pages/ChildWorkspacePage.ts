@@ -12,8 +12,13 @@ export class ChildWorkspacePage {
   async navigate(
     studentGuid: string,
     section: 'homework' | 'behavior' | 'subjects' | 'notices' = 'homework',
+    behavior: 'all' | 'attention' | 'positive' | 'neutral' = 'all',
   ): Promise<void> {
-    await this.page.goto(`/children/${studentGuid}/${section}`);
+    const params = new URLSearchParams({
+      section,
+      behavior,
+    });
+    await this.page.goto(`/children/${studentGuid}?${params.toString()}`);
     await this.page.waitForLoadState('networkidle');
   }
 

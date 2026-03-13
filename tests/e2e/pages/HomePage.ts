@@ -3,18 +3,18 @@ import { Page, Locator } from '@playwright/test';
 export class HomePage {
   readonly page: Page;
   readonly homeHeader: Locator;
+  readonly headerChildSelector: Locator;
   readonly refreshButton: Locator;
   readonly summaryStrip: Locator;
   readonly latestFeed: Locator;
-  readonly childrenSection: Locator;
 
   constructor(page: Page) {
     this.page = page;
     this.homeHeader = page.getByTestId('home-header');
+    this.headerChildSelector = page.getByTestId('home-header-child-selector');
     this.refreshButton = page.getByTestId('refresh-button');
     this.summaryStrip = page.getByTestId('summary-strip');
     this.latestFeed = page.getByTestId('latest-feed');
-    this.childrenSection = page.getByTestId('children-section');
   }
 
   async navigate(): Promise<void> {
