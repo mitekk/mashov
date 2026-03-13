@@ -4,7 +4,7 @@ import { InboxPage } from './pages/InboxPage';
 /**
  * E2E tests for the Inbox page (/inbox).
  *
- * With an empty database the inbox renders an empty state.
+ * Empty-state checks use route mocking so results are deterministic.
  * Filter toggle tests verify UI state changes.
  */
 test.describe('Inbox page', () => {
@@ -26,14 +26,23 @@ test.describe('Inbox page', () => {
   });
 
   test('shows empty state when no conversations exist', async ({ page }) => {
+    await page.route('**/api/v1/mail/conversations*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [],
+          pagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+        }),
+      });
+    });
+
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
 
-    // With no data in DB the conversation list is absent
     const listVisible = await inboxPage.conversationList.isVisible();
     expect(listVisible).toBe(false);
 
-    // And the conversation item count is 0
     const itemCount = await inboxPage.allConversationItems().count();
     expect(itemCount).toBe(0);
   });

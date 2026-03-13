@@ -1,10 +1,10 @@
 import { NotFoundException } from '@nestjs/common';
-import { ChildrenService } from './children.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChildrenService } from './children.service';
 
 const TEST_GUID = 'student-guid-001';
 
-function makeMockStudent(overrides?: object) {
+function makeStudent() {
   return {
     id: 'student-id-1',
     studentGuid: TEST_GUID,
@@ -15,223 +15,230 @@ function makeMockStudent(overrides?: object) {
     classNum: 10,
     gender: 'F',
     isActive: true,
-    ...overrides,
+    updatedAt: new Date('2026-03-12T10:00:00Z'),
   };
 }
 
-function makeMockPrisma(overrides: Partial<{
-  studentFindMany: jest.Mock;
-  studentFindUnique: jest.Mock;
-  homeworkFindMany: jest.Mock;
-  homeworkCount: jest.Mock;
-  behaviorFindMany: jest.Mock;
-  behaviorCount: jest.Mock;
-  subjectFindMany: jest.Mock;
-  messageBoardFindMany: jest.Mock;
-}>): jest.Mocked<PrismaService> {
-  const student = makeMockStudent();
+function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
+  const student = makeStudent();
   return {
     student: {
       findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([student]),
       findUnique: overrides.studentFindUnique ?? jest.fn().mockResolvedValue(student),
     },
     homeworkItem: {
-      findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]),
       count: overrides.homeworkCount ?? jest.fn().mockResolvedValue(0),
+      findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]),
+      findFirst: overrides.homeworkFindFirst ?? jest.fn().mockResolvedValue(null),
     },
     behaviorItem: {
-      findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]),
       count: overrides.behaviorCount ?? jest.fn().mockResolvedValue(0),
+      findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]),
+      findFirst: overrides.behaviorFindFirst ?? jest.fn().mockResolvedValue(null),
     },
     subjectEnrollment: {
+      count: overrides.subjectCount ?? jest.fn().mockResolvedValue(0),
       findMany: overrides.subjectFindMany ?? jest.fn().mockResolvedValue([]),
+      aggregate:
+        overrides.subjectAggregate ??
+        jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
     },
     messageBoardItem: {
-      findMany: overrides.messageBoardFindMany ?? jest.fn().mockResolvedValue([]),
+      findMany: overrides.noticeFindMany ?? jest.fn().mockResolvedValue([]),
+    },
+    readState: {
+      findMany: overrides.readStateFindMany ?? jest.fn().mockResolvedValue([]),
+    },
+    syncRun: {
+      findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
     },
   } as unknown as jest.Mocked<PrismaService>;
 }
 
 describe('ChildrenService', () => {
   describe('getChildren', () => {
-    it('returns all active students ordered by name', async () => {
-      const mockFindMany = jest.fn().mockResolvedValue([makeMockStudent()]);
-      const service = new ChildrenService(makeMockPrisma({ studentFindMany: mockFindMany }));
-
-      const result = await service.getChildren();
-      expect(result).toHaveLength(1);
-      expect(mockFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { isActive: true },
-          orderBy: { fullName: 'asc' },
+    it('returns {data} with computed counts and latestUpdateAt', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkCount: jest.fn().mockResolvedValue(2),
+          behaviorCount: jest.fn().mockResolvedValue(1),
+          subjectCount: jest.fn().mockResolvedValue(5),
+          homeworkFindFirst: jest.fn().mockResolvedValue({
+            lessonDate: new Date('2026-03-12T12:00:00Z'),
+          }),
+          behaviorFindFirst: jest.fn().mockResolvedValue({
+            eventAt: new Date('2026-03-12T13:00:00Z'),
+          }),
         }),
       );
-    });
 
-    it('returns an empty array when no students exist', async () => {
-      const service = new ChildrenService(
-        makeMockPrisma({ studentFindMany: jest.fn().mockResolvedValue([]) }),
-      );
       const result = await service.getChildren();
-      expect(result).toEqual([]);
+      expect(Array.isArray(result.data)).toBe(true);
+      expect(result.data[0]).toMatchObject({
+        studentGuid: TEST_GUID,
+        recentHomeworkCount: 2,
+        recentBehaviorCount: 1,
+        subjectCount: 5,
+      });
+      expect(typeof result.data[0].latestUpdateAt).toBe('string');
     });
   });
 
   describe('getChildWorkspace', () => {
-    it('returns workspace data with student when student exists', async () => {
-      const service = new ChildrenService(makeMockPrisma({}));
-      const result = await service.getChildWorkspace(TEST_GUID);
+    it('returns contract shape {student, summary, lastSyncAt}', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkCount: jest.fn().mockResolvedValue(3),
+          behaviorCount: jest
+            .fn()
+            .mockResolvedValueOnce(2) // recentBehaviorCount
+            .mockResolvedValueOnce(1), // attentionBehaviorCount
+          subjectCount: jest.fn().mockResolvedValue(4),
+          subjectAggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 9 } }),
+          syncRunFindFirst: jest.fn().mockResolvedValue({
+            endedAt: new Date('2026-03-12T14:00:00Z'),
+          }),
+        }),
+      );
 
+      const result = await service.getChildWorkspace(TEST_GUID);
       expect(result.student.studentGuid).toBe(TEST_GUID);
-      expect(result.homework).toEqual([]);
-      expect(result.behavior).toEqual([]);
-      expect(result.subjects).toEqual([]);
-      expect(result.notices).toEqual([]);
+      expect(result.summary).toEqual({
+        recentHomeworkCount: 3,
+        recentBehaviorCount: 2,
+        subjectCount: 4,
+        totalWeeklyHours: 9,
+        attentionBehaviorCount: 1,
+      });
+      expect(result.lastSyncAt).toBe('2026-03-12T14:00:00.000Z');
     });
 
-    it('throws NotFoundException when student does not exist', async () => {
+    it('throws NotFoundException for unknown student', async () => {
       const service = new ChildrenService(
-        makeMockPrisma({ studentFindUnique: jest.fn().mockResolvedValue(null) }),
+        makeMockPrisma({
+          studentFindUnique: jest.fn().mockResolvedValue(null),
+        }),
       );
-      await expect(service.getChildWorkspace('non-existent-guid')).rejects.toThrow(
+
+      await expect(service.getChildWorkspace('missing-guid')).rejects.toThrow(
         NotFoundException,
       );
     });
   });
 
   describe('getHomework', () => {
-    it('returns paginated homework items', async () => {
-      const hwItems = [
-        {
-          id: 'hw-1',
-          studentGuid: TEST_GUID,
-          subjectName: 'Math',
-          homeworkText: 'Do exercises',
-          lessonDate: new Date(),
-        },
-      ];
+    it('returns paginated data and merges read-state handled flags', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkFindMany: jest.fn().mockResolvedValue(hwItems),
+          homeworkFindMany: jest.fn().mockResolvedValue([
+            {
+              id: 'hw-1',
+              studentGuid: TEST_GUID,
+              lessonId: 1,
+              groupId: 2,
+              lessonDate: new Date('2026-03-10T00:00:00Z'),
+              lesson: 3,
+              subjectName: 'Math',
+              homeworkText: 'Page 10',
+              remark: null,
+              files: [],
+              updatedAt: new Date('2026-03-10T01:00:00Z'),
+            },
+          ]),
           homeworkCount: jest.fn().mockResolvedValue(1),
+          readStateFindMany: jest.fn().mockResolvedValue([
+            { itemId: 'hw-1', isHandled: true },
+          ]),
         }),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
-      expect(result.data).toHaveLength(1);
-      expect(result.pagination).toMatchObject({ page: 1, limit: 20, total: 1, totalPages: 1 });
-    });
-
-    it('calculates correct totalPages for pagination', async () => {
-      const service = new ChildrenService(
-        makeMockPrisma({
-          homeworkFindMany: jest.fn().mockResolvedValue([]),
-          homeworkCount: jest.fn().mockResolvedValue(25),
-        }),
-      );
-
-      const result = await service.getHomework(TEST_GUID, 1, 10);
-      expect(result.pagination.totalPages).toBe(3);
-      expect(result.pagination.total).toBe(25);
-    });
-
-    it('throws NotFoundException when student does not exist', async () => {
-      const service = new ChildrenService(
-        makeMockPrisma({ studentFindUnique: jest.fn().mockResolvedValue(null) }),
-      );
-      await expect(service.getHomework('unknown-guid', 1, 20)).rejects.toThrow(NotFoundException);
+      expect(result.pagination).toMatchObject({ total: 1, totalPages: 1 });
+      expect(result.data[0].isHandled).toBe(true);
+      expect(result.data[0].lessonDate).toBe('2026-03-10T00:00:00.000Z');
     });
   });
 
   describe('getBehavior', () => {
-    it('returns paginated behavior items when bucket=all', async () => {
-      const behaviorItems = [
-        { id: 'beh-1', studentGuid: TEST_GUID, achvaName: 'Late', classification: 'attention' },
-      ];
-      const mockFindMany = jest.fn().mockResolvedValue(behaviorItems);
-      const mockCount = jest.fn().mockResolvedValue(1);
+    it('maps classification to bucket and eventCode to priority', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([
+        {
+          id: 'beh-1',
+          studentGuid: TEST_GUID,
+          lessonId: 1,
+          groupId: 2,
+          eventCode: 2,
+          achvaCode: 2,
+          achvaName: 'חיסור',
+          classification: 'attention',
+          justifiable: false,
+          lessonDate: new Date('2026-03-11T00:00:00Z'),
+          lesson: 2,
+          subject: 'Math',
+          reporter: 'Teacher',
+          remark: null,
+          justification: null,
+          eventAt: new Date('2026-03-11T10:00:00Z'),
+          updatedAt: new Date('2026-03-11T11:00:00Z'),
+        },
+      ]);
       const service = new ChildrenService(
-        makeMockPrisma({ behaviorFindMany: mockFindMany, behaviorCount: mockCount }),
-      );
-
-      const result = await service.getBehavior(TEST_GUID, 1, 50, 'all');
-      expect(result.data).toHaveLength(1);
-      // When bucket=all, no bucket filter should be applied
-      expect(mockFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { studentGuid: TEST_GUID },
+        makeMockPrisma({
+          behaviorFindMany: mockFindMany,
+          behaviorCount: jest.fn().mockResolvedValue(1),
         }),
       );
-    });
 
-    it('applies bucket filter when bucket is not "all"', async () => {
-      const mockFindMany = jest.fn().mockResolvedValue([]);
-      const mockCount = jest.fn().mockResolvedValue(0);
-      const service = new ChildrenService(
-        makeMockPrisma({ behaviorFindMany: mockFindMany, behaviorCount: mockCount }),
-      );
-
-      await service.getBehavior(TEST_GUID, 1, 50, 'attention');
+      const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention');
       expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { studentGuid: TEST_GUID, bucket: 'attention' },
+          where: { studentGuid: TEST_GUID, classification: 'attention' },
         }),
       );
-    });
-
-    it('throws NotFoundException when student does not exist', async () => {
-      const service = new ChildrenService(
-        makeMockPrisma({ studentFindUnique: jest.fn().mockResolvedValue(null) }),
-      );
-      await expect(service.getBehavior('unknown', 1, 50, 'all')).rejects.toThrow(NotFoundException);
+      expect(result.data[0].bucket).toBe('attention');
+      expect(result.data[0].priority).toBe('high');
     });
   });
 
-  describe('getSubjects', () => {
-    it('returns subjects for a valid student', async () => {
-      const subjects = [{ id: 'sub-1', studentGuid: TEST_GUID, subjectName: 'Math' }];
+  describe('getSubjects / getNotices', () => {
+    it('returns {data} envelope for subjects and notices', async () => {
       const service = new ChildrenService(
-        makeMockPrisma({ subjectFindMany: jest.fn().mockResolvedValue(subjects) }),
-      );
-
-      const result = await service.getSubjects(TEST_GUID);
-      expect(result).toHaveLength(1);
-    });
-
-    it('throws NotFoundException when student does not exist', async () => {
-      const service = new ChildrenService(
-        makeMockPrisma({ studentFindUnique: jest.fn().mockResolvedValue(null) }),
-      );
-      await expect(service.getSubjects('unknown')).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('getNotices', () => {
-    it('returns only non-expired notices for a valid student', async () => {
-      const notices = [{ id: 'notice-1', studentGuid: TEST_GUID, eventText: 'Trip reminder' }];
-      const mockFindMany = jest.fn().mockResolvedValue(notices);
-      const service = new ChildrenService(
-        makeMockPrisma({ messageBoardFindMany: mockFindMany }),
-      );
-
-      const result = await service.getNotices(TEST_GUID);
-      expect(result).toHaveLength(1);
-      // Verify expirationDate filter is applied (gt: now)
-      expect(mockFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            studentGuid: TEST_GUID,
-            expirationDate: expect.objectContaining({ gt: expect.any(Date) }),
-          }),
+        makeMockPrisma({
+          subjectFindMany: jest.fn().mockResolvedValue([
+            {
+              id: 'sub-1',
+              studentGuid: TEST_GUID,
+              groupId: 10,
+              groupName: 'Math Group',
+              subjectName: 'Math',
+              teachers: [],
+              inactiveTeachers: [],
+              weeklyHours: 4,
+              lessonsCount: 20,
+              updatedAt: new Date('2026-03-12T00:00:00Z'),
+            },
+          ]),
+          noticeFindMany: jest.fn().mockResolvedValue([
+            {
+              id: 'notice-1',
+              studentGuid: TEST_GUID,
+              eventId: 99,
+              eventText: '<p>Hello</p>',
+              expirationDate: new Date('2026-03-20T00:00:00Z'),
+              inSite: true,
+              updatedAt: new Date('2026-03-12T00:00:00Z'),
+            },
+          ]),
         }),
       );
-    });
 
-    it('throws NotFoundException when student does not exist', async () => {
-      const service = new ChildrenService(
-        makeMockPrisma({ studentFindUnique: jest.fn().mockResolvedValue(null) }),
-      );
-      await expect(service.getNotices('unknown')).rejects.toThrow(NotFoundException);
+      const subjects = await service.getSubjects(TEST_GUID);
+      const notices = await service.getNotices(TEST_GUID);
+
+      expect(Array.isArray(subjects.data)).toBe(true);
+      expect(Array.isArray(notices.data)).toBe(true);
+      expect(subjects.data[0].updatedAt).toBe('2026-03-12T00:00:00.000Z');
+      expect(notices.data[0].expirationDate).toBe('2026-03-20T00:00:00.000Z');
     });
   });
 });

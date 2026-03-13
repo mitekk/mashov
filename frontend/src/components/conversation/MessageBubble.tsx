@@ -12,9 +12,16 @@ interface MessageBubbleProps {
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
+  const rawHtml =
+    typeof message.bodyHtmlSanitized === 'string' && message.bodyHtmlSanitized.trim().length > 0
+      ? message.bodyHtmlSanitized
+      : typeof message.bodyTextPreview === 'string' && message.bodyTextPreview.trim().length > 0
+        ? `<p>${message.bodyTextPreview}</p>`
+        : '<p>תוכן ההודעה אינו זמין בשלב 1.</p>';
+
   const sanitizedHtml = useMemo(
-    () => DOMPurify.sanitize(message.bodyHtmlSanitized ?? ''),
-    [message.bodyHtmlSanitized],
+    () => DOMPurify.sanitize(rawHtml),
+    [rawHtml],
   );
 
   const recipientNames = message.recipients

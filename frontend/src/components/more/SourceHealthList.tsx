@@ -5,7 +5,7 @@ import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 
 interface SourceHealthListProps {
-  sources: SourceHealth[];
+  sources?: SourceHealth[];
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -31,6 +31,8 @@ function StatusIcon({ status }: { status: SourceStatus }) {
       return <XCircle className="w-4 h-4 text-destructive" />;
     case 'never_synced':
       return <AlertCircle className="w-4 h-4 text-muted-foreground" />;
+    default:
+      return <AlertCircle className="w-4 h-4 text-muted-foreground" />;
   }
 }
 
@@ -40,13 +42,16 @@ function statusLabel(status: SourceStatus): string {
     case 'stale': return 'ישן';
     case 'failed': return 'שגיאה';
     case 'never_synced': return 'לא סונכרן';
+    default: return 'לא ידוע';
   }
 }
 
 export function SourceHealthList({ sources }: SourceHealthListProps) {
+  const safeSources = sources ?? [];
+
   return (
     <div data-testid="source-health-list" className="card-base divide-y divide-border">
-      {sources.map((source) => (
+      {safeSources.map((source) => (
         <div key={source.source} className="flex items-center gap-3 px-4 py-3">
           <StatusIcon status={source.status} />
           <div className="flex-1 min-w-0">

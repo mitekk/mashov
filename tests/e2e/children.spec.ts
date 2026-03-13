@@ -5,16 +5,22 @@ import { ChildWorkspacePage } from './pages/ChildWorkspacePage';
 /**
  * E2E tests for the Children page (/children) and Child Workspace (/children/:studentGuid).
  *
- * With an empty database, the children list renders an empty state.
+ * Empty-state checks use route mocking so results are deterministic.
  * Workspace tests verify navigation, section tab switching, and rendering.
  */
 test.describe('Children page', () => {
   test('renders the children page with empty state when no students exist', async ({ page }) => {
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [] }),
+      });
+    });
+
     const childrenPage = new ChildrenPage(page);
     await childrenPage.navigate();
 
-    // With no data, the empty state is shown (the grid container is absent)
-    // The page should not show any child cards
     const cardCount = await childrenPage.allChildCards().count();
     expect(cardCount).toBe(0);
   });
@@ -39,6 +45,14 @@ test.describe('Children page', () => {
   });
 
   test('children page persists its empty state after reload', async ({ page }) => {
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [] }),
+      });
+    });
+
     const childrenPage = new ChildrenPage(page);
     await childrenPage.navigate();
 
@@ -57,11 +71,17 @@ test.describe('Child workspace page', () => {
   const UNKNOWN_GUID = 'e2e-test-unknown-guid-00001';
 
   test('shows error state for an unknown student GUID', async ({ page }) => {
+    await page.route(`**/api/v1/children/${UNKNOWN_GUID}`, async (route) => {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'NOT_FOUND', message: 'not found' } }),
+      });
+    });
+
     const workspace = new ChildWorkspacePage(page);
     await workspace.navigate(UNKNOWN_GUID);
 
-    // With an unknown GUID the API returns 404; the page renders an error boundary
-    // Verify the workspace container is absent (error state is shown instead)
     const workspaceVisible = await workspace.workspaceContainer.isVisible();
     expect(workspaceVisible).toBe(false);
   });

@@ -3,18 +3,19 @@ import Link from 'next/link';
 import { BookOpen, AlertTriangle } from 'lucide-react';
 import type { DashboardChildCard } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
+import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 
 interface ChildQuickCardProps {
   child: DashboardChildCard;
 }
 
 export function ChildQuickCard({ child }: ChildQuickCardProps) {
-  return (
-    <Link
-      href={`/children/${child.studentGuid}`}
-      data-testid={`child-card-${child.studentGuid}`}
-      className="card-base p-4 flex flex-col gap-2 tap-target hover:bg-accent/30 transition-colors min-w-[160px] flex-shrink-0"
-    >
+  const safeHref = getPhase1HrefOrNull(
+    child.studentGuid ? `/children/${child.studentGuid}` : null,
+  );
+
+  const content = (
+    <>
       <div>
         <p className="text-sm font-semibold text-foreground truncate">
           {child.fullName}
@@ -45,6 +46,36 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
           {formatRelativeHe(child.latestUpdateAt)}
         </p>
       )}
+      {!safeHref && (
+        <p className="text-[11px] text-muted-foreground mt-1">
+          קישור זה אינו זמין בשלב 1
+        </p>
+      )}
+    </>
+  );
+
+  const className =
+    'card-base p-4 flex flex-col gap-2 tap-target transition-colors min-w-[160px] flex-shrink-0';
+
+  if (!safeHref) {
+    return (
+      <div
+        data-testid={`child-card-disabled-${child.studentGuid}`}
+        aria-disabled
+        className={`${className} opacity-70 cursor-not-allowed`}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href={safeHref}
+      data-testid={`child-card-${child.studentGuid}`}
+      className={`${className} hover:bg-accent/30`}
+    >
+      {content}
     </Link>
   );
 }

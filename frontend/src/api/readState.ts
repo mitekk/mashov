@@ -7,3 +7,10 @@ export function upsertReadState(req: ReadStateRequest): Promise<ReadStateRespons
     body: JSON.stringify(req),
   });
 }
+
+export function clearAllReadState(): Promise<{ deleted: number }> {
+  return apiFetch<{ deleted: number }>('/read-state', {
+    method: 'POST',
+    body: JSON.stringify({ clearAll: true }),
+  });
+}

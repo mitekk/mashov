@@ -1,0 +1,523 @@
+import { test, expect, type Page, type Route } from '@playwright/test';
+
+const STUDENT_GUID = 'student-guid-1';
+const CONVERSATION_ID = 'conv-1';
+
+function json(route: Route, body: unknown, status = 200) {
+  return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+}
+
+async function mockBaseRoutes(page: Page) {
+  await page.route('**/api/v1/dashboard', (route) =>
+    json(route, {
+      freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
+      summary: {
+        unreadConversations: 1,
+        recentHomeworkCount: 1,
+        recentBehaviorCount: 1,
+        childrenCount: 1,
+      },
+      needsAttention: [
+        {
+          id: 'att-1',
+          type: 'unread_conversation',
+          title: 'Unread conversation',
+          summary: 'Summary',
+          studentGuid: null,
+          studentName: null,
+          timestamp: new Date().toISOString(),
+          linkPath: `/inbox/${CONVERSATION_ID}`,
+        },
+      ],
+      feed: [
+        {
+          id: 'feed-1',
+          sourceType: 'homework',
+          sourceId: 'hw-1',
+          studentGuid: STUDENT_GUID,
+          studentName: 'Test Student',
+          title: 'Homework update',
+          summary: 'New homework',
+          category: 'homework',
+          priority: 'medium',
+          isPositive: false,
+          isUnread: true,
+          isHandled: false,
+          eventAt: new Date().toISOString(),
+          syncedAt: new Date().toISOString(),
+          linkPath: `/children/${STUDENT_GUID}`,
+        },
+      ],
+      children: [
+        {
+          studentGuid: STUDENT_GUID,
+          privateName: 'Test',
+          familyName: 'Student',
+          fullName: 'Test Student',
+          classCode: 'א',
+          classNum: 1,
+          recentHomeworkCount: 1,
+          recentBehaviorCount: 1,
+          latestUpdateAt: new Date().toISOString(),
+          oneLineStatus: '1 homework',
+        },
+      ],
+      school: { schoolName: 'Test School', schoolYear: 2026 },
+    }),
+  );
+
+  await page.route('**/api/v1/children', (route) =>
+    json(route, {
+      data: [
+        {
+          studentGuid: STUDENT_GUID,
+          privateName: 'Test',
+          familyName: 'Student',
+          fullName: 'Test Student',
+          classCode: 'א',
+          classNum: 1,
+          gender: 'M',
+          isActive: true,
+          recentHomeworkCount: 1,
+          recentBehaviorCount: 1,
+          subjectCount: 1,
+          latestUpdateAt: new Date().toISOString(),
+        },
+      ],
+    }),
+  );
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}`, (route) =>
+    json(route, {
+      student: {
+        studentGuid: STUDENT_GUID,
+        privateName: 'Test',
+        familyName: 'Student',
+        fullName: 'Test Student',
+        classCode: 'א',
+        classNum: 1,
+        gender: 'M',
+        isActive: true,
+      },
+      summary: {
+        recentHomeworkCount: 1,
+        recentBehaviorCount: 1,
+        subjectCount: 1,
+        totalWeeklyHours: 5,
+        attentionBehaviorCount: 1,
+      },
+      lastSyncAt: new Date().toISOString(),
+    }),
+  );
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, (route) =>
+    json(route, {
+      data: [],
+      pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
+    }),
+  );
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, (route) =>
+    json(route, {
+      data: [],
+      pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
+    }),
+  );
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/subjects`, (route) =>
+    json(route, { data: [] }),
+  );
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/notices`, (route) =>
+    json(route, { data: [] }),
+  );
+
+  await page.route('**/api/v1/mail/summary', (route) =>
+    json(route, {
+      unreadConversations: 1,
+      recentConversations: [],
+      lastSyncAt: new Date().toISOString(),
+    }),
+  );
+
+  await page.route('**/api/v1/mail/conversations**', (route) =>
+    json(route, {
+      data: [
+        {
+          conversationId: CONVERSATION_ID,
+          subject: 'Message subject',
+          senderNamePreview: 'Teacher',
+          sendTime: new Date().toISOString(),
+          isUnread: true,
+          hasAttachments: false,
+          preventReply: false,
+          labels: [],
+          isHandled: false,
+          lastFetchedAt: new Date().toISOString(),
+        },
+      ],
+      pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+    }),
+  );
+
+  await page.route(`**/api/v1/mail/conversations/${CONVERSATION_ID}`, (route) =>
+    json(route, {
+      conversationId: CONVERSATION_ID,
+      subject: 'Message subject',
+      sendTime: new Date().toISOString(),
+      isUnread: true,
+      hasDrafts: false,
+      hasAttachments: false,
+      preventReply: false,
+      labels: [],
+      isHandled: false,
+      messages: [
+        {
+          messageId: 'msg-1',
+          conversationId: CONVERSATION_ID,
+          senderId: 'sender-1',
+          senderName: 'Teacher',
+          subject: 'Message subject',
+          bodyHtmlSanitized: '<p>Hello world</p>',
+          bodyTextPreview: 'Hello world',
+          sendTime: new Date().toISOString(),
+          isUnread: true,
+          recipients: [],
+          preventReply: false,
+          sentViaEmail: false,
+          sentViaSms: false,
+        },
+      ],
+      lastFetchedAt: new Date().toISOString(),
+    }),
+  );
+
+  await page.route('**/api/v1/settings/source-health', (route) =>
+    json(route, {
+      sources: [],
+      overallState: 'fresh',
+      lastFullSyncAt: null,
+    }),
+  );
+  await page.route('**/api/v1/settings/profile', (route) =>
+    json(route, {
+      upstreamUserId: 'user-1',
+      displayName: 'Parent',
+      email: 'parent@example.com',
+      cellphone: '0500000000',
+      schoolName: 'Test School',
+      schoolYear: 2026,
+      schoolCode: 1234,
+      detailsState: 1,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  await page.route('**/api/v1/sync/refresh', (route) =>
+    json(route, { started: true, message: 'ok' }, 202),
+  );
+  await page.route('**/api/v1/read-state', (route) =>
+    json(route, {
+      id: 'rs-1',
+      itemType: 'feed_item',
+      itemId: 'feed-1',
+      isRead: true,
+      isHandled: true,
+      updatedAt: new Date().toISOString(),
+    }, 201),
+  );
+}
+
+test.describe('Navigation and fallback hardening', () => {
+  test('supports core click/navigation flows across Home -> Child -> Inbox -> Conversation -> More', async ({
+    page,
+  }) => {
+    await mockBaseRoutes(page);
+
+    await page.goto('/home');
+    await expect(page.getByTestId('home-header')).toBeVisible();
+
+    await page.getByTestId(`child-card-${STUDENT_GUID}`).click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}`);
+    await expect(page.getByTestId('child-workspace')).toBeVisible();
+
+    await page.getByTestId('nav-inbox').click();
+    await expect(page).toHaveURL('/inbox');
+    await expect(page.getByTestId('inbox-page')).toBeVisible();
+
+    await page.getByTestId(`conversation-item-${CONVERSATION_ID}`).click();
+    await expect(page).toHaveURL(`/inbox/${CONVERSATION_ID}`);
+    await expect(page.getByTestId('conversation-page')).toBeVisible();
+
+    await page.getByTestId('nav-more').click();
+    await expect(page).toHaveURL('/more');
+    await expect(page.getByTestId('more-page')).toBeVisible();
+  });
+
+  test('renders child workspace from legacy payload and allows section switching', async ({ page }) => {
+    await page.route(`**/api/v1/children/${STUDENT_GUID}`, (route) =>
+      json(route, {
+        student: {
+          studentGuid: STUDENT_GUID,
+          privateName: 'Test',
+          familyName: 'Student',
+          fullName: 'Test Student',
+          classCode: 'א',
+          classNum: 1,
+          gender: 'M',
+          isActive: true,
+        },
+        homework: [],
+        behavior: [],
+        subjects: [],
+        notices: [],
+      }),
+    );
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, (route) =>
+      json(route, {
+        data: [],
+        pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
+      }),
+    );
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, (route) =>
+      json(route, {
+        data: [
+          {
+            id: 'beh-1',
+            studentGuid: STUDENT_GUID,
+            lessonId: 1,
+            groupId: 1,
+            eventCode: 2,
+            achvaCode: 2,
+            achvaName: 'Absence',
+            classification: 'attention',
+            justifiable: false,
+            lessonDate: new Date().toISOString(),
+            lesson: 2,
+            subject: 'Math',
+            reporter: 'Teacher',
+            remark: null,
+            justification: null,
+            eventAt: new Date().toISOString(),
+            isHandled: false,
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+        pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+      }),
+    );
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/subjects`, (route) =>
+      json(route, [
+        {
+          id: 'sub-1',
+          studentGuid: STUDENT_GUID,
+          groupId: 1,
+          groupName: 'Math',
+          subjectName: 'Math',
+          teachers: [],
+          inactiveTeachers: [],
+          weeklyHours: 4,
+          lessonsCount: 10,
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/notices`, (route) =>
+      json(route, [
+        {
+          id: 'notice-1',
+          studentGuid: STUDENT_GUID,
+          eventId: 1,
+          eventText: '<p>Hello</p>',
+          expirationDate: new Date().toISOString(),
+          inSite: true,
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+
+    await page.goto(`/children/${STUDENT_GUID}`);
+    await expect(page.getByTestId('child-workspace')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Test Student');
+
+    await page.getByTestId('section-tab-behavior').click();
+    await expect(page.getByTestId('behavior-section')).toBeVisible();
+    await expect(page.getByTestId('behavior-item-beh-1')).toBeVisible();
+
+    await page.getByTestId('section-tab-subjects').click();
+    await expect(page.getByTestId('subjects-section')).toBeVisible();
+
+    await page.getByTestId('section-tab-notices').click();
+    await expect(page.getByTestId('notices-section')).toBeVisible();
+  });
+
+  test('renders conversation detail from legacy nested payload with subject/body fallback', async ({
+    page,
+  }) => {
+    await page.route('**/api/v1/mail/summary', (route) =>
+      json(route, { unreadConversations: 1, recentConversations: [], lastSyncAt: null }),
+    );
+    await page.route('**/api/v1/mail/conversations**', (route) =>
+      json(route, {
+        data: [
+          {
+            conversationId: CONVERSATION_ID,
+            subject: 'Legacy subject',
+            senderNamePreview: 'Teacher',
+            sendTime: new Date().toISOString(),
+            isUnread: true,
+            hasAttachments: false,
+            preventReply: false,
+            labels: [],
+            isHandled: false,
+            lastFetchedAt: new Date().toISOString(),
+          },
+        ],
+        pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+      }),
+    );
+    await page.route(`**/api/v1/mail/conversations/${CONVERSATION_ID}`, (route) =>
+      json(route, {
+        conversation: {
+          conversationId: CONVERSATION_ID,
+          subject: '',
+          sendTime: new Date().toISOString(),
+          isUnread: true,
+          hasDrafts: false,
+          hasAttachments: false,
+          preventReply: false,
+          labels: [],
+          lastFetchedAt: new Date().toISOString(),
+        },
+        messages: [
+          {
+            messageId: 'msg-1',
+            conversationId: CONVERSATION_ID,
+            senderId: 'sender-1',
+            senderName: 'Teacher',
+            subject: '',
+            bodyHtmlSanitized: null,
+            bodyTextPreview: null,
+            sendTime: new Date().toISOString(),
+            isUnread: true,
+            recipients: [],
+            preventReply: false,
+            sentViaEmail: false,
+            sentViaSms: false,
+          },
+        ],
+      }),
+    );
+
+    await page.goto('/inbox');
+    await page.getByTestId(`conversation-item-${CONVERSATION_ID}`).click();
+    await expect(page).toHaveURL(`/inbox/${CONVERSATION_ID}`);
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('ללא נושא');
+    await expect(page.getByText('תוכן ההודעה אינו זמין בשלב 1.')).toBeVisible();
+  });
+
+  test('disables unsupported out-of-phase links instead of navigating', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', (route) =>
+      json(route, {
+        freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
+        summary: {
+          unreadConversations: 0,
+          recentHomeworkCount: 0,
+          recentBehaviorCount: 0,
+          childrenCount: 0,
+        },
+        needsAttention: [
+          {
+            id: 'att-out',
+            type: 'sync_degraded',
+            title: 'Out of phase',
+            summary: 'Unsupported path',
+            studentGuid: null,
+            studentName: null,
+            timestamp: new Date().toISOString(),
+            linkPath: '/grades',
+          },
+        ],
+        feed: [
+          {
+            id: 'feed-out',
+            sourceType: 'mail',
+            sourceId: 'x',
+            studentGuid: null,
+            studentName: null,
+            title: 'Out of phase',
+            summary: 'Unsupported path',
+            category: 'mail',
+            priority: 'medium',
+            isPositive: false,
+            isUnread: true,
+            isHandled: false,
+            eventAt: new Date().toISOString(),
+            syncedAt: new Date().toISOString(),
+            linkPath: '/timetable',
+          },
+        ],
+        children: [],
+        school: { schoolName: 'Test', schoolYear: 2026 },
+      }),
+    );
+    await page.route('**/api/v1/sync/refresh', (route) =>
+      json(route, { started: true, message: 'ok' }, 202),
+    );
+
+    await page.goto('/home');
+    await expect(page.getByTestId('attention-card-disabled-att-out')).toBeVisible();
+    await expect(page.getByTestId('feed-item-disabled-feed-out')).toBeVisible();
+
+    await page.getByTestId('attention-card-disabled-att-out').click();
+    await expect(page).toHaveURL('/home');
+
+    await page.getByTestId('feed-item-disabled-feed-out').click();
+    await expect(page).toHaveURL('/home');
+  });
+
+  test('clear read-state action sends clearAll payload', async ({ page }) => {
+    let capturedPayload: unknown = null;
+
+    await page.route('**/api/v1/settings/source-health', (route) =>
+      json(route, { sources: [], overallState: 'fresh', lastFullSyncAt: null }),
+    );
+    await page.route('**/api/v1/settings/profile', (route) =>
+      json(route, {
+        upstreamUserId: 'user-1',
+        displayName: 'Parent',
+        email: 'parent@example.com',
+        cellphone: '0500000000',
+        schoolName: 'Test School',
+        schoolYear: 2026,
+        schoolCode: 1234,
+        detailsState: 1,
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+    await page.route('**/api/v1/dashboard', (route) =>
+      json(route, {
+        freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
+        summary: {
+          unreadConversations: 0,
+          recentHomeworkCount: 0,
+          recentBehaviorCount: 0,
+          childrenCount: 0,
+        },
+        needsAttention: [],
+        feed: [],
+        children: [],
+        school: { schoolName: 'Test', schoolYear: 2026 },
+      }),
+    );
+    await page.route('**/api/v1/read-state', async (route) => {
+      capturedPayload = route.request().postDataJSON();
+      await json(route, { deleted: 4 }, 201);
+    });
+
+    await page.goto('/more');
+    await expect(page.getByTestId('clear-read-state-button')).toBeVisible();
+    await page.getByTestId('clear-read-state-button').click();
+
+    expect(capturedPayload).toEqual({ clearAll: true });
+  });
+});

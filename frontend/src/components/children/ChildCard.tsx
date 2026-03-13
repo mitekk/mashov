@@ -3,18 +3,19 @@ import Link from 'next/link';
 import { BookOpen, AlertTriangle, ChevronLeft } from 'lucide-react';
 import type { ChildListItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
+import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 
 interface ChildCardProps {
   child: ChildListItem;
 }
 
 export function ChildCard({ child }: ChildCardProps) {
-  return (
-    <Link
-      href={`/children/${child.studentGuid}`}
-      data-testid={`child-list-card-${child.studentGuid}`}
-      className="card-base p-4 flex items-center gap-3 tap-target hover:bg-accent/30 transition-colors"
-    >
+  const safeHref = getPhase1HrefOrNull(
+    child.studentGuid ? `/children/${child.studentGuid}` : null,
+  );
+
+  const content = (
+    <>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
           <p className="text-base font-semibold text-foreground truncate">
@@ -46,8 +47,37 @@ export function ChildCard({ child }: ChildCardProps) {
             עודכן {formatRelativeHe(child.latestUpdateAt)}
           </p>
         )}
+        {!safeHref && (
+          <p className="text-[11px] text-muted-foreground mt-1">
+            קישור זה אינו זמין בשלב 1
+          </p>
+        )}
       </div>
       <ChevronLeft className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+    </>
+  );
+
+  const className = 'card-base p-4 flex items-center gap-3 tap-target transition-colors';
+
+  if (!safeHref) {
+    return (
+      <div
+        data-testid={`child-list-card-disabled-${child.studentGuid}`}
+        aria-disabled
+        className={`${className} opacity-70 cursor-not-allowed`}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href={safeHref}
+      data-testid={`child-list-card-${child.studentGuid}`}
+      className={`${className} hover:bg-accent/30`}
+    >
+      {content}
     </Link>
   );
 }

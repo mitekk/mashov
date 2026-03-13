@@ -1,60 +1,166 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
+  1: 'medium',
+  2: 'high',
+  4: 'low',
+  5: 'high',
+  6: 'medium',
+  10: 'medium',
+  11: 'low',
+};
+
 @Injectable()
 export class ChildrenService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getChildren() {
-    return this.prisma.student.findMany({
+    const students = await this.prisma.student.findMany({
       where: { isActive: true },
       orderBy: { fullName: 'asc' },
     });
+
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const data = await Promise.all(
+      students.map(async (student) => {
+        const [recentHomeworkCount, recentBehaviorCount, subjectCount, latestHomework, latestBehavior] =
+          await Promise.all([
+            this.prisma.homeworkItem.count({
+              where: {
+                studentGuid: student.studentGuid,
+                lessonDate: { gte: sevenDaysAgo },
+              },
+            }),
+            this.prisma.behaviorItem.count({
+              where: {
+                studentGuid: student.studentGuid,
+                lessonDate: { gte: sevenDaysAgo },
+                classification: { not: 'positive' },
+              },
+            }),
+            this.prisma.subjectEnrollment.count({
+              where: { studentGuid: student.studentGuid },
+            }),
+            this.prisma.homeworkItem.findFirst({
+              where: { studentGuid: student.studentGuid },
+              orderBy: { lessonDate: 'desc' },
+              select: { lessonDate: true },
+            }),
+            this.prisma.behaviorItem.findFirst({
+              where: { studentGuid: student.studentGuid },
+              orderBy: { eventAt: 'desc' },
+              select: { eventAt: true },
+            }),
+          ]);
+
+        const latestUpdateAt =
+          [
+            student.updatedAt,
+            latestHomework?.lessonDate ?? null,
+            latestBehavior?.eventAt ?? null,
+          ]
+            .filter((value): value is Date => value instanceof Date)
+            .sort((a, b) => b.getTime() - a.getTime())[0]
+            ?.toISOString() ?? null;
+
+        return {
+          studentGuid: student.studentGuid,
+          privateName: student.privateName,
+          familyName: student.familyName,
+          fullName: student.fullName,
+          classCode: student.classCode,
+          classNum: student.classNum,
+          gender: student.gender,
+          isActive: student.isActive,
+          recentHomeworkCount,
+          recentBehaviorCount,
+          subjectCount,
+          latestUpdateAt,
+        };
+      }),
+    );
+
+    return { data };
   }
 
   async getChildWorkspace(studentGuid: string) {
-    const student = await this.prisma.student.findUnique({
-      where: { studentGuid },
-    });
+    const student = await this.getStudentOrThrow(studentGuid);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    if (!student) {
-      throw new NotFoundException(`Student not found: ${studentGuid}`);
-    }
-
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const now = new Date();
-
-    const [homework, behavior, subjects, notices] = await Promise.all([
-      this.prisma.homeworkItem.findMany({
+    const [
+      recentHomeworkCount,
+      recentBehaviorCount,
+      subjectCount,
+      totalWeeklyHours,
+      attentionBehaviorCount,
+      lastSync,
+    ] = await Promise.all([
+      this.prisma.homeworkItem.count({
         where: {
           studentGuid,
-          lessonDate: { gte: thirtyDaysAgo },
+          lessonDate: { gte: sevenDaysAgo },
         },
-        orderBy: { lessonDate: 'desc' },
       }),
-      this.prisma.behaviorItem.findMany({
-        where: { studentGuid },
-        orderBy: { eventAt: 'desc' },
-      }),
-      this.prisma.subjectEnrollment.findMany({
-        where: { studentGuid },
-        orderBy: { subjectName: 'asc' },
-      }),
-      this.prisma.messageBoardItem.findMany({
+      this.prisma.behaviorItem.count({
         where: {
           studentGuid,
-          expirationDate: { gt: now },
+          lessonDate: { gte: sevenDaysAgo },
+          classification: { not: 'positive' },
         },
-        orderBy: { expirationDate: 'asc' },
+      }),
+      this.prisma.subjectEnrollment.count({
+        where: { studentGuid },
+      }),
+      this.prisma.subjectEnrollment.aggregate({
+        where: { studentGuid },
+        _sum: { weeklyHours: true },
+      }),
+      this.prisma.behaviorItem.count({
+        where: {
+          studentGuid,
+          lessonDate: { gte: sevenDaysAgo },
+          classification: 'attention',
+        },
+      }),
+      this.prisma.syncRun.findFirst({
+        where: {
+          source: {
+            in: [
+              `homework:${studentGuid}`,
+              `behavior:${studentGuid}`,
+              `groups:${studentGuid}`,
+              `lessons_count:${studentGuid}`,
+              `message_board:${studentGuid}`,
+            ],
+          },
+          status: 'success',
+        },
+        orderBy: { endedAt: 'desc' },
+        select: { endedAt: true },
       }),
     ]);
 
     return {
-      student,
-      homework,
-      behavior,
-      subjects,
-      notices,
+      student: {
+        studentGuid: student.studentGuid,
+        privateName: student.privateName,
+        familyName: student.familyName,
+        fullName: student.fullName,
+        classCode: student.classCode,
+        classNum: student.classNum,
+        gender: student.gender,
+        isActive: student.isActive,
+      },
+      summary: {
+        recentHomeworkCount,
+        recentBehaviorCount,
+        subjectCount,
+        totalWeeklyHours: totalWeeklyHours._sum.weeklyHours ?? 0,
+        attentionBehaviorCount,
+      },
+      lastSyncAt: lastSync?.endedAt?.toISOString() ?? null,
     };
   }
 
@@ -71,13 +177,28 @@ export class ChildrenService {
       this.prisma.homeworkItem.count({ where: { studentGuid } }),
     ]);
 
+    const handledMap = await this.getHandledMap('homework', items.map((item) => item.id));
+
     return {
-      data: items,
+      data: items.map((item) => ({
+        id: item.id,
+        studentGuid: item.studentGuid,
+        lessonId: item.lessonId,
+        groupId: item.groupId,
+        lessonDate: item.lessonDate.toISOString(),
+        lesson: item.lesson,
+        subjectName: item.subjectName,
+        homeworkText: item.homeworkText,
+        remark: item.remark,
+        files: this.asArray(item.files),
+        isHandled: handledMap.get(item.id) ?? false,
+        updatedAt: item.updatedAt.toISOString(),
+      })),
       pagination: {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: total === 0 ? 0 : Math.ceil(total / limit),
       },
     };
   }
@@ -92,7 +213,7 @@ export class ChildrenService {
 
     const where = {
       studentGuid,
-      ...(bucket !== 'all' ? { bucket } : {}),
+      ...(bucket !== 'all' ? { classification: bucket } : {}),
     };
 
     const [items, total] = await Promise.all([
@@ -105,13 +226,40 @@ export class ChildrenService {
       this.prisma.behaviorItem.count({ where }),
     ]);
 
+    const handledMap = await this.getHandledMap('behavior', items.map((item) => item.id));
+
     return {
-      data: items,
+      data: items.map((item) => {
+        const mappedBucket = this.mapBehaviorBucket(item.classification);
+        const priority = BEHAVIOR_PRIORITY_MAP[item.eventCode] ?? (mappedBucket === 'attention' ? 'medium' : 'low');
+
+        return {
+          id: item.id,
+          studentGuid: item.studentGuid,
+          lessonId: item.lessonId,
+          groupId: item.groupId,
+          eventCode: item.eventCode,
+          achvaCode: item.achvaCode,
+          achvaName: item.achvaName,
+          bucket: mappedBucket,
+          priority,
+          justifiable: item.justifiable,
+          lessonDate: item.lessonDate.toISOString(),
+          lesson: item.lesson,
+          subject: item.subject,
+          reporter: item.reporter,
+          remark: item.remark,
+          justification: item.justification,
+          eventAt: item.eventAt.toISOString(),
+          isHandled: handledMap.get(item.id) ?? false,
+          updatedAt: item.updatedAt.toISOString(),
+        };
+      }),
       pagination: {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: total === 0 ? 0 : Math.ceil(total / limit),
       },
     };
   }
@@ -119,32 +267,91 @@ export class ChildrenService {
   async getSubjects(studentGuid: string) {
     await this.requireStudent(studentGuid);
 
-    return this.prisma.subjectEnrollment.findMany({
+    const items = await this.prisma.subjectEnrollment.findMany({
       where: { studentGuid },
       orderBy: { subjectName: 'asc' },
     });
+
+    return {
+      data: items.map((item) => ({
+        id: item.id,
+        studentGuid: item.studentGuid,
+        groupId: item.groupId,
+        groupName: item.groupName,
+        subjectName: item.subjectName,
+        teachers: this.asArray(item.teachers),
+        inactiveTeachers: this.asArray(item.inactiveTeachers),
+        weeklyHours: item.weeklyHours,
+        lessonsCount: item.lessonsCount,
+        updatedAt: item.updatedAt.toISOString(),
+      })),
+    };
   }
 
   async getNotices(studentGuid: string) {
     await this.requireStudent(studentGuid);
 
     const now = new Date();
-    return this.prisma.messageBoardItem.findMany({
+    const items = await this.prisma.messageBoardItem.findMany({
       where: {
         studentGuid,
         expirationDate: { gt: now },
       },
       orderBy: { expirationDate: 'asc' },
     });
+
+    return {
+      data: items.map((item) => ({
+        id: item.id,
+        studentGuid: item.studentGuid,
+        eventId: item.eventId,
+        eventText: item.eventText,
+        expirationDate: item.expirationDate.toISOString(),
+        inSite: item.inSite,
+        updatedAt: item.updatedAt.toISOString(),
+      })),
+    };
   }
 
   private async requireStudent(studentGuid: string): Promise<void> {
+    await this.getStudentOrThrow(studentGuid);
+  }
+
+  private async getStudentOrThrow(studentGuid: string) {
     const student = await this.prisma.student.findUnique({
       where: { studentGuid },
-      select: { id: true },
     });
     if (!student) {
       throw new NotFoundException(`Student not found: ${studentGuid}`);
     }
+    return student;
+  }
+
+  private async getHandledMap(itemType: string, itemIds: string[]): Promise<Map<string, boolean>> {
+    if (itemIds.length === 0) return new Map();
+
+    const rows = await this.prisma.readState.findMany({
+      where: {
+        itemType,
+        itemId: { in: itemIds },
+        scopeType: 'household',
+        scopeId: 'default',
+      },
+      select: { itemId: true, isHandled: true },
+    });
+
+    return new Map(rows.map((row) => [row.itemId, row.isHandled]));
+  }
+
+  private mapBehaviorBucket(classification: string): 'attention' | 'positive' | 'neutral' {
+    if (classification === 'attention' || classification === 'positive' || classification === 'neutral') {
+      return classification;
+    }
+
+    return 'neutral';
+  }
+
+  private asArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
   }
 }

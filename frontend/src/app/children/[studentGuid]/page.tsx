@@ -28,6 +28,13 @@ export default function ChildWorkspacePage() {
   const [activeSection, setActiveSection] = useState<SectionId>('homework');
 
   const { data, isLoading, isError, refetch } = useChild(studentGuid);
+  const summary = data?.summary ?? {
+    recentHomeworkCount: 0,
+    recentBehaviorCount: 0,
+    subjectCount: 0,
+    totalWeeklyHours: 0,
+    attentionBehaviorCount: 0,
+  };
 
   if (isLoading) return <AppShell><LoadingState message="טוען נתוני ילד..." /></AppShell>;
   if (isError || !data) return <AppShell><ErrorState onRetry={() => void refetch()} /></AppShell>;
@@ -35,7 +42,7 @@ export default function ChildWorkspacePage() {
   return (
     <AppShell>
       <div data-testid="child-workspace" className="pb-4">
-        <ChildHeader student={data.student} summary={data.summary} lastSyncAt={data.lastSyncAt} />
+        <ChildHeader student={data.student} summary={summary} lastSyncAt={data.lastSyncAt} />
 
         {/* Section tabs */}
         <div className="sticky top-0 bg-background z-10 border-b border-border">

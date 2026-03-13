@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchSourceHealth, fetchProfile } from '@/api/settings';
-import { upsertReadState } from '@/api/readState';
+import { clearAllReadState } from '@/api/readState';
 
 export function useSourceHealth() {
   return useQuery({
@@ -22,13 +22,7 @@ export function useProfile() {
 export function useClearAllReadState() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () =>
-      upsertReadState({
-        itemType: 'feed_item',
-        itemId: '__clear_all__',
-        isRead: false,
-        isHandled: false,
-      }),
+    mutationFn: clearAllReadState,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });

@@ -8,14 +8,15 @@ import { SourceTypeBadge } from '@/components/ui/Badge';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { useMarkHandled } from '@/hooks/useReadState';
+import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 
 interface FeedItemProps {
   item: FeedItemType;
 }
 
-function getSafeFeedHref(item: FeedItemType): string {
+function getSafeFeedHref(item: FeedItemType): string | null {
   if (typeof item.linkPath === 'string' && item.linkPath.trim().length > 0) {
-    return item.linkPath;
+    return getPhase1HrefOrNull(item.linkPath);
   }
 
   if (item.sourceType === 'mail') return '/inbox';
@@ -33,7 +34,7 @@ export function FeedItem({ item }: FeedItemProps) {
   );
 
   const isHandled = item.isHandled;
-  const safeHref = getSafeFeedHref(item);
+  const safeHref = getPhase1HrefOrNull(getSafeFeedHref(item));
 
   return (
     <div
@@ -44,32 +45,61 @@ export function FeedItem({ item }: FeedItemProps) {
       )}
     >
       <div className="flex-1 min-w-0">
-        <Link href={safeHref} className="block group">
-          <div className="flex items-start gap-2 mb-1">
-            <SourceTypeBadge type={item.sourceType} />
-            <span className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap me-auto">
-              {formatRelativeHe(item.eventAt)}
-            </span>
-          </div>
-          <p
-            className={cn(
-              'text-sm font-medium text-foreground truncate group-hover:underline',
-              !item.isUnread && 'font-normal',
+        {safeHref ? (
+          <Link href={safeHref} className="block group">
+            <div className="flex items-start gap-2 mb-1">
+              <SourceTypeBadge type={item.sourceType} />
+              <span className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap me-auto">
+                {formatRelativeHe(item.eventAt)}
+              </span>
+            </div>
+            <p
+              className={cn(
+                'text-sm font-medium text-foreground truncate group-hover:underline',
+                !item.isUnread && 'font-normal',
+              )}
+            >
+              {item.title}
+            </p>
+            {item.summary && (
+              <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                {item.summary}
+              </p>
             )}
+            {item.studentName && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {item.studentName}
+              </p>
+            )}
+          </Link>
+        ) : (
+          <div
+            data-testid={`feed-item-disabled-${item.id}`}
+            aria-disabled
+            className="block opacity-70 cursor-not-allowed"
           >
-            {item.title}
-          </p>
-          {item.summary && (
-            <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
-              {item.summary}
+            <div className="flex items-start gap-2 mb-1">
+              <SourceTypeBadge type={item.sourceType} />
+              <span className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap me-auto">
+                {formatRelativeHe(item.eventAt)}
+              </span>
+            </div>
+            <p className="text-sm font-medium text-foreground truncate">{item.title}</p>
+            {item.summary && (
+              <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
+                {item.summary}
+              </p>
+            )}
+            {item.studentName && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {item.studentName}
+              </p>
+            )}
+            <p className="text-[11px] text-muted-foreground mt-1">
+              קישור זה אינו זמין בשלב 1
             </p>
-          )}
-          {item.studentName && (
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {item.studentName}
-            </p>
-          )}
-        </Link>
+          </div>
+        )}
       </div>
       <button
         data-testid={`mark-handled-${item.id}`}

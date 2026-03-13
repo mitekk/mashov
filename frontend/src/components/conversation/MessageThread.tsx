@@ -8,11 +8,16 @@ interface MessageThreadProps {
 }
 
 export function MessageThread({ conversation }: MessageThreadProps) {
+  const safeSubject =
+    typeof conversation.subject === 'string' && conversation.subject.trim().length > 0
+      ? conversation.subject
+      : 'ללא נושא';
+
   return (
     <section data-testid="message-thread" className="space-y-3">
       {/* Subject */}
       <div className="px-4 pt-4">
-        <h1 className="text-lg font-bold text-foreground">{conversation.subject}</h1>
+        <h1 className="text-lg font-bold text-foreground">{safeSubject}</h1>
       </div>
 
       {/* Messages */}

@@ -77,7 +77,7 @@ export class MailService {
       recentConversations: recentConversations.map((c) => ({
         conversationId: c.conversationId,
         subject: c.subject,
-        senderNamePreview: c.senderNamePreview,
+        senderNamePreview: c.senderNamePreview ?? '',
         sendTime: c.sendTime.toISOString(),
         isUnread: c.isUnread,
         hasAttachments: c.hasAttachments,
@@ -99,13 +99,35 @@ export class MailService {
       this.prisma.mailConversation.count({ where }),
     ]);
 
+    const readStateRows = await this.prisma.readState.findMany({
+      where: {
+        itemType: 'mail_conversation',
+        itemId: { in: items.map((item) => item.conversationId) },
+        scopeType: 'household',
+        scopeId: 'default',
+      },
+      select: { itemId: true, isHandled: true },
+    });
+    const handledMap = new Map(readStateRows.map((row) => [row.itemId, row.isHandled]));
+
     return {
-      data: items,
+      data: items.map((item) => ({
+        conversationId: item.conversationId,
+        subject: item.subject,
+        senderNamePreview: item.senderNamePreview ?? '',
+        sendTime: item.sendTime.toISOString(),
+        isUnread: item.isUnread,
+        hasAttachments: item.hasAttachments,
+        preventReply: item.preventReply,
+        labels: this.asStringArray(item.labels),
+        isHandled: handledMap.get(item.conversationId) ?? false,
+        lastFetchedAt: item.lastFetchedAt.toISOString(),
+      })),
       pagination: {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: total === 0 ? 0 : Math.ceil(total / limit),
       },
     };
   }
@@ -121,70 +143,151 @@ export class MailService {
 
     // Check if full messages with body exist in DB
     const existingMessages = await this.prisma.mailMessage.findMany({
-      where: {
-        conversationId,
-        bodyHtmlSanitized: { not: null },
-      },
+      where: { conversationId },
+      orderBy: { sendTime: 'asc' },
+    });
+    const hasRenderableBody = existingMessages.some(
+      (msg) => typeof msg.bodyHtmlSanitized === 'string' && msg.bodyHtmlSanitized.trim().length > 0,
+    );
+
+    if (!hasRenderableBody) {
+      // Lazy fetch from upstream
+      try {
+        const upstream = await this.mashovClient.get<UpstreamConversationDetail>(
+          `/api/mail/inbox/conversations/${conversationId}`,
+          {
+            headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+          },
+        );
+
+        await Promise.all(
+          (upstream.messages ?? []).map(async (msg) => {
+            const sanitized = msg.body ? sanitizeHtml(msg.body, SANITIZE_OPTIONS) : null;
+            const preview = sanitized
+              ? sanitizeHtml(sanitized, { allowedTags: [] }).substring(0, 200)
+              : null;
+
+            return this.prisma.mailMessage.upsert({
+              where: { messageId: msg.messageId },
+              create: {
+                messageId: msg.messageId,
+                conversationId: msg.conversationId,
+                senderId: msg.senderId,
+                senderName: msg.senderName,
+                subject: msg.subject,
+                bodyHtmlSanitized: sanitized,
+                bodyTextPreview: preview,
+                sendTime: new Date(msg.sendTime),
+                isUnread: msg.isNew,
+                recipients: (msg.recipients ?? []) as import('@prisma/client').Prisma.InputJsonValue,
+                files: (msg.files ?? []) as import('@prisma/client').Prisma.InputJsonValue,
+                preventReply: msg.preventReply,
+                sentViaEmail: msg.sentViaEmail,
+                sentViaSms: msg.sentViaSms,
+                rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
+              },
+              update: {
+                bodyHtmlSanitized: sanitized,
+                bodyTextPreview: preview,
+                sendTime: new Date(msg.sendTime),
+                isUnread: msg.isNew,
+                rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
+              },
+            });
+          }),
+        );
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Failed to fetch conversation detail from upstream: ${msg}`);
+      }
+    }
+
+    const messages = await this.prisma.mailMessage.findMany({
+      where: { conversationId },
+      orderBy: { sendTime: 'asc' },
     });
 
-    if (existingMessages.length > 0) {
-      return { conversation, messages: existingMessages };
-    }
-
-    // Lazy fetch from upstream
-    try {
-      const upstream = await this.mashovClient.get<UpstreamConversationDetail>(
-        `/api/mail/inbox/conversations/${conversationId}`,
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+    const readState = await this.prisma.readState.findUnique({
+      where: {
+        itemType_itemId_scopeType_scopeId: {
+          itemType: 'mail_conversation',
+          itemId: conversationId,
+          scopeType: 'household',
+          scopeId: 'default',
         },
-      );
+      },
+      select: { isHandled: true },
+    });
 
-      const messages = await Promise.all(
-        (upstream.messages ?? []).map(async (msg) => {
-          const sanitized = msg.body ? sanitizeHtml(msg.body, SANITIZE_OPTIONS) : null;
-          const preview = sanitized
-            ? sanitizeHtml(sanitized, { allowedTags: [] }).substring(0, 200)
-            : null;
+    return {
+      conversationId: conversation.conversationId,
+      subject: conversation.subject,
+      sendTime: conversation.sendTime.toISOString(),
+      isUnread: conversation.isUnread,
+      hasDrafts: conversation.hasDrafts,
+      hasAttachments: conversation.hasAttachments,
+      preventReply: conversation.preventReply,
+      labels: this.asStringArray(conversation.labels),
+      isHandled: readState?.isHandled ?? false,
+      messages: messages.map((msg) => ({
+        messageId: msg.messageId,
+        conversationId: msg.conversationId,
+        senderId: msg.senderId,
+        senderName: msg.senderName,
+        subject: msg.subject,
+        bodyHtmlSanitized: msg.bodyHtmlSanitized ?? '',
+        bodyTextPreview: msg.bodyTextPreview ?? '',
+        sendTime: msg.sendTime.toISOString(),
+        isUnread: msg.isUnread,
+        recipients: this.normalizeRecipients(msg.recipients),
+        preventReply: msg.preventReply,
+        sentViaEmail: msg.sentViaEmail,
+        sentViaSms: msg.sentViaSms,
+      })),
+      lastFetchedAt: conversation.lastFetchedAt.toISOString(),
+    };
+  }
 
-          return this.prisma.mailMessage.upsert({
-            where: { messageId: msg.messageId },
-            create: {
-              messageId: msg.messageId,
-              conversationId: msg.conversationId,
-              senderId: msg.senderId,
-              senderName: msg.senderName,
-              subject: msg.subject,
-              bodyHtmlSanitized: sanitized,
-              bodyTextPreview: preview,
-              sendTime: new Date(msg.sendTime),
-              isUnread: msg.isNew,
-              recipients: (msg.recipients ?? []) as import('@prisma/client').Prisma.InputJsonValue,
-              files: (msg.files ?? []) as import('@prisma/client').Prisma.InputJsonValue,
-              preventReply: msg.preventReply,
-              sentViaEmail: msg.sentViaEmail,
-              sentViaSms: msg.sentViaSms,
-              rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
-            },
-            update: {
-              bodyHtmlSanitized: sanitized,
-              bodyTextPreview: preview,
-              sendTime: new Date(msg.sendTime),
-              isUnread: msg.isNew,
-              rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
-            },
-          });
-        }),
-      );
+  private asStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.filter((entry): entry is string => typeof entry === 'string');
+  }
 
-      return { conversation, messages };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to fetch conversation detail from upstream: ${msg}`);
-      // Return with metadata-only messages as fallback
-      const fallback = await this.prisma.mailMessage.findMany({ where: { conversationId } });
-      return { conversation, messages: fallback };
-    }
+  private normalizeRecipients(value: unknown): Array<{
+    displayOrder: number;
+    displayName: string;
+    valueType: string;
+    targetType: string;
+    isGroup: boolean;
+  }> {
+    if (!Array.isArray(value)) return [];
+
+    return value.map((recipient, index) => {
+      if (recipient && typeof recipient === 'object') {
+        const candidate = recipient as Record<string, unknown>;
+        return {
+          displayOrder:
+            typeof candidate.displayOrder === 'number' ? candidate.displayOrder : index,
+          displayName:
+            typeof candidate.displayName === 'string'
+              ? candidate.displayName
+              : typeof candidate.value === 'string'
+                ? candidate.value
+                : '',
+          valueType: typeof candidate.valueType === 'string' ? candidate.valueType : '',
+          targetType: typeof candidate.targetType === 'string' ? candidate.targetType : '',
+          isGroup: Boolean(candidate.isGroup),
+        };
+      }
+
+      return {
+        displayOrder: index,
+        displayName: '',
+        valueType: '',
+        targetType: '',
+        isGroup: false,
+      };
+    });
   }
 
   async markUnread(conversationIds: string[]) {

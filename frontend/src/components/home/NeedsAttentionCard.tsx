@@ -4,6 +4,7 @@ import { Mail, AlertTriangle, BookOpen, AlertCircle } from 'lucide-react';
 import type { NeedsAttentionItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
+import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 
 interface NeedsAttentionCardProps {
   item: NeedsAttentionItem;
@@ -52,18 +53,17 @@ export function NeedsAttentionCard({ item }: NeedsAttentionCardProps) {
   const { border, icon, iconColor } = getTypeStyles(item.type);
   const safeHref =
     typeof item.linkPath === 'string' && item.linkPath.trim().length > 0
-      ? item.linkPath
+      ? getPhase1HrefOrNull(item.linkPath)
       : '/home';
 
-  return (
-    <Link
-      href={safeHref}
-      data-testid={`attention-card-${item.id}`}
-      className={cn(
-        'card-base p-4 flex gap-3 items-start tap-target hover:bg-accent/30 transition-colors',
-        border,
-      )}
-    >
+  const className = cn(
+    'card-base p-4 flex gap-3 items-start tap-target transition-colors',
+    border,
+    safeHref ? 'hover:bg-accent/30' : 'opacity-70 cursor-not-allowed',
+  );
+
+  const content = (
+    <>
       <span className={cn('mt-0.5 flex-shrink-0', iconColor)}>{icon}</span>
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
@@ -82,7 +82,34 @@ export function NeedsAttentionCard({ item }: NeedsAttentionCardProps) {
             {item.summary}
           </p>
         )}
+        {!safeHref && (
+          <p className="text-[11px] text-muted-foreground mt-1">
+            קישור זה אינו זמין בשלב 1
+          </p>
+        )}
       </div>
-    </Link>
+    </>
+  );
+
+  if (safeHref) {
+    return (
+      <Link
+        href={safeHref}
+        data-testid={`attention-card-${item.id}`}
+        className={className}
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <div
+      data-testid={`attention-card-disabled-${item.id}`}
+      aria-disabled
+      className={className}
+    >
+      {content}
+    </div>
   );
 }

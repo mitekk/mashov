@@ -36,12 +36,15 @@ export class ReadStateController {
     @Body() body: UpsertReadStateDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    if (body.clearAll === true) {
+    const isLegacyClearAll =
+      body.itemType === 'feed_item' && body.itemId === '__clear_all__';
+
+    if (body.clearAll === true || isLegacyClearAll) {
       return this.readStateService.clearAll();
     }
 
     if (!body.itemType || !body.itemId) {
-      res.status(200);
+      res.status(400);
       return { error: { code: 'VALIDATION_ERROR', message: 'itemType and itemId are required', details: [] } };
     }
 

@@ -1,133 +1,116 @@
-import { SettingsService } from './settings.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SyncRun } from '@prisma/client';
+import { FreshnessService } from '../sync/freshness.service';
+import { SettingsService } from './settings.service';
 
-function makeSyncRun(source: string, status: string, startedAt: Date): SyncRun {
+function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
   return {
-    id: `run-${source}`,
-    source,
-    status,
-    startedAt,
-    endedAt: new Date(startedAt.getTime() + 5000),
-    fetchedCount: null,
-    createdCount: null,
-    updatedCount: null,
-    errorMessage: status === 'failed' ? 'timeout error' : null,
-  } as SyncRun;
-}
-
-function makeMockPrisma(overrides: Partial<{
-  syncRunFindMany: jest.Mock;
-  parentProfileFindFirst: jest.Mock;
-}>): jest.Mocked<PrismaService> {
-  return {
-    syncRun: {
-      findMany: overrides.syncRunFindMany ?? jest.fn().mockResolvedValue([]),
+    student: {
+      findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([]),
     },
     parentProfile: {
-      findFirst: overrides.parentProfileFindFirst ?? jest.fn().mockResolvedValue(null),
+      findFirst: overrides.profileFindFirst ?? jest.fn().mockResolvedValue(null),
+    },
+    householdConnection: {
+      findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
     },
   } as unknown as jest.Mocked<PrismaService>;
 }
 
+function makeMockFreshnessService(overrides: Partial<Record<string, jest.Mock>>) {
+  return {
+    getAllSourceHealth:
+      overrides.getAllSourceHealth ?? jest.fn().mockResolvedValue([]),
+    computeFreshness:
+      overrides.computeFreshness ??
+      jest.fn().mockResolvedValue({
+        state: 'fresh',
+        lastSyncAt: null,
+        staleSources: [],
+      }),
+  } as unknown as jest.Mocked<FreshnessService>;
+}
+
 describe('SettingsService', () => {
   describe('getSourceHealth', () => {
-    it('returns an empty array when there are no sync runs', async () => {
-      const service = new SettingsService(makeMockPrisma({}));
-      const result = await service.getSourceHealth();
-      expect(result).toEqual([]);
-    });
-
-    it('returns the latest run per source', async () => {
-      const runs = [
-        makeSyncRun('notifications', 'success', new Date('2026-03-11T10:00:00Z')),
-        makeSyncRun('notifications', 'failed', new Date('2026-03-11T09:00:00Z')),
-        makeSyncRun('mail_inbox', 'success', new Date('2026-03-11T10:00:00Z')),
-      ];
-
-      const service = new SettingsService(
-        makeMockPrisma({ syncRunFindMany: jest.fn().mockResolvedValue(runs) }),
-      );
-
-      const result = await service.getSourceHealth();
-      // Should return 2 entries (one per source)
-      expect(result).toHaveLength(2);
-    });
-
-    it('deduplicates sources — first occurrence (most recent by startedAt) wins', async () => {
-      const recentSuccess = makeSyncRun('notifications', 'success', new Date('2026-03-11T10:00:00Z'));
-      const olderFailed = makeSyncRun('notifications', 'failed', new Date('2026-03-10T10:00:00Z'));
-
+    it('returns contract shape with sources + overallState + lastFullSyncAt', async () => {
       const service = new SettingsService(
         makeMockPrisma({
-          syncRunFindMany: jest.fn().mockResolvedValue([recentSuccess, olderFailed]),
+          studentFindMany: jest.fn().mockResolvedValue([
+            { studentGuid: 'guid-1' },
+            { studentGuid: 'guid-2' },
+          ]),
+        }),
+        makeMockFreshnessService({
+          getAllSourceHealth: jest.fn().mockResolvedValue([
+            {
+              source: 'notifications',
+              status: 'fresh',
+              lastSuccessAt: '2026-03-12T10:00:00Z',
+              lastAttemptAt: '2026-03-12T10:00:00Z',
+              lastErrorMessage: null,
+              fetchedCount: 4,
+              staleThresholdMinutes: 15,
+            },
+          ]),
+          computeFreshness: jest.fn().mockResolvedValue({
+            state: 'fresh',
+            lastSyncAt: '2026-03-12T10:00:00Z',
+            staleSources: [],
+          }),
         }),
       );
 
       const result = await service.getSourceHealth();
-      expect(result).toHaveLength(1);
-      expect(result[0].status).toBe('success');
-    });
-
-    it('includes errorMessage for failed runs', async () => {
-      const failedRun = makeSyncRun('behavior', 'failed', new Date('2026-03-11T10:00:00Z'));
-
-      const service = new SettingsService(
-        makeMockPrisma({ syncRunFindMany: jest.fn().mockResolvedValue([failedRun]) }),
-      );
-
-      const result = await service.getSourceHealth();
-      expect(result[0].errorMessage).toBe('timeout error');
-    });
-
-    it('returns null errorMessage for successful runs', async () => {
-      const successRun = makeSyncRun('notifications', 'success', new Date('2026-03-11T10:00:00Z'));
-
-      const service = new SettingsService(
-        makeMockPrisma({ syncRunFindMany: jest.fn().mockResolvedValue([successRun]) }),
-      );
-
-      const result = await service.getSourceHealth();
-      expect(result[0].errorMessage).toBeNull();
-    });
-
-    it('returns lastRun as ISO string', async () => {
-      const run = makeSyncRun('notifications', 'success', new Date('2026-03-11T10:00:00Z'));
-
-      const service = new SettingsService(
-        makeMockPrisma({ syncRunFindMany: jest.fn().mockResolvedValue([run]) }),
-      );
-
-      const result = await service.getSourceHealth();
-      expect(result[0].lastRun).toBe(run.startedAt.toISOString());
+      expect(result).toEqual({
+        sources: expect.any(Array),
+        overallState: 'fresh',
+        lastFullSyncAt: '2026-03-12T10:00:00Z',
+      });
+      expect(result.sources).toHaveLength(1);
     });
   });
 
   describe('getProfile', () => {
-    it('returns the parent profile when one exists', async () => {
-      const profile = {
-        id: 'profile-1',
-        upstreamUserId: 'user-abc',
-        displayName: 'John Parent',
-        email: 'john@example.com',
-        cellphone: '050-000-0000',
-        detailsState: 1,
-        rawPayload: null,
-        updatedAt: new Date(),
-      };
-
+    it('returns merged profile + household fields in contract shape', async () => {
       const service = new SettingsService(
-        makeMockPrisma({ parentProfileFindFirst: jest.fn().mockResolvedValue(profile) }),
+        makeMockPrisma({
+          profileFindFirst: jest.fn().mockResolvedValue({
+            upstreamUserId: 'user-1',
+            displayName: 'Parent Name',
+            email: 'parent@example.com',
+            cellphone: '050-1234567',
+            detailsState: 2,
+            updatedAt: new Date('2026-03-12T09:00:00Z'),
+          }),
+          householdFindFirst: jest.fn().mockResolvedValue({
+            schoolName: 'Test School',
+            schoolYear: 2026,
+            schoolCode: 1234,
+          }),
+        }),
+        makeMockFreshnessService({}),
       );
 
       const result = await service.getProfile();
-      expect(result).toBeDefined();
-      expect(result?.displayName).toBe('John Parent');
+      expect(result).toEqual({
+        upstreamUserId: 'user-1',
+        displayName: 'Parent Name',
+        email: 'parent@example.com',
+        cellphone: '050-1234567',
+        schoolName: 'Test School',
+        schoolYear: 2026,
+        schoolCode: 1234,
+        detailsState: 2,
+        updatedAt: '2026-03-12T09:00:00.000Z',
+      });
     });
 
-    it('returns null when no parent profile exists', async () => {
+    it('returns null when parent profile does not exist', async () => {
       const service = new SettingsService(
-        makeMockPrisma({ parentProfileFindFirst: jest.fn().mockResolvedValue(null) }),
+        makeMockPrisma({
+          profileFindFirst: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockFreshnessService({}),
       );
 
       const result = await service.getProfile();
