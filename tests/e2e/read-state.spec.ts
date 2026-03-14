@@ -1,6 +1,27 @@
 import { test, expect, request as playwrightRequest } from '@playwright/test';
 import { HomePage } from './pages/HomePage';
 
+const EMPTY_DASHBOARD_RESPONSE = {
+  freshness: {
+    state: 'fresh',
+    lastSyncAt: null,
+    staleSources: [],
+  },
+  summary: {
+    unreadConversations: 0,
+    recentHomeworkCount: 0,
+    recentBehaviorCount: 0,
+    childrenCount: 0,
+  },
+  needsAttention: [],
+  feed: [],
+  children: [],
+  school: {
+    schoolName: '',
+    schoolYear: new Date().getFullYear(),
+  },
+};
+
 /**
  * E2E tests for read-state / mark-handled behavior.
  *
@@ -82,6 +103,12 @@ test.describe('Read-state: mark handled via API', () => {
 });
 
 test.describe('Home page: mark-handled interaction', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: EMPTY_DASHBOARD_RESPONSE });
+    });
+  });
+
   test('home page loads and feed section is present for interaction', async ({ page }) => {
     const homePage = new HomePage(page);
     await homePage.navigate();

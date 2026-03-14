@@ -396,7 +396,9 @@ test.describe('Navigation and fallback hardening', () => {
         );
         window.sessionStorage.setItem('__child_workspace_unload_count', String(current + 1));
       });
-      const marker = window.crypto.randomUUID();
+      const marker = typeof window.crypto.randomUUID === 'function'
+        ? window.crypto.randomUUID()
+        : `marker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       (window as Window & { __childWorkspaceDocumentMarker?: string }).__childWorkspaceDocumentMarker = marker;
       return marker;
     });
