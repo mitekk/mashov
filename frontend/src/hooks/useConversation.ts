@@ -36,7 +36,14 @@ export function useMarkConversationNew() {
 }
 
 export function useMarkConversationRead() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (conversationId: string) => markConversationsRead([conversationId]),
+    onSuccess: (_data: MailBulkActionResponse, conversationId: string) => {
+      void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
   });
 }

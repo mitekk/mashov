@@ -5,6 +5,7 @@ export class InboxPage {
   readonly inboxContainer: Locator;
   readonly filterAllButton: Locator;
   readonly filterUnreadButton: Locator;
+  readonly filterArchivedButton: Locator;
   readonly conversationList: Locator;
   readonly bulkActionsBar: Locator;
 
@@ -13,6 +14,7 @@ export class InboxPage {
     this.inboxContainer = page.getByTestId('inbox-page');
     this.filterAllButton = page.getByTestId('filter-all');
     this.filterUnreadButton = page.getByTestId('filter-unread');
+    this.filterArchivedButton = page.getByTestId('filter-archived');
     this.conversationList = page.getByTestId('conversation-list');
     this.bulkActionsBar = page.getByTestId('inbox-bulk-actions');
   }
@@ -32,12 +34,17 @@ export class InboxPage {
 
   async clickFilterAll(): Promise<void> {
     await this.filterAllButton.click();
-    await this.page.waitForURL((url) => url.searchParams.get('filter') !== 'unread');
+    await this.page.waitForURL((url) => !url.searchParams.has('filter'));
   }
 
   async clickFilterUnread(): Promise<void> {
     await this.filterUnreadButton.click();
-    await this.page.waitForURL((url) => url.searchParams.get('filter') === 'unread');
+    await this.page.waitForURL((url) => url.searchParams.get('filter') === 'new');
+  }
+
+  async clickFilterArchived(): Promise<void> {
+    await this.filterArchivedButton.click();
+    await this.page.waitForURL((url) => url.searchParams.get('filter') === 'archived');
   }
 
   async clickConversation(conversationId: string): Promise<void> {

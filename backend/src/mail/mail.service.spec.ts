@@ -115,7 +115,7 @@ describe('MailService', () => {
         makeMockMashovClient({}),
       );
 
-      const result = await service.getConversations(1, 20, false);
+      const result = await service.getConversations(1, 20, 'all');
       expect(result.pagination).toMatchObject({ page: 1, total: 1, totalPages: 1 });
       expect(result.data[0]).toMatchObject({
         conversationId: 'conv-1',
@@ -134,7 +134,7 @@ describe('MailService', () => {
         makeMockMashovClient({}),
       );
 
-      const result = await service.getConversations(1, 20, false);
+      const result = await service.getConversations(1, 20, 'all');
       expect(result.data[0]).not.toHaveProperty('isHandled');
     });
   });

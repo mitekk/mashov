@@ -21,10 +21,10 @@ export function useMailSummary() {
   });
 }
 
-export function useConversations(newOnly: boolean) {
+export function useConversations(filter: 'all' | 'new' | 'archived') {
   return useInfiniteQuery({
-    queryKey: ['conversations', newOnly],
-    queryFn: ({ pageParam }: { pageParam: unknown }) => fetchConversations(Number(pageParam), 20, newOnly),
+    queryKey: ['conversations', filter],
+    queryFn: ({ pageParam }: { pageParam: unknown }) => fetchConversations(Number(pageParam), 20, filter),
     initialPageParam: 1,
     getNextPageParam: (lastPage) => (
       lastPage.pagination.page < lastPage.pagination.totalPages

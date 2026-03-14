@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Put, Body, Query } from '@nestjs/common';
-import { IsArray, IsString, IsOptional, IsBoolean, IsInt, Min, Max } from 'class-validator';
+import { IsArray, IsString, IsOptional, IsIn, IsBoolean, IsInt, Min, Max } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { MailService } from './mail.service';
 
@@ -17,6 +17,11 @@ class ConversationsQueryDto {
   @Max(100)
   limit?: number = 20;
 
+  @IsOptional()
+  @IsIn(['all', 'new', 'archived'])
+  filter?: 'all' | 'new' | 'archived' = 'all';
+
+  /** @deprecated use filter=new instead */
   @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
@@ -54,8 +59,10 @@ export class MailController {
   async getConversations(@Query() query: ConversationsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const newOnly = query.newOnly ?? false;
-    return this.mailService.getConversations(page, limit, newOnly);
+    // Support legacy newOnly param for backward compat with older clients/tests
+    const filter: 'all' | 'new' | 'archived' =
+      query.filter ?? (query.newOnly ? 'new' : 'all');
+    return this.mailService.getConversations(page, limit, filter);
   }
 
   @Get('conversations/:id')

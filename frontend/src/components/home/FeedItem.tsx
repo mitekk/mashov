@@ -9,6 +9,7 @@ import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { useMarkNew } from '@/hooks/useMarkNew';
 import { useArchive } from '@/hooks/useArchive';
+import { useArchive as useMailArchive } from '@/hooks/useMail';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 import { buildBehaviorDetailHref, buildChildSectionHref, buildHomeworkDetailHref } from '@/lib/child-routes';
 
@@ -63,6 +64,8 @@ export function FeedItem({ item }: FeedItemProps) {
     studentGuid: item.studentGuid ?? '',
     invalidateKeys: archiveInvalidateKeys,
   });
+
+  const { mutate: mutateMailArchive, isPending: isMailArchivePending } = useMailArchive();
 
   const safeHref = getPhase1HrefOrNull(getSafeFeedHref(item));
 
@@ -151,6 +154,17 @@ export function FeedItem({ item }: FeedItemProps) {
             className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
           >
             <Archive className={cn('w-4 h-4', item.isArchived && 'text-primary')} />
+          </button>
+        )}
+        {isMailItem && (
+          <button
+            data-testid={`feed-item-archive-${item.id}`}
+            onClick={() => mutateMailArchive([item.sourceId])}
+            disabled={isMailArchivePending}
+            aria-label="העבר לארכיון"
+            className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+          >
+            <Archive className="w-4 h-4" />
           </button>
         )}
       </div>

@@ -16,12 +16,12 @@ export function fetchMailSummary(): Promise<MailSummary> {
 export function fetchConversations(
   page = 1,
   limit = 20,
-  newOnly = false,
+  filter: 'all' | 'new' | 'archived' = 'all',
 ): Promise<ConversationsResponse> {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
-    newOnly: String(newOnly),
+    filter,
   });
   return apiFetch<ConversationsResponse>(`/mail/conversations?${params.toString()}`);
 }

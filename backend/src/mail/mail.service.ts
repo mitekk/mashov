@@ -109,8 +109,8 @@ export class MailService {
     };
   }
 
-  async getConversations(page: number, limit: number, newOnly: boolean) {
-    const where = this.buildInboxWhere(newOnly);
+  async getConversations(page: number, limit: number, filter: 'all' | 'new' | 'archived') {
+    const where = this.buildInboxWhere(filter);
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
         where,
@@ -288,9 +288,12 @@ export class MailService {
     };
   }
 
-  private buildInboxWhere(newOnly: boolean): Prisma.MailConversationWhereInput {
+  private buildInboxWhere(filter: 'all' | 'new' | 'archived'): Prisma.MailConversationWhereInput {
+    if (filter === 'archived') {
+      return { labels: { array_contains: ['archived'] } };
+    }
     return {
-      ...(newOnly ? { isNew: true } : {}),
+      ...(filter === 'new' ? { isNew: true } : {}),
       NOT: { labels: { array_contains: ['archived'] } },
     };
   }
@@ -390,17 +393,14 @@ export class MailService {
       this.logger.warn(`Upstream archive failed: ${msg}; updating DB only`);
     }
 
-    await this.prisma.mailMessage.deleteMany({
+    const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-    });
-
-    const deleted = await this.prisma.mailConversation.deleteMany({
-      where: { conversationId: { in: conversationIds } },
+      data: { isNew: false, labels: ['archived'] as unknown as Prisma.InputJsonValue },
     });
 
     await this.updateCachedNewCount();
 
-    return { updated: deleted.count };
+    return { updated: updated.count };
   }
 
   private async updateCachedNewCount(): Promise<void> {

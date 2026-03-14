@@ -13,10 +13,18 @@ import { useArchive, useConversations, useMailSummary, useMarkUnread } from '@/h
 import { Archive, Mail, MailOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+type InboxFilter = 'all' | 'new' | 'archived';
+
+function getFilterFromParam(param: string | null): InboxFilter {
+  if (param === 'new' || param === 'unread') return 'new';
+  if (param === 'archived') return 'archived';
+  return 'all';
+}
+
 function InboxPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const unreadOnly = searchParams.get('filter') === 'unread';
+  const activeFilter = getFilterFromParam(searchParams.get('filter'));
   const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
 
   const { data: summary } = useMailSummary();
@@ -28,7 +36,7 @@ function InboxPageContent() {
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
-  } = useConversations(unreadOnly);
+  } = useConversations(activeFilter);
   const { mutate: markUnread, isPending: isMarkUnreadPending } = useMarkUnread();
   const { mutate: archive, isPending: isArchivePending } = useArchive();
 
@@ -39,10 +47,10 @@ function InboxPageContent() {
   const isBulkActionPending = isMarkUnreadPending || isArchivePending;
   const hasSelection = selectedConversationIds.length > 0;
 
-  const setFilter = (val: boolean) => {
+  const setFilter = (val: InboxFilter) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (val) params.set('filter', 'unread');
-    else params.delete('filter');
+    if (val === 'all') params.delete('filter');
+    else params.set('filter', val);
     const nextQuery = params.toString();
     router.replace(nextQuery ? `/inbox?${nextQuery}` : '/inbox');
     setSelectedConversationIds([]);
@@ -100,10 +108,10 @@ function InboxPageContent() {
           <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm">
             <button
               data-testid="filter-all"
-              onClick={() => setFilter(false)}
+              onClick={() => setFilter('all')}
               className={cn(
                 'px-3 py-1.5 transition-colors',
-                !unreadOnly
+                activeFilter === 'all'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent',
               )}
@@ -112,15 +120,27 @@ function InboxPageContent() {
             </button>
             <button
               data-testid="filter-unread"
-              onClick={() => setFilter(true)}
+              onClick={() => setFilter('new')}
               className={cn(
                 'px-3 py-1.5 transition-colors',
-                unreadOnly
+                activeFilter === 'new'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent',
               )}
             >
               לא נקראו
+            </button>
+            <button
+              data-testid="filter-archived"
+              onClick={() => setFilter('archived')}
+              className={cn(
+                'px-3 py-1.5 transition-colors',
+                activeFilter === 'archived'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent',
+              )}
+            >
+              ארכיון
             </button>
           </div>
           <ThemeToggle />
@@ -183,7 +203,13 @@ function InboxPageContent() {
           conversations.length === 0 ? (
             <EmptyState
               icon={<Mail className="w-10 h-10" />}
-              title={unreadOnly ? 'אין הודעות שלא נקראו' : 'תיבת הדואר ריקה'}
+              title={
+                activeFilter === 'new'
+                  ? 'אין הודעות שלא נקראו'
+                  : activeFilter === 'archived'
+                    ? 'אין פריטים בארכיון'
+                    : 'תיבת הדואר ריקה'
+              }
             />
           ) : (
             <ConversationList
