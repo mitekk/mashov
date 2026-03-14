@@ -7,6 +7,7 @@ import { SourceHealthList } from '@/components/more/SourceHealthList';
 import { ProfileCard } from '@/components/more/ProfileCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { useSourceHealth, useProfile, useClearAllReadState } from '@/hooks/useSettings';
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? '1.0.0';
@@ -18,15 +19,16 @@ export default function MorePage() {
 
   return (
     <AppShell>
-      <div data-testid="more-page" className="px-4 pb-4 space-y-6">
-        <header className="pt-4">
-          <h1 className="text-xl font-bold text-foreground">עוד</h1>
+      <div data-testid="more-page" className="page-shell space-y-7">
+        <header className="page-header">
+          <h1 className="page-title">עוד</h1>
+          <ThemeToggle />
         </header>
 
         {/* Profile */}
         {profile && (
           <section>
-            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               פרטי הורה
             </h2>
             <ProfileCard profile={profile} />
@@ -35,7 +37,7 @@ export default function MorePage() {
 
         {/* Source health */}
         <section>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             מצב סנכרון
           </h2>
           {healthLoading && <LoadingState message="טוען..." />}
@@ -45,7 +47,7 @@ export default function MorePage() {
 
         {/* Clear read state */}
         <section>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             פעולות
           </h2>
           <div className="card-base">
@@ -53,7 +55,7 @@ export default function MorePage() {
               data-testid="clear-read-state-button"
               onClick={() => clearAll()}
               disabled={isClearing}
-              className="w-full flex items-center gap-3 px-4 py-3 text-sm text-destructive hover:bg-destructive/5 transition-colors rounded-xl disabled:opacity-50"
+              className="flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
             >
               <Trash2 className="w-4 h-4 flex-shrink-0" />
               <span>נקה מצב קריאה</span>

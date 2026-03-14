@@ -46,10 +46,10 @@ export function getBucketColor(bucket: BehaviorBucket): {
 } {
   switch (bucket) {
     case 'attention':
-      return { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' };
+      return { bg: 'bg-attention-subtle', text: 'text-attention', border: 'border-attention/45' };
     case 'positive':
-      return { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' };
+      return { bg: 'bg-positive-subtle', text: 'text-positive', border: 'border-positive/45' };
     case 'neutral':
-      return { bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-200' };
+      return { bg: 'bg-muted', text: 'text-muted-foreground', border: 'border-border' };
   }
 }

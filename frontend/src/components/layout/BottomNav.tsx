@@ -73,10 +73,10 @@ export function BottomNav() {
   return (
     <nav
       data-testid="bottom-nav"
-      className="fixed bottom-0 inset-x-0 bg-card border-t border-border z-50"
+      className="fixed inset-x-0 bottom-0 z-50 border-t border-border/80 bg-card/90 backdrop-blur"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
-      <div className="flex items-stretch">
+      <div className="mx-auto flex max-w-5xl items-stretch px-2 py-1.5">
         {navItems.map((item) => {
           const activeRoot = item.activeRoot ?? item.href;
           const isActive =
@@ -87,10 +87,10 @@ export function BottomNav() {
               href={item.href}
               data-testid={item.testId}
               className={cn(
-                'flex flex-col items-center justify-center flex-1 py-2 gap-1 tap-target transition-colors',
+                'tap-target flex flex-1 flex-col items-center justify-center gap-1 rounded-2xl py-2 transition-colors',
                 isActive
-                  ? 'text-primary'
-                  : 'text-muted-foreground hover:text-foreground',
+                  ? 'bg-primary/12 text-primary'
+                  : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground',
               )}
               aria-current={isActive ? 'page' : undefined}
             >

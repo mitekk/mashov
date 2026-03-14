@@ -12,7 +12,7 @@ interface ConversationListProps {
 
 export function ConversationList({ conversations, pagination, onLoadMore }: ConversationListProps) {
   return (
-    <div data-testid="conversation-list" className="space-y-2 px-4">
+    <div data-testid="conversation-list" className="space-y-2">
       {conversations.map((conversation) => (
         <ConversationItem
           key={conversation.conversationId}
@@ -23,7 +23,7 @@ export function ConversationList({ conversations, pagination, onLoadMore }: Conv
         <button
           onClick={onLoadMore}
           data-testid="load-more-conversations"
-          className="w-full py-2.5 text-sm text-primary font-medium border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors tap-target"
+          className="tap-target w-full rounded-2xl border border-primary/30 py-2.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
         >
           טען עוד
         </button>

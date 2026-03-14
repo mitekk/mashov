@@ -8,13 +8,13 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon, title, subtitle }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+    <div className="card-base flex flex-col items-center justify-center px-4 py-12 text-center">
       {icon && (
-        <div className="mb-4 text-muted-foreground opacity-40">
+        <div className="mb-4 text-muted-foreground/80 opacity-80">
           {icon}
         </div>
       )}
-      <p className="text-base font-medium text-foreground mb-1">{title}</p>
+      <p className="mb-1 text-base font-medium text-foreground">{title}</p>
       {subtitle && (
         <p className="text-sm text-muted-foreground">{subtitle}</p>
       )}

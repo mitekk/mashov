@@ -1,3 +1,5 @@
+'use client';
+
 import React from 'react';
 import Link from 'next/link';
 import { BookOpen, AlertTriangle } from 'lucide-react';
@@ -34,12 +36,15 @@ export function ChildQuickCard({ child, isSelected = false }: ChildQuickCardProp
           <BookOpen className="w-3 h-3" />
           {child.recentHomeworkCount}
         </span>
-        {child.recentBehaviorCount > 0 && (
-          <span className="flex items-center gap-1 text-amber-600">
-            <AlertTriangle className="w-3 h-3" />
-            {child.recentBehaviorCount}
-          </span>
-        )}
+        <span
+          className={cn(
+            'flex items-center gap-1',
+            child.recentBehaviorCount > 0 ? 'text-attention' : 'text-muted-foreground',
+          )}
+        >
+          <AlertTriangle className="w-3 h-3" />
+          {child.recentBehaviorCount}
+        </span>
       </div>
       {child.oneLineStatus && (
         <p className="text-xs text-muted-foreground line-clamp-1">
@@ -60,7 +65,7 @@ export function ChildQuickCard({ child, isSelected = false }: ChildQuickCardProp
   );
 
   const className = cn(
-    'card-base p-4 flex flex-col gap-2 tap-target transition-colors min-w-[160px] flex-shrink-0',
+    'card-base tap-target flex min-w-[176px] flex-shrink-0 flex-col gap-2.5 p-4 transition-colors',
     isSelected
       ? 'border-primary shadow-[0_0_0_1px_hsl(var(--primary))]'
       : 'border-border',
@@ -83,7 +88,7 @@ export function ChildQuickCard({ child, isSelected = false }: ChildQuickCardProp
       href={safeHref}
       onClick={() => setSelectedChildGuid(child.studentGuid)}
       data-testid={`child-card-${child.studentGuid}`}
-      className={cn(className, 'hover:bg-accent/30')}
+      className={cn(className, 'hover:bg-accent/40')}
     >
       {content}
     </Link>

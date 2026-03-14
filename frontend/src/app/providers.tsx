@@ -3,6 +3,7 @@
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SelectedChildProvider } from '@/hooks/useSelectedChild';
+import { ThemeProvider } from '@/hooks/useTheme';
 
 function makeQueryClient(): QueryClient {
   return new QueryClient({
@@ -37,9 +38,11 @@ export default function Providers({ children }: ProvidersProps) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <SelectedChildProvider>
-        {children}
-      </SelectedChildProvider>
+      <ThemeProvider>
+        <SelectedChildProvider>
+          {children}
+        </SelectedChildProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

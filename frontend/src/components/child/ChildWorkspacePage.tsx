@@ -122,7 +122,7 @@ export function ChildWorkspacePage({
 
   return (
     <AppShell>
-      <div data-testid="child-workspace" className="pb-6">
+      <div data-testid="child-workspace" className="page-shell space-y-4 pb-6">
         <ChildHeader
           student={data.student}
           summary={summary}
@@ -132,8 +132,8 @@ export function ChildWorkspacePage({
           onChildChange={handleChildChange}
         />
 
-        <div className="sticky top-0 z-10 mt-4 border-y border-border bg-background/95 backdrop-blur">
-          <div className="flex overflow-x-auto px-4 gap-2 py-2.5 scrollbar-hide">
+        <div className="sticky top-2 z-10 rounded-2xl border border-border/80 bg-background/85 backdrop-blur">
+          <div className="flex gap-2 overflow-x-auto px-3 py-2.5 scrollbar-hide">
             {SECTIONS.map((section) => {
               return (
                 <button
@@ -144,11 +144,10 @@ export function ChildWorkspacePage({
                   aria-current={activeSection === section.id ? 'page' : undefined}
                   aria-pressed={activeSection === section.id}
                   className={cn(
-                    'tap-target flex-shrink-0 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
-                    'inline-flex items-center gap-1.5',
+                    'tap-target inline-flex flex-shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors',
                     activeSection === section.id
-                      ? 'border-primary bg-primary text-primary-foreground shadow-sm'
-                      : 'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground',
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-border/80 bg-card/90 text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
                 >
                   {section.icon}

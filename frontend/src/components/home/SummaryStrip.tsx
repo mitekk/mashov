@@ -22,16 +22,16 @@ interface ChipProps {
 
 function SummaryChip({ icon, count, label, href, variant = 'default' }: ChipProps) {
   const variantStyles = {
-    default: 'bg-secondary text-secondary-foreground border-border',
-    attention: 'bg-amber-50 text-amber-700 border-amber-200',
-    positive: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    info: 'bg-blue-50 text-blue-700 border-blue-200',
+    default: 'bg-secondary/80 text-secondary-foreground border-border',
+    attention: 'bg-attention-subtle text-attention border-attention/35',
+    positive: 'bg-positive-subtle text-positive border-positive/35',
+    info: 'bg-info-subtle text-info border-info/35',
   };
 
   return (
     <Link
       href={href}
-      className={`flex items-center gap-2 px-3 py-2 rounded-full border text-sm font-medium flex-shrink-0 tap-target transition-opacity hover:opacity-80 ${variantStyles[variant]}`}
+      className={`tap-target flex flex-shrink-0 items-center gap-2 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors hover:bg-accent ${variantStyles[variant]}`}
     >
       <span className="w-4 h-4 flex-shrink-0">{icon}</span>
       <span className="font-semibold tabular-nums">{count}</span>
@@ -55,7 +55,7 @@ export function SummaryStrip({ summary }: SummaryStripProps) {
   return (
     <div
       data-testid="summary-strip"
-      className="flex gap-2 overflow-x-auto px-4 py-3 -mx-0 scrollbar-hide"
+      className="flex gap-2 overflow-x-auto py-1 scrollbar-hide"
       style={{ scrollbarWidth: 'none' }}
     >
       <SummaryChip

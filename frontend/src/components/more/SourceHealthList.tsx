@@ -31,15 +31,15 @@ const STATUS_PRIORITY: Record<SourceStatus, number> = {
 function StatusIcon({ status }: { status: SourceStatus }) {
   switch (status) {
     case 'fresh':
-      return <CheckCircle className="w-4 h-4 text-green-500" />;
+      return <CheckCircle className="h-4 w-4 text-positive" />;
     case 'stale':
-      return <Clock className="w-4 h-4 text-amber-500" />;
+      return <Clock className="h-4 w-4 text-attention" />;
     case 'failed':
-      return <XCircle className="w-4 h-4 text-destructive" />;
+      return <XCircle className="h-4 w-4 text-destructive" />;
     case 'never_synced':
-      return <AlertCircle className="w-4 h-4 text-muted-foreground" />;
+      return <AlertCircle className="h-4 w-4 text-muted-foreground" />;
     default:
-      return <AlertCircle className="w-4 h-4 text-muted-foreground" />;
+      return <AlertCircle className="h-4 w-4 text-muted-foreground" />;
   }
 }
 
@@ -150,8 +150,8 @@ export function SourceHealthList({ sources }: SourceHealthListProps) {
           <div className="text-end flex-shrink-0">
             <p className={cn(
               'text-xs font-medium',
-              source.status === 'fresh' && 'text-green-600',
-              source.status === 'stale' && 'text-amber-600',
+              source.status === 'fresh' && 'text-positive',
+              source.status === 'stale' && 'text-attention',
               source.status === 'failed' && 'text-destructive',
               source.status === 'never_synced' && 'text-muted-foreground',
             )}>

@@ -16,8 +16,8 @@ export function StaleIndicator({ status }: StaleIndicatorProps) {
     <div
       className={
         isDegraded
-          ? 'bg-amber-100 border-b border-amber-300 px-4 py-1.5'
-          : 'bg-amber-50 border-b border-amber-200 px-4 py-1'
+          ? 'border-b border-attention/45 bg-attention-subtle px-4 py-1.5'
+          : 'border-b border-attention/35 bg-attention-subtle/85 px-4 py-1'
       }
       role="status"
       aria-live="polite"
@@ -25,8 +25,8 @@ export function StaleIndicator({ status }: StaleIndicatorProps) {
       <p
         className={
           isDegraded
-            ? 'text-xs font-medium text-amber-800 text-center'
-            : 'text-xs text-amber-700 text-center'
+            ? 'text-center text-xs font-medium text-attention'
+            : 'text-center text-xs text-attention'
         }
       >
         {isDegraded

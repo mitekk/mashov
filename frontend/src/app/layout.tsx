@@ -7,6 +7,7 @@ const assistant = Assistant({
   subsets: ['latin'],
   weight: ['300', '400', '500', '600', '700'],
   display: 'swap',
+  variable: '--font-assistant',
 });
 
 export const metadata: Metadata = {
@@ -22,7 +23,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
-  themeColor: '#1d4ed8',
+  themeColor: '#4f85bb',
 };
 
 interface RootLayoutProps {
@@ -30,9 +31,28 @@ interface RootLayoutProps {
 }
 
 export default function RootLayout({ children }: RootLayoutProps) {
+  const themeBootstrap = `
+    (() => {
+      try {
+        const key = 'mashov.theme';
+        const root = document.documentElement;
+        const stored = localStorage.getItem(key);
+        const isValid = stored === 'light' || stored === 'dark';
+        const theme = isValid
+          ? stored
+          : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        root.classList.toggle('dark', theme === 'dark');
+        root.style.colorScheme = theme;
+      } catch {}
+    })();
+  `;
+
   return (
     <html lang="he" dir="rtl" suppressHydrationWarning>
-      <body className={assistant.className}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+      </head>
+      <body className={`${assistant.className} ${assistant.variable}`}>
         <Providers>{children}</Providers>
       </body>
     </html>

@@ -11,7 +11,10 @@ export function AppShell({ children }: AppShellProps) {
     <div className="flex flex-col min-h-dvh">
       <FreshnessBar />
       <main className="flex-1 pb-nav overflow-y-auto">
-        {children}
+        <div className="relative isolate">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-primary/6 to-transparent" />
+          {children}
+        </div>
       </main>
       <BottomNav />
     </div>

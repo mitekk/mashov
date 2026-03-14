@@ -16,12 +16,12 @@ export function MessageThread({ conversation }: MessageThreadProps) {
   return (
     <section data-testid="message-thread" className="space-y-3">
       {/* Subject */}
-      <div className="px-4 pt-4">
-        <h1 className="text-lg font-bold text-foreground">{safeSubject}</h1>
+      <div className="pt-2">
+        <h1 className="text-xl font-semibold text-foreground">{safeSubject}</h1>
       </div>
 
       {/* Messages */}
-      <div className="px-4 space-y-3">
+      <div className="space-y-3">
         {conversation.messages.map((msg) => (
           <MessageBubble key={msg.messageId} message={msg} />
         ))}
@@ -29,7 +29,7 @@ export function MessageThread({ conversation }: MessageThreadProps) {
 
       {/* Reply disabled notice */}
       {conversation.preventReply && (
-        <div className="mx-4 mb-4 flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 rounded-lg px-4 py-3">
+        <div className="mb-2 flex items-center gap-2 rounded-xl bg-muted/70 px-4 py-3 text-sm text-muted-foreground">
           <MessageCircleOff className="w-4 h-4 flex-shrink-0" />
           <span>השיחה נעולה — לא ניתן להגיב</span>
         </div>

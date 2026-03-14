@@ -8,6 +8,7 @@ import { UnreadBadge } from '@/components/inbox/UnreadBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { useConversations, useMailSummary } from '@/hooks/useMail';
 import { Mail } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -30,41 +31,48 @@ function InboxPageContent() {
   };
 
   return (
-    <div data-testid="inbox-page" className="pb-4">
-      <header className="px-4 pt-4 flex items-center justify-between">
+    <div data-testid="inbox-page" className="page-shell space-y-5">
+      <header className="page-header items-center">
         <div className="flex items-center gap-2">
-          <h1 className="text-xl font-bold text-foreground">דואר</h1>
+          <h1 className="page-title">דואר</h1>
           {summary && summary.unreadConversations > 0 && (
             <UnreadBadge count={summary.unreadConversations} />
           )}
         </div>
 
-        {/* Filter toggle */}
-        <div className="flex rounded-lg overflow-hidden border border-border text-sm">
-          <button
-            data-testid="filter-all"
-            onClick={() => setFilter(false)}
-            className={cn(
-              'px-3 py-1.5 transition-colors',
-              !unreadOnly ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
-            )}
-          >
-            הכל
-          </button>
-          <button
-            data-testid="filter-unread"
-            onClick={() => setFilter(true)}
-            className={cn(
-              'px-3 py-1.5 transition-colors',
-              unreadOnly ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
-            )}
-          >
-            לא נקראו
-          </button>
+        <div className="flex items-center gap-2">
+          {/* Filter toggle */}
+          <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm">
+            <button
+              data-testid="filter-all"
+              onClick={() => setFilter(false)}
+              className={cn(
+                'px-3 py-1.5 transition-colors',
+                !unreadOnly
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent',
+              )}
+            >
+              הכל
+            </button>
+            <button
+              data-testid="filter-unread"
+              onClick={() => setFilter(true)}
+              className={cn(
+                'px-3 py-1.5 transition-colors',
+                unreadOnly
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent',
+              )}
+            >
+              לא נקראו
+            </button>
+          </div>
+          <ThemeToggle />
         </div>
       </header>
 
-      <div className="mt-4">
+      <div className="section-stack">
         {isLoading && <LoadingState message="טוען הודעות..." />}
         {isError && <ErrorState onRetry={() => void refetch()} />}
         {!isLoading && !isError && data && (
@@ -91,8 +99,8 @@ export default function InboxPage() {
     <AppShell>
       <Suspense
         fallback={(
-          <div data-testid="inbox-page" className="pb-4">
-            <div className="mt-4">
+          <div data-testid="inbox-page" className="page-shell">
+            <div className="section-stack">
               <LoadingState message="טוען הודעות..." />
             </div>
           </div>

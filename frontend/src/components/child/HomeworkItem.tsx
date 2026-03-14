@@ -23,13 +23,13 @@ export function HomeworkItem({ item, studentGuid }: HomeworkItemProps) {
     <div
       data-testid={`homework-item-${item.id}`}
       className={cn(
-        'card-base p-4 flex gap-3 items-start transition-opacity',
+        'card-base flex items-start gap-3 p-4 transition-opacity',
         item.isHandled ? 'opacity-50' : 'opacity-100',
       )}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1 flex-wrap">
-          <span className="text-xs font-medium text-primary bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full flex-shrink-0">
+          <span className="flex-shrink-0 rounded-full border border-info/35 bg-info-subtle px-2 py-0.5 text-xs font-medium text-info">
             {item.subjectName}
           </span>
           <span className="text-xs text-muted-foreground">

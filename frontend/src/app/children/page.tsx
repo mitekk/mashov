@@ -6,6 +6,7 @@ import { ChildCard } from '@/components/children/ChildCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { useChildren } from '@/hooks/useChildren';
 import { Users } from 'lucide-react';
 
@@ -14,9 +15,10 @@ export default function ChildrenPage() {
 
   return (
     <AppShell>
-      <div className="px-4 pb-4 space-y-4">
-        <header className="pt-4">
-          <h1 className="text-xl font-bold text-foreground">ילדים</h1>
+      <div className="page-shell space-y-5">
+        <header className="page-header">
+          <h1 className="page-title">ילדים</h1>
+          <ThemeToggle />
         </header>
 
         {isLoading && <LoadingState message="טוען ילדים..." />}
@@ -29,7 +31,7 @@ export default function ChildrenPage() {
               subtitle="לא נמצאו ילדים מחוברים לחשבון"
             />
           ) : (
-            <div data-testid="children-page" className="grid gap-3">
+            <div data-testid="children-page" className="grid gap-3 md:grid-cols-2">
               {data.data.map((child) => (
                 <ChildCard key={child.studentGuid} child={child} />
               ))}

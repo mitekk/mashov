@@ -4,10 +4,12 @@ import React, { useEffect, useMemo } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { SummaryStrip } from '@/components/home/SummaryStrip';
+import { ChildQuickCard } from '@/components/home/ChildQuickCard';
 import { NeedsAttentionSection } from '@/components/home/NeedsAttentionSection';
 import { LatestFeed } from '@/components/home/LatestFeed';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { useDashboard, useSyncRefresh } from '@/hooks/useDashboard';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { formatRelativeHe } from '@/lib/dates';
@@ -79,27 +81,30 @@ export default function HomePage() {
 
   return (
     <AppShell>
-      <div className="px-4 pb-4 space-y-5">
+      <div className="page-shell space-y-6">
         {/* Header strip */}
-        <header data-testid="home-header" className="flex items-start justify-between pt-4 gap-3">
+        <header data-testid="home-header" className="page-header">
           <div className="min-w-0 flex-1">
-            <h1 className="text-xl font-bold text-foreground">מרכז הורים</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">{currentDateHe}</p>
+            <h1 className="page-title">מרכז הורים</h1>
+            <p className="page-subtitle">{currentDateHe}</p>
             {dashboard.freshness.lastSyncAt && (
-              <p className="text-xs text-muted-foreground">
+              <p className="mt-1 text-xs text-muted-foreground">
                 סונכרן {formatRelativeHe(dashboard.freshness.lastSyncAt)}
               </p>
             )}
           </div>
-          <button
-            data-testid="refresh-button"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            aria-label="רענן נתונים"
-            className="p-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <button
+              data-testid="refresh-button"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              aria-label="רענן נתונים"
+              className="icon-button disabled:opacity-50"
+            >
+              <RefreshCw className={`h-5 w-5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         </header>
 
         {isError && (
@@ -111,6 +116,21 @@ export default function HomePage() {
 
         {/* Summary strip */}
         <SummaryStrip summary={dashboard.summary} />
+
+        {hasChildren && (
+          <section data-testid="home-children" className="section-stack">
+            <h2 className="text-lg font-semibold text-foreground">ילדים</h2>
+            <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
+              {dashboard.children.map((child) => (
+                <ChildQuickCard
+                  key={child.studentGuid}
+                  child={child}
+                  isSelected={selectedChild?.studentGuid === child.studentGuid}
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Needs attention */}
         {dashboard.needsAttention.length > 0 && (

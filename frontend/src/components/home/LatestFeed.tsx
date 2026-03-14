@@ -18,8 +18,8 @@ export function LatestFeed({ items }: LatestFeedProps) {
   const hasMore = visibleCount < items.length;
 
   return (
-    <section data-testid="latest-feed" className="px-4">
-      <h2 className="text-base font-semibold text-foreground mb-3">
+    <section data-testid="latest-feed" className="section-stack">
+      <h2 className="text-lg font-semibold text-foreground">
         עדכונים אחרונים
       </h2>
       {items.length === 0 ? (
@@ -29,7 +29,7 @@ export function LatestFeed({ items }: LatestFeedProps) {
           subtitle="כל הפריטים טופלו"
         />
       ) : (
-        <div className="space-y-2">
+        <div className="section-stack">
           {visibleItems.map((item) => (
             <FeedItem key={item.id} item={item} />
           ))}
@@ -37,7 +37,7 @@ export function LatestFeed({ items }: LatestFeedProps) {
             <button
               onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
               data-testid="load-more-feed"
-              className="w-full py-2.5 text-sm text-primary font-medium border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors tap-target"
+              className="tap-target w-full rounded-2xl border border-primary/30 py-2.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
             >
               טען עוד
             </button>

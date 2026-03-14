@@ -19,33 +19,33 @@ function getTypeStyles(type: string | null | undefined): {
   switch (type) {
     case 'unread_conversation':
       return {
-        border: 'border-s-4 border-s-blue-500',
+        border: 'border-s-4 border-s-info',
         icon: <Mail className="w-4 h-4" />,
-        iconColor: 'text-blue-500',
+        iconColor: 'text-info',
       };
     case 'negative_behavior':
       return {
-        border: 'border-s-4 border-s-amber-500',
+        border: 'border-s-4 border-s-attention',
         icon: <AlertTriangle className="w-4 h-4" />,
-        iconColor: 'text-amber-500',
+        iconColor: 'text-attention',
       };
     case 'unhandled_homework':
       return {
-        border: 'border-s-4 border-s-slate-400',
+        border: 'border-s-4 border-s-border',
         icon: <BookOpen className="w-4 h-4" />,
-        iconColor: 'text-slate-500',
+        iconColor: 'text-muted-foreground',
       };
     case 'sync_degraded':
       return {
-        border: 'border-s-4 border-s-red-400',
+        border: 'border-s-4 border-s-destructive',
         icon: <AlertCircle className="w-4 h-4" />,
-        iconColor: 'text-red-400',
+        iconColor: 'text-destructive',
       };
     default:
       return {
-        border: 'border-s-4 border-s-slate-300',
+        border: 'border-s-4 border-s-border',
         icon: <AlertCircle className="w-4 h-4" />,
-        iconColor: 'text-slate-500',
+        iconColor: 'text-muted-foreground',
       };
   }
 }
@@ -72,9 +72,9 @@ export function NeedsAttentionCard({ item }: NeedsAttentionCardProps) {
   const safeHref = getPhase1HrefOrNull(resolvedHref);
 
   const className = cn(
-    'card-base p-4 flex gap-3 items-start tap-target transition-colors',
+    'card-base tap-target flex items-start gap-3 p-4 transition-colors',
     border,
-    safeHref ? 'hover:bg-accent/30' : 'opacity-70 cursor-not-allowed',
+    safeHref ? 'hover:bg-accent/40' : 'cursor-not-allowed opacity-70',
   );
 
   const content = (

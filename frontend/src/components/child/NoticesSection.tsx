@@ -17,8 +17,8 @@ export function NoticesSection({ studentGuid }: NoticesSectionProps) {
   const { data, isLoading, isError, refetch } = useChildNotices(studentGuid);
 
   return (
-    <section data-testid="notices-section" className="px-4 py-4">
-      <h2 className="text-base font-semibold text-foreground mb-3">
+    <section data-testid="notices-section" className="section-stack py-1">
+      <h2 className="text-lg font-semibold text-foreground">
         הודעות בית הספר
       </h2>
       {isLoading && <FeedSkeleton count={2} />}

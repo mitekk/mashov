@@ -1,3 +1,5 @@
+'use client';
+
 import React from 'react';
 import Link from 'next/link';
 import { BookOpen, AlertTriangle, ChevronLeft } from 'lucide-react';
@@ -41,7 +43,7 @@ export function ChildCard({ child }: ChildCardProps) {
             {child.recentHomeworkCount} שיעורי בית
           </span>
           {child.recentBehaviorCount > 0 && (
-            <span className="flex items-center gap-1 text-amber-600">
+            <span className="flex items-center gap-1 text-attention">
               <AlertTriangle className="w-3.5 h-3.5" />
               {child.recentBehaviorCount} אירועים
             </span>
@@ -63,7 +65,7 @@ export function ChildCard({ child }: ChildCardProps) {
   );
 
   const className = cn(
-    'card-base p-4 flex items-center gap-3 tap-target transition-colors',
+    'card-base tap-target flex items-center gap-3 p-4 transition-colors',
     isSelected
       ? 'border-primary shadow-[0_0_0_1px_hsl(var(--primary))]'
       : 'border-border',
@@ -86,7 +88,7 @@ export function ChildCard({ child }: ChildCardProps) {
       href={safeHref}
       onClick={() => setSelectedChildGuid(child.studentGuid)}
       data-testid={`child-list-card-${child.studentGuid}`}
-      className={cn(className, 'hover:bg-accent/30')}
+      className={cn(className, 'hover:bg-accent/40')}
     >
       {content}
     </Link>

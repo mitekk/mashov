@@ -31,21 +31,21 @@ export function BehaviorSection({
   );
 
   return (
-    <section data-testid="behavior-section" className="px-4 py-4">
-      <h2 className="text-base font-semibold text-foreground mb-3">
+    <section data-testid="behavior-section" className="section-stack py-1">
+      <h2 className="text-lg font-semibold text-foreground">
         אירועי התנהגות
       </h2>
-      <div className="flex gap-2 mb-3 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+      <div className="flex gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
         {FILTER_TABS.map((tab) => (
           <button
             key={tab}
             data-testid={`behavior-filter-${tab}`}
             onClick={() => onFilterChange(tab)}
             className={cn(
-              'px-3 py-1.5 rounded-full text-xs font-medium flex-shrink-0 border transition-colors tap-target',
+              'tap-target flex-shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors',
               activeFilter === tab
                 ? 'bg-primary text-primary-foreground border-primary'
-                : 'bg-secondary text-secondary-foreground border-border hover:bg-accent',
+                : 'border-border/80 bg-secondary/75 text-secondary-foreground hover:bg-accent',
             )}
           >
             {getBucketLabel(tab)}
@@ -67,7 +67,7 @@ export function BehaviorSection({
         />
       )}
       {data && data.data.length > 0 && (
-        <div className="space-y-2">
+        <div className="section-stack">
           {data.data.map((item) => (
             <BehaviorItem key={item.id} item={item} studentGuid={studentGuid} />
           ))}

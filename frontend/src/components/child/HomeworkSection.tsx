@@ -16,8 +16,8 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
   const { data, isLoading, isError, refetch } = useChildHomework(studentGuid);
 
   return (
-    <section data-testid="homework-section" className="px-4 py-4">
-      <h2 className="text-base font-semibold text-foreground mb-3">
+    <section data-testid="homework-section" className="section-stack py-1">
+      <h2 className="text-lg font-semibold text-foreground">
         שיעורי בית אחרונים
       </h2>
       {isLoading && <FeedSkeleton count={3} />}
@@ -34,7 +34,7 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
         />
       )}
       {data && data.data.length > 0 && (
-        <div className="space-y-2">
+        <div className="section-stack">
           {data.data.map((item) => (
             <HomeworkItem key={item.id} item={item} studentGuid={studentGuid} />
           ))}

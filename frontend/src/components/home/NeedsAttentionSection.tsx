@@ -18,8 +18,8 @@ export function NeedsAttentionSection({ items }: NeedsAttentionSectionProps) {
   const hasMore = items.length > INITIAL_VISIBLE;
 
   return (
-    <section data-testid="needs-attention-section" className="px-4">
-      <h2 className="text-base font-semibold text-foreground mb-3">
+    <section data-testid="needs-attention-section" className="section-stack">
+      <h2 className="text-lg font-semibold text-foreground">
         דורש תשומת לב
       </h2>
       {items.length === 0 ? (
@@ -29,7 +29,7 @@ export function NeedsAttentionSection({ items }: NeedsAttentionSectionProps) {
           subtitle="הכל מסודר"
         />
       ) : (
-        <div className="space-y-2">
+        <div className="section-stack">
           {visibleItems.map((item) => (
             <NeedsAttentionCard key={item.id} item={item} />
           ))}
@@ -37,7 +37,7 @@ export function NeedsAttentionSection({ items }: NeedsAttentionSectionProps) {
             <button
               onClick={() => setShowAll(true)}
               data-testid="show-all-attention"
-              className="w-full py-2 text-sm text-primary font-medium hover:underline tap-target"
+              className="tap-target w-full rounded-2xl border border-primary/25 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
             >
               ראה הכל ({items.length})
             </button>
