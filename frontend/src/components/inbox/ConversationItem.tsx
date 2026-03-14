@@ -17,8 +17,7 @@ export function ConversationItem({
   selected,
   onToggleSelect,
 }: ConversationItemProps) {
-  const isUnread = conversation.isUnread;
-  const isHandled = conversation.isHandled;
+  const isNew = conversation.isNew;
   const safeHref = getPhase1HrefOrNull(
     conversation.conversationId
       ? `/inbox/${conversation.conversationId}`
@@ -26,17 +25,12 @@ export function ConversationItem({
   );
 
   const content = (
-    <div
-      className={cn(
-        'min-w-0 flex-1',
-        isHandled && 'opacity-60',
-      )}
-    >
+    <div className="min-w-0 flex-1">
       <div className="flex items-start gap-2 mb-1">
         <p
           className={cn(
             'text-sm truncate flex-1',
-            isUnread ? 'font-semibold text-foreground' : 'font-normal text-muted-foreground',
+            isNew ? 'font-semibold text-foreground' : 'font-normal text-muted-foreground',
           )}
         >
           {conversation.senderNamePreview}
@@ -52,7 +46,7 @@ export function ConversationItem({
       <p
         className={cn(
           'text-sm truncate',
-          isUnread ? 'font-medium text-foreground' : 'text-muted-foreground',
+          isNew ? 'font-medium text-foreground' : 'text-muted-foreground',
         )}
       >
         {conversation.subject}
@@ -67,7 +61,7 @@ export function ConversationItem({
         {conversation.preventReply && (
           <MessageSquareOff className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
         )}
-        {isUnread && (
+        {isNew && (
           <span className="w-2 h-2 rounded-full bg-primary flex-shrink-0 me-auto" />
         )}
       </div>

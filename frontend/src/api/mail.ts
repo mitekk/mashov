@@ -16,12 +16,12 @@ export function fetchMailSummary(): Promise<MailSummary> {
 export function fetchConversations(
   page = 1,
   limit = 20,
-  unreadOnly = false,
+  newOnly = false,
 ): Promise<ConversationsResponse> {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
-    unreadOnly: String(unreadOnly),
+    newOnly: String(newOnly),
   });
   return apiFetch<ConversationsResponse>(`/mail/conversations?${params.toString()}`);
 }
@@ -29,6 +29,16 @@ export function fetchConversations(
 export function fetchConversationDetail(id: string): Promise<ConversationDetail> {
   return apiFetch<ConversationDetail | LegacyConversationResponse>(`/mail/conversations/${id}`)
     .then((response) => normalizeConversationDetail(response));
+}
+
+export function markConversationsRead(
+  conversationIds: string[],
+): Promise<MailBulkActionResponse> {
+  const body: MailBulkActionRequest = { conversationIds };
+  return apiFetch<MailBulkActionResponse>('/mail/conversations/mark-read', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 }
 
 export function markConversationsUnread(
@@ -66,8 +76,10 @@ function normalizeConversationDetail(
         typeof response.subject === 'string' && response.subject.trim().length > 0
           ? response.subject
           : 'ללא נושא',
+      isNew: Boolean((response as unknown as UnknownRecord).isNew ?? (response as unknown as UnknownRecord).isUnread),
       messages: response.messages.map((msg) => ({
         ...msg,
+        isNew: Boolean((msg as unknown as UnknownRecord).isNew ?? (msg as unknown as UnknownRecord).isUnread),
         bodyHtmlSanitized: normalizeMessageHtml(
           msg.bodyHtmlSanitized,
           msg.bodyTextPreview,
@@ -93,12 +105,11 @@ function normalizeConversationDetail(
         ? conversation.subject
         : 'ללא נושא',
     sendTime: String(conversation.sendTime ?? new Date().toISOString()),
-    isUnread: Boolean(conversation.isUnread),
+    isNew: Boolean(conversation.isNew ?? conversation.isUnread),
     hasDrafts: Boolean(conversation.hasDrafts),
     hasAttachments: Boolean(conversation.hasAttachments),
     preventReply: Boolean(conversation.preventReply),
     labels: Array.isArray(conversation.labels) ? (conversation.labels as string[]) : [],
-    isHandled: Boolean((response as unknown as UnknownRecord).isHandled),
     lastFetchedAt: String(conversation.lastFetchedAt ?? new Date().toISOString()),
     messages: messages.map((msg, index) => {
       const message = msg as UnknownRecord;
@@ -116,7 +127,7 @@ function normalizeConversationDetail(
         ),
         bodyTextPreview: String(message.bodyTextPreview ?? ''),
         sendTime: String(message.sendTime ?? new Date().toISOString()),
-        isUnread: Boolean(message.isUnread),
+        isNew: Boolean(message.isNew ?? message.isUnread),
         recipients: normalizeRecipients(message.recipients),
         hasAttachments: Boolean(
           message.hasAttachments

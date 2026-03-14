@@ -90,8 +90,8 @@ function InboxPageContent() {
       <header className="page-header items-center">
         <div className="flex items-center gap-2">
           <h1 className="page-title">דואר</h1>
-          {summary && summary.unreadConversations > 0 && (
-            <UnreadBadge count={summary.unreadConversations} />
+          {summary && summary.newConversations > 0 && (
+            <UnreadBadge count={summary.newConversations} />
           )}
         </div>
 

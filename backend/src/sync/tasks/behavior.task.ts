@@ -103,6 +103,8 @@ export class BehaviorTask {
                 remark,
                 justification,
                 eventAt,
+                isNew: true,
+                isArchived: false,
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
@@ -117,6 +119,7 @@ export class BehaviorTask {
                 remark,
                 justification,
                 eventAt,
+                // Do NOT overwrite isNew/isArchived on updates
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
             });

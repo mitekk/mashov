@@ -7,6 +7,7 @@ import {
 import {
   fetchMailSummary,
   fetchConversations,
+  markConversationsRead,
   markConversationsUnread,
   archiveConversations,
 } from '@/api/mail';
@@ -20,10 +21,10 @@ export function useMailSummary() {
   });
 }
 
-export function useConversations(unreadOnly: boolean) {
+export function useConversations(newOnly: boolean) {
   return useInfiniteQuery({
-    queryKey: ['conversations', unreadOnly],
-    queryFn: ({ pageParam }) => fetchConversations(Number(pageParam), 20, unreadOnly),
+    queryKey: ['conversations', newOnly],
+    queryFn: ({ pageParam }: { pageParam: unknown }) => fetchConversations(Number(pageParam), 20, newOnly),
     initialPageParam: 1,
     getNextPageParam: (lastPage) => (
       lastPage.pagination.page < lastPage.pagination.totalPages
@@ -31,6 +32,18 @@ export function useConversations(unreadOnly: boolean) {
         : undefined
     ),
     staleTime: 30_000,
+  });
+}
+
+export function useMarkRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => markConversationsRead(ids),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
   });
 }
 

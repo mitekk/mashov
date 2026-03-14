@@ -14,7 +14,7 @@ export class ConversationPage {
     await this.page.waitForLoadState('networkidle');
   }
 
-  markHandledButton(conversationId: string): Locator {
-    return this.page.getByTestId(`mark-handled-${conversationId}`);
+  markNewButton(conversationId: string): Locator {
+    return this.page.getByTestId(`mark-new-${conversationId}`);
   }
 }

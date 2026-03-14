@@ -21,7 +21,7 @@ function getTypeStyles(type: string | null | undefined): {
   iconColor: string;
 } {
   switch (type) {
-    case 'unread_conversation':
+    case 'new_conversation':
       return {
         border: 'border-s-4 border-s-info',
         icon: <Mail className="w-4 h-4" />,
@@ -33,7 +33,7 @@ function getTypeStyles(type: string | null | undefined): {
         icon: <AlertTriangle className="w-4 h-4" />,
         iconColor: 'text-attention',
       };
-    case 'unhandled_homework':
+    case 'new_homework':
       return {
         border: 'border-s-4 border-s-border',
         icon: <BookOpen className="w-4 h-4" />,
@@ -58,7 +58,7 @@ export function NeedsAttentionCard({ item }: NeedsAttentionCardProps) {
   const { border, icon, iconColor } = getTypeStyles(item.type);
   const resolvedHref = (() => {
     if (item.studentGuid) {
-      if (item.type === 'unhandled_homework') {
+      if (item.type === 'new_homework') {
         return buildHomeworkDetailHref(item.studentGuid, item.id)
           ?? buildChildSectionHref(item.studentGuid, 'homework');
       }

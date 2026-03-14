@@ -1,5 +1,5 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
-import { IsInt, IsOptional, IsIn, Min, Max } from 'class-validator';
+import { Controller, Get, Put, Param, Query, Body } from '@nestjs/common';
+import { IsInt, IsOptional, IsIn, IsBoolean, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ChildrenService } from './children.service';
 
@@ -18,10 +18,30 @@ class PaginationQueryDto {
   limit?: number = 20;
 }
 
+class HomeworkQueryDto extends PaginationQueryDto {
+  @IsOptional()
+  @IsIn(['active', 'archived'])
+  status?: 'active' | 'archived' = 'active';
+}
+
 class BehaviorQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(['all', 'attention', 'positive', 'neutral'])
   bucket?: 'all' | 'attention' | 'positive' | 'neutral' = 'all';
+
+  @IsOptional()
+  @IsIn(['active', 'archived'])
+  status?: 'active' | 'archived' = 'active';
+}
+
+class SetIsNewDto {
+  @IsBoolean()
+  isNew!: boolean;
+}
+
+class SetArchivedDto {
+  @IsBoolean()
+  isArchived!: boolean;
 }
 
 @Controller('children')
@@ -41,11 +61,12 @@ export class ChildrenController {
   @Get(':studentGuid/homework')
   async getHomework(
     @Param('studentGuid') studentGuid: string,
-    @Query() query: PaginationQueryDto,
+    @Query() query: HomeworkQueryDto,
   ) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    return this.childrenService.getHomework(studentGuid, page, limit);
+    const status = query.status ?? 'active';
+    return this.childrenService.getHomework(studentGuid, page, limit, status);
   }
 
   @Get(':studentGuid/homework/:homeworkId')
@@ -56,6 +77,24 @@ export class ChildrenController {
     return this.childrenService.getHomeworkDetail(studentGuid, homeworkId);
   }
 
+  @Put(':studentGuid/homework/:homeworkId/is-new')
+  async setHomeworkIsNew(
+    @Param('studentGuid') studentGuid: string,
+    @Param('homeworkId') homeworkId: string,
+    @Body() body: SetIsNewDto,
+  ) {
+    return this.childrenService.setHomeworkIsNew(studentGuid, homeworkId, body.isNew);
+  }
+
+  @Put(':studentGuid/homework/:homeworkId/archive')
+  async setHomeworkArchived(
+    @Param('studentGuid') studentGuid: string,
+    @Param('homeworkId') homeworkId: string,
+    @Body() body: SetArchivedDto,
+  ) {
+    return this.childrenService.setHomeworkArchived(studentGuid, homeworkId, body.isArchived);
+  }
+
   @Get(':studentGuid/behavior')
   async getBehavior(
     @Param('studentGuid') studentGuid: string,
@@ -64,7 +103,8 @@ export class ChildrenController {
     const page = query.page ?? 1;
     const limit = query.limit ?? 50;
     const bucket = query.bucket ?? 'all';
-    return this.childrenService.getBehavior(studentGuid, page, limit, bucket);
+    const status = query.status ?? 'active';
+    return this.childrenService.getBehavior(studentGuid, page, limit, bucket, status);
   }
 
   @Get(':studentGuid/behavior/:behaviorId')
@@ -73,6 +113,24 @@ export class ChildrenController {
     @Param('behaviorId') behaviorId: string,
   ) {
     return this.childrenService.getBehaviorDetail(studentGuid, behaviorId);
+  }
+
+  @Put(':studentGuid/behavior/:behaviorId/is-new')
+  async setBehaviorIsNew(
+    @Param('studentGuid') studentGuid: string,
+    @Param('behaviorId') behaviorId: string,
+    @Body() body: SetIsNewDto,
+  ) {
+    return this.childrenService.setBehaviorIsNew(studentGuid, behaviorId, body.isNew);
+  }
+
+  @Put(':studentGuid/behavior/:behaviorId/archive')
+  async setBehaviorArchived(
+    @Param('studentGuid') studentGuid: string,
+    @Param('behaviorId') behaviorId: string,
+    @Body() body: SetArchivedDto,
+  ) {
+    return this.childrenService.setBehaviorArchived(studentGuid, behaviorId, body.isArchived);
   }
 
   @Get(':studentGuid/subjects')

@@ -5,11 +5,15 @@ import type {
   ChildWorkspaceResponse,
   HomeworkResponse,
   HomeworkDetailResponse,
+  HomeworkItem,
   BehaviorResponse,
   BehaviorDetailResponse,
+  BehaviorItem,
   SubjectsResponse,
   NoticesResponse,
   BehaviorBucket,
+  MarkIsNewRequest,
+  MarkArchivedRequest,
 } from '@/types/api';
 import { classifyBehavior } from '@/lib/behavior';
 
@@ -201,7 +205,8 @@ function normalizeHomework(item: UnknownRecord) {
         ? item.remark
         : null,
     files: Array.isArray(item.files) ? item.files : [],
-    isHandled: Boolean(item.isHandled),
+    isNew: Boolean(item.isNew),
+    isArchived: Boolean(item.isArchived),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }
@@ -247,7 +252,8 @@ function normalizeBehavior(item: UnknownRecord) {
         ? item.justification
         : null,
     eventAt: String(item.eventAt ?? ''),
-    isHandled: Boolean(item.isHandled),
+    isNew: Boolean(item.isNew),
+    isArchived: Boolean(item.isArchived),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }
@@ -279,4 +285,52 @@ function normalizeNotice(item: UnknownRecord) {
     inSite: Boolean(item.inSite),
     updatedAt: String(item.updatedAt ?? ''),
   };
+}
+
+export function markHomeworkIsNew(
+  studentGuid: string,
+  homeworkId: string,
+  isNew: boolean,
+): Promise<HomeworkItem> {
+  const body: MarkIsNewRequest = { isNew };
+  return apiFetch<HomeworkItem>(
+    `/children/${studentGuid}/homework/${homeworkId}/is-new`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function archiveHomework(
+  studentGuid: string,
+  homeworkId: string,
+  isArchived: boolean,
+): Promise<HomeworkItem> {
+  const body: MarkArchivedRequest = { isArchived };
+  return apiFetch<HomeworkItem>(
+    `/children/${studentGuid}/homework/${homeworkId}/archive`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function markBehaviorIsNew(
+  studentGuid: string,
+  behaviorId: string,
+  isNew: boolean,
+): Promise<BehaviorItem> {
+  const body: MarkIsNewRequest = { isNew };
+  return apiFetch<BehaviorItem>(
+    `/children/${studentGuid}/behavior/${behaviorId}/is-new`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function archiveBehavior(
+  studentGuid: string,
+  behaviorId: string,
+  isArchived: boolean,
+): Promise<BehaviorItem> {
+  const body: MarkArchivedRequest = { isArchived };
+  return apiFetch<BehaviorItem>(
+    `/children/${studentGuid}/behavior/${behaviorId}/archive`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
 }

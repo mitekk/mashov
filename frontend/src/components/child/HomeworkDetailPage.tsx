@@ -4,8 +4,9 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
-  BookmarkCheck,
-  BookmarkX,
+  Eye,
+  EyeOff,
+  Archive,
   Paperclip,
 } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
@@ -13,7 +14,8 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { useChildHomeworkDetail } from '@/hooks/useChild';
 import { useChildren } from '@/hooks/useChildren';
-import { useMarkHandled } from '@/hooks/useReadState';
+import { useMarkNew } from '@/hooks/useMarkNew';
+import { useArchive } from '@/hooks/useArchive';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { cn } from '@/lib/utils';
 import { formatShortDate } from '@/lib/dates';
@@ -28,15 +30,27 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
   const { data, isLoading, isError, refetch } = useChildHomeworkDetail(studentGuid, homeworkId);
   const { data: childrenData } = useChildren();
   const listHref = buildChildSectionHref(studentGuid, 'homework');
-  const { markHandled, isPending } = useMarkHandled(
-    'homework',
-    homeworkId,
-    [
-      ['dashboard'],
-      ['child-homework', studentGuid],
-      ['child-homework-detail', studentGuid, homeworkId],
-    ],
-  );
+
+  const invalidateKeys = [
+    ['dashboard'],
+    ['child-homework', studentGuid],
+    ['child-homework-detail', studentGuid, homeworkId],
+  ];
+
+  const { mutate: mutateMarkNew, isPending: isMarkNewPending } = useMarkNew({
+    type: 'homework',
+    id: homeworkId,
+    studentGuid,
+    invalidateKeys,
+  });
+
+  const { mutate: mutateArchive, isPending: isArchivePending } = useArchive({
+    type: 'homework',
+    id: homeworkId,
+    studentGuid,
+    invalidateKeys,
+  });
+
   const childFullName = childrenData?.data.find(
     (child) => child.studentGuid === studentGuid,
   )?.fullName;
@@ -47,11 +61,6 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
       return;
     }
     if (listHref) router.replace(listHref);
-  };
-
-  const handleToggleHandled = () => {
-    if (!data) return;
-    markHandled(!data.isHandled);
   };
 
   return (
@@ -68,25 +77,42 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
             <ArrowRight className="h-5 w-5" />
           </button>
           {data && (
-            <button
-              type="button"
-              data-testid={`homework-detail-toggle-${homeworkId}`}
-              onClick={handleToggleHandled}
-              disabled={isPending}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-            >
-              {data.isHandled ? (
-                <>
-                  <BookmarkX className="h-4 w-4" />
-                  <span>בטל טיפול</span>
-                </>
-              ) : (
-                <>
-                  <BookmarkCheck className="h-4 w-4" />
-                  <span>סמן כטופל</span>
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-testid={`homework-detail-toggle-new-${homeworkId}`}
+                onClick={() => mutateMarkNew(!data.isNew)}
+                disabled={isMarkNewPending}
+                aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                {data.isNew ? (
+                  <>
+                    <Eye className="h-4 w-4" />
+                    <span>סמן כנקרא</span>
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="h-4 w-4" />
+                    <span>סמן כחדש</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                data-testid={`homework-detail-archive-${homeworkId}`}
+                onClick={() => mutateArchive(!data.isArchived)}
+                disabled={isArchivePending}
+                aria-label={data.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50',
+                  data.isArchived ? 'text-primary' : 'text-muted-foreground',
+                )}
+              >
+                <Archive className="h-4 w-4" />
+                <span>{data.isArchived ? 'שחזר' : 'ארכיון'}</span>
+              </button>
+            </div>
           )}
         </div>
 
@@ -101,10 +127,7 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
         {data && (
           <article
             data-testid={`homework-detail-${data.id}`}
-            className={cn(
-              'card-base space-y-3 p-4',
-              data.isHandled && 'opacity-70',
-            )}
+            className="card-base space-y-3 p-4"
           >
             <div className="flex items-center gap-2 flex-wrap">
               <span className="rounded-full border border-info/35 bg-info-subtle px-2 py-0.5 text-xs font-medium text-info">
@@ -121,13 +144,18 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
               {data.lesson > 0 && (
                 <span className="text-xs text-muted-foreground">שיעור {data.lesson}</span>
               )}
-            </div>
-            <p
-              className={cn(
-                'text-sm text-foreground whitespace-pre-wrap',
-                data.isHandled && 'line-through',
+              {data.isNew && (
+                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                  חדש
+                </span>
               )}
-            >
+              {data.isArchived && (
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  בארכיון
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-foreground whitespace-pre-wrap">
               {data.homeworkText}
             </p>
             {data.remark && (

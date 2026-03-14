@@ -6,14 +6,12 @@ function makeMockPrisma(overrides: Partial<{
   homeworkFindMany: jest.Mock;
   behaviorFindMany: jest.Mock;
   mailFindMany: jest.Mock;
-  readStateFindMany: jest.Mock;
 }>): jest.Mocked<PrismaService> {
   return {
     student: { findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([]) },
     homeworkItem: { findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]) },
     behaviorItem: { findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]) },
     mailConversation: { findMany: overrides.mailFindMany ?? jest.fn().mockResolvedValue([]) },
-    readState: { findMany: overrides.readStateFindMany ?? jest.fn().mockResolvedValue([]) },
   } as unknown as jest.Mocked<PrismaService>;
 }
 
@@ -27,13 +25,15 @@ describe('FeedService', () => {
       expect(result.pagination).toEqual({ page: 1, limit: 20, total: 0, totalPages: 0 });
     });
 
-    it('maps homework items to contract-compliant feed items', async () => {
+    it('maps homework items to contract-compliant feed items with isNew and isArchived', async () => {
       const hw = {
         id: 'hw-1',
         studentGuid: 'student-abc',
         subjectName: 'Math',
         homeworkText: 'Solve exercises 1-10',
         lessonDate: new Date('2026-03-11T00:00:00Z'),
+        isNew: true,
+        isArchived: false,
         updatedAt: new Date('2026-03-11T05:00:00Z'),
       };
 
@@ -52,13 +52,73 @@ describe('FeedService', () => {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isUnread: false,
-        isHandled: false,
+        isNew: true,
+        isArchived: false,
         linkPath: '/children/student-abc',
       });
     });
 
-    it('maps positive behavior items to sourceType=positive', async () => {
+    it('does not include isUnread or isHandled fields on homework feed items', async () => {
+      const hw = {
+        id: 'hw-1',
+        studentGuid: 'student-abc',
+        subjectName: 'Math',
+        homeworkText: 'Solve exercises 1-10',
+        lessonDate: new Date('2026-03-11T00:00:00Z'),
+        isNew: true,
+        isArchived: false,
+        updatedAt: new Date('2026-03-11T05:00:00Z'),
+      };
+
+      const service = new FeedService(
+        makeMockPrisma({ homeworkFindMany: jest.fn().mockResolvedValue([hw]) }),
+      );
+
+      const result = await service.getFeed(1, 20);
+      expect(result.data[0]).not.toHaveProperty('isUnread');
+      expect(result.data[0]).not.toHaveProperty('isHandled');
+    });
+
+    it('excludes archived homework items from feed results', async () => {
+      const archived = {
+        id: 'hw-archived',
+        studentGuid: 'student-abc',
+        subjectName: 'Math',
+        homeworkText: 'Old homework',
+        lessonDate: new Date('2026-03-09T00:00:00Z'),
+        isNew: false,
+        isArchived: true,
+        updatedAt: new Date('2026-03-09T05:00:00Z'),
+      };
+
+      const homeworkFindMany = jest.fn().mockResolvedValue([archived]);
+      const service = new FeedService(
+        makeMockPrisma({ homeworkFindMany }),
+      );
+
+      await service.getFeed(1, 20);
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ isArchived: false }),
+        }),
+      );
+    });
+
+    it('excludes archived behavior items from feed results', async () => {
+      const behaviorFindMany = jest.fn().mockResolvedValue([]);
+      const service = new FeedService(
+        makeMockPrisma({ behaviorFindMany }),
+      );
+
+      await service.getFeed(1, 20);
+      expect(behaviorFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ isArchived: false }),
+        }),
+      );
+    });
+
+    it('maps positive behavior items to sourceType=positive with isNew and isArchived', async () => {
       const behavior = {
         id: 'beh-1',
         studentGuid: 'student-abc',
@@ -66,6 +126,8 @@ describe('FeedService', () => {
         remark: null,
         classification: 'positive',
         eventAt: new Date('2026-03-11T09:00:00Z'),
+        isNew: false,
+        isArchived: false,
         updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
@@ -78,6 +140,8 @@ describe('FeedService', () => {
         sourceType: 'positive',
         priority: 'low',
         isPositive: true,
+        isNew: false,
+        isArchived: false,
         linkPath: '/children/student-abc',
       });
     });
@@ -90,6 +154,8 @@ describe('FeedService', () => {
         remark: 'Was 10 minutes late',
         classification: 'attention',
         eventAt: new Date('2026-03-11T09:00:00Z'),
+        isNew: true,
+        isArchived: false,
         updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
@@ -102,18 +168,19 @@ describe('FeedService', () => {
         sourceType: 'behavior',
         priority: 'high',
         isPositive: false,
+        isNew: true,
         summary: 'Was 10 minutes late',
       });
     });
 
-    it('maps mail conversations to route-aware feed items', async () => {
+    it('maps mail conversations to route-aware feed items with isNew from conversation', async () => {
       const conv = {
         id: 'conv-db-1',
         conversationId: 'conv-public-1',
         subject: 'Parent evening',
         senderNamePreview: 'Principal',
         sendTime: new Date('2026-03-11T10:00:00Z'),
-        isUnread: true,
+        isNew: true,
         lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
@@ -129,8 +196,29 @@ describe('FeedService', () => {
         studentGuid: null,
         studentName: null,
         priority: 'high',
+        isNew: true,
         linkPath: '/inbox/conv-public-1',
       });
+    });
+
+    it('does not include isUnread or isHandled on mail feed items', async () => {
+      const conv = {
+        id: 'conv-db-1',
+        conversationId: 'conv-public-1',
+        subject: 'Parent evening',
+        senderNamePreview: 'Principal',
+        sendTime: new Date('2026-03-11T10:00:00Z'),
+        isNew: true,
+        lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
+      };
+
+      const service = new FeedService(
+        makeMockPrisma({ mailFindMany: jest.fn().mockResolvedValue([conv]) }),
+      );
+
+      const result = await service.getFeed(1, 20);
+      expect(result.data[0]).not.toHaveProperty('isUnread');
+      expect(result.data[0]).not.toHaveProperty('isHandled');
     });
 
     it('requests mail conversations without archived label', async () => {
@@ -157,6 +245,8 @@ describe('FeedService', () => {
         subjectName: 'Science',
         homeworkText: 'Read chapter',
         lessonDate: new Date('2026-03-11T08:00:00Z'),
+        isNew: true,
+        isArchived: false,
         updatedAt: new Date('2026-03-11T08:10:00Z'),
       };
 
@@ -178,6 +268,8 @@ describe('FeedService', () => {
         subjectName: 'Math',
         homeworkText: 'Old',
         lessonDate: new Date('2026-03-09T08:00:00Z'),
+        isNew: false,
+        isArchived: false,
         updatedAt: new Date('2026-03-09T08:30:00Z'),
       };
       const newer = {
@@ -186,6 +278,8 @@ describe('FeedService', () => {
         subjectName: 'Math',
         homeworkText: 'New',
         lessonDate: new Date('2026-03-11T08:00:00Z'),
+        isNew: true,
+        isArchived: false,
         updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
@@ -200,59 +294,48 @@ describe('FeedService', () => {
       expect(result.data[1].id).toBe('hw-old');
     });
 
-    it('applies read-state isHandled for feed items', async () => {
+    it('applies isNew directly from homework source table', async () => {
       const hw = {
-        id: 'hw-handled',
+        id: 'hw-new-flag',
         studentGuid: 'student-1',
         subjectName: 'Math',
         homeworkText: 'Done',
         lessonDate: new Date('2026-03-11T08:00:00Z'),
+        isNew: true,
+        isArchived: false,
         updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
       const service = new FeedService(
         makeMockPrisma({
           homeworkFindMany: jest.fn().mockResolvedValue([hw]),
-          readStateFindMany: jest.fn().mockResolvedValue([
-            { itemId: 'hw-handled', isHandled: true },
-          ]),
         }),
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].isHandled).toBe(true);
+      expect(result.data[0].isNew).toBe(true);
     });
 
-    it('applies read-state isHandled for mail items using mail_conversation scope', async () => {
-      const conv = {
-        id: 'conv-db-1',
-        conversationId: 'conv-public-1',
-        subject: 'Parent evening',
-        senderNamePreview: 'Principal',
-        sendTime: new Date('2026-03-11T10:00:00Z'),
-        isUnread: true,
-        lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
+    it('applies isNew=false directly from source table when not new', async () => {
+      const hw = {
+        id: 'hw-old-flag',
+        studentGuid: 'student-1',
+        subjectName: 'Math',
+        homeworkText: 'Done',
+        lessonDate: new Date('2026-03-11T08:00:00Z'),
+        isNew: false,
+        isArchived: false,
+        updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
-      const readStateFindMany = jest.fn().mockResolvedValue([
-        { itemId: 'conv-public-1', isHandled: true },
-      ]);
+
       const service = new FeedService(
         makeMockPrisma({
-          mailFindMany: jest.fn().mockResolvedValue([conv]),
-          readStateFindMany,
+          homeworkFindMany: jest.fn().mockResolvedValue([hw]),
         }),
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].isHandled).toBe(true);
-      expect(readStateFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            itemType: 'mail_conversation',
-            itemId: { in: ['conv-public-1'] },
-          }),
-        }),
-      );
+      expect(result.data[0].isNew).toBe(false);
     });
 
     it('applies pagination correctly', async () => {
@@ -263,6 +346,8 @@ describe('FeedService', () => {
           subjectName: 'Math',
           homeworkText: 'First',
           lessonDate: new Date('2026-03-11T10:00:00Z'),
+          isNew: true,
+          isArchived: false,
           updatedAt: new Date('2026-03-11T10:10:00Z'),
         },
         {
@@ -271,6 +356,8 @@ describe('FeedService', () => {
           subjectName: 'Math',
           homeworkText: 'Second',
           lessonDate: new Date('2026-03-10T10:00:00Z'),
+          isNew: false,
+          isArchived: false,
           updatedAt: new Date('2026-03-10T10:10:00Z'),
         },
       ];

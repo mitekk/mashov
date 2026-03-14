@@ -11,7 +11,6 @@ import { FeedModule } from './feed/feed.module';
 import { ChildrenModule } from './children/children.module';
 import { MailModule } from './mail/mail.module';
 import { SettingsModule } from './settings/settings.module';
-import { ReadStateModule } from './read-state/read-state.module';
 import { HealthModule } from './health/health.module';
 
 @Module({
@@ -27,7 +26,6 @@ import { HealthModule } from './health/health.module';
     ChildrenModule,
     MailModule,
     SettingsModule,
-    ReadStateModule,
     HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

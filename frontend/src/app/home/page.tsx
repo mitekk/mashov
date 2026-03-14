@@ -22,7 +22,7 @@ const EMPTY_DASHBOARD: DashboardResponse = {
     staleSources: [],
   },
   summary: {
-    unreadConversations: 0,
+    newConversations: 0,
     recentHomeworkCount: 0,
     recentBehaviorCount: 0,
     childrenCount: 0,

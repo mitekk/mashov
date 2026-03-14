@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowRight, BookmarkCheck, BookmarkX } from 'lucide-react';
+import { ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { MessageThread } from '@/components/conversation/MessageThread';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -10,7 +10,7 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import {
   useConversation,
-  useMarkConversationHandled,
+  useMarkConversationNew,
   useMarkConversationRead,
 } from '@/hooks/useConversation';
 
@@ -20,7 +20,7 @@ export default function ConversationPage() {
   const conversationId = params.conversationId as string;
 
   const { data, isLoading, isError, refetch } = useConversation(conversationId);
-  const { mutate: markHandled, isPending } = useMarkConversationHandled();
+  const { mutate: markNew, isPending } = useMarkConversationNew();
   const { mutate: markRead } = useMarkConversationRead();
   const autoMarkedReadConversationId = useRef<string | null>(null);
 
@@ -28,22 +28,12 @@ export default function ConversationPage() {
     if (!data) return;
     if (autoMarkedReadConversationId.current === conversationId) return;
     autoMarkedReadConversationId.current = conversationId;
-    markRead({
-      itemType: 'mail_conversation',
-      itemId: conversationId,
-      isRead: true,
-      isHandled: data.isHandled,
-    });
+    markRead(conversationId);
   }, [conversationId, data, markRead]);
 
-  const handleToggleHandled = () => {
+  const handleToggleNew = () => {
     if (!data) return;
-    markHandled({
-      itemType: 'mail_conversation',
-      itemId: conversationId,
-      isRead: true,
-      isHandled: !data.isHandled,
-    });
+    markNew({ conversationId, isNew: !data.isNew });
   };
 
   return (
@@ -62,21 +52,21 @@ export default function ConversationPage() {
           <div className="flex items-center gap-2">
             {data && (
               <button
-                data-testid={`mark-handled-${conversationId}`}
-                onClick={handleToggleHandled}
+                data-testid={`mark-new-${conversationId}`}
+                onClick={handleToggleNew}
                 disabled={isPending}
-                aria-label={data.isHandled ? 'בטל טיפול' : 'סמן כטופל'}
+                aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >
-                {data.isHandled ? (
+                {data.isNew ? (
                   <>
-                    <BookmarkX className="h-4 w-4" />
-                    <span>בטל טיפול</span>
+                    <Eye className="h-4 w-4" />
+                    <span>סמן כנקרא</span>
                   </>
                 ) : (
                   <>
-                    <BookmarkCheck className="h-4 w-4" />
-                    <span>סמן כטופל</span>
+                    <EyeOff className="h-4 w-4" />
+                    <span>סמן כחדש</span>
                   </>
                 )}
               </button>

@@ -30,7 +30,11 @@ export class HomePage {
     return this.page.getByTestId(`feed-item-${id}`);
   }
 
-  markHandledButton(itemId: string): Locator {
-    return this.page.getByTestId(`mark-handled-${itemId}`);
+  markNewButton(itemId: string): Locator {
+    return this.page.getByTestId(`feed-item-mark-new-${itemId}`);
+  }
+
+  archiveButton(itemId: string): Locator {
+    return this.page.getByTestId(`feed-item-archive-${itemId}`);
   }
 }

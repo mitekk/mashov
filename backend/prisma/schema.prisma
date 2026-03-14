@@ -15,7 +15,7 @@ model HouseholdConnection {
   encryptedPassword String
   schoolName       String?
   upstreamUserId   String?
-  cachedUnreadCount Int      @default(0)
+  cachedNewCount   Int       @default(0)
   lastLoginAt      DateTime?
   active           Boolean   @default(true)
   createdAt        DateTime  @default(now())
@@ -79,7 +79,7 @@ model MailConversation {
   subject           String
   senderNamePreview String?
   sendTime          DateTime
-  isUnread          Boolean   @default(false)
+  isNew             Boolean   @default(false)
   hasDrafts         Boolean   @default(false)
   hasAttachments    Boolean   @default(false)
   preventReply      Boolean   @default(false)
@@ -102,7 +102,7 @@ model MailMessage {
   bodyHtmlSanitized  String?
   bodyTextPreview    String?
   sendTime           DateTime
-  isUnread           Boolean  @default(false)
+  isNew              Boolean  @default(false)
   recipients         Json     @default("[]")
   files              Json     @default("[]")
   preventReply       Boolean  @default(false)
@@ -126,6 +126,8 @@ model HomeworkItem {
   homeworkText String
   remark       String?
   files        Json     @default("[]")
+  isNew        Boolean  @default(false)
+  isArchived   Boolean  @default(false)
   rawPayload   Json?
   updatedAt    DateTime @updatedAt
 
@@ -150,6 +152,8 @@ model BehaviorItem {
   remark         String?
   justification  String?
   eventAt        DateTime
+  isNew          Boolean  @default(false)
+  isArchived     Boolean  @default(false)
   rawPayload     Json?
   updatedAt      DateTime @updatedAt
 
@@ -203,19 +207,6 @@ model MessageBoardItem {
   @@map("message_board_item")
 }
 
-model ReadState {
-  id        String   @id @default(cuid())
-  itemType  String
-  itemId    String
-  scopeType String   @default("household")
-  scopeId   String   @default("default")
-  isRead    Boolean  @default(false)
-  isHandled Boolean  @default(false)
-  updatedAt DateTime @updatedAt
-
-  @@unique([itemType, itemId, scopeType, scopeId])
-  @@map("read_state")
-}
 
 model SyncRun {
   id           String    @id @default(cuid())

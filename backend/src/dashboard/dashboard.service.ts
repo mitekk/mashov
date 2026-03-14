@@ -5,7 +5,7 @@ import { SessionService } from '../session/session.service';
 
 export interface NeedsAttentionItem {
   id: string;
-  type: 'unread_conversation' | 'negative_behavior' | 'unhandled_homework' | 'sync_degraded';
+  type: 'new_conversation' | 'negative_behavior' | 'new_homework' | 'sync_degraded';
   title: string;
   summary: string;
   studentGuid: string | null;
@@ -25,8 +25,8 @@ export interface FeedItem {
   category: string;
   priority: 'high' | 'medium' | 'low';
   isPositive: boolean;
-  isUnread: boolean;
-  isHandled: boolean;
+  isNew: boolean;
+  isArchived: boolean;
   eventAt: string;
   syncedAt: string;
   linkPath: string;
@@ -76,36 +76,38 @@ export class DashboardService {
   }
 
   private async getSummary() {
-    const [household, unreadFallback, students, recentHomework, recentBehavior] = await Promise.all([
+    const [household, newFallback, students, recentHomework, recentBehavior] = await Promise.all([
       this.prisma.householdConnection.findFirst({
         where: { active: true },
         orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedUnreadCount: true },
+        select: { cachedNewCount: true },
       }),
       this.prisma.mailConversation.count({
         where: {
-          isUnread: true,
+          isNew: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
       }),
       this.prisma.student.count({ where: { isActive: true } }),
       this.prisma.homeworkItem.count({
         where: {
+          isArchived: false,
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
         },
       }),
       this.prisma.behaviorItem.count({
         where: {
+          isArchived: false,
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
           classification: { not: 'positive' },
         },
       }),
     ]);
 
-    const unreadConversations = household?.cachedUnreadCount ?? unreadFallback;
+    const newConversations = household?.cachedNewCount ?? newFallback;
 
     return {
-      unreadConversations,
+      newConversations,
       recentHomeworkCount: recentHomework,
       recentBehaviorCount: recentBehavior,
       childrenCount: students,
@@ -125,10 +127,10 @@ export class DashboardService {
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
 
-    // Priority 1: unread conversations
+    // Priority 1: new (unread) conversations
     const conversations = await this.prisma.mailConversation.findMany({
       where: {
-        isUnread: true,
+        isNew: true,
         NOT: { labels: { array_contains: ['archived'] } },
       },
       orderBy: { sendTime: 'desc' },
@@ -137,7 +139,7 @@ export class DashboardService {
     for (const conv of conversations) {
       items.push({
         id: conv.id,
-        type: 'unread_conversation',
+        type: 'new_conversation',
         title: conv.subject,
         summary: conv.senderNamePreview ?? 'הודעה שלא נקראה',
         studentGuid: null,
@@ -152,6 +154,8 @@ export class DashboardService {
     // Priority 2: negative behavior (not positive, not neutral)
     const behaviors = await this.prisma.behaviorItem.findMany({
       where: {
+        isNew: true,
+        isArchived: false,
         classification: 'attention',
         lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
       },
@@ -173,9 +177,11 @@ export class DashboardService {
 
     if (items.length >= 5) return items.slice(0, 5);
 
-    // Priority 3: recent homework
+    // Priority 3: recent new homework
     const homework = await this.prisma.homeworkItem.findMany({
       where: {
+        isNew: true,
+        isArchived: false,
         lessonDate: { gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
       },
       orderBy: { lessonDate: 'desc' },
@@ -184,7 +190,7 @@ export class DashboardService {
     for (const hw of homework) {
       items.push({
         id: hw.id,
-        type: 'unhandled_homework',
+        type: 'new_homework',
         title: `${hw.subjectName}: שיעורי בית`,
         summary: hw.homeworkText,
         studentGuid: hw.studentGuid,
@@ -222,10 +228,12 @@ export class DashboardService {
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
+        where: { isArchived: false },
         orderBy: { lessonDate: 'desc' },
         take: 20,
       }),
       this.prisma.behaviorItem.findMany({
+        where: { isArchived: false },
         orderBy: { eventAt: 'desc' },
         take: 20,
       }),
@@ -252,8 +260,8 @@ export class DashboardService {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isUnread: false,
-        isHandled: false,
+        isNew: hw.isNew,
+        isArchived: hw.isArchived,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
         linkPath: `/children/${hw.studentGuid}`,
@@ -273,8 +281,8 @@ export class DashboardService {
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
-        isUnread: false,
-        isHandled: false,
+        isNew: b.isNew,
+        isArchived: b.isArchived,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
         linkPath: `/children/${b.studentGuid}`,
@@ -291,10 +299,10 @@ export class DashboardService {
         studentGuid: null,
         studentName: null,
         category: 'mail',
-        priority: conv.isUnread ? 'high' : 'medium',
+        priority: conv.isNew ? 'high' : 'medium',
         isPositive: false,
-        isUnread: conv.isUnread,
-        isHandled: false,
+        isNew: conv.isNew,
+        isArchived: false,
         eventAt: conv.sendTime.toISOString(),
         syncedAt: conv.lastFetchedAt.toISOString(),
         linkPath: `/inbox/${conv.conversationId}`,
@@ -302,49 +310,7 @@ export class DashboardService {
     }
 
     allItems.sort((a, b) => new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime());
-    const sliced = allItems.slice(0, 20);
-
-    const genericFeedIds = sliced
-      .filter((item) => item.sourceType !== 'mail')
-      .map((item) => item.id);
-    const mailConversationIds = sliced
-      .filter((item) => item.sourceType === 'mail')
-      .map((item) => item.sourceId);
-
-    const [feedReadStateRows, mailReadStateRows] = await Promise.all([
-      genericFeedIds.length > 0
-        ? this.prisma.readState.findMany({
-          where: {
-            itemType: 'feed_item',
-            itemId: { in: genericFeedIds },
-            scopeType: 'household',
-            scopeId: 'default',
-          },
-          select: { itemId: true, isHandled: true },
-        })
-        : Promise.resolve([]),
-      mailConversationIds.length > 0
-        ? this.prisma.readState.findMany({
-          where: {
-            itemType: 'mail_conversation',
-            itemId: { in: mailConversationIds },
-            scopeType: 'household',
-            scopeId: 'default',
-          },
-          select: { itemId: true, isHandled: true },
-        })
-        : Promise.resolve([]),
-    ]);
-
-    const feedHandledMap = new Map(feedReadStateRows.map((row) => [row.itemId, row.isHandled]));
-    const mailHandledMap = new Map(mailReadStateRows.map((row) => [row.itemId, row.isHandled]));
-
-    return sliced.map((item) => ({
-      ...item,
-      isHandled: item.sourceType === 'mail'
-        ? (mailHandledMap.get(item.sourceId) ?? false)
-        : (feedHandledMap.get(item.id) ?? false),
-    }));
+    return allItems.slice(0, 20);
   }
 
   private async getChildren(): Promise<ChildCard[]> {
@@ -361,12 +327,14 @@ export class DashboardService {
           this.prisma.homeworkItem.count({
             where: {
               studentGuid: student.studentGuid,
+              isArchived: false,
               lessonDate: { gte: sevenDaysAgo },
             },
           }),
           this.prisma.behaviorItem.count({
             where: {
               studentGuid: student.studentGuid,
+              isArchived: false,
               lessonDate: { gte: sevenDaysAgo },
               classification: { not: 'positive' },
             },

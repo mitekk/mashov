@@ -4,8 +4,9 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
-  BookmarkCheck,
-  BookmarkX,
+  Eye,
+  EyeOff,
+  Archive,
 } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { ErrorState } from '@/components/ui/ErrorState';
@@ -13,7 +14,8 @@ import { LoadingState } from '@/components/ui/LoadingState';
 import { BucketBadge, Badge } from '@/components/ui/Badge';
 import { useChildBehaviorDetail } from '@/hooks/useChild';
 import { useChildren } from '@/hooks/useChildren';
-import { useMarkHandled } from '@/hooks/useReadState';
+import { useMarkNew } from '@/hooks/useMarkNew';
+import { useArchive } from '@/hooks/useArchive';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { getBucketColor } from '@/lib/behavior';
 import { cn } from '@/lib/utils';
@@ -29,15 +31,27 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
   const { data, isLoading, isError, refetch } = useChildBehaviorDetail(studentGuid, behaviorId);
   const { data: childrenData } = useChildren();
   const listHref = buildChildSectionHref(studentGuid, 'behavior');
-  const { markHandled, isPending } = useMarkHandled(
-    'behavior',
-    behaviorId,
-    [
-      ['dashboard'],
-      ['child-behavior', studentGuid],
-      ['child-behavior-detail', studentGuid, behaviorId],
-    ],
-  );
+
+  const invalidateKeys = [
+    ['dashboard'],
+    ['child-behavior', studentGuid],
+    ['child-behavior-detail', studentGuid, behaviorId],
+  ];
+
+  const { mutate: mutateMarkNew, isPending: isMarkNewPending } = useMarkNew({
+    type: 'behavior',
+    id: behaviorId,
+    studentGuid,
+    invalidateKeys,
+  });
+
+  const { mutate: mutateArchive, isPending: isArchivePending } = useArchive({
+    type: 'behavior',
+    id: behaviorId,
+    studentGuid,
+    invalidateKeys,
+  });
+
   const colors = data ? getBucketColor(data.bucket) : null;
   const childFullName = childrenData?.data.find(
     (child) => child.studentGuid === studentGuid,
@@ -49,11 +63,6 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
       return;
     }
     if (listHref) router.replace(listHref);
-  };
-
-  const handleToggleHandled = () => {
-    if (!data) return;
-    markHandled(!data.isHandled);
   };
 
   return (
@@ -70,25 +79,42 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
             <ArrowRight className="h-5 w-5" />
           </button>
           {data && (
-            <button
-              type="button"
-              data-testid={`behavior-detail-toggle-${behaviorId}`}
-              onClick={handleToggleHandled}
-              disabled={isPending}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-            >
-              {data.isHandled ? (
-                <>
-                  <BookmarkX className="h-4 w-4" />
-                  <span>בטל טיפול</span>
-                </>
-              ) : (
-                <>
-                  <BookmarkCheck className="h-4 w-4" />
-                  <span>סמן כטופל</span>
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-testid={`behavior-detail-toggle-new-${behaviorId}`}
+                onClick={() => mutateMarkNew(!data.isNew)}
+                disabled={isMarkNewPending}
+                aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                {data.isNew ? (
+                  <>
+                    <Eye className="h-4 w-4" />
+                    <span>סמן כנקרא</span>
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="h-4 w-4" />
+                    <span>סמן כחדש</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                data-testid={`behavior-detail-archive-${behaviorId}`}
+                onClick={() => mutateArchive(!data.isArchived)}
+                disabled={isArchivePending}
+                aria-label={data.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50',
+                  data.isArchived ? 'text-primary' : 'text-muted-foreground',
+                )}
+              >
+                <Archive className="h-4 w-4" />
+                <span>{data.isArchived ? 'שחזר' : 'ארכיון'}</span>
+              </button>
+            </div>
           )}
         </div>
 
@@ -106,17 +132,26 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
             className={cn(
               'card-base space-y-3 border-s-4 p-4',
               colors?.border,
-              data.isHandled && 'opacity-70',
             )}
           >
             <div className="flex items-start gap-2 flex-wrap">
               <BucketBadge bucket={data.bucket} />
               {data.justifiable && <Badge variant="secondary">מוצדק</Badge>}
+              {data.isNew && (
+                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                  חדש
+                </span>
+              )}
+              {data.isArchived && (
+                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  בארכיון
+                </span>
+              )}
               <span className="text-xs text-muted-foreground ms-auto whitespace-nowrap">
                 {formatShortDate(data.lessonDate)}
               </span>
             </div>
-            <p className={cn('text-sm font-semibold text-foreground', data.isHandled && 'line-through')}>
+            <p className="text-sm font-semibold text-foreground">
               {data.achvaName}
             </p>
             <div className="flex gap-3 flex-wrap text-xs text-muted-foreground">

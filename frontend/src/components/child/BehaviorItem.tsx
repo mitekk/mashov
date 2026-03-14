@@ -2,12 +2,13 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { CheckCircle, Circle } from 'lucide-react';
+import { Eye, EyeOff, Archive } from 'lucide-react';
 import type { BehaviorItem as BehaviorItemType } from '@/types/api';
 import { BucketBadge, Badge } from '@/components/ui/Badge';
 import { formatShortDate } from '@/lib/dates';
 import { getBucketColor } from '@/lib/behavior';
-import { useMarkHandled } from '@/hooks/useReadState';
+import { useMarkNew } from '@/hooks/useMarkNew';
+import { useArchive } from '@/hooks/useArchive';
 import { cn } from '@/lib/utils';
 
 interface BehaviorItemProps {
@@ -21,11 +22,21 @@ export function BehaviorItem({
   studentGuid,
   detailHref = null,
 }: BehaviorItemProps) {
-  const { markHandled, isPending } = useMarkHandled(
-    'behavior',
-    item.id,
-    [['child-behavior', studentGuid], ['dashboard']],
-  );
+  const invalidateKeys = [['child-behavior', studentGuid], ['dashboard']];
+
+  const { mutate: mutateMarkNew, isPending: isMarkNewPending } = useMarkNew({
+    type: 'behavior',
+    id: item.id,
+    studentGuid,
+    invalidateKeys,
+  });
+
+  const { mutate: mutateArchive, isPending: isArchivePending } = useArchive({
+    type: 'behavior',
+    id: item.id,
+    studentGuid,
+    invalidateKeys,
+  });
 
   const colors = getBucketColor(item.bucket);
   const content = (
@@ -34,6 +45,11 @@ export function BehaviorItem({
         <BucketBadge bucket={item.bucket} />
         {item.justifiable && (
           <Badge variant="secondary">מוצדק</Badge>
+        )}
+        {item.isNew && (
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+            חדש
+          </span>
         )}
         <span className="text-xs text-muted-foreground ms-auto whitespace-nowrap">
           {formatShortDate(item.lessonDate)}
@@ -61,8 +77,7 @@ export function BehaviorItem({
     <div
       data-testid={`behavior-item-${item.id}`}
       className={cn(
-        'card-base p-4 flex gap-3 items-start transition-opacity border-s-4',
-        item.isHandled ? 'opacity-50' : 'opacity-100',
+        'card-base p-4 flex gap-3 items-start border-s-4',
         colors.border,
       )}
     >
@@ -75,19 +90,30 @@ export function BehaviorItem({
           {content}
         </Link>
       ) : content}
-      <button
-        data-testid={`behavior-handle-${item.id}`}
-        onClick={() => markHandled(!item.isHandled)}
-        disabled={isPending}
-        aria-label={item.isHandled ? 'בטל טיפול' : 'סמן כטופל'}
-        className="flex-shrink-0 mt-0.5 text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
-      >
-        {item.isHandled ? (
-          <CheckCircle className="w-5 h-5 text-primary" />
-        ) : (
-          <Circle className="w-5 h-5" />
-        )}
-      </button>
+      <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
+        <button
+          data-testid={`behavior-mark-new-${item.id}`}
+          onClick={() => mutateMarkNew(!item.isNew)}
+          disabled={isMarkNewPending}
+          aria-label={item.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
+          className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+        >
+          {item.isNew ? (
+            <Eye className="w-5 h-5 text-primary" />
+          ) : (
+            <EyeOff className="w-5 h-5" />
+          )}
+        </button>
+        <button
+          data-testid={`behavior-archive-${item.id}`}
+          onClick={() => mutateArchive(!item.isArchived)}
+          disabled={isArchivePending}
+          aria-label={item.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
+          className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+        >
+          <Archive className={cn('w-4 h-4', item.isArchived && 'text-primary')} />
+        </button>
+      </div>
     </div>
   );
 }

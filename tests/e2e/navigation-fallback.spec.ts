@@ -19,7 +19,7 @@ async function mockBaseRoutes(page: Page) {
     json(route, {
       freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
       summary: {
-        unreadConversations: 1,
+        newConversations: 1,
         recentHomeworkCount: 1,
         recentBehaviorCount: 1,
         childrenCount: 1,
@@ -27,7 +27,7 @@ async function mockBaseRoutes(page: Page) {
       needsAttention: [
         {
           id: 'att-1',
-          type: 'unread_conversation',
+          type: 'new_conversation',
           title: 'Unread conversation',
           summary: 'Summary',
           studentGuid: null,
@@ -48,8 +48,8 @@ async function mockBaseRoutes(page: Page) {
           category: 'homework',
           priority: 'medium',
           isPositive: false,
-          isUnread: true,
-          isHandled: false,
+          isNew: true,
+          isArchived: false,
           eventAt: new Date().toISOString(),
           syncedAt: new Date().toISOString(),
           linkPath: `/children/${STUDENT_GUID}`,
@@ -131,7 +131,8 @@ async function mockBaseRoutes(page: Page) {
         homeworkText: 'New homework',
         remark: null,
         files: [],
-        isHandled: false,
+        isNew: false,
+        isArchived: false,
         updatedAt: new Date().toISOString(),
       });
     }
@@ -162,7 +163,8 @@ async function mockBaseRoutes(page: Page) {
         remark: null,
         justification: null,
         eventAt: new Date().toISOString(),
-        isHandled: false,
+        isNew: false,
+        isArchived: false,
         updatedAt: new Date().toISOString(),
       });
     }
@@ -182,7 +184,7 @@ async function mockBaseRoutes(page: Page) {
 
   await page.route('**/api/v1/mail/summary', (route) =>
     json(route, {
-      unreadConversations: 1,
+      newConversations: 1,
       recentConversations: [],
       lastSyncAt: new Date().toISOString(),
     }),
@@ -196,11 +198,10 @@ async function mockBaseRoutes(page: Page) {
           subject: 'Message subject',
           senderNamePreview: 'Teacher',
           sendTime: new Date().toISOString(),
-          isUnread: true,
+          isNew: true,
           hasAttachments: false,
           preventReply: false,
           labels: [],
-          isHandled: false,
           lastFetchedAt: new Date().toISOString(),
         },
       ],
@@ -213,12 +214,11 @@ async function mockBaseRoutes(page: Page) {
       conversationId: CONVERSATION_ID,
       subject: 'Message subject',
       sendTime: new Date().toISOString(),
-      isUnread: true,
+      isNew: true,
       hasDrafts: false,
       hasAttachments: false,
       preventReply: false,
       labels: [],
-      isHandled: false,
       messages: [
         {
           messageId: 'msg-1',
@@ -229,7 +229,7 @@ async function mockBaseRoutes(page: Page) {
           bodyHtmlSanitized: '<p>Hello world</p>',
           bodyTextPreview: 'Hello world',
           sendTime: new Date().toISOString(),
-          isUnread: true,
+          isNew: true,
           recipients: [],
           preventReply: false,
           sentViaEmail: false,
@@ -262,16 +262,6 @@ async function mockBaseRoutes(page: Page) {
   );
   await page.route('**/api/v1/sync/refresh', (route) =>
     json(route, { started: true, message: 'ok' }, 202),
-  );
-  await page.route('**/api/v1/read-state', (route) =>
-    json(route, {
-      id: 'rs-1',
-      itemType: 'feed_item',
-      itemId: 'feed-1',
-      isRead: true,
-      isHandled: true,
-      updatedAt: new Date().toISOString(),
-    }, 201),
   );
 }
 
@@ -643,49 +633,4 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page).toHaveURL('/home');
   });
 
-  test('clear read-state action sends clearAll payload', async ({ page }) => {
-    let capturedPayload: unknown = null;
-
-    await page.route('**/api/v1/settings/source-health', (route) =>
-      json(route, { sources: [], overallState: 'fresh', lastFullSyncAt: null }),
-    );
-    await page.route('**/api/v1/settings/profile', (route) =>
-      json(route, {
-        upstreamUserId: 'user-1',
-        displayName: 'Parent',
-        email: 'parent@example.com',
-        cellphone: '0500000000',
-        schoolName: 'Test School',
-        schoolYear: 2026,
-        schoolCode: 1234,
-        detailsState: 1,
-        updatedAt: new Date().toISOString(),
-      }),
-    );
-    await page.route('**/api/v1/dashboard', (route) =>
-      json(route, {
-        freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
-        summary: {
-          unreadConversations: 0,
-          recentHomeworkCount: 0,
-          recentBehaviorCount: 0,
-          childrenCount: 0,
-        },
-        needsAttention: [],
-        feed: [],
-        children: [],
-        school: { schoolName: 'Test', schoolYear: 2026 },
-      }),
-    );
-    await page.route('**/api/v1/read-state', async (route) => {
-      capturedPayload = route.request().postDataJSON();
-      await json(route, { deleted: 4 }, 201);
-    });
-
-    await page.goto('/more');
-    await expect(page.getByTestId('clear-read-state-button')).toBeVisible();
-    await page.getByTestId('clear-read-state-button').click();
-
-    expect(capturedPayload).toEqual({ clearAll: true });
-  });
 });

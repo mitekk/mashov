@@ -170,23 +170,31 @@ export class ChildrenService {
     };
   }
 
-  async getHomework(studentGuid: string, page: number, limit: number) {
+  async getHomework(
+    studentGuid: string,
+    page: number,
+    limit: number,
+    status: 'active' | 'archived' = 'active',
+  ) {
     await this.requireStudent(studentGuid);
+
+    const where = {
+      studentGuid,
+      isArchived: status === 'archived',
+    };
 
     const [items, total] = await Promise.all([
       this.prisma.homeworkItem.findMany({
-        where: { studentGuid },
+        where,
         orderBy: { lessonDate: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.homeworkItem.count({ where: { studentGuid } }),
+      this.prisma.homeworkItem.count({ where }),
     ]);
 
-    const handledMap = await this.getHandledMap('homework', items.map((item) => item.id));
-
     return {
-      data: items.map((item) => this.mapHomeworkItem(item, handledMap.get(item.id) ?? false)),
+      data: items.map((item) => this.mapHomeworkItem(item)),
       pagination: {
         page,
         limit,
@@ -206,8 +214,7 @@ export class ChildrenService {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
 
-    const handledMap = await this.getHandledMap('homework', [item.id]);
-    return this.mapHomeworkItem(item, handledMap.get(item.id) ?? false);
+    return this.mapHomeworkItem(item);
   }
 
   async getBehavior(
@@ -215,11 +222,13 @@ export class ChildrenService {
     page: number,
     limit: number,
     bucket: 'all' | 'attention' | 'positive' | 'neutral',
+    status: 'active' | 'archived' = 'active',
   ) {
     await this.requireStudent(studentGuid);
 
     const where = {
       studentGuid,
+      isArchived: status === 'archived',
       ...(bucket !== 'all' ? { classification: bucket } : {}),
     };
 
@@ -233,10 +242,8 @@ export class ChildrenService {
       this.prisma.behaviorItem.count({ where }),
     ]);
 
-    const handledMap = await this.getHandledMap('behavior', items.map((item) => item.id));
-
     return {
-      data: items.map((item) => this.mapBehaviorItem(item, handledMap.get(item.id) ?? false)),
+      data: items.map((item) => this.mapBehaviorItem(item)),
       pagination: {
         page,
         limit,
@@ -256,8 +263,79 @@ export class ChildrenService {
       throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
     }
 
-    const handledMap = await this.getHandledMap('behavior', [item.id]);
-    return this.mapBehaviorItem(item, handledMap.get(item.id) ?? false);
+    return this.mapBehaviorItem(item);
+  }
+
+  async setHomeworkIsNew(studentGuid: string, homeworkId: string, isNew: boolean) {
+    await this.requireStudent(studentGuid);
+
+    const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
+    if (!item || item.studentGuid !== studentGuid) {
+      throw new NotFoundException(`Homework not found: ${homeworkId}`);
+    }
+
+    const updated = await this.prisma.homeworkItem.update({
+      where: { id: homeworkId },
+      data: { isNew },
+    });
+
+    return this.mapHomeworkItem(updated);
+  }
+
+  async setHomeworkArchived(studentGuid: string, homeworkId: string, isArchived: boolean) {
+    await this.requireStudent(studentGuid);
+
+    const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
+    if (!item || item.studentGuid !== studentGuid) {
+      throw new NotFoundException(`Homework not found: ${homeworkId}`);
+    }
+
+    // Archive rules: archive=true forces isNew=false; unarchive=false forces isNew=true
+    const updated = await this.prisma.homeworkItem.update({
+      where: { id: homeworkId },
+      data: {
+        isArchived,
+        isNew: isArchived ? false : true,
+      },
+    });
+
+    return this.mapHomeworkItem(updated);
+  }
+
+  async setBehaviorIsNew(studentGuid: string, behaviorId: string, isNew: boolean) {
+    await this.requireStudent(studentGuid);
+
+    const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
+    if (!item || item.studentGuid !== studentGuid) {
+      throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
+    }
+
+    const updated = await this.prisma.behaviorItem.update({
+      where: { id: behaviorId },
+      data: { isNew },
+    });
+
+    return this.mapBehaviorItem(updated);
+  }
+
+  async setBehaviorArchived(studentGuid: string, behaviorId: string, isArchived: boolean) {
+    await this.requireStudent(studentGuid);
+
+    const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
+    if (!item || item.studentGuid !== studentGuid) {
+      throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
+    }
+
+    // Archive rules: archive=true forces isNew=false; unarchive=false forces isNew=true
+    const updated = await this.prisma.behaviorItem.update({
+      where: { id: behaviorId },
+      data: {
+        isArchived,
+        isNew: isArchived ? false : true,
+      },
+    });
+
+    return this.mapBehaviorItem(updated);
   }
 
   async getSubjects(studentGuid: string) {
@@ -320,8 +398,10 @@ export class ChildrenService {
     homeworkText: string;
     remark: string | null;
     files: unknown;
+    isNew: boolean;
+    isArchived: boolean;
     updatedAt: Date;
-  }, isHandled: boolean) {
+  }) {
     return {
       id: item.id,
       studentGuid: item.studentGuid,
@@ -333,7 +413,8 @@ export class ChildrenService {
       homeworkText: item.homeworkText,
       remark: item.remark,
       files: this.asArray(item.files),
-      isHandled,
+      isNew: item.isNew,
+      isArchived: item.isArchived,
       updatedAt: item.updatedAt.toISOString(),
     };
   }
@@ -355,8 +436,10 @@ export class ChildrenService {
     remark: string | null;
     justification: string | null;
     eventAt: Date;
+    isNew: boolean;
+    isArchived: boolean;
     updatedAt: Date;
-  }, isHandled: boolean) {
+  }) {
     const mappedBucket = this.mapBehaviorBucket(item.classification);
     const priority = BEHAVIOR_PRIORITY_MAP[item.eventCode]
       ?? (mappedBucket === 'attention' ? 'medium' : 'low');
@@ -379,7 +462,8 @@ export class ChildrenService {
       remark: item.remark,
       justification: item.justification,
       eventAt: item.eventAt.toISOString(),
-      isHandled,
+      isNew: item.isNew,
+      isArchived: item.isArchived,
       updatedAt: item.updatedAt.toISOString(),
     };
   }
@@ -404,22 +488,6 @@ export class ChildrenService {
       throw new NotFoundException(`Student not found: ${studentGuid}`);
     }
     return student;
-  }
-
-  private async getHandledMap(itemType: string, itemIds: string[]): Promise<Map<string, boolean>> {
-    if (itemIds.length === 0) return new Map();
-
-    const rows = await this.prisma.readState.findMany({
-      where: {
-        itemType,
-        itemId: { in: itemIds },
-        scopeType: 'household',
-        scopeId: 'default',
-      },
-      select: { itemId: true, isHandled: true },
-    });
-
-    return new Map(rows.map((row) => [row.itemId, row.isHandled]));
   }
 
   private mapBehaviorBucket(classification: string): 'attention' | 'positive' | 'neutral' {

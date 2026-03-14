@@ -7,6 +7,22 @@ import { InboxPage } from './pages/InboxPage';
  * Empty-state checks use route mocking so results are deterministic.
  * Filter toggle tests verify UI state changes.
  */
+
+function makeConversation(overrides: object = {}) {
+  return {
+    conversationId: 'conv-default',
+    subject: 'Default message',
+    senderNamePreview: 'Teacher',
+    sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+    isNew: false,
+    hasAttachments: false,
+    preventReply: false,
+    labels: [],
+    lastFetchedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 test.describe('Inbox page', () => {
   test('renders the inbox page container', async ({ page }) => {
     const inboxPage = new InboxPage(page);
@@ -55,24 +71,23 @@ test.describe('Inbox page', () => {
     await expect(inboxPage.filterUnreadButton).toBeVisible();
   });
 
-  test('clicking filter-unread adds filter=unread to the URL', async ({ page }) => {
+  test('clicking filter-unread adds filter=new to the URL', async ({ page }) => {
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
 
     await inboxPage.clickFilterUnread();
 
-    expect(page.url()).toContain('filter=unread');
+    expect(page.url()).toContain('filter=new');
   });
 
-  test('clicking filter-all removes the unread filter from the URL', async ({ page }) => {
+  test('clicking filter-all removes the new filter from the URL', async ({ page }) => {
     const inboxPage = new InboxPage(page);
-    // Start with the unread filter already active
-    await page.goto('/inbox?filter=unread');
+    await page.goto('/inbox?filter=new');
     await page.waitForLoadState('networkidle');
 
     await inboxPage.clickFilterAll();
 
-    expect(page.url()).not.toContain('filter=unread');
+    expect(page.url()).not.toContain('filter=new');
   });
 
   test('inbox page renders correctly after page reload', async ({ page }) => {
@@ -86,16 +101,50 @@ test.describe('Inbox page', () => {
     await expect(inboxPage.inboxContainer).toBeVisible();
   });
 
-  test('unread filter state persists in URL after reload', async ({ page }) => {
-    await page.goto('/inbox?filter=unread');
+  test('new filter state persists in URL after reload', async ({ page }) => {
+    await page.goto('/inbox?filter=new');
     await page.waitForLoadState('networkidle');
 
-    // Reload — URL param should be preserved by browser
     await page.reload();
     await page.waitForLoadState('networkidle');
 
-    // The URL should still contain the filter
-    expect(page.url()).toContain('filter=unread');
+    expect(page.url()).toContain('filter=new');
+  });
+
+  test('conversations use isNew field (not isUnread)', async ({ page }) => {
+    await page.route('**/api/v1/mail/summary', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          newConversations: 1,
+          recentConversations: [],
+          lastSyncAt: null,
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            makeConversation({
+              conversationId: 'conv-new-check',
+              subject: 'New message check',
+              isNew: true,
+            }),
+          ],
+          pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+
+    await expect(inboxPage.conversationItem('conv-new-check')).toBeVisible();
   });
 
   test('load more appends conversations instead of replacing list', async ({ page }) => {
@@ -104,7 +153,7 @@ test.describe('Inbox page', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          unreadConversations: 2,
+          newConversations: 2,
           recentConversations: [],
           lastSyncAt: null,
         }),
@@ -117,35 +166,25 @@ test.describe('Inbox page', () => {
       const body = pageParam === 1
         ? {
           data: [
-            {
+            makeConversation({
               conversationId: 'conv-page-1',
               subject: 'First page',
               senderNamePreview: 'Teacher A',
               sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
-              isUnread: true,
-              hasAttachments: false,
-              preventReply: false,
-              labels: [],
-              isHandled: false,
-              lastFetchedAt: new Date().toISOString(),
-            },
+              isNew: true,
+            }),
           ],
           pagination: { page: 1, limit: 20, total: 2, totalPages: 2 },
         }
         : {
           data: [
-            {
+            makeConversation({
               conversationId: 'conv-page-2',
               subject: 'Second page',
               senderNamePreview: 'Teacher B',
               sendTime: new Date('2026-03-11T10:00:00Z').toISOString(),
-              isUnread: false,
-              hasAttachments: false,
-              preventReply: false,
-              labels: [],
-              isHandled: false,
-              lastFetchedAt: new Date().toISOString(),
-            },
+              isNew: false,
+            }),
           ],
           pagination: { page: 2, limit: 20, total: 2, totalPages: 2 },
         };
@@ -167,15 +206,15 @@ test.describe('Inbox page', () => {
     await expect(inboxPage.conversationItem('conv-page-2')).toBeVisible();
   });
 
-  test('bulk mark-unread action sends selected conversation ids', async ({ page }) => {
-    let markUnreadRequestBody: unknown = null;
+  test('mark-read action sends conversation ids to mark-read endpoint', async ({ page }) => {
+    let markReadRequestBody: unknown = null;
 
     await page.route('**/api/v1/mail/summary', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          unreadConversations: 1,
+          newConversations: 1,
           recentConversations: [],
           lastSyncAt: null,
         }),
@@ -188,18 +227,65 @@ test.describe('Inbox page', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           data: [
-            {
+            makeConversation({
+              conversationId: 'conv-mark-read-1',
+              subject: 'Mark read item',
+              isNew: true,
+            }),
+          ],
+          pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations/mark-read', async (route) => {
+      markReadRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ updated: 1 }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+    await inboxPage.toggleConversationSelection('conv-mark-read-1');
+    await expect(inboxPage.bulkActionsBar).toBeVisible();
+
+    const markReadButton = page.getByTestId('bulk-mark-read');
+    if (await markReadButton.isVisible()) {
+      await markReadButton.click();
+      await expect.poll(() => markReadRequestBody).not.toBeNull();
+      expect(markReadRequestBody).toEqual({ conversationIds: ['conv-mark-read-1'] });
+    }
+  });
+
+  test('bulk mark-unread action sends selected conversation ids', async ({ page }) => {
+    let markUnreadRequestBody: unknown = null;
+
+    await page.route('**/api/v1/mail/summary', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          newConversations: 1,
+          recentConversations: [],
+          lastSyncAt: null,
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            makeConversation({
               conversationId: 'conv-bulk-1',
               subject: 'Bulk item',
-              senderNamePreview: 'Teacher',
-              sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
-              isUnread: true,
-              hasAttachments: false,
-              preventReply: false,
-              labels: [],
-              isHandled: false,
-              lastFetchedAt: new Date().toISOString(),
-            },
+              isNew: true,
+            }),
           ],
           pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
         }),
@@ -233,7 +319,7 @@ test.describe('Inbox page', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          unreadConversations: 1,
+          newConversations: 1,
           recentConversations: [],
           lastSyncAt: null,
         }),
@@ -248,18 +334,11 @@ test.describe('Inbox page', () => {
         }
         : {
           data: [
-            {
+            makeConversation({
               conversationId: 'conv-archive-1',
               subject: 'Archive item',
-              senderNamePreview: 'Teacher',
-              sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
-              isUnread: true,
-              hasAttachments: false,
-              preventReply: false,
-              labels: [],
-              isHandled: false,
-              lastFetchedAt: new Date().toISOString(),
-            },
+              isNew: true,
+            }),
           ],
           pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
         };
@@ -294,7 +373,7 @@ test.describe('Inbox page', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          unreadConversations: 1,
+          newConversations: 1,
           recentConversations: [],
           lastSyncAt: null,
         }),
@@ -307,18 +386,12 @@ test.describe('Inbox page', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           data: [
-            {
+            makeConversation({
               conversationId: 'conv-detail-1',
               subject: 'Detail subject',
-              senderNamePreview: 'Teacher',
-              sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
-              isUnread: true,
+              isNew: true,
               hasAttachments: true,
-              preventReply: false,
-              labels: [],
-              isHandled: false,
-              lastFetchedAt: new Date().toISOString(),
-            },
+            }),
           ],
           pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
         }),
@@ -333,12 +406,11 @@ test.describe('Inbox page', () => {
           conversationId: 'conv-detail-1',
           subject: 'Detail subject',
           sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
-          isUnread: true,
+          isNew: true,
           hasDrafts: false,
           hasAttachments: true,
           preventReply: false,
           labels: [],
-          isHandled: false,
           lastFetchedAt: new Date().toISOString(),
           messages: [
             {

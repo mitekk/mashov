@@ -11,10 +11,14 @@ import { cn } from '@/lib/utils';
 import { getBucketLabel } from '@/lib/behavior';
 import { buildBehaviorDetailHref, type ChildBehaviorFilter } from '@/lib/child-routes';
 
+type BehaviorStatusFilter = 'active' | 'archived';
+
 interface BehaviorSectionProps {
   studentGuid: string;
   activeFilter: ChildBehaviorFilter;
   onFilterChange: (filter: ChildBehaviorFilter) => void;
+  statusFilter: BehaviorStatusFilter;
+  onStatusFilterChange: (status: BehaviorStatusFilter) => void;
 }
 
 const FILTER_TABS: ChildBehaviorFilter[] = ['all', 'attention', 'positive', 'neutral'];
@@ -23,6 +27,8 @@ export function BehaviorSection({
   studentGuid,
   activeFilter,
   onFilterChange,
+  statusFilter,
+  onStatusFilterChange,
 }: BehaviorSectionProps) {
   const { data, isLoading, isError, refetch } = useChildBehavior(
     studentGuid,
@@ -30,11 +36,43 @@ export function BehaviorSection({
     activeFilter,
   );
 
+  const filteredItems = data?.data.filter((item) =>
+    statusFilter === 'archived' ? item.isArchived : !item.isArchived,
+  ) ?? [];
+
   return (
     <section data-testid="behavior-section" className="section-stack py-1">
       <h2 className="text-lg font-semibold text-foreground">
         אירועי התנהגות
       </h2>
+      {/* Status (Active / Archived) tabs */}
+      <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm w-fit">
+        <button
+          data-testid="behavior-status-active"
+          onClick={() => onStatusFilterChange('active')}
+          className={cn(
+            'px-3 py-1.5 transition-colors',
+            statusFilter === 'active'
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:bg-accent',
+          )}
+        >
+          פעיל
+        </button>
+        <button
+          data-testid="behavior-status-archived"
+          onClick={() => onStatusFilterChange('archived')}
+          className={cn(
+            'px-3 py-1.5 transition-colors',
+            statusFilter === 'archived'
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:bg-accent',
+          )}
+        >
+          ארכיון
+        </button>
+      </div>
+      {/* Bucket filter chips */}
       <div className="flex gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
         {FILTER_TABS.map((tab) => (
           <button
@@ -59,16 +97,16 @@ export function BehaviorSection({
           onRetry={() => void refetch()}
         />
       )}
-      {data && data.data.length === 0 && (
+      {!isLoading && !isError && filteredItems.length === 0 && (
         <EmptyState
           icon={<AlertTriangle className="w-8 h-8" />}
-          title="אין אירועי התנהגות"
+          title={statusFilter === 'archived' ? 'אין אירועי התנהגות בארכיון' : 'אין אירועי התנהגות'}
           subtitle={activeFilter !== 'all' ? 'נסה לשנות את הסינון' : undefined}
         />
       )}
-      {data && data.data.length > 0 && (
+      {filteredItems.length > 0 && (
         <div className="section-stack">
-          {data.data.map((item) => (
+          {filteredItems.map((item) => (
             <BehaviorItem
               key={item.id}
               item={item}

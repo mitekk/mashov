@@ -33,16 +33,16 @@ export interface FreshnessStatus {
 // ─── Dashboard ─────────────────────────────────────────────────────────────
 
 export interface DashboardSummary {
-  unreadConversations: number;
+  newConversations: number;
   recentHomeworkCount: number;
   recentBehaviorCount: number;
   childrenCount: number;
 }
 
 export type NeedsAttentionType =
-  | 'unread_conversation'
+  | 'new_conversation'
   | 'negative_behavior'
-  | 'unhandled_homework'
+  | 'new_homework'
   | 'sync_degraded';
 
 export interface NeedsAttentionItem {
@@ -70,8 +70,8 @@ export interface FeedItem {
   category: string;
   priority: FeedPriority;
   isPositive: boolean;
-  isUnread: boolean;
-  isHandled: boolean;
+  isNew: boolean;
+  isArchived: boolean;
   eventAt: string;
   syncedAt: string;
   linkPath: string;
@@ -172,7 +172,8 @@ export interface HomeworkItem {
   homeworkText: string;
   remark: string | null;
   files: HomeworkFile[];
-  isHandled: boolean;
+  isNew: boolean;
+  isArchived: boolean;
   updatedAt: string;
 }
 
@@ -201,7 +202,8 @@ export interface BehaviorItem {
   remark: string | null;
   justification: string | null;
   eventAt: string;
-  isHandled: boolean;
+  isNew: boolean;
+  isArchived: boolean;
   updatedAt: string;
 }
 
@@ -255,13 +257,13 @@ export interface RecentConversation {
   subject: string;
   senderNamePreview: string;
   sendTime: string;
-  isUnread: boolean;
+  isNew: boolean;
   hasAttachments: boolean;
   preventReply: boolean;
 }
 
 export interface MailSummary {
-  unreadConversations: number;
+  newConversations: number;
   recentConversations: RecentConversation[];
   lastSyncAt: string | null;
 }
@@ -271,11 +273,10 @@ export interface ConversationListItem {
   subject: string;
   senderNamePreview: string;
   sendTime: string;
-  isUnread: boolean;
+  isNew: boolean;
   hasAttachments: boolean;
   preventReply: boolean;
   labels: string[];
-  isHandled: boolean;
   lastFetchedAt: string;
 }
 
@@ -298,7 +299,7 @@ export interface ConversationMessage {
   bodyHtmlSanitized: string;
   bodyTextPreview: string;
   sendTime: string;
-  isUnread: boolean;
+  isNew: boolean;
   recipients: MessageRecipient[];
   hasAttachments: boolean;
   preventReply: boolean;
@@ -310,12 +311,11 @@ export interface ConversationDetail {
   conversationId: string;
   subject: string;
   sendTime: string;
-  isUnread: boolean;
+  isNew: boolean;
   hasDrafts: boolean;
   hasAttachments: boolean;
   preventReply: boolean;
   labels: string[];
-  isHandled: boolean;
   messages: ConversationMessage[];
   lastFetchedAt: string;
 }
@@ -352,25 +352,10 @@ export interface ParentProfile {
   updatedAt: string;
 }
 
-// ─── Read State ────────────────────────────────────────────────────────────
+// ─── IsNew / Archive mutations ─────────────────────────────────────────────
 
-export type ReadStateItemType = 'homework' | 'behavior' | 'mail_conversation' | 'feed_item';
-
-export interface ReadStateRequest {
-  itemType: ReadStateItemType;
-  itemId: string;
-  isRead: boolean;
-  isHandled: boolean;
-}
-
-export interface ReadStateResponse {
-  id: string;
-  itemType: string;
-  itemId: string;
-  isRead: boolean;
-  isHandled: boolean;
-  updatedAt: string;
-}
+export interface MarkIsNewRequest { isNew: boolean }
+export interface MarkArchivedRequest { isArchived: boolean }
 
 // ─── Sync ──────────────────────────────────────────────────────────────────
 

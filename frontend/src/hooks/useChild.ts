@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   fetchChild,
   fetchChildHomework,
@@ -8,8 +8,7 @@ import {
   fetchChildSubjects,
   fetchChildNotices,
 } from '@/api/children';
-import { upsertReadState } from '@/api/readState';
-import type { BehaviorBucket, ReadStateRequest } from '@/types/api';
+import type { BehaviorBucket } from '@/types/api';
 
 export function useChild(studentGuid: string) {
   return useQuery({
@@ -75,24 +74,5 @@ export function useChildNotices(studentGuid: string) {
     queryFn: () => fetchChildNotices(studentGuid),
     staleTime: 5 * 60_000,
     enabled: Boolean(studentGuid),
-  });
-}
-
-export function useMarkHandled() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (req: ReadStateRequest) => upsertReadState(req),
-    onSuccess: (_data, variables) => {
-      // Invalidate relevant queries
-      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      if (variables.itemType === 'homework') {
-        void queryClient.invalidateQueries({ queryKey: ['child-homework'] });
-        void queryClient.invalidateQueries({ queryKey: ['child-homework-detail'] });
-      }
-      if (variables.itemType === 'behavior') {
-        void queryClient.invalidateQueries({ queryKey: ['child-behavior'] });
-        void queryClient.invalidateQueries({ queryKey: ['child-behavior-detail'] });
-      }
-    },
   });
 }

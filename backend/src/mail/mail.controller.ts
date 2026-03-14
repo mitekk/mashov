@@ -20,7 +20,13 @@ class ConversationsQueryDto {
   @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
-  unreadOnly?: boolean = false;
+  newOnly?: boolean = false;
+}
+
+class MarkReadDto {
+  @IsArray()
+  @IsString({ each: true })
+  conversationIds!: string[];
 }
 
 class MarkUnreadDto {
@@ -48,13 +54,18 @@ export class MailController {
   async getConversations(@Query() query: ConversationsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const unreadOnly = query.unreadOnly ?? false;
-    return this.mailService.getConversations(page, limit, unreadOnly);
+    const newOnly = query.newOnly ?? false;
+    return this.mailService.getConversations(page, limit, newOnly);
   }
 
   @Get('conversations/:id')
   async getConversation(@Param('id') id: string) {
     return this.mailService.getConversationDetail(id);
+  }
+
+  @Put('conversations/mark-read')
+  async markRead(@Body() body: MarkReadDto) {
+    return this.mailService.markConversationsRead(body.conversationIds);
   }
 
   @Put('conversations/mark-unread')
