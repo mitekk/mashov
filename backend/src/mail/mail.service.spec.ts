@@ -24,10 +24,15 @@ function makeConversation(overrides?: object) {
 }
 
 function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
+  const householdUpdate = overrides.householdUpdate
+    ?? overrides.householdUpdateMany
+    ?? jest.fn().mockResolvedValue({ count: 0 });
+
   return {
     householdConnection: {
       findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
-      updateMany: overrides.householdUpdateMany ?? jest.fn().mockResolvedValue({ count: 0 }),
+      update: householdUpdate,
+      updateMany: householdUpdate,
     },
     mailConversation: {
       count: overrides.conversationCount ?? jest.fn().mockResolvedValue(0),
@@ -331,12 +336,13 @@ describe('MailService', () => {
   describe('markConversationsRead', () => {
     it('sets isNew=false on conversations and updates cachedNewCount', async () => {
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
-      const householdUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
       const service = new MailService(
         makeMockPrisma({
           conversationUpdateMany,
-          householdUpdateMany,
+          householdUpdate,
           conversationCount: jest.fn().mockResolvedValue(5),
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({}),
       );
@@ -352,19 +358,21 @@ describe('MailService', () => {
     });
 
     it('updates cachedNewCount after marking conversations as read', async () => {
-      const householdUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
       const service = new MailService(
         makeMockPrisma({
           conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
-          householdUpdateMany,
+          householdUpdate,
           conversationCount: jest.fn().mockResolvedValue(3),
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({}),
       );
 
       await service.markConversationsRead(['conv-1']);
-      expect(householdUpdateMany).toHaveBeenCalledWith(
+      expect(householdUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
+          where: expect.objectContaining({ id: 'household-1' }),
           data: expect.objectContaining({ cachedNewCount: 3 }),
         }),
       );
@@ -396,14 +404,13 @@ describe('MailService', () => {
       );
     });
 
-    it('archive deletes conversations and messages and returns deleted count', async () => {
-      const conversationDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
-      const messageDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    it('archive sets labels to archived and isNew=false', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       const mashovPut = jest.fn().mockResolvedValue({});
       const service = new MailService(
         makeMockPrisma({
-          conversationDeleteMany,
-          messageDeleteMany,
+          conversationUpdateMany,
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({ put: mashovPut }),
       );
@@ -415,8 +422,47 @@ describe('MailService', () => {
         ['conv-upstream-1'],
         expect.any(Object),
       );
-      expect(messageDeleteMany).toHaveBeenCalled();
-      expect(conversationDeleteMany).toHaveBeenCalled();
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ conversationId: { in: ['conv-upstream-1'] } }),
+          data: expect.objectContaining({ isNew: false, labels: ['archived'] }),
+        }),
+      );
+    });
+
+    it('unarchive clears archived label and sets isNew=true', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
+      const mashovPut = jest.fn().mockResolvedValue({});
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany,
+          householdUpdate,
+          conversationCount: jest.fn().mockResolvedValue(7),
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
+        }),
+        makeMockMashovClient({ put: mashovPut }),
+      );
+
+      const result = await service.unarchive(['conv-archived-1']);
+      expect(result.updated).toBe(1);
+      expect(mashovPut).toHaveBeenCalledWith(
+        '/api/mail/conversations/markAsUnread',
+        ['conv-archived-1'],
+        expect.any(Object),
+      );
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ conversationId: { in: ['conv-archived-1'] } }),
+          data: expect.objectContaining({ isNew: true, labels: [] }),
+        }),
+      );
+      expect(householdUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'household-1' }),
+          data: expect.objectContaining({ cachedNewCount: 7 }),
+        }),
+      );
     });
   });
 });

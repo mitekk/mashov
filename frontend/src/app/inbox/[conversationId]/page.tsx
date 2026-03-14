@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowRight, Eye, EyeOff } from 'lucide-react';
+import { Archive, ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { MessageThread } from '@/components/conversation/MessageThread';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -12,6 +12,7 @@ import {
   useConversation,
   useMarkConversationNew,
   useMarkConversationRead,
+  useUnarchiveConversation,
 } from '@/hooks/useConversation';
 
 export default function ConversationPage() {
@@ -22,10 +23,13 @@ export default function ConversationPage() {
   const { data, isLoading, isError, refetch } = useConversation(conversationId);
   const { mutate: markNew, isPending } = useMarkConversationNew();
   const { mutate: markRead } = useMarkConversationRead();
+  const { mutate: unarchive, isPending: isUnarchivePending } = useUnarchiveConversation();
   const autoMarkedReadConversationId = useRef<string | null>(null);
+  const isArchived = data?.labels.includes('archived') ?? false;
 
   useEffect(() => {
     if (!data) return;
+    if (data.labels.includes('archived')) return;
     if (autoMarkedReadConversationId.current === conversationId) return;
     autoMarkedReadConversationId.current = conversationId;
     markRead(conversationId);
@@ -34,6 +38,10 @@ export default function ConversationPage() {
   const handleToggleNew = () => {
     if (!data) return;
     markNew({ conversationId, isNew: !data.isNew });
+  };
+
+  const handleUnarchive = () => {
+    unarchive(conversationId);
   };
 
   return (
@@ -52,13 +60,18 @@ export default function ConversationPage() {
           <div className="flex items-center gap-2">
             {data && (
               <button
-                data-testid={`mark-new-${conversationId}`}
-                onClick={handleToggleNew}
-                disabled={isPending}
-                aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
+                data-testid={isArchived ? `unarchive-${conversationId}` : `mark-new-${conversationId}`}
+                onClick={isArchived ? handleUnarchive : handleToggleNew}
+                disabled={isPending || isUnarchivePending}
+                aria-label={isArchived ? 'שחזר מארכיון' : data.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >
-                {data.isNew ? (
+                {isArchived ? (
+                  <>
+                    <Archive className="h-4 w-4" />
+                    <span>שחזר מארכיון</span>
+                  </>
+                ) : data.isNew ? (
                   <>
                     <Eye className="h-4 w-4" />
                     <span>סמן כנקרא</span>

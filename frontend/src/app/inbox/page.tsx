@@ -9,7 +9,13 @@ import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { useArchive, useConversations, useMailSummary, useMarkUnread } from '@/hooks/useMail';
+import {
+  useArchive,
+  useConversations,
+  useMailSummary,
+  useMarkUnread,
+  useUnarchive,
+} from '@/hooks/useMail';
 import { Archive, Mail, MailOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -39,13 +45,15 @@ function InboxPageContent() {
   } = useConversations(activeFilter);
   const { mutate: markUnread, isPending: isMarkUnreadPending } = useMarkUnread();
   const { mutate: archive, isPending: isArchivePending } = useArchive();
+  const { mutate: unarchive, isPending: isUnarchivePending } = useUnarchive();
 
   const conversations = useMemo(
     () => data?.pages.flatMap((page) => page.data) ?? [],
     [data],
   );
-  const isBulkActionPending = isMarkUnreadPending || isArchivePending;
+  const isBulkActionPending = isMarkUnreadPending || isArchivePending || isUnarchivePending;
   const hasSelection = selectedConversationIds.length > 0;
+  const isArchivedFilter = activeFilter === 'archived';
 
   const setFilter = (val: InboxFilter) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -87,6 +95,15 @@ function InboxPageContent() {
   const handleArchiveSelected = () => {
     if (!hasSelection || isBulkActionPending) return;
     archive(selectedConversationIds, {
+      onSuccess: () => {
+        setSelectedConversationIds([]);
+      },
+    });
+  };
+
+  const handleUnarchiveSelected = () => {
+    if (!hasSelection || isBulkActionPending) return;
+    unarchive(selectedConversationIds, {
       onSuccess: () => {
         setSelectedConversationIds([]);
       },
@@ -164,26 +181,41 @@ function InboxPageContent() {
           >
             בחר הכל
           </button>
-          <button
-            type="button"
-            data-testid="bulk-mark-unread"
-            onClick={handleMarkUnreadSelected}
-            disabled={isBulkActionPending}
-            className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-          >
-            <MailOpen className="h-3.5 w-3.5" />
-            סמן כלא נקרא
-          </button>
-          <button
-            type="button"
-            data-testid="bulk-archive"
-            onClick={handleArchiveSelected}
-            disabled={isBulkActionPending}
-            className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-          >
-            <Archive className="h-3.5 w-3.5" />
-            ארכיון
-          </button>
+          {isArchivedFilter ? (
+            <button
+              type="button"
+              data-testid="bulk-unarchive"
+              onClick={handleUnarchiveSelected}
+              disabled={isBulkActionPending}
+              className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              שחזר מארכיון
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                data-testid="bulk-mark-unread"
+                onClick={handleMarkUnreadSelected}
+                disabled={isBulkActionPending}
+                className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                <MailOpen className="h-3.5 w-3.5" />
+                סמן כלא נקרא
+              </button>
+              <button
+                type="button"
+                data-testid="bulk-archive"
+                onClick={handleArchiveSelected}
+                disabled={isBulkActionPending}
+                className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                <Archive className="h-3.5 w-3.5" />
+                ארכיון
+              </button>
+            </>
+          )}
           <button
             type="button"
             data-testid="bulk-clear-selection"

@@ -151,10 +151,6 @@ export class MailService {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
 
-    if (this.asStringArray(conversation.labels).includes('archived')) {
-      throw new NotFoundException(`Conversation not found: ${conversationId}`);
-    }
-
     // Check if full messages with body exist in DB
     const existingMessages = await this.prisma.mailMessage.findMany({
       where: { conversationId },
@@ -396,6 +392,30 @@ export class MailService {
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
       data: { isNew: false, labels: ['archived'] as unknown as Prisma.InputJsonValue },
+    });
+
+    await this.updateCachedNewCount();
+
+    return { updated: updated.count };
+  }
+
+  async unarchive(conversationIds: string[]) {
+    try {
+      await this.mashovClient.put(
+        '/api/mail/conversations/markAsUnread',
+        conversationIds,
+        {
+          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+        },
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Upstream unarchive(markAsUnread) failed: ${msg}; updating DB only`);
+    }
+
+    const updated = await this.prisma.mailConversation.updateMany({
+      where: { conversationId: { in: conversationIds } },
+      data: { isNew: true, labels: [] as unknown as Prisma.InputJsonValue },
     });
 
     await this.updateCachedNewCount();

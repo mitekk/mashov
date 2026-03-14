@@ -18,11 +18,12 @@ interface HomeworkSectionProps {
 
 export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
   const [statusFilter, setStatusFilter] = useState<HomeworkStatusFilter>('active');
-  const { data, isLoading, isError, refetch } = useChildHomework(studentGuid);
-
-  const filteredItems = data?.data.filter((item) =>
-    statusFilter === 'archived' ? item.isArchived : !item.isArchived,
-  ) ?? [];
+  const { data, isLoading, isError, refetch } = useChildHomework(
+    studentGuid,
+    1,
+    statusFilter,
+  );
+  const filteredItems = data?.data ?? [];
 
   return (
     <section data-testid="homework-section" className="section-stack py-1">

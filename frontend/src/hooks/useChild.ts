@@ -19,10 +19,14 @@ export function useChild(studentGuid: string) {
   });
 }
 
-export function useChildHomework(studentGuid: string, page = 1) {
+export function useChildHomework(
+  studentGuid: string,
+  page = 1,
+  status: 'active' | 'archived' = 'active',
+) {
   return useQuery({
-    queryKey: ['child-homework', studentGuid, page],
-    queryFn: () => fetchChildHomework(studentGuid, page),
+    queryKey: ['child-homework', studentGuid, page, status],
+    queryFn: () => fetchChildHomework(studentGuid, page, 50, status),
     staleTime: 60_000,
     enabled: Boolean(studentGuid),
   });
@@ -41,10 +45,11 @@ export function useChildBehavior(
   studentGuid: string,
   page = 1,
   bucket: BehaviorBucket | 'all' = 'all',
+  status: 'active' | 'archived' = 'active',
 ) {
   return useQuery({
-    queryKey: ['child-behavior', studentGuid, page, bucket],
-    queryFn: () => fetchChildBehavior(studentGuid, page, 50, bucket),
+    queryKey: ['child-behavior', studentGuid, page, bucket, status],
+    queryFn: () => fetchChildBehavior(studentGuid, page, 50, bucket, status),
     staleTime: 60_000,
     enabled: Boolean(studentGuid),
   });

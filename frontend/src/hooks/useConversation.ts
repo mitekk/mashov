@@ -4,6 +4,7 @@ import {
   fetchConversationDetail,
   markConversationsRead,
   markConversationsUnread,
+  unarchiveConversations,
 } from '@/api/mail';
 
 export function useConversation(conversationId: string) {
@@ -39,6 +40,19 @@ export function useMarkConversationRead() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (conversationId: string) => markConversationsRead([conversationId]),
+    onSuccess: (_data: MailBulkActionResponse, conversationId: string) => {
+      void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function useUnarchiveConversation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (conversationId: string) => unarchiveConversations([conversationId]),
     onSuccess: (_data: MailBulkActionResponse, conversationId: string) => {
       void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });

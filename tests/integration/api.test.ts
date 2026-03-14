@@ -732,6 +732,42 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       expect(listRes.status).toBe(200);
       expect(listRes.body.data).toHaveLength(0);
     });
+
+    it('PUT /api/v1/mail/conversations/unarchive restores archived conversation to inbox and sets isNew=true', async () => {
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-unarchive',
+          subject: 'Archived Message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isNew: false,
+          labels: ['archived'],
+          rawPayload: {},
+        },
+      });
+
+      const unarchiveRes = await request(app.getHttpServer())
+        .put('/api/v1/mail/conversations/unarchive')
+        .send({ conversationIds: ['conv-unarchive'] });
+      expect(unarchiveRes.status).toBe(200);
+      expect(unarchiveRes.body.updated).toBe(1);
+      expect(mashovPutMock).toHaveBeenCalledWith(
+        '/api/mail/conversations/markAsUnread',
+        ['conv-unarchive'],
+        expect.any(Object),
+      );
+
+      const archivedListRes = await request(app.getHttpServer())
+        .get('/api/v1/mail/conversations?filter=archived');
+      expect(archivedListRes.status).toBe(200);
+      expect(archivedListRes.body.data).toHaveLength(0);
+
+      const inboxListRes = await request(app.getHttpServer()).get('/api/v1/mail/conversations');
+      expect(inboxListRes.status).toBe(200);
+      expect(inboxListRes.body.data).toHaveLength(1);
+      expect(inboxListRes.body.data[0].conversationId).toBe('conv-unarchive');
+      expect(inboxListRes.body.data[0].isNew).toBe(true);
+    });
   });
 
   describe('Read-state API (removed)', () => {

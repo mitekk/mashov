@@ -61,6 +61,16 @@ export function archiveConversations(
   });
 }
 
+export function unarchiveConversations(
+  conversationIds: string[],
+): Promise<MailBulkActionResponse> {
+  const body: MailBulkActionRequest = { conversationIds };
+  return apiFetch<MailBulkActionResponse>('/mail/conversations/unarchive', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
 interface LegacyConversationResponse {
   conversation: UnknownRecord;
   messages: UnknownRecord[];

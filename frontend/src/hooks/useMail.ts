@@ -10,6 +10,7 @@ import {
   markConversationsRead,
   markConversationsUnread,
   archiveConversations,
+  unarchiveConversations,
 } from '@/api/mail';
 
 export function useMailSummary() {
@@ -63,6 +64,18 @@ export function useArchive() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (ids: string[]) => archiveConversations(ids),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function useUnarchive() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => unarchiveConversations(ids),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
       void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });

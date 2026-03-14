@@ -34,11 +34,9 @@ export function BehaviorSection({
     studentGuid,
     1,
     activeFilter,
+    statusFilter,
   );
-
-  const filteredItems = data?.data.filter((item) =>
-    statusFilter === 'archived' ? item.isArchived : !item.isArchived,
-  ) ?? [];
+  const filteredItems = data?.data ?? [];
 
   return (
     <section data-testid="behavior-section" className="section-stack py-1">

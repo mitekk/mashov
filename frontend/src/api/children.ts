@@ -46,9 +46,15 @@ export async function fetchChildHomework(
   studentGuid: string,
   page = 1,
   limit = 50,
+  status: 'active' | 'archived' = 'active',
 ): Promise<HomeworkResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    status,
+  });
   const response = await apiFetch<HomeworkResponse>(
-    `/children/${studentGuid}/homework?page=${page}&limit=${limit}`,
+    `/children/${studentGuid}/homework?${params.toString()}`,
   );
   return {
     data: Array.isArray(response.data)
@@ -75,11 +81,13 @@ export async function fetchChildBehavior(
   page = 1,
   limit = 50,
   bucket: BehaviorBucket | 'all' = 'all',
+  status: 'active' | 'archived' = 'active',
 ): Promise<BehaviorResponse> {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
     bucket,
+    status,
   });
   const response = await apiFetch<BehaviorResponse>(
     `/children/${studentGuid}/behavior?${params.toString()}`,

@@ -46,6 +46,12 @@ class ArchiveDto {
   conversationIds!: string[];
 }
 
+class UnarchiveDto {
+  @IsArray()
+  @IsString({ each: true })
+  conversationIds!: string[];
+}
+
 @Controller('mail')
 export class MailController {
   constructor(private readonly mailService: MailService) {}
@@ -83,5 +89,10 @@ export class MailController {
   @Put('conversations/archive')
   async archive(@Body() body: ArchiveDto) {
     return this.mailService.archive(body.conversationIds);
+  }
+
+  @Put('conversations/unarchive')
+  async unarchive(@Body() body: UnarchiveDto) {
+    return this.mailService.unarchive(body.conversationIds);
   }
 }

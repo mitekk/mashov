@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
@@ -44,6 +44,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
     studentGuid,
     invalidateKeys,
   });
+  const autoMarkedReadBehaviorId = useRef<string | null>(null);
 
   const { mutate: mutateArchive, isPending: isArchivePending } = useArchive({
     type: 'behavior',
@@ -56,6 +57,13 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
   const childFullName = childrenData?.data.find(
     (child) => child.studentGuid === studentGuid,
   )?.fullName;
+
+  useEffect(() => {
+    if (!data?.isNew) return;
+    if (autoMarkedReadBehaviorId.current === behaviorId) return;
+    autoMarkedReadBehaviorId.current = behaviorId;
+    mutateMarkNew(false);
+  }, [behaviorId, data?.isNew, mutateMarkNew]);
 
   const handleBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
@@ -85,7 +93,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
                 data-testid={`behavior-detail-toggle-new-${behaviorId}`}
                 onClick={() => mutateMarkNew(!data.isNew)}
                 disabled={isMarkNewPending}
-                aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
+                aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כלא נקרא'}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >
                 {data.isNew ? (
@@ -96,7 +104,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
                 ) : (
                   <>
                     <EyeOff className="h-4 w-4" />
-                    <span>סמן כחדש</span>
+                    <span>סמן כלא נקרא</span>
                   </>
                 )}
               </button>

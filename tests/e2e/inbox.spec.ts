@@ -495,6 +495,69 @@ test.describe('Inbox page', () => {
     expect(requestedFilter).toBe('archived');
   });
 
+  test('archived bulk action sends selected ids to unarchive endpoint', async ({ page }) => {
+    let requestedFilter: string | null = null;
+    let unarchiveRequestBody: unknown = null;
+    let unarchived = false;
+
+    await page.route('**/api/v1/mail/summary', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ newConversations: 0, recentConversations: [], lastSyncAt: null }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      const url = new URL(route.request().url());
+      requestedFilter = url.searchParams.get('filter');
+      const isArchivedFilter = requestedFilter === 'archived';
+      const archivedData = unarchived
+        ? []
+        : [makeConversation({
+          conversationId: 'conv-archived-bulk-1',
+          subject: 'Archived bulk message',
+          isNew: false,
+          labels: ['archived'],
+        })];
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: isArchivedFilter ? archivedData : [],
+          pagination: {
+            page: 1,
+            limit: 20,
+            total: isArchivedFilter ? archivedData.length : 0,
+            totalPages: 1,
+          },
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations/unarchive', async (route) => {
+      unarchiveRequestBody = route.request().postDataJSON();
+      unarchived = true;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ updated: 1 }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+    await inboxPage.clickFilterArchived();
+    await inboxPage.toggleConversationSelection('conv-archived-bulk-1');
+
+    await page.getByTestId('bulk-unarchive').click();
+    await expect.poll(() => unarchiveRequestBody).not.toBeNull();
+    expect(unarchiveRequestBody).toEqual({ conversationIds: ['conv-archived-bulk-1'] });
+    expect(requestedFilter).toBe('archived');
+    await expect(inboxPage.conversationItem('conv-archived-bulk-1')).toHaveCount(0);
+  });
+
   test('conversation detail auto-fires mark-read on open and shows mark-new toggle', async ({ page }) => {
     let markReadRequestBody: unknown = null;
 
@@ -503,15 +566,6 @@ test.describe('Inbox page', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ newConversations: 1, recentConversations: [], lastSyncAt: null }),
-      });
-    });
-
-    await page.route('**/api/v1/mail/conversations/mark-read', async (route) => {
-      markReadRequestBody = route.request().postDataJSON();
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ updated: 1 }),
       });
     });
 
@@ -560,6 +614,15 @@ test.describe('Inbox page', () => {
       });
     });
 
+    await page.route('**/api/v1/mail/conversations/mark-read', async (route) => {
+      markReadRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ updated: 1 }),
+      });
+    });
+
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
     await inboxPage.clickConversation('conv-read-1');
@@ -573,6 +636,90 @@ test.describe('Inbox page', () => {
     await expect(page.getByTestId('mark-new-conv-read-1')).toBeVisible();
   });
 
+  test('archived conversation detail shows unarchive action and calls unarchive endpoint', async ({ page }) => {
+    let unarchiveRequestBody: unknown = null;
+
+    await page.route('**/api/v1/mail/summary', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ newConversations: 0, recentConversations: [], lastSyncAt: null }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      if (route.request().url().includes('/conv-archived-detail-1')) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            conversationId: 'conv-archived-detail-1',
+            subject: 'Archived detail',
+            sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+            isNew: false,
+            hasDrafts: false,
+            hasAttachments: false,
+            preventReply: false,
+            labels: ['archived'],
+            lastFetchedAt: new Date().toISOString(),
+            messages: [{
+              messageId: 'msg-archived-detail-1',
+              conversationId: 'conv-archived-detail-1',
+              senderId: 's1',
+              senderName: 'Teacher',
+              subject: 'Archived detail',
+              bodyHtmlSanitized: '<p>Body</p>',
+              bodyTextPreview: 'Body',
+              sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+              isUnread: false,
+              recipients: [],
+              hasAttachments: false,
+              preventReply: false,
+              sentViaEmail: false,
+              sentViaSms: false,
+            }],
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [makeConversation({
+            conversationId: 'conv-archived-detail-1',
+            subject: 'Archived detail',
+            isNew: false,
+            labels: ['archived'],
+          })],
+          pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations/unarchive', async (route) => {
+      unarchiveRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ updated: 1 }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+    await inboxPage.clickFilterArchived();
+    await inboxPage.clickConversation('conv-archived-detail-1');
+    await expect(page).toHaveURL('/inbox/conv-archived-detail-1');
+    await expect(page.getByTestId('unarchive-conv-archived-detail-1')).toBeVisible();
+    await expect(page.getByTestId('mark-new-conv-archived-detail-1')).toHaveCount(0);
+
+    await page.getByTestId('unarchive-conv-archived-detail-1').click();
+    await expect.poll(() => unarchiveRequestBody).not.toBeNull();
+    expect(unarchiveRequestBody).toEqual({ conversationIds: ['conv-archived-detail-1'] });
+  });
+
   test('inbox list refetches after returning from conversation detail', async ({ page }) => {
     let markReadFired = false;
     let conversationListFetchCount = 0;
@@ -582,15 +729,6 @@ test.describe('Inbox page', () => {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ newConversations: 1, recentConversations: [], lastSyncAt: null }),
-      });
-    });
-
-    await page.route('**/api/v1/mail/conversations/mark-read', async (route) => {
-      markReadFired = true;
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ updated: 1 }),
       });
     });
 
@@ -637,6 +775,15 @@ test.describe('Inbox page', () => {
           data: [makeConversation({ conversationId: 'conv-stale-1', isNew: true })],
           pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
         }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations/mark-read', async (route) => {
+      markReadFired = true;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ updated: 1 }),
       });
     });
 
