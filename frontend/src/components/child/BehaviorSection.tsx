@@ -9,7 +9,7 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { FeedSkeleton } from '@/components/ui/LoadingState';
 import { cn } from '@/lib/utils';
 import { getBucketLabel } from '@/lib/behavior';
-import type { ChildBehaviorFilter } from '@/lib/child-routes';
+import { buildBehaviorDetailHref, type ChildBehaviorFilter } from '@/lib/child-routes';
 
 interface BehaviorSectionProps {
   studentGuid: string;
@@ -69,7 +69,12 @@ export function BehaviorSection({
       {data && data.data.length > 0 && (
         <div className="section-stack">
           {data.data.map((item) => (
-            <BehaviorItem key={item.id} item={item} studentGuid={studentGuid} />
+            <BehaviorItem
+              key={item.id}
+              item={item}
+              studentGuid={studentGuid}
+              detailHref={buildBehaviorDetailHref(studentGuid, item.id)}
+            />
           ))}
         </div>
       )}

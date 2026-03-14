@@ -48,6 +48,14 @@ export class ChildrenController {
     return this.childrenService.getHomework(studentGuid, page, limit);
   }
 
+  @Get(':studentGuid/homework/:homeworkId')
+  async getHomeworkDetail(
+    @Param('studentGuid') studentGuid: string,
+    @Param('homeworkId') homeworkId: string,
+  ) {
+    return this.childrenService.getHomeworkDetail(studentGuid, homeworkId);
+  }
+
   @Get(':studentGuid/behavior')
   async getBehavior(
     @Param('studentGuid') studentGuid: string,
@@ -57,6 +65,14 @@ export class ChildrenController {
     const limit = query.limit ?? 50;
     const bucket = query.bucket ?? 'all';
     return this.childrenService.getBehavior(studentGuid, page, limit, bucket);
+  }
+
+  @Get(':studentGuid/behavior/:behaviorId')
+  async getBehaviorDetail(
+    @Param('studentGuid') studentGuid: string,
+    @Param('behaviorId') behaviorId: string,
+  ) {
+    return this.childrenService.getBehaviorDetail(studentGuid, behaviorId);
   }
 
   @Get(':studentGuid/subjects')

@@ -70,6 +70,7 @@ test.describe('Children page', () => {
 test.describe('Child workspace page', () => {
   // Use a non-existent GUID — the page renders an error state for unknown students
   const UNKNOWN_GUID = 'e2e-test-unknown-guid-00001';
+  const STUDENT_GUID = 'e2e-test-student-guid-00002';
 
   test('shows error state for an unknown student GUID', async ({ page }) => {
     await page.route(`**/api/v1/children/${UNKNOWN_GUID}`, async (route) => {
@@ -97,5 +98,243 @@ test.describe('Child workspace page', () => {
     const childrenPage = new ChildrenPage(page);
     await childrenPage.navigate();
     expect(page.url()).toContain('/children');
+  });
+
+  test('homework item opens dedicated detail page', async ({ page }) => {
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              studentGuid: STUDENT_GUID,
+              privateName: 'Test',
+              familyName: 'Student',
+              fullName: 'Test Student',
+              classCode: 'א',
+              classNum: 1,
+              gender: 'M',
+              isActive: true,
+              recentHomeworkCount: 1,
+              recentBehaviorCount: 0,
+              subjectCount: 1,
+              latestUpdateAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          student: {
+            studentGuid: STUDENT_GUID,
+            privateName: 'Test',
+            familyName: 'Student',
+            fullName: 'Test Student',
+            classCode: 'א',
+            classNum: 1,
+            gender: 'M',
+            isActive: true,
+          },
+          summary: {
+            recentHomeworkCount: 1,
+            recentBehaviorCount: 0,
+            subjectCount: 1,
+            totalWeeklyHours: 6,
+            attentionBehaviorCount: 0,
+          },
+          lastSyncAt: new Date().toISOString(),
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/hw-1`)) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 'hw-1',
+            studentGuid: STUDENT_GUID,
+            lessonId: 1,
+            groupId: 1,
+            lessonDate: new Date().toISOString(),
+            lesson: 2,
+            subjectName: 'Math',
+            homeworkText: 'Solve questions 1-5',
+            remark: 'Bring notebook',
+            files: [],
+            isHandled: false,
+            updatedAt: new Date().toISOString(),
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              id: 'hw-1',
+              studentGuid: STUDENT_GUID,
+              lessonId: 1,
+              groupId: 1,
+              lessonDate: new Date().toISOString(),
+              lesson: 2,
+              subjectName: 'Math',
+              homeworkText: 'Solve questions 1-5',
+              remark: 'Bring notebook',
+              files: [],
+              isHandled: false,
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'homework', 'all');
+
+    await expect(page.getByTestId('homework-item-link-hw-1')).toBeVisible();
+    await page.getByTestId('homework-item-link-hw-1').click();
+
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
+  });
+
+  test('behavior item opens dedicated detail page', async ({ page }) => {
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              studentGuid: STUDENT_GUID,
+              privateName: 'Test',
+              familyName: 'Student',
+              fullName: 'Test Student',
+              classCode: 'א',
+              classNum: 1,
+              gender: 'M',
+              isActive: true,
+              recentHomeworkCount: 0,
+              recentBehaviorCount: 1,
+              subjectCount: 1,
+              latestUpdateAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          student: {
+            studentGuid: STUDENT_GUID,
+            privateName: 'Test',
+            familyName: 'Student',
+            fullName: 'Test Student',
+            classCode: 'א',
+            classNum: 1,
+            gender: 'M',
+            isActive: true,
+          },
+          summary: {
+            recentHomeworkCount: 0,
+            recentBehaviorCount: 1,
+            subjectCount: 1,
+            totalWeeklyHours: 6,
+            attentionBehaviorCount: 1,
+          },
+          lastSyncAt: new Date().toISOString(),
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith(`/children/${STUDENT_GUID}/behavior/beh-1`)) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 'beh-1',
+            studentGuid: STUDENT_GUID,
+            lessonId: 1,
+            groupId: 1,
+            eventCode: 2,
+            achvaCode: 2,
+            achvaName: 'Absence',
+            bucket: 'attention',
+            priority: 'high',
+            justifiable: false,
+            lessonDate: new Date().toISOString(),
+            lesson: 2,
+            subject: 'Math',
+            reporter: 'Teacher',
+            remark: null,
+            justification: null,
+            eventAt: new Date().toISOString(),
+            isHandled: false,
+            updatedAt: new Date().toISOString(),
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              id: 'beh-1',
+              studentGuid: STUDENT_GUID,
+              lessonId: 1,
+              groupId: 1,
+              eventCode: 2,
+              achvaCode: 2,
+              achvaName: 'Absence',
+              bucket: 'attention',
+              priority: 'high',
+              justifiable: false,
+              lessonDate: new Date().toISOString(),
+              lesson: 2,
+              subject: 'Math',
+              reporter: 'Teacher',
+              remark: null,
+              justification: null,
+              eventAt: new Date().toISOString(),
+              isHandled: false,
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'behavior', 'all');
+
+    await expect(page.getByTestId('behavior-item-link-beh-1')).toBeVisible();
+    await page.getByTestId('behavior-item-link-beh-1').click();
+
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior/beh-1`);
+    await expect(page.getByTestId('behavior-detail-beh-1')).toBeVisible();
   });
 });

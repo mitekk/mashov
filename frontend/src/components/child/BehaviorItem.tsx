@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { CheckCircle, Circle } from 'lucide-react';
 import type { BehaviorItem as BehaviorItemType } from '@/types/api';
 import { BucketBadge, Badge } from '@/components/ui/Badge';
@@ -12,9 +13,14 @@ import { cn } from '@/lib/utils';
 interface BehaviorItemProps {
   item: BehaviorItemType;
   studentGuid: string;
+  detailHref?: string | null;
 }
 
-export function BehaviorItem({ item, studentGuid }: BehaviorItemProps) {
+export function BehaviorItem({
+  item,
+  studentGuid,
+  detailHref = null,
+}: BehaviorItemProps) {
   const { markHandled, isPending } = useMarkHandled(
     'behavior',
     item.id,
@@ -22,6 +28,34 @@ export function BehaviorItem({ item, studentGuid }: BehaviorItemProps) {
   );
 
   const colors = getBucketColor(item.bucket);
+  const content = (
+    <div className="min-w-0 flex-1">
+      <div className="flex items-start gap-2 flex-wrap mb-1">
+        <BucketBadge bucket={item.bucket} />
+        {item.justifiable && (
+          <Badge variant="secondary">מוצדק</Badge>
+        )}
+        <span className="text-xs text-muted-foreground ms-auto whitespace-nowrap">
+          {formatShortDate(item.lessonDate)}
+        </span>
+      </div>
+      <p className="text-sm font-medium text-foreground">{item.achvaName}</p>
+      <div className="flex gap-3 mt-1 flex-wrap">
+        {item.subject && (
+          <span className="text-xs text-muted-foreground">{item.subject}</span>
+        )}
+        {item.reporter && (
+          <span className="text-xs text-muted-foreground">{item.reporter}</span>
+        )}
+        {item.lesson !== null && (
+          <span className="text-xs text-muted-foreground">שיעור {item.lesson}</span>
+        )}
+      </div>
+      {item.remark && (
+        <p className="text-xs text-muted-foreground mt-1 italic">{item.remark}</p>
+      )}
+    </div>
+  );
 
   return (
     <div
@@ -32,32 +66,15 @@ export function BehaviorItem({ item, studentGuid }: BehaviorItemProps) {
         colors.border,
       )}
     >
-      <div className="flex-1 min-w-0">
-        <div className="flex items-start gap-2 flex-wrap mb-1">
-          <BucketBadge bucket={item.bucket} />
-          {item.justifiable && (
-            <Badge variant="secondary">מוצדק</Badge>
-          )}
-          <span className="text-xs text-muted-foreground ms-auto whitespace-nowrap">
-            {formatShortDate(item.lessonDate)}
-          </span>
-        </div>
-        <p className="text-sm font-medium text-foreground">{item.achvaName}</p>
-        <div className="flex gap-3 mt-1 flex-wrap">
-          {item.subject && (
-            <span className="text-xs text-muted-foreground">{item.subject}</span>
-          )}
-          {item.reporter && (
-            <span className="text-xs text-muted-foreground">{item.reporter}</span>
-          )}
-          {item.lesson !== null && (
-            <span className="text-xs text-muted-foreground">שיעור {item.lesson}</span>
-          )}
-        </div>
-        {item.remark && (
-          <p className="text-xs text-muted-foreground mt-1 italic">{item.remark}</p>
-        )}
-      </div>
+      {detailHref ? (
+        <Link
+          href={detailHref}
+          data-testid={`behavior-item-link-${item.id}`}
+          className="min-w-0 flex-1 rounded-xl p-1 transition-colors hover:bg-accent/30"
+        >
+          {content}
+        </Link>
+      ) : content}
       <button
         data-testid={`behavior-handle-${item.id}`}
         onClick={() => markHandled(!item.isHandled)}

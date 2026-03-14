@@ -4,7 +4,9 @@ import type {
   ChildrenResponse,
   ChildWorkspaceResponse,
   HomeworkResponse,
+  HomeworkDetailResponse,
   BehaviorResponse,
+  BehaviorDetailResponse,
   SubjectsResponse,
   NoticesResponse,
   BehaviorBucket,
@@ -54,6 +56,16 @@ export async function fetchChildHomework(
   };
 }
 
+export async function fetchChildHomeworkDetail(
+  studentGuid: string,
+  homeworkId: string,
+): Promise<HomeworkDetailResponse> {
+  const response = await apiFetch<UnknownRecord>(
+    `/children/${studentGuid}/homework/${homeworkId}`,
+  );
+  return normalizeHomework(response);
+}
+
 export async function fetchChildBehavior(
   studentGuid: string,
   page = 1,
@@ -76,6 +88,16 @@ export async function fetchChildBehavior(
       : [],
     pagination: response.pagination,
   };
+}
+
+export async function fetchChildBehaviorDetail(
+  studentGuid: string,
+  behaviorId: string,
+): Promise<BehaviorDetailResponse> {
+  const response = await apiFetch<UnknownRecord>(
+    `/children/${studentGuid}/behavior/${behaviorId}`,
+  );
+  return normalizeBehavior(response);
 }
 
 export async function fetchChildSubjects(studentGuid: string): Promise<SubjectsResponse> {

@@ -177,6 +177,7 @@ export interface HomeworkItem {
 }
 
 export type HomeworkResponse = PaginatedResponse<HomeworkItem>;
+export type HomeworkDetailResponse = HomeworkItem;
 
 // ─── Behavior ──────────────────────────────────────────────────────────────
 
@@ -205,6 +206,7 @@ export interface BehaviorItem {
 }
 
 export type BehaviorResponse = PaginatedResponse<BehaviorItem>;
+export type BehaviorDetailResponse = BehaviorItem;
 
 // ─── Subjects ──────────────────────────────────────────────────────────────
 

@@ -5,7 +5,11 @@ import type { NeedsAttentionItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
-import { buildChildSectionHref } from '@/lib/child-routes';
+import {
+  buildBehaviorDetailHref,
+  buildChildSectionHref,
+  buildHomeworkDetailHref,
+} from '@/lib/child-routes';
 
 interface NeedsAttentionCardProps {
   item: NeedsAttentionItem;
@@ -55,10 +59,12 @@ export function NeedsAttentionCard({ item }: NeedsAttentionCardProps) {
   const resolvedHref = (() => {
     if (item.studentGuid) {
       if (item.type === 'unhandled_homework') {
-        return buildChildSectionHref(item.studentGuid, 'homework');
+        return buildHomeworkDetailHref(item.studentGuid, item.id)
+          ?? buildChildSectionHref(item.studentGuid, 'homework');
       }
       if (item.type === 'negative_behavior') {
-        return buildChildSectionHref(item.studentGuid, 'behavior');
+        return buildBehaviorDetailHref(item.studentGuid, item.id)
+          ?? buildChildSectionHref(item.studentGuid, 'behavior');
       }
       return buildChildSectionHref(item.studentGuid, 'homework');
     }

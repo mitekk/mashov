@@ -186,20 +186,7 @@ export class ChildrenService {
     const handledMap = await this.getHandledMap('homework', items.map((item) => item.id));
 
     return {
-      data: items.map((item) => ({
-        id: item.id,
-        studentGuid: item.studentGuid,
-        lessonId: item.lessonId,
-        groupId: item.groupId,
-        lessonDate: item.lessonDate.toISOString(),
-        lesson: item.lesson,
-        subjectName: item.subjectName,
-        homeworkText: item.homeworkText,
-        remark: item.remark,
-        files: this.asArray(item.files),
-        isHandled: handledMap.get(item.id) ?? false,
-        updatedAt: item.updatedAt.toISOString(),
-      })),
+      data: items.map((item) => this.mapHomeworkItem(item, handledMap.get(item.id) ?? false)),
       pagination: {
         page,
         limit,
@@ -207,6 +194,20 @@ export class ChildrenService {
         totalPages: total === 0 ? 0 : Math.ceil(total / limit),
       },
     };
+  }
+
+  async getHomeworkDetail(studentGuid: string, homeworkId: string) {
+    await this.requireStudent(studentGuid);
+
+    const item = await this.prisma.homeworkItem.findUnique({
+      where: { id: homeworkId },
+    });
+    if (!item || item.studentGuid !== studentGuid) {
+      throw new NotFoundException(`Homework not found: ${homeworkId}`);
+    }
+
+    const handledMap = await this.getHandledMap('homework', [item.id]);
+    return this.mapHomeworkItem(item, handledMap.get(item.id) ?? false);
   }
 
   async getBehavior(
@@ -235,32 +236,7 @@ export class ChildrenService {
     const handledMap = await this.getHandledMap('behavior', items.map((item) => item.id));
 
     return {
-      data: items.map((item) => {
-        const mappedBucket = this.mapBehaviorBucket(item.classification);
-        const priority = BEHAVIOR_PRIORITY_MAP[item.eventCode] ?? (mappedBucket === 'attention' ? 'medium' : 'low');
-
-        return {
-          id: item.id,
-          studentGuid: item.studentGuid,
-          lessonId: item.lessonId,
-          groupId: item.groupId,
-          eventCode: item.eventCode,
-          achvaCode: item.achvaCode,
-          achvaName: item.achvaName,
-          bucket: mappedBucket,
-          priority,
-          justifiable: item.justifiable,
-          lessonDate: item.lessonDate.toISOString(),
-          lesson: item.lesson,
-          subject: item.subject,
-          reporter: item.reporter,
-          remark: item.remark,
-          justification: item.justification,
-          eventAt: item.eventAt.toISOString(),
-          isHandled: handledMap.get(item.id) ?? false,
-          updatedAt: item.updatedAt.toISOString(),
-        };
-      }),
+      data: items.map((item) => this.mapBehaviorItem(item, handledMap.get(item.id) ?? false)),
       pagination: {
         page,
         limit,
@@ -268,6 +244,20 @@ export class ChildrenService {
         totalPages: total === 0 ? 0 : Math.ceil(total / limit),
       },
     };
+  }
+
+  async getBehaviorDetail(studentGuid: string, behaviorId: string) {
+    await this.requireStudent(studentGuid);
+
+    const item = await this.prisma.behaviorItem.findUnique({
+      where: { id: behaviorId },
+    });
+    if (!item || item.studentGuid !== studentGuid) {
+      throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
+    }
+
+    const handledMap = await this.getHandledMap('behavior', [item.id]);
+    return this.mapBehaviorItem(item, handledMap.get(item.id) ?? false);
   }
 
   async getSubjects(studentGuid: string) {
@@ -316,6 +306,81 @@ export class ChildrenService {
         inSite: item.inSite,
         updatedAt: item.updatedAt.toISOString(),
       })),
+    };
+  }
+
+  private mapHomeworkItem(item: {
+    id: string;
+    studentGuid: string;
+    lessonId: number;
+    groupId: number;
+    lessonDate: Date;
+    lesson: number;
+    subjectName: string;
+    homeworkText: string;
+    remark: string | null;
+    files: unknown;
+    updatedAt: Date;
+  }, isHandled: boolean) {
+    return {
+      id: item.id,
+      studentGuid: item.studentGuid,
+      lessonId: item.lessonId,
+      groupId: item.groupId,
+      lessonDate: item.lessonDate.toISOString(),
+      lesson: item.lesson,
+      subjectName: item.subjectName,
+      homeworkText: item.homeworkText,
+      remark: item.remark,
+      files: this.asArray(item.files),
+      isHandled,
+      updatedAt: item.updatedAt.toISOString(),
+    };
+  }
+
+  private mapBehaviorItem(item: {
+    id: string;
+    studentGuid: string;
+    lessonId: number;
+    groupId: number;
+    eventCode: number;
+    achvaCode: number;
+    achvaName: string;
+    classification: string;
+    justifiable: boolean;
+    lessonDate: Date;
+    lesson: number | null;
+    subject: string;
+    reporter: string;
+    remark: string | null;
+    justification: string | null;
+    eventAt: Date;
+    updatedAt: Date;
+  }, isHandled: boolean) {
+    const mappedBucket = this.mapBehaviorBucket(item.classification);
+    const priority = BEHAVIOR_PRIORITY_MAP[item.eventCode]
+      ?? (mappedBucket === 'attention' ? 'medium' : 'low');
+
+    return {
+      id: item.id,
+      studentGuid: item.studentGuid,
+      lessonId: item.lessonId,
+      groupId: item.groupId,
+      eventCode: item.eventCode,
+      achvaCode: item.achvaCode,
+      achvaName: item.achvaName,
+      bucket: mappedBucket,
+      priority,
+      justifiable: item.justifiable,
+      lessonDate: item.lessonDate.toISOString(),
+      lesson: item.lesson,
+      subject: item.subject,
+      reporter: item.reporter,
+      remark: item.remark,
+      justification: item.justification,
+      eventAt: item.eventAt.toISOString(),
+      isHandled,
+      updatedAt: item.updatedAt.toISOString(),
     };
   }
 

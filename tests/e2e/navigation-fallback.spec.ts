@@ -117,19 +117,60 @@ async function mockBaseRoutes(page: Page) {
     }),
   );
 
-  await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, (route) =>
-    json(route, {
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/hw-1`)) {
+      return json(route, {
+        id: 'hw-1',
+        studentGuid: STUDENT_GUID,
+        lessonId: 1,
+        groupId: 1,
+        lessonDate: new Date().toISOString(),
+        lesson: 2,
+        subjectName: 'Math',
+        homeworkText: 'New homework',
+        remark: null,
+        files: [],
+        isHandled: false,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return json(route, {
       data: [],
       pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
-    }),
-  );
+    });
+  });
 
-  await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, (route) =>
-    json(route, {
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith(`/children/${STUDENT_GUID}/behavior/beh-1`)) {
+      return json(route, {
+        id: 'beh-1',
+        studentGuid: STUDENT_GUID,
+        lessonId: 1,
+        groupId: 1,
+        eventCode: 2,
+        achvaCode: 2,
+        achvaName: 'Absence',
+        bucket: 'attention',
+        priority: 'high',
+        justifiable: false,
+        lessonDate: new Date().toISOString(),
+        lesson: 2,
+        subject: 'Math',
+        reporter: 'Teacher',
+        remark: null,
+        justification: null,
+        eventAt: new Date().toISOString(),
+        isHandled: false,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return json(route, {
       data: [],
       pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
-    }),
-  );
+    });
+  });
 
   await page.route(`**/api/v1/children/${STUDENT_GUID}/subjects`, (route) =>
     json(route, { data: [] }),
@@ -235,6 +276,18 @@ async function mockBaseRoutes(page: Page) {
 }
 
 test.describe('Navigation and fallback hardening', () => {
+  test('opens dedicated homework detail page from home feed', async ({ page }) => {
+    await mockBaseRoutes(page);
+
+    await page.goto('/home');
+    await expect(page.getByTestId('home-header')).toBeVisible();
+
+    await page.getByTestId('feed-item-feed-1').locator('a').click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
+    await expect(page.getByTestId('homework-detail-page')).toBeVisible();
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
+  });
+
   test('supports core click/navigation flows across Home -> Child -> Inbox -> Conversation -> More', async ({
     page,
   }) => {

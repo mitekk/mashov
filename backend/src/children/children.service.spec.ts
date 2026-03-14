@@ -30,11 +30,13 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     homeworkItem: {
       count: overrides.homeworkCount ?? jest.fn().mockResolvedValue(0),
       findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]),
+      findUnique: overrides.homeworkFindUnique ?? jest.fn().mockResolvedValue(null),
       findFirst: overrides.homeworkFindFirst ?? jest.fn().mockResolvedValue(null),
     },
     behaviorItem: {
       count: overrides.behaviorCount ?? jest.fn().mockResolvedValue(0),
       findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]),
+      findUnique: overrides.behaviorFindUnique ?? jest.fn().mockResolvedValue(null),
       findFirst: overrides.behaviorFindFirst ?? jest.fn().mockResolvedValue(null),
     },
     subjectEnrollment: {
@@ -171,6 +173,78 @@ describe('ChildrenService', () => {
     });
   });
 
+  describe('getHomeworkDetail', () => {
+    it('returns a single homework detail item with handled state', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue({
+            id: 'hw-1',
+            studentGuid: TEST_GUID,
+            lessonId: 1,
+            groupId: 2,
+            lessonDate: new Date('2026-03-10T00:00:00Z'),
+            lesson: 3,
+            subjectName: 'Math',
+            homeworkText: 'Page 10',
+            remark: null,
+            files: [],
+            updatedAt: new Date('2026-03-10T01:00:00Z'),
+          }),
+          readStateFindMany: jest.fn().mockResolvedValue([
+            { itemId: 'hw-1', isHandled: true },
+          ]),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
+      expect(result).toMatchObject({
+        id: 'hw-1',
+        studentGuid: TEST_GUID,
+        isHandled: true,
+      });
+      expect(result.lessonDate).toBe('2026-03-10T00:00:00.000Z');
+    });
+
+    it('throws NotFoundException when homework item is missing', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getHomeworkDetail(TEST_GUID, 'missing-hw')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('throws NotFoundException when homework item belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue({
+            id: 'hw-1',
+            studentGuid: 'other-student-guid',
+            lessonId: 1,
+            groupId: 2,
+            lessonDate: new Date('2026-03-10T00:00:00Z'),
+            lesson: 3,
+            subjectName: 'Math',
+            homeworkText: 'Page 10',
+            remark: null,
+            files: [],
+            updatedAt: new Date('2026-03-10T01:00:00Z'),
+          }),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getHomeworkDetail(TEST_GUID, 'hw-1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('getBehavior', () => {
     it('maps classification to bucket and eventCode to priority', async () => {
       const mockFindMany = jest.fn().mockResolvedValue([
@@ -210,6 +284,92 @@ describe('ChildrenService', () => {
       );
       expect(result.data[0].bucket).toBe('attention');
       expect(result.data[0].priority).toBe('high');
+    });
+  });
+
+  describe('getBehaviorDetail', () => {
+    it('returns a single behavior detail item with handled state', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue({
+            id: 'beh-1',
+            studentGuid: TEST_GUID,
+            lessonId: 1,
+            groupId: 2,
+            eventCode: 2,
+            achvaCode: 2,
+            achvaName: 'חיסור',
+            classification: 'attention',
+            justifiable: false,
+            lessonDate: new Date('2026-03-11T00:00:00Z'),
+            lesson: 2,
+            subject: 'Math',
+            reporter: 'Teacher',
+            remark: null,
+            justification: null,
+            eventAt: new Date('2026-03-11T10:00:00Z'),
+            updatedAt: new Date('2026-03-11T11:00:00Z'),
+          }),
+          readStateFindMany: jest.fn().mockResolvedValue([
+            { itemId: 'beh-1', isHandled: true },
+          ]),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
+      expect(result).toMatchObject({
+        id: 'beh-1',
+        studentGuid: TEST_GUID,
+        bucket: 'attention',
+        priority: 'high',
+        isHandled: true,
+      });
+      expect(result.lessonDate).toBe('2026-03-11T00:00:00.000Z');
+    });
+
+    it('throws NotFoundException when behavior item is missing', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getBehaviorDetail(TEST_GUID, 'missing-beh')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('throws NotFoundException when behavior item belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue({
+            id: 'beh-1',
+            studentGuid: 'other-student-guid',
+            lessonId: 1,
+            groupId: 2,
+            eventCode: 2,
+            achvaCode: 2,
+            achvaName: 'חיסור',
+            classification: 'attention',
+            justifiable: false,
+            lessonDate: new Date('2026-03-11T00:00:00Z'),
+            lesson: 2,
+            subject: 'Math',
+            reporter: 'Teacher',
+            remark: null,
+            justification: null,
+            eventAt: new Date('2026-03-11T10:00:00Z'),
+            updatedAt: new Date('2026-03-11T11:00:00Z'),
+          }),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getBehaviorDetail(TEST_GUID, 'beh-1')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 

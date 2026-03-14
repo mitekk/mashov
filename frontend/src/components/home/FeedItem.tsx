@@ -9,7 +9,7 @@ import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { useMarkHandled } from '@/hooks/useReadState';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
-import { buildChildSectionHref } from '@/lib/child-routes';
+import { buildBehaviorDetailHref, buildChildSectionHref, buildHomeworkDetailHref } from '@/lib/child-routes';
 
 interface FeedItemProps {
   item: FeedItemType;
@@ -18,9 +18,13 @@ interface FeedItemProps {
 function getSafeFeedHref(item: FeedItemType): string | null {
   if (item.studentGuid) {
     if (item.sourceType === 'homework') {
+      const detailHref = buildHomeworkDetailHref(item.studentGuid, item.sourceId);
+      if (detailHref) return detailHref;
       return buildChildSectionHref(item.studentGuid, 'homework');
     }
     if (item.sourceType === 'behavior' || item.sourceType === 'positive') {
+      const detailHref = buildBehaviorDetailHref(item.studentGuid, item.sourceId);
+      if (detailHref) return detailHref;
       return buildChildSectionHref(item.studentGuid, 'behavior');
     }
   }

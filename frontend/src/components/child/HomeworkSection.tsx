@@ -7,6 +7,7 @@ import { HomeworkItem } from './HomeworkItem';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { FeedSkeleton } from '@/components/ui/LoadingState';
+import { buildHomeworkDetailHref } from '@/lib/child-routes';
 
 interface HomeworkSectionProps {
   studentGuid: string;
@@ -36,7 +37,12 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
       {data && data.data.length > 0 && (
         <div className="section-stack">
           {data.data.map((item) => (
-            <HomeworkItem key={item.id} item={item} studentGuid={studentGuid} />
+            <HomeworkItem
+              key={item.id}
+              item={item}
+              studentGuid={studentGuid}
+              detailHref={buildHomeworkDetailHref(studentGuid, item.id)}
+            />
           ))}
         </div>
       )}

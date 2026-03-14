@@ -2,7 +2,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   fetchChild,
   fetchChildHomework,
+  fetchChildHomeworkDetail,
   fetchChildBehavior,
+  fetchChildBehaviorDetail,
   fetchChildSubjects,
   fetchChildNotices,
 } from '@/api/children';
@@ -27,6 +29,15 @@ export function useChildHomework(studentGuid: string, page = 1) {
   });
 }
 
+export function useChildHomeworkDetail(studentGuid: string, homeworkId: string) {
+  return useQuery({
+    queryKey: ['child-homework-detail', studentGuid, homeworkId],
+    queryFn: () => fetchChildHomeworkDetail(studentGuid, homeworkId),
+    staleTime: 60_000,
+    enabled: Boolean(studentGuid && homeworkId),
+  });
+}
+
 export function useChildBehavior(
   studentGuid: string,
   page = 1,
@@ -37,6 +48,15 @@ export function useChildBehavior(
     queryFn: () => fetchChildBehavior(studentGuid, page, 50, bucket),
     staleTime: 60_000,
     enabled: Boolean(studentGuid),
+  });
+}
+
+export function useChildBehaviorDetail(studentGuid: string, behaviorId: string) {
+  return useQuery({
+    queryKey: ['child-behavior-detail', studentGuid, behaviorId],
+    queryFn: () => fetchChildBehaviorDetail(studentGuid, behaviorId),
+    staleTime: 60_000,
+    enabled: Boolean(studentGuid && behaviorId),
   });
 }
 
@@ -67,9 +87,11 @@ export function useMarkHandled() {
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       if (variables.itemType === 'homework') {
         void queryClient.invalidateQueries({ queryKey: ['child-homework'] });
+        void queryClient.invalidateQueries({ queryKey: ['child-homework-detail'] });
       }
       if (variables.itemType === 'behavior') {
         void queryClient.invalidateQueries({ queryKey: ['child-behavior'] });
+        void queryClient.invalidateQueries({ queryKey: ['child-behavior-detail'] });
       }
     },
   });

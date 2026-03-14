@@ -158,7 +158,11 @@ export function ChildWorkspacePage({
           </div>
         </div>
 
-        {activeSection === 'homework' && <HomeworkSection studentGuid={studentGuid} />}
+        {activeSection === 'homework' && (
+          <HomeworkSection
+            studentGuid={studentGuid}
+          />
+        )}
         {activeSection === 'behavior' && (
           <BehaviorSection
             studentGuid={studentGuid}

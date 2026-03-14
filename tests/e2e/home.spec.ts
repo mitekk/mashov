@@ -75,7 +75,10 @@ test.describe('Home page', () => {
     const fallbackLink = homePage.feedItem('feed-missing-link').locator('a');
     await expect(
       fallbackLink,
-    ).toHaveAttribute('href', '/children/student-guid-1?section=homework&behavior=all');
+    ).toHaveAttribute(
+      'href',
+      '/children/student-guid-1/homework/hw-1',
+    );
     expect(hrefPropErrors).toHaveLength(0);
   });
 
