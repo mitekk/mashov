@@ -2,16 +2,23 @@ import React from 'react';
 import Link from 'next/link';
 import { Paperclip, MessageSquareOff } from 'lucide-react';
 import type { ConversationListItem } from '@/types/api';
-import { formatRelativeHe } from '@/lib/dates';
+import { formatAbsoluteHe, formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 
 interface ConversationItemProps {
   conversation: ConversationListItem;
+  selected: boolean;
+  onToggleSelect: (conversationId: string, checked: boolean) => void;
 }
 
-export function ConversationItem({ conversation }: ConversationItemProps) {
+export function ConversationItem({
+  conversation,
+  selected,
+  onToggleSelect,
+}: ConversationItemProps) {
   const isUnread = conversation.isUnread;
+  const isHandled = conversation.isHandled;
   const safeHref = getPhase1HrefOrNull(
     conversation.conversationId
       ? `/inbox/${conversation.conversationId}`
@@ -19,7 +26,12 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
   );
 
   const content = (
-    <div className="flex-1 min-w-0">
+    <div
+      className={cn(
+        'min-w-0 flex-1',
+        isHandled && 'opacity-60',
+      )}
+    >
       <div className="flex items-start gap-2 mb-1">
         <p
           className={cn(
@@ -29,9 +41,13 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
         >
           {conversation.senderNamePreview}
         </p>
-        <span className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap">
+        <time
+          dateTime={conversation.sendTime}
+          title={formatAbsoluteHe(conversation.sendTime)}
+          className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap"
+        >
           {formatRelativeHe(conversation.sendTime)}
-        </span>
+        </time>
       </div>
       <p
         className={cn(
@@ -40,6 +56,9 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
         )}
       >
         {conversation.subject}
+      </p>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {formatAbsoluteHe(conversation.sendTime)}
       </p>
       <div className="flex items-center gap-2 mt-1">
         {conversation.hasAttachments && (
@@ -70,18 +89,36 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
         aria-disabled
         className={cn(className, 'opacity-70 cursor-not-allowed')}
       >
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(event) => onToggleSelect(conversation.conversationId, event.target.checked)}
+          data-testid={`conversation-select-${conversation.conversationId}`}
+          className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+          aria-label="בחר שיחה"
+        />
         {content}
       </div>
     );
   }
 
   return (
-    <Link
-      href={safeHref}
-      data-testid={`conversation-item-${conversation.conversationId}`}
-      className={cn(className, 'hover:bg-accent/30')}
-    >
-      {content}
-    </Link>
+    <div className={className}>
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={(event) => onToggleSelect(conversation.conversationId, event.target.checked)}
+        data-testid={`conversation-select-${conversation.conversationId}`}
+        className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+        aria-label="בחר שיחה"
+      />
+      <Link
+        href={safeHref}
+        data-testid={`conversation-item-${conversation.conversationId}`}
+        className="min-w-0 flex-1 rounded-xl p-1 transition-colors hover:bg-accent/30"
+      >
+        {content}
+      </Link>
+    </div>
   );
 }

@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChildrenService } from './children.service';
+import { SessionService } from '../session/session.service';
 
 const TEST_GUID = 'student-guid-001';
 
@@ -55,6 +56,13 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
   } as unknown as jest.Mocked<PrismaService>;
 }
 
+function makeMockSession(overrides: Partial<Record<string, jest.Mock>> = {}) {
+  return {
+    ensureStudentsAvailable:
+      overrides.ensureStudentsAvailable ?? jest.fn().mockResolvedValue(undefined),
+  } as unknown as jest.Mocked<SessionService>;
+}
+
 describe('ChildrenService', () => {
   describe('getChildren', () => {
     it('returns {data} with computed counts and latestUpdateAt', async () => {
@@ -70,6 +78,7 @@ describe('ChildrenService', () => {
             eventAt: new Date('2026-03-12T13:00:00Z'),
           }),
         }),
+        makeMockSession(),
       );
 
       const result = await service.getChildren();
@@ -99,6 +108,7 @@ describe('ChildrenService', () => {
             endedAt: new Date('2026-03-12T14:00:00Z'),
           }),
         }),
+        makeMockSession(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -118,6 +128,7 @@ describe('ChildrenService', () => {
         makeMockPrisma({
           studentFindUnique: jest.fn().mockResolvedValue(null),
         }),
+        makeMockSession(),
       );
 
       await expect(service.getChildWorkspace('missing-guid')).rejects.toThrow(
@@ -150,6 +161,7 @@ describe('ChildrenService', () => {
             { itemId: 'hw-1', isHandled: true },
           ]),
         }),
+        makeMockSession(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -187,6 +199,7 @@ describe('ChildrenService', () => {
           behaviorFindMany: mockFindMany,
           behaviorCount: jest.fn().mockResolvedValue(1),
         }),
+        makeMockSession(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention');
@@ -230,6 +243,7 @@ describe('ChildrenService', () => {
             },
           ]),
         }),
+        makeMockSession(),
       );
 
       const subjects = await service.getSubjects(TEST_GUID);

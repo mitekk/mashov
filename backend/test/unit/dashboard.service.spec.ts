@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DashboardService } from '../../src/dashboard/dashboard.service';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { FreshnessService } from '../../src/sync/freshness.service';
+import { SessionService } from '../../src/session/session.service';
 
 const mockPrisma = {
   mailConversation: {
@@ -34,6 +35,10 @@ const mockFreshness = {
   computeFreshness: jest.fn(),
 };
 
+const mockSession = {
+  ensureStudentsAvailable: jest.fn(),
+};
+
 describe('DashboardService', () => {
   let service: DashboardService;
 
@@ -45,6 +50,7 @@ describe('DashboardService', () => {
         DashboardService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: FreshnessService, useValue: mockFreshness },
+        { provide: SessionService, useValue: mockSession },
       ],
     }).compile();
 

@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowRight, BookmarkCheck, BookmarkX } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
@@ -8,7 +8,11 @@ import { MessageThread } from '@/components/conversation/MessageThread';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { useConversation, useMarkConversationHandled } from '@/hooks/useConversation';
+import {
+  useConversation,
+  useMarkConversationHandled,
+  useMarkConversationRead,
+} from '@/hooks/useConversation';
 
 export default function ConversationPage() {
   const params = useParams();
@@ -17,6 +21,20 @@ export default function ConversationPage() {
 
   const { data, isLoading, isError, refetch } = useConversation(conversationId);
   const { mutate: markHandled, isPending } = useMarkConversationHandled();
+  const { mutate: markRead } = useMarkConversationRead();
+  const autoMarkedReadConversationId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!data) return;
+    if (autoMarkedReadConversationId.current === conversationId) return;
+    autoMarkedReadConversationId.current = conversationId;
+    markRead({
+      itemType: 'mail_conversation',
+      itemId: conversationId,
+      isRead: true,
+      isHandled: data.isHandled,
+    });
+  }, [conversationId, data, markRead]);
 
   const handleToggleHandled = () => {
     if (!data) return;

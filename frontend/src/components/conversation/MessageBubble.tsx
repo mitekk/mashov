@@ -70,10 +70,10 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       />
 
       {/* Attachment indicator */}
-      {message.sentViaEmail && (
+      {message.hasAttachments && (
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <Paperclip className="w-3 h-3" />
-          <span>נשלח גם במייל</span>
+          <span>יש קבצים מצורפים</span>
         </div>
       )}
     </article>

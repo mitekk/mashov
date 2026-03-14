@@ -74,6 +74,11 @@ function normalizeConversationDetail(
         ),
         bodyTextPreview: msg.bodyTextPreview ?? '',
         recipients: Array.isArray(msg.recipients) ? msg.recipients : [],
+        hasAttachments: Boolean(
+          (msg as unknown as UnknownRecord).hasAttachments
+          ?? (Array.isArray((msg as unknown as UnknownRecord).files)
+            && ((msg as unknown as UnknownRecord).files as unknown[]).length > 0),
+        ),
       })),
     };
   }
@@ -113,6 +118,10 @@ function normalizeConversationDetail(
         sendTime: String(message.sendTime ?? new Date().toISOString()),
         isUnread: Boolean(message.isUnread),
         recipients: normalizeRecipients(message.recipients),
+        hasAttachments: Boolean(
+          message.hasAttachments
+          ?? (Array.isArray(message.files) && message.files.length > 0),
+        ),
         preventReply: Boolean(message.preventReply),
         sentViaEmail: Boolean(message.sentViaEmail),
         sentViaSms: Boolean(message.sentViaSms),

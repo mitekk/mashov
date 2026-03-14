@@ -37,10 +37,13 @@ function getSafeFeedHref(item: FeedItemType): string | null {
 }
 
 export function FeedItem({ item }: FeedItemProps) {
+  const isMailItem = item.sourceType === 'mail';
   const { markHandled, isPending } = useMarkHandled(
-    'feed_item',
-    item.id,
-    [['dashboard']],
+    isMailItem ? 'mail_conversation' : 'feed_item',
+    isMailItem ? item.sourceId : item.id,
+    isMailItem
+      ? [['dashboard'], ['conversations'], ['conversation', item.sourceId]]
+      : [['dashboard']],
   );
 
   const isHandled = item.isHandled;

@@ -22,6 +22,13 @@ export function useMarkConversationHandled() {
       });
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
     },
+  });
+}
+
+export function useMarkConversationRead() {
+  return useMutation({
+    mutationFn: (req: ReadStateRequest) => upsertReadState(req),
   });
 }

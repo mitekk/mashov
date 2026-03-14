@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService } from '../sync/freshness.service';
+import { SessionService } from '../session/session.service';
 
 export interface NeedsAttentionItem {
   id: string;
@@ -49,9 +50,12 @@ export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly freshnessService: FreshnessService,
+    private readonly sessionService: SessionService,
   ) {}
 
   async getDashboard() {
+    await this.sessionService.ensureStudentsAvailable();
+
     const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(),
       this.getSummary(),
@@ -72,8 +76,18 @@ export class DashboardService {
   }
 
   private async getSummary() {
-    const [unreadConversations, students, recentHomework, recentBehavior] = await Promise.all([
-      this.prisma.mailConversation.count({ where: { isUnread: true } }),
+    const [household, unreadFallback, students, recentHomework, recentBehavior] = await Promise.all([
+      this.prisma.householdConnection.findFirst({
+        where: { active: true },
+        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
+        select: { cachedUnreadCount: true },
+      }),
+      this.prisma.mailConversation.count({
+        where: {
+          isUnread: true,
+          NOT: { labels: { array_contains: ['archived'] } },
+        },
+      }),
       this.prisma.student.count({ where: { isActive: true } }),
       this.prisma.homeworkItem.count({
         where: {
@@ -87,6 +101,8 @@ export class DashboardService {
         },
       }),
     ]);
+
+    const unreadConversations = household?.cachedUnreadCount ?? unreadFallback;
 
     return {
       unreadConversations,
@@ -111,7 +127,10 @@ export class DashboardService {
 
     // Priority 1: unread conversations
     const conversations = await this.prisma.mailConversation.findMany({
-      where: { isUnread: true },
+      where: {
+        isUnread: true,
+        NOT: { labels: { array_contains: ['archived'] } },
+      },
       orderBy: { sendTime: 'desc' },
       take: 3,
     });
@@ -211,6 +230,9 @@ export class DashboardService {
         take: 20,
       }),
       this.prisma.mailConversation.findMany({
+        where: {
+          NOT: { labels: { array_contains: ['archived'] } },
+        },
         orderBy: { sendTime: 'desc' },
         take: 20,
       }),
@@ -282,20 +304,46 @@ export class DashboardService {
     allItems.sort((a, b) => new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime());
     const sliced = allItems.slice(0, 20);
 
-    const readStateRows = await this.prisma.readState.findMany({
-      where: {
-        itemType: 'feed_item',
-        itemId: { in: sliced.map((item) => item.id) },
-        scopeType: 'household',
-        scopeId: 'default',
-      },
-      select: { itemId: true, isHandled: true },
-    });
-    const handledMap = new Map(readStateRows.map((row) => [row.itemId, row.isHandled]));
+    const genericFeedIds = sliced
+      .filter((item) => item.sourceType !== 'mail')
+      .map((item) => item.id);
+    const mailConversationIds = sliced
+      .filter((item) => item.sourceType === 'mail')
+      .map((item) => item.sourceId);
+
+    const [feedReadStateRows, mailReadStateRows] = await Promise.all([
+      genericFeedIds.length > 0
+        ? this.prisma.readState.findMany({
+          where: {
+            itemType: 'feed_item',
+            itemId: { in: genericFeedIds },
+            scopeType: 'household',
+            scopeId: 'default',
+          },
+          select: { itemId: true, isHandled: true },
+        })
+        : Promise.resolve([]),
+      mailConversationIds.length > 0
+        ? this.prisma.readState.findMany({
+          where: {
+            itemType: 'mail_conversation',
+            itemId: { in: mailConversationIds },
+            scopeType: 'household',
+            scopeId: 'default',
+          },
+          select: { itemId: true, isHandled: true },
+        })
+        : Promise.resolve([]),
+    ]);
+
+    const feedHandledMap = new Map(feedReadStateRows.map((row) => [row.itemId, row.isHandled]));
+    const mailHandledMap = new Map(mailReadStateRows.map((row) => [row.itemId, row.isHandled]));
 
     return sliced.map((item) => ({
       ...item,
-      isHandled: handledMap.get(item.id) ?? false,
+      isHandled: item.sourceType === 'mail'
+        ? (mailHandledMap.get(item.sourceId) ?? false)
+        : (feedHandledMap.get(item.id) ?? false),
     }));
   }
 

@@ -3,7 +3,7 @@ import { upsertReadState } from '@/api/readState';
 import type { ReadStateRequest, ReadStateItemType } from '@/types/api';
 
 interface UseReadStateOptions {
-  invalidateKeys?: string[][];
+  invalidateKeys?: Array<readonly unknown[]>;
 }
 
 export function useReadState(options: UseReadStateOptions = {}) {
@@ -23,7 +23,7 @@ export function useReadState(options: UseReadStateOptions = {}) {
 export function useMarkHandled(
   itemType: ReadStateItemType,
   itemId: string,
-  invalidateKeys?: string[][],
+  invalidateKeys?: Array<readonly unknown[]>,
 ) {
   const { mutate, isPending } = useReadState({ invalidateKeys });
 

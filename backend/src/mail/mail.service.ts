@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import sanitizeHtml = require('sanitize-html');
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 
@@ -9,11 +10,11 @@ interface UpstreamMessage {
   senderId: string;
   senderName: string;
   subject: string;
-  body: string;
+  body?: string;
   sendTime: string;
   isNew: boolean;
   recipients: unknown[];
-  files: unknown[];
+  files?: unknown[];
   preventReply: boolean;
   sentViaEmail: boolean;
   sentViaSms: boolean;
@@ -21,8 +22,14 @@ interface UpstreamMessage {
 
 interface UpstreamConversationDetail {
   conversationId: string;
-  subject: string;
-  messages: UpstreamMessage[];
+  subject?: string;
+  sendTime?: string;
+  isNew?: boolean;
+  hasDrafts?: boolean;
+  hasAttachments?: boolean;
+  preventReply?: boolean;
+  labels?: unknown[];
+  messages?: UpstreamMessage[];
 }
 
 const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
@@ -58,10 +65,23 @@ export class MailService {
   ) {}
 
   async getSummary() {
-    const [unreadConversations, recentConversations, lastSync] = await Promise.all([
-      this.prisma.mailConversation.count({ where: { isUnread: true } }),
+    const [household, unreadFallback, recentConversations, lastSync] = await Promise.all([
+      this.prisma.householdConnection.findFirst({
+        where: { active: true },
+        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
+        select: { cachedUnreadCount: true },
+      }),
+      this.prisma.mailConversation.count({
+        where: {
+          isUnread: true,
+          NOT: { labels: { array_contains: ['archived'] } },
+        },
+      }),
       this.prisma.mailConversation.findMany({
-        where: { isUnread: true },
+        where: {
+          isUnread: true,
+          NOT: { labels: { array_contains: ['archived'] } },
+        },
         orderBy: { sendTime: 'desc' },
         take: 3,
       }),
@@ -71,6 +91,8 @@ export class MailService {
         select: { endedAt: true },
       }),
     ]);
+
+    const unreadConversations = household?.cachedUnreadCount ?? unreadFallback;
 
     return {
       unreadConversations,
@@ -88,7 +110,7 @@ export class MailService {
   }
 
   async getConversations(page: number, limit: number, unreadOnly: boolean) {
-    const where = unreadOnly ? { isUnread: true } : {};
+    const where = this.buildInboxWhere(unreadOnly);
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
         where,
@@ -141,6 +163,10 @@ export class MailService {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
 
+    if (this.asStringArray(conversation.labels).includes('archived')) {
+      throw new NotFoundException(`Conversation not found: ${conversationId}`);
+    }
+
     // Check if full messages with body exist in DB
     const existingMessages = await this.prisma.mailMessage.findMany({
       where: { conversationId },
@@ -154,44 +180,75 @@ export class MailService {
       // Lazy fetch from upstream
       try {
         const upstream = await this.mashovClient.get<UpstreamConversationDetail>(
-          `/api/mail/inbox/conversations/${conversationId}`,
+          `/api/mail/conversations/${conversationId}`,
           {
-            headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+            headers: {
+              Referer: `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`,
+            },
           },
         );
 
+        await this.prisma.mailConversation.update({
+          where: { conversationId },
+          data: {
+            subject: upstream.subject ?? conversation.subject,
+            senderNamePreview: upstream.messages?.[0]?.senderName ?? conversation.senderNamePreview,
+            sendTime: upstream.sendTime ? new Date(upstream.sendTime) : conversation.sendTime,
+            isUnread: upstream.isNew ?? conversation.isUnread,
+            hasDrafts: upstream.hasDrafts ?? conversation.hasDrafts,
+            hasAttachments: upstream.hasAttachments ?? conversation.hasAttachments,
+            preventReply: upstream.preventReply ?? conversation.preventReply,
+            ...(Array.isArray(upstream.labels)
+              ? { labels: upstream.labels as Prisma.InputJsonValue }
+              : {}),
+            rawPayload: upstream as unknown as Prisma.InputJsonValue,
+            lastFetchedAt: new Date(),
+          },
+        });
+
         await Promise.all(
           (upstream.messages ?? []).map(async (msg) => {
+            if (!msg.messageId) return;
             const sanitized = msg.body ? sanitizeHtml(msg.body, SANITIZE_OPTIONS) : null;
             const preview = sanitized
               ? sanitizeHtml(sanitized, { allowedTags: [] }).substring(0, 200)
               : null;
+            const files = Array.isArray(msg.files) ? msg.files : [];
+            const recipients = Array.isArray(msg.recipients) ? msg.recipients : [];
 
             return this.prisma.mailMessage.upsert({
               where: { messageId: msg.messageId },
               create: {
                 messageId: msg.messageId,
-                conversationId: msg.conversationId,
-                senderId: msg.senderId,
-                senderName: msg.senderName,
-                subject: msg.subject,
+                conversationId: msg.conversationId || conversationId,
+                senderId: msg.senderId ?? '',
+                senderName: msg.senderName ?? '',
+                subject: msg.subject ?? '',
                 bodyHtmlSanitized: sanitized,
                 bodyTextPreview: preview,
                 sendTime: new Date(msg.sendTime),
                 isUnread: msg.isNew,
-                recipients: (msg.recipients ?? []) as import('@prisma/client').Prisma.InputJsonValue,
-                files: (msg.files ?? []) as import('@prisma/client').Prisma.InputJsonValue,
+                recipients: recipients as Prisma.InputJsonValue,
+                files: files as Prisma.InputJsonValue,
                 preventReply: msg.preventReply,
                 sentViaEmail: msg.sentViaEmail,
                 sentViaSms: msg.sentViaSms,
-                rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                rawPayload: msg as unknown as Prisma.InputJsonValue,
               },
               update: {
+                senderId: msg.senderId ?? '',
+                senderName: msg.senderName ?? '',
+                subject: msg.subject ?? '',
                 bodyHtmlSanitized: sanitized,
                 bodyTextPreview: preview,
                 sendTime: new Date(msg.sendTime),
                 isUnread: msg.isNew,
-                rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                recipients: recipients as Prisma.InputJsonValue,
+                files: files as Prisma.InputJsonValue,
+                preventReply: msg.preventReply,
+                sentViaEmail: msg.sentViaEmail,
+                sentViaSms: msg.sentViaSms,
+                rawPayload: msg as unknown as Prisma.InputJsonValue,
               },
             });
           }),
@@ -207,6 +264,13 @@ export class MailService {
       orderBy: { sendTime: 'asc' },
     });
 
+    const resolvedConversation = await this.prisma.mailConversation.findUnique({
+      where: { conversationId },
+    });
+    if (!resolvedConversation) {
+      throw new NotFoundException(`Conversation not found: ${conversationId}`);
+    }
+
     const readState = await this.prisma.readState.findUnique({
       where: {
         itemType_itemId_scopeType_scopeId: {
@@ -220,14 +284,14 @@ export class MailService {
     });
 
     return {
-      conversationId: conversation.conversationId,
-      subject: conversation.subject,
-      sendTime: conversation.sendTime.toISOString(),
-      isUnread: conversation.isUnread,
-      hasDrafts: conversation.hasDrafts,
-      hasAttachments: conversation.hasAttachments,
-      preventReply: conversation.preventReply,
-      labels: this.asStringArray(conversation.labels),
+      conversationId: resolvedConversation.conversationId,
+      subject: resolvedConversation.subject,
+      sendTime: resolvedConversation.sendTime.toISOString(),
+      isUnread: resolvedConversation.isUnread,
+      hasDrafts: resolvedConversation.hasDrafts,
+      hasAttachments: resolvedConversation.hasAttachments,
+      preventReply: resolvedConversation.preventReply,
+      labels: this.asStringArray(resolvedConversation.labels),
       isHandled: readState?.isHandled ?? false,
       messages: messages.map((msg) => ({
         messageId: msg.messageId,
@@ -243,8 +307,16 @@ export class MailService {
         preventReply: msg.preventReply,
         sentViaEmail: msg.sentViaEmail,
         sentViaSms: msg.sentViaSms,
+        hasAttachments: this.hasMessageAttachments(msg.files),
       })),
-      lastFetchedAt: conversation.lastFetchedAt.toISOString(),
+      lastFetchedAt: resolvedConversation.lastFetchedAt.toISOString(),
+    };
+  }
+
+  private buildInboxWhere(unreadOnly: boolean): Prisma.MailConversationWhereInput {
+    return {
+      ...(unreadOnly ? { isUnread: true } : {}),
+      NOT: { labels: { array_contains: ['archived'] } },
     };
   }
 
@@ -290,11 +362,15 @@ export class MailService {
     });
   }
 
+  private hasMessageAttachments(value: unknown): boolean {
+    return Array.isArray(value) && value.length > 0;
+  }
+
   async markUnread(conversationIds: string[]) {
     try {
       await this.mashovClient.put(
         '/api/mail/conversations/markAsUnread',
-        { conversationIds },
+        conversationIds,
         {
           headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
         },
@@ -316,7 +392,7 @@ export class MailService {
     try {
       await this.mashovClient.put(
         '/api/mail/conversations/move/archive',
-        { conversationIds },
+        conversationIds,
         {
           headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
         },
@@ -326,25 +402,23 @@ export class MailService {
       this.logger.warn(`Upstream archive failed: ${msg}; updating DB only`);
     }
 
-    // Update labels to include 'archived' in DB
-    const conversations = await this.prisma.mailConversation.findMany({
+    await this.prisma.mailMessage.deleteMany({
       where: { conversationId: { in: conversationIds } },
-      select: { id: true, labels: true },
     });
 
-    await Promise.all(
-      conversations.map((conv) => {
-        const labels = Array.isArray(conv.labels) ? conv.labels : [];
-        if (!labels.includes('archived')) {
-          labels.push('archived');
-        }
-        return this.prisma.mailConversation.update({
-          where: { id: conv.id },
-          data: { labels: labels as import('@prisma/client').Prisma.InputJsonValue },
-        });
-      }),
-    );
+    const deleted = await this.prisma.mailConversation.deleteMany({
+      where: { conversationId: { in: conversationIds } },
+    });
 
-    return { updated: conversationIds.length };
+    await this.prisma.readState.deleteMany({
+      where: {
+        itemType: 'mail_conversation',
+        itemId: { in: conversationIds },
+        scopeType: 'household',
+        scopeId: 'default',
+      },
+    });
+
+    return { updated: deleted.count };
   }
 }

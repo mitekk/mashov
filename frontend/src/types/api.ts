@@ -298,6 +298,7 @@ export interface ConversationMessage {
   sendTime: string;
   isUnread: boolean;
   recipients: MessageRecipient[];
+  hasAttachments: boolean;
   preventReply: boolean;
   sentViaEmail: boolean;
   sentViaSms: boolean;

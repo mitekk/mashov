@@ -1,4 +1,9 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import {
   fetchMailSummary,
   fetchConversations,
@@ -15,13 +20,16 @@ export function useMailSummary() {
   });
 }
 
-export function useConversations(
-  page: number,
-  unreadOnly: boolean,
-) {
-  return useQuery({
-    queryKey: ['conversations', page, unreadOnly],
-    queryFn: () => fetchConversations(page, 20, unreadOnly),
+export function useConversations(unreadOnly: boolean) {
+  return useInfiniteQuery({
+    queryKey: ['conversations', unreadOnly],
+    queryFn: ({ pageParam }) => fetchConversations(Number(pageParam), 20, unreadOnly),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => (
+      lastPage.pagination.page < lastPage.pagination.totalPages
+        ? lastPage.pagination.page + 1
+        : undefined
+    ),
     staleTime: 30_000,
   });
 }

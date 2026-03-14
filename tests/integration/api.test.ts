@@ -39,12 +39,17 @@ async function seedStudent(prisma: PrismaClient): Promise<void> {
 describe('API Integration Tests (Phase 1 contract)', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
+  let mashovGetMock: jest.Mock;
+  let mashovPutMock: jest.Mock;
 
   beforeAll(async () => {
     prisma = new PrismaClient({
       datasources: { db: { url: process.env.DATABASE_URL } },
     });
     await prisma.$connect();
+
+    mashovGetMock = jest.fn().mockResolvedValue({ messages: [] });
+    mashovPutMock = jest.fn().mockResolvedValue({});
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [
@@ -62,8 +67,8 @@ describe('API Integration Tests (Phase 1 contract)', () => {
     })
       .overrideProvider(MashovHttpClient)
       .useValue({
-        get: jest.fn().mockResolvedValue({ messages: [] }),
-        put: jest.fn().mockResolvedValue({}),
+        get: mashovGetMock,
+        put: mashovPutMock,
       })
       .compile();
 
@@ -91,6 +96,10 @@ describe('API Integration Tests (Phase 1 contract)', () => {
     await prisma.parentProfile.deleteMany({});
     await prisma.householdConnection.deleteMany({});
     await prisma.student.deleteMany({});
+    mashovGetMock.mockReset();
+    mashovGetMock.mockResolvedValue({ messages: [] });
+    mashovPutMock.mockReset();
+    mashovPutMock.mockResolvedValue({});
   });
 
   describe('GET /health', () => {
@@ -216,6 +225,34 @@ describe('API Integration Tests (Phase 1 contract)', () => {
   });
 
   describe('Mail API', () => {
+    it('GET /api/v1/mail/summary uses cached unread count from household when present', async () => {
+      await prisma.householdConnection.create({
+        data: {
+          schoolCode: 1234,
+          schoolYear: 2026,
+          username: 'user',
+          encryptedPassword: 'enc',
+          schoolName: 'School',
+          active: true,
+          cachedUnreadCount: 17,
+        },
+      });
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-cache-1',
+          subject: 'Message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isUnread: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/mail/summary');
+      expect(res.status).toBe(200);
+      expect(res.body.unreadConversations).toBe(17);
+    });
+
     it('GET /api/v1/mail/conversations includes isHandled', async () => {
       await prisma.mailConversation.create({
         data: {
@@ -243,6 +280,36 @@ describe('API Integration Tests (Phase 1 contract)', () => {
         conversationId: 'conv-1',
         isHandled: true,
       });
+    });
+
+    it('GET /api/v1/mail/conversations excludes archived-labeled conversations', async () => {
+      await prisma.mailConversation.createMany({
+        data: [
+          {
+            conversationId: 'conv-visible',
+            subject: 'Visible',
+            senderNamePreview: 'School',
+            sendTime: new Date('2026-03-12T10:00:00Z'),
+            isUnread: true,
+            labels: [],
+            rawPayload: {},
+          },
+          {
+            conversationId: 'conv-archived',
+            subject: 'Archived',
+            senderNamePreview: 'School',
+            sendTime: new Date('2026-03-11T10:00:00Z'),
+            isUnread: true,
+            labels: ['archived'],
+            rawPayload: {},
+          },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/mail/conversations');
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].conversationId).toBe('conv-visible');
     });
 
     it('GET /api/v1/mail/conversations/:id returns flattened contract shape', async () => {
@@ -277,6 +344,162 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       });
       expect(Array.isArray(res.body.messages)).toBe(true);
       expect(res.body.messages[0].messageId).toBe('msg-1');
+    });
+
+    it('GET /api/v1/mail/conversations/:id lazy-fetches detail and sanitizes html body', async () => {
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-lazy',
+          subject: 'Message Subject',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isUnread: true,
+          rawPayload: {},
+        },
+      });
+      await prisma.mailMessage.create({
+        data: {
+          messageId: 'msg-lazy',
+          conversationId: 'conv-lazy',
+          senderId: 'sender-1',
+          senderName: 'Teacher',
+          subject: 'Message Subject',
+          bodyHtmlSanitized: null,
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          rawPayload: {},
+        },
+      });
+      mashovGetMock.mockResolvedValueOnce({
+        conversationId: 'conv-lazy',
+        subject: 'Message Subject',
+        sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+        isNew: true,
+        hasDrafts: false,
+        hasAttachments: true,
+        preventReply: false,
+        labels: [],
+        messages: [
+          {
+            messageId: 'msg-lazy',
+            conversationId: 'conv-lazy',
+            senderId: 'sender-1',
+            senderName: 'Teacher',
+            subject: 'Message Subject',
+            body: '<p>Hello<script>alert("x")</script></p>',
+            sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+            isNew: true,
+            recipients: [],
+            files: [{ fileId: 'f-1' }],
+            preventReply: false,
+            sentViaEmail: false,
+            sentViaSms: false,
+          },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/mail/conversations/conv-lazy');
+      expect(res.status).toBe(200);
+      expect(res.body.messages[0].bodyHtmlSanitized).toContain('<p>Hello</p>');
+      expect(res.body.messages[0].bodyHtmlSanitized).not.toContain('<script>');
+      expect(res.body.messages[0].hasAttachments).toBe(true);
+      expect(mashovGetMock).toHaveBeenCalledWith(
+        '/api/mail/conversations/conv-lazy',
+        expect.any(Object),
+      );
+    });
+
+    it('PUT /api/v1/mail/conversations/mark-unread proxies raw id array to upstream', async () => {
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-mark-unread',
+          subject: 'Message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isUnread: false,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put('/api/v1/mail/conversations/mark-unread')
+        .send({ conversationIds: ['conv-mark-unread'] });
+      expect(res.status).toBe(200);
+      expect(res.body.updated).toBe(1);
+      expect(mashovPutMock).toHaveBeenCalledWith(
+        '/api/mail/conversations/markAsUnread',
+        ['conv-mark-unread'],
+        expect.any(Object),
+      );
+    });
+
+    it('PUT /api/v1/mail/conversations/archive removes inbox conversation locally', async () => {
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-archive',
+          subject: 'Message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isUnread: false,
+          rawPayload: {},
+        },
+      });
+      await prisma.mailMessage.create({
+        data: {
+          messageId: 'msg-archive',
+          conversationId: 'conv-archive',
+          senderId: 'sender-1',
+          senderName: 'Teacher',
+          subject: 'Message',
+          bodyHtmlSanitized: '<p>Body</p>',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          rawPayload: {},
+        },
+      });
+
+      const archiveRes = await request(app.getHttpServer())
+        .put('/api/v1/mail/conversations/archive')
+        .send({ conversationIds: ['conv-archive'] });
+      expect(archiveRes.status).toBe(200);
+      expect(archiveRes.body.updated).toBe(1);
+      expect(mashovPutMock).toHaveBeenCalledWith(
+        '/api/mail/conversations/move/archive',
+        ['conv-archive'],
+        expect.any(Object),
+      );
+
+      const listRes = await request(app.getHttpServer()).get('/api/v1/mail/conversations');
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.data).toHaveLength(0);
+    });
+  });
+
+  describe('Dashboard API', () => {
+    it('GET /api/v1/dashboard summary unreadConversations uses cached mail count', async () => {
+      await prisma.householdConnection.create({
+        data: {
+          schoolCode: 1234,
+          schoolYear: 2026,
+          username: 'user',
+          encryptedPassword: 'enc',
+          schoolName: 'School',
+          active: true,
+          cachedUnreadCount: 23,
+        },
+      });
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-dashboard-1',
+          subject: 'Message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isUnread: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/dashboard');
+      expect(res.status).toBe(200);
+      expect(res.body.summary.unreadConversations).toBe(23);
     });
   });
 

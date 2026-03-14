@@ -6,6 +6,7 @@ export class InboxPage {
   readonly filterAllButton: Locator;
   readonly filterUnreadButton: Locator;
   readonly conversationList: Locator;
+  readonly bulkActionsBar: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -13,6 +14,7 @@ export class InboxPage {
     this.filterAllButton = page.getByTestId('filter-all');
     this.filterUnreadButton = page.getByTestId('filter-unread');
     this.conversationList = page.getByTestId('conversation-list');
+    this.bulkActionsBar = page.getByTestId('inbox-bulk-actions');
   }
 
   async navigate(): Promise<void> {
@@ -41,5 +43,9 @@ export class InboxPage {
   async clickConversation(conversationId: string): Promise<void> {
     await this.conversationItem(conversationId).click();
     await this.page.waitForLoadState('networkidle');
+  }
+
+  async toggleConversationSelection(conversationId: string): Promise<void> {
+    await this.page.getByTestId(`conversation-select-${conversationId}`).click();
   }
 }

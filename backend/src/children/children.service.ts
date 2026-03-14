@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SessionService } from '../session/session.service';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -13,9 +14,14 @@ const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
 
 @Injectable()
 export class ChildrenService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sessionService: SessionService,
+  ) {}
 
   async getChildren() {
+    await this.sessionService.ensureStudentsAvailable();
+
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
       orderBy: { fullName: 'asc' },
@@ -318,9 +324,17 @@ export class ChildrenService {
   }
 
   private async getStudentOrThrow(studentGuid: string) {
-    const student = await this.prisma.student.findUnique({
+    let student = await this.prisma.student.findUnique({
       where: { studentGuid },
     });
+
+    if (!student) {
+      await this.sessionService.ensureStudentsAvailable();
+      student = await this.prisma.student.findUnique({
+        where: { studentGuid },
+      });
+    }
+
     if (!student) {
       throw new NotFoundException(`Student not found: ${studentGuid}`);
     }

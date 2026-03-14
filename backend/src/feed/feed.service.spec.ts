@@ -133,6 +133,22 @@ describe('FeedService', () => {
       });
     });
 
+    it('requests mail conversations without archived label', async () => {
+      const mailFindMany = jest.fn().mockResolvedValue([]);
+      const service = new FeedService(
+        makeMockPrisma({ mailFindMany }),
+      );
+
+      await service.getFeed(1, 20);
+      expect(mailFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            NOT: { labels: { array_contains: ['archived'] } },
+          },
+        }),
+      );
+    });
+
     it('resolves studentName from student map when studentGuid is provided', async () => {
       const students = [{ studentGuid: 'student-abc', fullName: 'Alice Smith' }];
       const hw = {
@@ -205,6 +221,38 @@ describe('FeedService', () => {
 
       const result = await service.getFeed(1, 20);
       expect(result.data[0].isHandled).toBe(true);
+    });
+
+    it('applies read-state isHandled for mail items using mail_conversation scope', async () => {
+      const conv = {
+        id: 'conv-db-1',
+        conversationId: 'conv-public-1',
+        subject: 'Parent evening',
+        senderNamePreview: 'Principal',
+        sendTime: new Date('2026-03-11T10:00:00Z'),
+        isUnread: true,
+        lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
+      };
+      const readStateFindMany = jest.fn().mockResolvedValue([
+        { itemId: 'conv-public-1', isHandled: true },
+      ]);
+      const service = new FeedService(
+        makeMockPrisma({
+          mailFindMany: jest.fn().mockResolvedValue([conv]),
+          readStateFindMany,
+        }),
+      );
+
+      const result = await service.getFeed(1, 20);
+      expect(result.data[0].isHandled).toBe(true);
+      expect(readStateFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            itemType: 'mail_conversation',
+            itemId: { in: ['conv-public-1'] },
+          }),
+        }),
+      );
     });
 
     it('applies pagination correctly', async () => {

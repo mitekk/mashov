@@ -213,9 +213,38 @@ export class SessionService {
     await this.ensureAuthenticated();
   }
 
-  private async ensureAuthenticated(): Promise<void> {
+  async ensureStudentsAvailable(): Promise<void> {
+    if (process.env.NODE_ENV === "test") {
+      return;
+    }
+
+    const activeStudents = await this.prisma.student.count({
+      where: { isActive: true },
+    });
+    if (activeStudents > 0) {
+      return;
+    }
+
+    this.logger.warn(
+      "No active students found in DB; forcing re-authentication to refresh roster",
+    );
+
+    try {
+      await this.ensureAuthenticated(true);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to refresh student roster: ${msg}`);
+    }
+  }
+
+  private async ensureAuthenticated(force = false): Promise<void> {
     if (this.isAuthenticating && this.authPromise) {
       return this.authPromise;
+    }
+
+    if (force) {
+      this.csrfToken = null;
+      this.sessionCookies = null;
     }
 
     this.isAuthenticating = true;

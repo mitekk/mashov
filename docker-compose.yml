@@ -141,7 +141,8 @@ services:
       PLAYWRIGHT_BACKEND_URL: http://backend:3000
     volumes:
       - ./:/work
-    command: ["sh", "-c", "npm ci && npx playwright test --workers=1"]
+      - /work/node_modules
+    command: ["sh", "-c", "npm ci --include=dev && npx playwright test --workers=1"]
     logging:
       driver: "json-file"
       options:

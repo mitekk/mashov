@@ -38,6 +38,9 @@ export class FeedService {
         orderBy: { eventAt: 'desc' },
       }),
       this.prisma.mailConversation.findMany({
+        where: {
+          NOT: { labels: { array_contains: ['archived'] } },
+        },
         orderBy: { sendTime: 'desc' },
       }),
     ]);
@@ -112,20 +115,46 @@ export class FeedService {
     const offset = (page - 1) * limit;
     const data = allItems.slice(offset, offset + limit);
 
-    const readStateRows = await this.prisma.readState.findMany({
-      where: {
-        itemType: 'feed_item',
-        itemId: { in: data.map((item) => item.id) },
-        scopeType: 'household',
-        scopeId: 'default',
-      },
-      select: { itemId: true, isHandled: true },
-    });
-    const handledMap = new Map(readStateRows.map((row) => [row.itemId, row.isHandled]));
+    const genericFeedIds = data
+      .filter((item) => item.sourceType !== 'mail')
+      .map((item) => item.id);
+    const mailConversationIds = data
+      .filter((item) => item.sourceType === 'mail')
+      .map((item) => item.sourceId);
+
+    const [feedReadStateRows, mailReadStateRows] = await Promise.all([
+      genericFeedIds.length > 0
+        ? this.prisma.readState.findMany({
+          where: {
+            itemType: 'feed_item',
+            itemId: { in: genericFeedIds },
+            scopeType: 'household',
+            scopeId: 'default',
+          },
+          select: { itemId: true, isHandled: true },
+        })
+        : Promise.resolve([]),
+      mailConversationIds.length > 0
+        ? this.prisma.readState.findMany({
+          where: {
+            itemType: 'mail_conversation',
+            itemId: { in: mailConversationIds },
+            scopeType: 'household',
+            scopeId: 'default',
+          },
+          select: { itemId: true, isHandled: true },
+        })
+        : Promise.resolve([]),
+    ]);
+
+    const feedHandledMap = new Map(feedReadStateRows.map((row) => [row.itemId, row.isHandled]));
+    const mailHandledMap = new Map(mailReadStateRows.map((row) => [row.itemId, row.isHandled]));
 
     const withReadState = data.map((item) => ({
       ...item,
-      isHandled: handledMap.get(item.id) ?? false,
+      isHandled: item.sourceType === 'mail'
+        ? (mailHandledMap.get(item.sourceId) ?? false)
+        : (feedHandledMap.get(item.id) ?? false),
     }));
 
     return {
