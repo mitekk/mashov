@@ -12,6 +12,7 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { BucketBadge, Badge } from '@/components/ui/Badge';
 import { useChildBehaviorDetail } from '@/hooks/useChild';
+import { useChildren } from '@/hooks/useChildren';
 import { useMarkHandled } from '@/hooks/useReadState';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { getBucketColor } from '@/lib/behavior';
@@ -26,6 +27,7 @@ interface BehaviorDetailPageProps {
 export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPageProps) {
   const router = useRouter();
   const { data, isLoading, isError, refetch } = useChildBehaviorDetail(studentGuid, behaviorId);
+  const { data: childrenData } = useChildren();
   const listHref = buildChildSectionHref(studentGuid, 'behavior');
   const { markHandled, isPending } = useMarkHandled(
     'behavior',
@@ -37,6 +39,9 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
     ],
   );
   const colors = data ? getBucketColor(data.bucket) : null;
+  const childFullName = childrenData?.data.find(
+    (child) => child.studentGuid === studentGuid,
+  )?.fullName;
 
   const handleBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
@@ -115,6 +120,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
               {data.achvaName}
             </p>
             <div className="flex gap-3 flex-wrap text-xs text-muted-foreground">
+              {childFullName && <span>תלמיד/ה: {childFullName}</span>}
               {data.subject && <span>{data.subject}</span>}
               {data.reporter && <span>{data.reporter}</span>}
               {data.lesson !== null && <span>שיעור {data.lesson}</span>}

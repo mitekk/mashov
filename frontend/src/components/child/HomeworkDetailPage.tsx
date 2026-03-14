@@ -12,6 +12,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { useChildHomeworkDetail } from '@/hooks/useChild';
+import { useChildren } from '@/hooks/useChildren';
 import { useMarkHandled } from '@/hooks/useReadState';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { cn } from '@/lib/utils';
@@ -25,6 +26,7 @@ interface HomeworkDetailPageProps {
 export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPageProps) {
   const router = useRouter();
   const { data, isLoading, isError, refetch } = useChildHomeworkDetail(studentGuid, homeworkId);
+  const { data: childrenData } = useChildren();
   const listHref = buildChildSectionHref(studentGuid, 'homework');
   const { markHandled, isPending } = useMarkHandled(
     'homework',
@@ -35,6 +37,9 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
       ['child-homework-detail', studentGuid, homeworkId],
     ],
   );
+  const childFullName = childrenData?.data.find(
+    (child) => child.studentGuid === studentGuid,
+  )?.fullName;
 
   const handleBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
@@ -108,6 +113,11 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
               <span className="text-xs text-muted-foreground">
                 {formatShortDate(data.lessonDate)}
               </span>
+              {childFullName && (
+                <span className="text-xs text-muted-foreground">
+                  תלמיד/ה: {childFullName}
+                </span>
+              )}
               {data.lesson > 0 && (
                 <span className="text-xs text-muted-foreground">שיעור {data.lesson}</span>
               )}
