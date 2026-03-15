@@ -109,6 +109,10 @@ test.describe('Home page', () => {
   });
 
   test('renders the header and date when the dashboard loads', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: makeEmptyDashboard() });
+    });
+
     const homePage = new HomePage(page);
     await homePage.navigate();
 
@@ -118,6 +122,10 @@ test.describe('Home page', () => {
   });
 
   test('renders the summary strip even with no data', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: makeEmptyDashboard() });
+    });
+
     const homePage = new HomePage(page);
     await homePage.navigate();
 
@@ -125,6 +133,10 @@ test.describe('Home page', () => {
   });
 
   test('renders the latest feed section even when the feed is empty', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: makeEmptyDashboard() });
+    });
+
     const homePage = new HomePage(page);
     await homePage.navigate();
 
@@ -132,6 +144,10 @@ test.describe('Home page', () => {
   });
 
   test('refresh button is visible and clickable', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: makeEmptyDashboard() });
+    });
+
     const homePage = new HomePage(page);
     await homePage.navigate();
 
@@ -342,6 +358,10 @@ test.describe('Home page', () => {
   });
 
   test('page is accessible after a reload', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: makeEmptyDashboard() });
+    });
+
     const homePage = new HomePage(page);
     await homePage.navigate();
     await expect(homePage.homeHeader).toBeVisible();

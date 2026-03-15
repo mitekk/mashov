@@ -799,7 +799,10 @@ test.describe('Inbox page', () => {
     await page.waitForLoadState('networkidle');
 
     // After mark-read, list query should have been invalidated and refetched
-    expect(conversationListFetchCount).toBeGreaterThan(initialFetchCount);
+    await expect.poll(
+      () => conversationListFetchCount,
+      { timeout: 10_000 },
+    ).toBeGreaterThan(initialFetchCount);
   });
 
   test('home feed mail item has archive button that calls archive endpoint', async ({ page }) => {

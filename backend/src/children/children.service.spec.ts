@@ -411,7 +411,11 @@ describe('ChildrenService', () => {
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention');
       expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { studentGuid: TEST_GUID, classification: 'attention' },
+          where: expect.objectContaining({
+            studentGuid: TEST_GUID,
+            classification: 'attention',
+            isArchived: false,
+          }),
         }),
       );
       expect(result.data[0].bucket).toBe('attention');

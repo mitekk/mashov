@@ -228,7 +228,6 @@ test.describe('Child workspace page', () => {
   test('homework list shows Active tab by default and filters out archived items', async ({ page }) => {
     await stubWorkspaceRoutes(page);
 
-    const homeworkFindMany = jest.fn();
     await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
       const url = new URL(route.request().url());
       const status = url.searchParams.get('status');
@@ -252,7 +251,6 @@ test.describe('Child workspace page', () => {
           }),
         });
       }
-      void homeworkFindMany;
     });
 
     const workspace = new ChildWorkspacePage(page);
