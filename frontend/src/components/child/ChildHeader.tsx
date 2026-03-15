@@ -7,7 +7,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from '@/components/ui/Select';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 
@@ -39,9 +38,6 @@ export function ChildHeader({
     <header className="card-base px-4 py-5">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            {student.fullName}
-          </h1>
           <Select
             value={selectedChildGuid}
             onValueChange={onChildChange}
@@ -52,21 +48,25 @@ export function ChildHeader({
               id="child-header-selector"
               aria-label="בחר ילד"
               data-testid="child-header-selector"
-              className="tap-target mt-2 h-10 max-w-[16rem] border-border py-1.5 text-sm font-medium"
+              className="tap-target h-auto w-auto max-w-xs border-transparent bg-transparent px-0 shadow-none hover:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 gap-2 items-center"
             >
-              <SelectValue placeholder="בחר ילד" className="truncate" />
+              <span className="text-2xl font-semibold tracking-tight text-foreground leading-tight">
+                {student.fullName}
+              </span>
             </SelectTrigger>
             <SelectContent align="start" className="max-h-72">
-              {childOptions.map((child) => (
-                <SelectItem
-                  key={child.studentGuid}
-                  value={child.studentGuid}
-                  className="text-base"
-                >
-                  {child.fullName}
-                  {child.isActive ? '' : ' (לא פעיל)'}
-                </SelectItem>
-              ))}
+              <div className="space-y-1">
+                {childOptions.map((child) => (
+                  <SelectItem
+                    key={child.studentGuid}
+                    value={child.studentGuid}
+                    className="text-base"
+                  >
+                    {child.fullName}
+                    {child.isActive ? '' : ' (לא פעיל)'}
+                  </SelectItem>
+                ))}
+              </div>
             </SelectContent>
           </Select>
           <p className="text-sm text-muted-foreground mt-0.5">
