@@ -13,6 +13,7 @@ import {
   useArchive,
   useConversations,
   useMailSummary,
+  useMarkRead,
   useMarkUnread,
   useUnarchive,
 } from '@/hooks/useMail';
@@ -45,6 +46,7 @@ function InboxPageContent() {
     isFetchingNextPage,
     fetchNextPage,
   } = useConversations(activeFilter);
+  const { mutate: markRead, isPending: isMarkReadPending } = useMarkRead();
   const { mutate: markUnread, isPending: isMarkUnreadPending } = useMarkUnread();
   const { mutate: archive, isPending: isArchivePending } = useArchive();
   const { mutate: unarchive, isPending: isUnarchivePending } = useUnarchive();
@@ -53,7 +55,10 @@ function InboxPageContent() {
     () => data?.pages.flatMap((page) => page.data) ?? [],
     [data],
   );
-  const isBulkActionPending = isMarkUnreadPending || isArchivePending || isUnarchivePending;
+  const isBulkActionPending = isMarkReadPending
+    || isMarkUnreadPending
+    || isArchivePending
+    || isUnarchivePending;
   const hasSelection = selectedConversationIds.length > 0;
   const selectedConversations = useMemo(
     () => conversations.filter((conversation) => selectedConversationIds.includes(conversation.conversationId)),
@@ -99,6 +104,15 @@ function InboxPageContent() {
 
   const handleClearSelection = () => {
     setSelectedConversationIds([]);
+  };
+
+  const handleMarkReadSelected = () => {
+    if (!hasSelection || isBulkActionPending || selectedNonArchivedIds.length === 0) return;
+    markRead(selectedNonArchivedIds, {
+      onSuccess: () => {
+        setSelectedConversationIds([]);
+      },
+    });
   };
 
   const handleMarkUnreadSelected = () => {
@@ -213,7 +227,18 @@ function InboxPageContent() {
           )}
           {hasNonArchivedSelection && (
             <>
-              {activeFilter !== 'new' && (
+              {activeFilter === 'new' ? (
+                <button
+                  type="button"
+                  data-testid="bulk-mark-read"
+                  onClick={handleMarkReadSelected}
+                  disabled={isBulkActionPending}
+                  className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                >
+                  <Mail className="h-3.5 w-3.5" />
+                  סמן כנקרא
+                </button>
+              ) : (
                 <button
                   type="button"
                   data-testid="bulk-mark-unread"

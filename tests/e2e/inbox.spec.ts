@@ -274,13 +274,10 @@ test.describe('Inbox page', () => {
     await inboxPage.navigate();
     await inboxPage.toggleConversationSelection('conv-mark-read-1');
     await expect(inboxPage.bulkActionsBar).toBeVisible();
-
-    const markReadButton = page.getByTestId('bulk-mark-read');
-    if (await markReadButton.isVisible()) {
-      await markReadButton.click();
-      await expect.poll(() => markReadRequestBody).not.toBeNull();
-      expect(markReadRequestBody).toEqual({ conversationIds: ['conv-mark-read-1'] });
-    }
+    await expect(page.getByTestId('bulk-mark-read')).toBeVisible();
+    await page.getByTestId('bulk-mark-read').click();
+    await expect.poll(() => markReadRequestBody).not.toBeNull();
+    expect(markReadRequestBody).toEqual({ conversationIds: ['conv-mark-read-1'] });
   });
 
   test('bulk mark-unread action sends selected conversation ids', async ({ page }) => {
@@ -370,7 +367,52 @@ test.describe('Inbox page', () => {
     await inboxPage.toggleConversationSelection('conv-no-bulk-unread-1');
 
     await expect(page.getByTestId('bulk-mark-unread')).toHaveCount(0);
+    await expect(page.getByTestId('bulk-mark-read')).toBeVisible();
     await expect(page.getByTestId('bulk-archive')).toBeVisible();
+  });
+
+  test('bulk mark-read action is hidden in all and archived tabs', async ({ page }) => {
+    await page.route('**/api/v1/mail/summary', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          newConversations: 1,
+          recentConversations: [],
+          lastSyncAt: null,
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            makeConversation({
+              conversationId: 'conv-hide-mark-read-1',
+              subject: 'Filter scoped action',
+              isNew: true,
+            }),
+          ],
+          pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+    await inboxPage.toggleConversationSelection('conv-hide-mark-read-1');
+    await expect(page.getByTestId('bulk-mark-read')).toBeVisible();
+
+    await inboxPage.clickFilterAll();
+    await inboxPage.toggleConversationSelection('conv-hide-mark-read-1');
+    await expect(page.getByTestId('bulk-mark-read')).toHaveCount(0);
+
+    await inboxPage.clickFilterArchived();
+    await inboxPage.toggleConversationSelection('conv-hide-mark-read-1');
+    await expect(page.getByTestId('bulk-mark-read')).toHaveCount(0);
   });
 
   test('bulk archive action removes conversation from inbox list after refetch', async ({ page }) => {

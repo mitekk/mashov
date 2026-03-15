@@ -48,7 +48,11 @@ export function FeedItem({ item }: FeedItemProps) {
 
   const markNewKeys = isMailItem
     ? [['dashboard'], ['conversations'], ['conversation', item.sourceId]]
-    : [['dashboard']];
+    : [
+        ['dashboard'],
+        ...(item.studentGuid ? [['child-behavior', item.studentGuid]] : []),
+        ...(item.studentGuid ? [['child-homework', item.studentGuid]] : []),
+      ];
 
   const { mutate: mutateMarkNew, isPending: isMarkNewPending } = useMarkNew({
     type: isMailItem ? 'conversation' : (item.sourceType === 'homework' ? 'homework' : 'behavior'),
@@ -57,7 +61,11 @@ export function FeedItem({ item }: FeedItemProps) {
     invalidateKeys: markNewKeys,
   });
 
-  const archiveInvalidateKeys = [['dashboard']];
+  const archiveInvalidateKeys = [
+    ['dashboard'],
+    ...(item.studentGuid ? [['child-behavior', item.studentGuid]] : []),
+    ...(item.studentGuid ? [['child-homework', item.studentGuid]] : []),
+  ];
   const { mutate: mutateArchive, isPending: isArchivePending } = useArchive({
     type: item.sourceType === 'homework' ? 'homework' : 'behavior',
     id: item.id,

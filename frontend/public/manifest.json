@@ -1,0 +1,12 @@
+{
+  "name": "מרכז הורים",
+  "short_name": "מרכז הורים",
+  "description": "מרכז פיקוד הורים — ממשק מאוחד לנתוני בית הספר",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "/home",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f85bb"
+}

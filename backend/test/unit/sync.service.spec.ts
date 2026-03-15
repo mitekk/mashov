@@ -14,7 +14,16 @@ import { DailyBehaveTask } from '../../src/sync/tasks/daily-behave.task';
 import { OutBehaveTask } from '../../src/sync/tasks/out-behave.task';
 
 const createMockTask = () => ({
-  execute: jest.fn().mockResolvedValue(undefined),
+  execute: jest.fn().mockResolvedValue({
+    status: 'success',
+    summary: {
+      fetchedCount: 0,
+      createdCount: 0,
+      updatedCount: 0,
+      failedCount: 0,
+    },
+    errorMessages: [],
+  }),
 });
 
 describe('SyncService', () => {
@@ -88,8 +97,16 @@ describe('SyncService', () => {
     it('does not reject when one task throws an error', async () => {
       notificationsTask.execute.mockRejectedValueOnce(new Error('Upstream unavailable'));
 
-      // Should not throw
-      await expect(service.refreshAll()).resolves.toBeUndefined();
+      const result = await service.refreshAll();
+      expect(result.status).toBe('partial');
+      expect(result.tasks).toHaveLength(12);
+      expect(result.tasks.find((task) => task.task === 'notifications')).toMatchObject({
+        status: 'failed',
+        errorMessages: ['Upstream unavailable'],
+      });
+      expect(result.tasks.find((task) => task.task === 'mailCounts')).toMatchObject({
+        status: 'success',
+      });
     });
 
     it('continues running remaining tasks even when one fails', async () => {
@@ -118,7 +135,13 @@ describe('SyncService', () => {
       dailyBehaveTask.execute.mockRejectedValue(error);
       outBehaveTask.execute.mockRejectedValue(error);
 
-      await expect(service.refreshAll()).resolves.toBeUndefined();
+      const result = await service.refreshAll();
+      expect(result.status).toBe('partial');
+      expect(result.tasks).toHaveLength(12);
+      result.tasks.forEach((task) => {
+        expect(task.status).toBe('failed');
+        expect(task.errorMessages).toContain('Network unavailable');
+      });
     });
   });
 });

@@ -15,11 +15,10 @@ interface ChildCardProps {
 }
 
 export function ChildCard({ child }: ChildCardProps) {
-  const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
+  const { setSelectedChildGuid } = useSelectedChild();
   const safeHref = getPhase1HrefOrNull(
     buildChildSectionHref(child.studentGuid, 'homework'),
   );
-  const isSelected = selectedChildGuid === child.studentGuid;
 
   const content = (
     <>
@@ -64,12 +63,7 @@ export function ChildCard({ child }: ChildCardProps) {
     </>
   );
 
-  const className = cn(
-    'card-base tap-target flex items-center gap-3 p-4 transition-colors',
-    isSelected
-      ? 'border-primary shadow-[0_0_0_1px_hsl(var(--primary))]'
-      : 'border-border',
-  );
+  const className = 'card-base tap-target flex items-center gap-3 border-border p-4 transition-colors';
 
   if (!safeHref) {
     return (

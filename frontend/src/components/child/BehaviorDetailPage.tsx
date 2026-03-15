@@ -94,7 +94,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
                 <button
                   type="button"
                   data-testid={`behavior-detail-toggle-new-${behaviorId}`}
-                  onClick={() => mutateMarkNew(!data.isNew)}
+                  onClick={() => mutateMarkNew(!data.isNew, { onSuccess: () => router.back() })}
                   disabled={isMarkNewPending}
                   aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כלא נקרא'}
                   className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
@@ -115,7 +115,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
               <button
                 type="button"
                 data-testid={`behavior-detail-archive-${behaviorId}`}
-                onClick={() => mutateArchive(!data.isArchived)}
+                onClick={() => mutateArchive(!data.isArchived, { onSuccess: () => router.back() })}
                 disabled={isArchivePending}
                 aria-label={data.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
                 className={cn(

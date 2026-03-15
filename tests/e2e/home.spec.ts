@@ -144,14 +144,14 @@ test.describe('Home page', () => {
     await expect(homePage.latestFeed).toBeVisible();
   });
 
-  test('latest feed unread filter shows only isNew=true items', async ({ page }) => {
+  test('latest feed tabs apply unread/archived/all contract', async ({ page }) => {
     await page.route('**/api/v1/dashboard', async (route) => {
       await route.fulfill({
         json: makeEmptyDashboard({
           feed: [
-            makeFeedItem({ id: 'feed-unread-1', isNew: true }),
-            makeFeedItem({ id: 'feed-read-1', isNew: false }),
-            makeFeedItem({ id: 'feed-unread-2', isNew: true }),
+            makeFeedItem({ id: 'feed-unread-1', isNew: true, isArchived: false }),
+            makeFeedItem({ id: 'feed-read-1', isNew: false, isArchived: false }),
+            makeFeedItem({ id: 'feed-archived-1', isNew: false, isArchived: true }),
           ],
         }),
       });
@@ -160,21 +160,27 @@ test.describe('Home page', () => {
     const homePage = new HomePage(page);
     await homePage.navigate();
 
-    await expect(
-      homePage.latestFeed.locator('[data-testid="home-feed-filter-unread"] + [data-testid="home-feed-filter-all"]'),
-    ).toHaveCount(1);
+    await expect(page.getByTestId('home-feed-filter-unread')).toBeVisible();
+    await expect(page.getByTestId('home-feed-filter-archived')).toBeVisible();
+    await expect(page.getByTestId('home-feed-filter-all')).toBeVisible();
 
     await expect(homePage.feedItem('feed-unread-1')).toBeVisible();
-    await expect(homePage.feedItem('feed-unread-2')).toBeVisible();
     await expect(homePage.feedItem('feed-read-1')).toHaveCount(0);
+    await expect(homePage.feedItem('feed-archived-1')).toHaveCount(0);
 
     await homePage.clickFeedFilterAll();
     await expect(homePage.feedItem('feed-read-1')).toBeVisible();
-
     await expect(homePage.feedItem('feed-unread-1')).toBeVisible();
-    await expect(homePage.feedItem('feed-unread-2')).toBeVisible();
+    await expect(homePage.feedItem('feed-archived-1')).toHaveCount(0);
+
+    await homePage.clickFeedFilterArchived();
+    await expect(homePage.feedItem('feed-archived-1')).toBeVisible();
+    await expect(homePage.feedItem('feed-unread-1')).toHaveCount(0);
+    await expect(homePage.feedItem('feed-read-1')).toHaveCount(0);
+
     await homePage.clickFeedFilterUnread();
     await expect(homePage.feedItem('feed-read-1')).toHaveCount(0);
+    await expect(homePage.feedItem('feed-archived-1')).toHaveCount(0);
   });
 
   test('latest feed unread filter shows unread empty state when all items are read', async ({ page }) => {
@@ -488,5 +494,67 @@ test.describe('Home page', () => {
 
     await expect(homePage.homeHeader).toBeVisible();
     await expect(homePage.summaryStrip).toBeVisible();
+  });
+
+  test('home quick cards do not render selected-highlight border styles', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          summary: {
+            newConversations: 0,
+            recentHomeworkCount: 1,
+            recentBehaviorCount: 1,
+            childrenCount: 2,
+          },
+          children: [
+            {
+              studentGuid: 'student-guid-1',
+              privateName: 'First',
+              familyName: 'Kid',
+              fullName: 'First Kid',
+              classCode: 'א',
+              classNum: 1,
+              recentHomeworkCount: 1,
+              recentBehaviorCount: 0,
+              latestUpdateAt: new Date().toISOString(),
+              oneLineStatus: 'status',
+            },
+            {
+              studentGuid: 'student-guid-2',
+              privateName: 'Second',
+              familyName: 'Kid',
+              fullName: 'Second Kid',
+              classCode: 'ב',
+              classNum: 2,
+              recentHomeworkCount: 0,
+              recentBehaviorCount: 1,
+              latestUpdateAt: new Date().toISOString(),
+              oneLineStatus: 'status',
+            },
+          ],
+        }),
+      });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+
+    const firstCard = page.getByTestId('child-card-student-guid-1');
+    const secondCard = page.getByTestId('child-card-student-guid-2');
+    await expect(firstCard).toBeVisible();
+    await expect(secondCard).toBeVisible();
+    await expect(firstCard).not.toHaveClass(/border-primary|shadow-\[0_0_0_1px_hsl\(var\(--primary\)\)\]/);
+    await expect(secondCard).not.toHaveClass(/border-primary|shadow-\[0_0_0_1px_hsl\(var\(--primary\)\)\]/);
+  });
+
+  test('manifest.json is served with required app metadata', async ({ page }) => {
+    const response = await page.request.get('/manifest.json');
+    expect(response.ok()).toBe(true);
+
+    const manifest = await response.json();
+    expect(manifest.name).toBe('מרכז הורים');
+    expect(manifest.start_url).toBe('/home');
+    expect(manifest.display).toBe('standalone');
+    expect(manifest.dir).toBe('rtl');
   });
 });

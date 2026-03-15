@@ -125,7 +125,6 @@ export default function HomePage() {
                 <ChildQuickCard
                   key={child.studentGuid}
                   child={child}
-                  isSelected={selectedChild?.studentGuid === child.studentGuid}
                 />
               ))}
             </div>

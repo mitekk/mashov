@@ -110,6 +110,57 @@ test.describe('Children page', () => {
     const countAfterReload = await childrenPage.allChildCards().count();
     expect(countAfterReload).toBe(initialCount);
   });
+
+  test('children list cards do not render selected-highlight border styles', async ({ page }) => {
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              studentGuid: 'student-no-highlight-1',
+              privateName: 'One',
+              familyName: 'Kid',
+              fullName: 'One Kid',
+              classCode: 'א',
+              classNum: 1,
+              gender: 'M',
+              isActive: true,
+              recentHomeworkCount: 0,
+              recentBehaviorCount: 0,
+              subjectCount: 0,
+              latestUpdateAt: new Date().toISOString(),
+            },
+            {
+              studentGuid: 'student-no-highlight-2',
+              privateName: 'Two',
+              familyName: 'Kid',
+              fullName: 'Two Kid',
+              classCode: 'ב',
+              classNum: 2,
+              gender: 'F',
+              isActive: true,
+              recentHomeworkCount: 0,
+              recentBehaviorCount: 0,
+              subjectCount: 0,
+              latestUpdateAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      });
+    });
+
+    const childrenPage = new ChildrenPage(page);
+    await childrenPage.navigate();
+
+    const firstCard = page.getByTestId('child-list-card-student-no-highlight-1');
+    const secondCard = page.getByTestId('child-list-card-student-no-highlight-2');
+    await expect(firstCard).toBeVisible();
+    await expect(secondCard).toBeVisible();
+    await expect(firstCard).not.toHaveClass(/border-primary|shadow-\[0_0_0_1px_hsl\(var\(--primary\)\)\]/);
+    await expect(secondCard).not.toHaveClass(/border-primary|shadow-\[0_0_0_1px_hsl\(var\(--primary\)\)\]/);
+  });
 });
 
 test.describe('Child workspace page', () => {
@@ -400,6 +451,103 @@ test.describe('Child workspace page', () => {
     expect(archiveRequestBody).toMatchObject({ isArchived: true });
   });
 
+  test('explicit homework detail action navigates back to workspace list', async ({ page }) => {
+    let archiveRequestBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              studentGuid: STUDENT_GUID,
+              privateName: 'Test',
+              familyName: 'Student',
+              fullName: 'Test Student',
+              classCode: 'א',
+              classNum: 1,
+              gender: 'M',
+              isActive: true,
+              recentHomeworkCount: 1,
+              recentBehaviorCount: 1,
+              subjectCount: 1,
+              latestUpdateAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/hw-1`)) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(makeHomeworkItem({ isNew: false, isArchived: false })),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [makeHomeworkItem({ id: 'hw-1', isNew: false, isArchived: false })],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework/hw-1/archive`, async (route) => {
+      archiveRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(makeHomeworkItem({ id: 'hw-1', isNew: false, isArchived: true })),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'homework', 'all');
+    await page.getByTestId('homework-item-link-hw-1').click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
+
+    await page.getByTestId('homework-detail-archive-hw-1').click();
+    await expect.poll(() => archiveRequestBody).not.toBeNull();
+    await expect(page).toHaveURL(
+      `/children/${STUDENT_GUID}?section=homework&behavior=all`,
+    );
+  });
+
+  test('opening homework detail directly does not auto-navigate away after auto mark-read', async ({ page }) => {
+    let isNewRequestBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework/hw-1`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(makeHomeworkItem({ isNew: true, isArchived: false })),
+      });
+    });
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework/hw-1/is-new`, async (route) => {
+      isNewRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(makeHomeworkItem({ isNew: false, isArchived: false })),
+      });
+    });
+
+    await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
+    await page.waitForLoadState('networkidle');
+    await expect.poll(() => isNewRequestBody).not.toBeNull();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
+  });
+
   test('unarchive action on homework restores isNew=true', async ({ page }) => {
     let archiveRequestBody: unknown = null;
 
@@ -666,5 +814,102 @@ test.describe('Child workspace page', () => {
     await archiveButton.click();
     await expect.poll(() => archiveRequestBody).not.toBeNull();
     expect(archiveRequestBody).toMatchObject({ isArchived: true });
+  });
+
+  test('explicit behavior detail action navigates back to workspace list', async ({ page }) => {
+    let archiveRequestBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              studentGuid: STUDENT_GUID,
+              privateName: 'Test',
+              familyName: 'Student',
+              fullName: 'Test Student',
+              classCode: 'א',
+              classNum: 1,
+              gender: 'M',
+              isActive: true,
+              recentHomeworkCount: 1,
+              recentBehaviorCount: 1,
+              subjectCount: 1,
+              latestUpdateAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith(`/children/${STUDENT_GUID}/behavior/beh-1`)) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(makeBehaviorItem({ isNew: false, isArchived: false })),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [makeBehaviorItem({ id: 'beh-1', isNew: false, isArchived: false })],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior/beh-1/archive`, async (route) => {
+      archiveRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(makeBehaviorItem({ id: 'beh-1', isNew: false, isArchived: true })),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'behavior', 'all');
+    await page.getByTestId('behavior-item-link-beh-1').click();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior/beh-1`);
+
+    await page.getByTestId('behavior-detail-archive-beh-1').click();
+    await expect.poll(() => archiveRequestBody).not.toBeNull();
+    await expect(page).toHaveURL(
+      `/children/${STUDENT_GUID}?section=behavior&behavior=all`,
+    );
+  });
+
+  test('opening behavior detail directly does not auto-navigate away after auto mark-read', async ({ page }) => {
+    let isNewRequestBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior/beh-1`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(makeBehaviorItem({ isNew: true, isArchived: false })),
+      });
+    });
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior/beh-1/is-new`, async (route) => {
+      isNewRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(makeBehaviorItem({ isNew: false, isArchived: false })),
+      });
+    });
+
+    await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
+    await page.waitForLoadState('networkidle');
+    await expect.poll(() => isNewRequestBody).not.toBeNull();
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior/beh-1`);
   });
 });

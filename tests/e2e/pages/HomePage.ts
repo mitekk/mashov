@@ -8,6 +8,7 @@ export class HomePage {
   readonly summaryStrip: Locator;
   readonly latestFeed: Locator;
   readonly feedFilterAllButton: Locator;
+  readonly feedFilterArchivedButton: Locator;
   readonly feedFilterUnreadButton: Locator;
 
   constructor(page: Page) {
@@ -18,6 +19,7 @@ export class HomePage {
     this.summaryStrip = page.getByTestId('summary-strip');
     this.latestFeed = page.getByTestId('latest-feed');
     this.feedFilterAllButton = page.getByTestId('home-feed-filter-all');
+    this.feedFilterArchivedButton = page.getByTestId('home-feed-filter-archived');
     this.feedFilterUnreadButton = page.getByTestId('home-feed-filter-unread');
   }
 
@@ -32,6 +34,10 @@ export class HomePage {
 
   async clickFeedFilterAll(): Promise<void> {
     await this.feedFilterAllButton.click();
+  }
+
+  async clickFeedFilterArchived(): Promise<void> {
+    await this.feedFilterArchivedButton.click();
   }
 
   async clickFeedFilterUnread(): Promise<void> {

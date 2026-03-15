@@ -17,3 +17,5 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0007](0007-component-architecture.md) | Component Architecture — Feature-Based Folder Structure with Shared UI Primitives | Accepted | Frontend agent | 2026-03-11 |
 | [ADR-0008](0008-refresh-button-lifecycle-local-state.md) | Manual Refresh Lifecycle — Blocking Sync API + Awaited Query Invalidation | Accepted | Frontend + backend agent | 2026-03-15 |
 | [ADR-0009](0009-home-feed-read-unread-filter.md) | Home Feed Read/Unread Filter — Client-Side Toggle over Server-Side Query Param | Accepted | Frontend agent | 2026-03-15 |
+| [ADR-0010](0010-ui-interaction-patterns.md) | UI Interaction Patterns — Bulk Actions, Feed Filtering, Selection Highlight, and Post-Action Navigation | Accepted | Frontend agent | 2026-03-15 |
+| [ADR-0011](0011-child-card-badge-unread-count.md) | Child Card Badge Counts — Unread + Non-Archived Only, No Date Window | Proposed | Frontend + backend agent | 2026-03-15 |

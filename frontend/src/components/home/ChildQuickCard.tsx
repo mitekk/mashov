@@ -12,10 +12,9 @@ import { cn } from '@/lib/utils';
 
 interface ChildQuickCardProps {
   child: DashboardChildCard;
-  isSelected?: boolean;
 }
 
-export function ChildQuickCard({ child, isSelected = false }: ChildQuickCardProps) {
+export function ChildQuickCard({ child }: ChildQuickCardProps) {
   const { setSelectedChildGuid } = useSelectedChild();
   const safeHref = getPhase1HrefOrNull(
     buildChildSectionHref(child.studentGuid, 'homework'),
@@ -64,12 +63,7 @@ export function ChildQuickCard({ child, isSelected = false }: ChildQuickCardProp
     </>
   );
 
-  const className = cn(
-    'card-base tap-target flex min-w-[176px] flex-shrink-0 flex-col gap-2.5 p-4 transition-colors',
-    isSelected
-      ? 'border-primary shadow-[0_0_0_1px_hsl(var(--primary))]'
-      : 'border-border',
-  );
+  const className = 'card-base tap-target flex min-w-[176px] flex-shrink-0 flex-col gap-2.5 border-border p-4 transition-colors';
 
   if (!safeHref) {
     return (

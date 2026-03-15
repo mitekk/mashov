@@ -12,14 +12,16 @@ interface LatestFeedProps {
 }
 
 const PAGE_SIZE = 10;
-type FeedFilter = 'all' | 'unread';
+type FeedFilter = 'new' | 'archived' | 'all';
 
 export function LatestFeed({ items }: LatestFeedProps) {
-  const [activeFilter, setActiveFilter] = useState<FeedFilter>('unread');
+  const [activeFilter, setActiveFilter] = useState<FeedFilter>('new');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const filteredItems = activeFilter === 'unread'
-    ? items.filter((item) => item.isNew)
-    : items;
+  const filteredItems = items.filter((item) => {
+    if (activeFilter === 'new') return item.isNew && !item.isArchived;
+    if (activeFilter === 'archived') return item.isArchived;
+    return !item.isArchived;
+  });
   const visibleItems = filteredItems.slice(0, visibleCount);
   const hasMore = visibleCount < filteredItems.length;
   const isEmpty = filteredItems.length === 0;
@@ -38,15 +40,27 @@ export function LatestFeed({ items }: LatestFeedProps) {
         <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm">
           <button
             data-testid="home-feed-filter-unread"
-            onClick={() => handleFilterChange('unread')}
+            onClick={() => handleFilterChange('new')}
             className={cn(
               'px-3 py-1.5 transition-colors',
-              activeFilter === 'unread'
+              activeFilter === 'new'
                 ? 'bg-primary text-primary-foreground'
                 : 'text-muted-foreground hover:bg-accent',
             )}
           >
             לא נקרא
+          </button>
+          <button
+            data-testid="home-feed-filter-archived"
+            onClick={() => handleFilterChange('archived')}
+            className={cn(
+              'px-3 py-1.5 transition-colors',
+              activeFilter === 'archived'
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent',
+            )}
+          >
+            ארכיון
           </button>
           <button
             data-testid="home-feed-filter-all"
@@ -65,8 +79,20 @@ export function LatestFeed({ items }: LatestFeedProps) {
       {isEmpty ? (
         <EmptyState
           icon={<Inbox className="w-8 h-8" />}
-          title={activeFilter === 'unread' ? 'אין עדכונים שלא נקראו' : 'אין עדכונים חדשים'}
-          subtitle={activeFilter === 'unread' ? 'נסה לעבור לכל הפריטים' : 'כל הפריטים טופלו'}
+          title={
+            activeFilter === 'new'
+              ? 'אין עדכונים שלא נקראו'
+              : activeFilter === 'archived'
+                ? 'אין פריטים בארכיון'
+                : 'אין עדכונים פעילים'
+          }
+          subtitle={
+            activeFilter === 'new'
+              ? 'נסה לעבור לכל הפריטים'
+              : activeFilter === 'archived'
+                ? 'לא נמצאו פריטים בארכיון'
+                : 'כל הפריטים טופלו'
+          }
         />
       ) : (
         <div className="section-stack">

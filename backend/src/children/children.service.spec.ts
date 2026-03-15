@@ -729,4 +729,163 @@ describe('ChildrenService', () => {
       expect(notices.data[0].expirationDate).toBe('2026-03-20T00:00:00.000Z');
     });
   });
+
+  describe('student fallback + attachment downloads', () => {
+    it('retries student lookup after ensureStudentsAvailable when student is initially missing', async () => {
+      const studentFindUnique = jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(makeStudent());
+      const ensureStudentsAvailable = jest.fn().mockResolvedValue(undefined);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          studentFindUnique,
+        }),
+        makeMockSession({ ensureStudentsAvailable }),
+        makeMockMashovClient(),
+      );
+
+      const result = await service.getChildWorkspace(TEST_GUID);
+      expect(result.student.studentGuid).toBe(TEST_GUID);
+      expect(ensureStudentsAvailable).toHaveBeenCalledTimes(1);
+      expect(studentFindUnique).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws NotFoundException after fallback student lookup still fails', async () => {
+      const ensureStudentsAvailable = jest.fn().mockResolvedValue(undefined);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          studentFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession({ ensureStudentsAvailable }),
+        makeMockMashovClient(),
+      );
+
+      await expect(service.getSubjects(TEST_GUID)).rejects.toThrow(NotFoundException);
+      expect(ensureStudentsAvailable).toHaveBeenCalledTimes(1);
+    });
+
+    it('downloads homework attachment via candidate fallback and decodes file name', async () => {
+      const getResponse = jest.fn().mockImplementation(async (path: string) => {
+        if (path === `/api/students/${TEST_GUID}/files/hw-file-1/homework%20file.pdf`) {
+          return {
+            data: new Uint8Array([1, 2, 3]).buffer,
+            headers: {
+              'content-type': 'application/pdf',
+              'content-disposition': "attachment; filename*=UTF-8''homework%20file.pdf",
+            },
+          };
+        }
+
+        throw new Error('not found');
+      });
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({
+              files: [{ fileId: 'hw-file-1', fileName: 'homework file.pdf' }],
+            }),
+          ),
+        }),
+        makeMockSession(),
+        makeMockMashovClient({ getResponse }),
+      );
+
+      const result = await service.downloadHomeworkAttachment(TEST_GUID, 'hw-1', 'hw-file-1');
+      expect(getResponse).toHaveBeenCalledWith(
+        `/api/students/${TEST_GUID}/studyFiles/hw-file-1/homework%20file.pdf`,
+        expect.any(Object),
+      );
+      expect(getResponse).toHaveBeenCalledWith(
+        `/api/students/${TEST_GUID}/files/hw-file-1/homework%20file.pdf`,
+        expect.any(Object),
+      );
+      expect(result.contentType).toBe('application/pdf');
+      expect(result.fileName).toBe('homework file.pdf');
+      expect(result.buffer.equals(Buffer.from([1, 2, 3]))).toBe(true);
+    });
+
+    it('throws NotFoundException when homework attachment id is missing from payload', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({
+              files: [{ fileId: 'hw-file-x', fileName: 'other.pdf' }],
+            }),
+          ),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      await expect(
+        service.downloadHomeworkAttachment(TEST_GUID, 'hw-1', 'hw-file-1'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('downloads behavior attachment via lesson endpoint fallback with string lessonId metadata', async () => {
+      const getResponse = jest.fn().mockImplementation(async (path: string) => {
+        if (path === '/api/lessons/7/files/beh-file-1/behavior.pdf') {
+          return {
+            data: new Uint8Array([7, 8]).buffer,
+            headers: {
+              'content-type': 'application/pdf',
+              'content-disposition': 'attachment; filename="behavior.pdf"',
+            },
+          };
+        }
+
+        throw new Error('not found');
+      });
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({
+              lessonId: 9,
+              rawPayload: {
+                attachments: [
+                  {
+                    id: 'beh-file-1',
+                    name: 'behavior.pdf',
+                    url: 'files/beh-file-1',
+                    lessonId: '7',
+                  },
+                ],
+              },
+            }),
+          ),
+        }),
+        makeMockSession(),
+        makeMockMashovClient({ getResponse }),
+      );
+
+      const result = await service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1');
+      expect(getResponse).toHaveBeenCalledWith(
+        '/api/lessons/7/files/beh-file-1/behavior.pdf',
+        expect.any(Object),
+      );
+      expect(result.fileName).toBe('behavior.pdf');
+      expect(result.buffer.equals(Buffer.from([7, 8]))).toBe(true);
+    });
+
+    it('throws NotFoundException when behavior attachment is missing', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({
+              rawPayload: {
+                files: [{ fileId: 'different-file', fileName: 'other.pdf' }],
+              },
+            }),
+          ),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      await expect(
+        service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
 });
