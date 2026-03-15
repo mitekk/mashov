@@ -1,7 +1,8 @@
-import { Controller, Get, Put, Param, Query, Body } from '@nestjs/common';
+import { Controller, Get, Put, Param, Query, Body, Res, StreamableFile } from '@nestjs/common';
 import { IsInt, IsOptional, IsIn, IsBoolean, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ChildrenService } from './children.service';
+import type { Response } from 'express';
 
 class PaginationQueryDto {
   @IsOptional()
@@ -77,6 +78,32 @@ export class ChildrenController {
     return this.childrenService.getHomeworkDetail(studentGuid, homeworkId);
   }
 
+  @Get(':studentGuid/homework/:homeworkId/files/:fileId')
+  async downloadHomeworkFile(
+    @Param('studentGuid') studentGuid: string,
+    @Param('homeworkId') homeworkId: string,
+    @Param('fileId') fileId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const file = await this.childrenService.downloadHomeworkAttachment(
+      studentGuid,
+      homeworkId,
+      fileId,
+    );
+
+    response.setHeader(
+      'Content-Type',
+      file.contentType ?? 'application/octet-stream',
+    );
+    response.setHeader(
+      'Content-Disposition',
+      file.contentDisposition
+        ?? `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName ?? fileId)}`,
+    );
+
+    return new StreamableFile(file.buffer);
+  }
+
   @Put(':studentGuid/homework/:homeworkId/is-new')
   async setHomeworkIsNew(
     @Param('studentGuid') studentGuid: string,
@@ -113,6 +140,32 @@ export class ChildrenController {
     @Param('behaviorId') behaviorId: string,
   ) {
     return this.childrenService.getBehaviorDetail(studentGuid, behaviorId);
+  }
+
+  @Get(':studentGuid/behavior/:behaviorId/files/:fileId')
+  async downloadBehaviorFile(
+    @Param('studentGuid') studentGuid: string,
+    @Param('behaviorId') behaviorId: string,
+    @Param('fileId') fileId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const file = await this.childrenService.downloadBehaviorAttachment(
+      studentGuid,
+      behaviorId,
+      fileId,
+    );
+
+    response.setHeader(
+      'Content-Type',
+      file.contentType ?? 'application/octet-stream',
+    );
+    response.setHeader(
+      'Content-Disposition',
+      file.contentDisposition
+        ?? `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName ?? fileId)}`,
+    );
+
+    return new StreamableFile(file.buffer);
   }
 
   @Put(':studentGuid/behavior/:behaviorId/is-new')

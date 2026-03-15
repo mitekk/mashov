@@ -442,6 +442,86 @@ test.describe('Inbox page', () => {
     await expect(page.getByText('יש קבצים מצורפים')).toBeVisible();
   });
 
+  test('conversation detail renders attachment download links when files are present', async ({ page }) => {
+    await page.route('**/api/v1/mail/summary', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          newConversations: 1,
+          recentConversations: [],
+          lastSyncAt: null,
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            makeConversation({
+              conversationId: 'conv-detail-files',
+              subject: 'Detail with files',
+              isNew: true,
+              hasAttachments: true,
+            }),
+          ],
+          pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations/conv-detail-files', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          conversationId: 'conv-detail-files',
+          subject: 'Detail with files',
+          sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+          isNew: true,
+          hasDrafts: false,
+          hasAttachments: true,
+          preventReply: false,
+          labels: [],
+          lastFetchedAt: new Date().toISOString(),
+          messages: [
+            {
+              messageId: 'msg-detail-files',
+              conversationId: 'conv-detail-files',
+              senderId: 'sender-1',
+              senderName: 'Teacher',
+              subject: 'Detail with files',
+              bodyHtmlSanitized: '<p>Message with file</p>',
+              bodyTextPreview: 'Message with file',
+              sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+              isNew: true,
+              recipients: [],
+              files: [{ fileId: 'file-1', fileName: 'document.pdf' }],
+              preventReply: false,
+              sentViaEmail: false,
+              sentViaSms: false,
+            },
+          ],
+        }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+    await inboxPage.clickConversation('conv-detail-files');
+    await expect(page).toHaveURL('/inbox/conv-detail-files');
+
+    const attachmentLink = page.getByRole('link', { name: 'document.pdf' });
+    await expect(attachmentLink).toBeVisible();
+    await expect(attachmentLink).toHaveAttribute(
+      'href',
+      '/api/v1/mail/conversations/conv-detail-files/messages/msg-detail-files/files/file-1',
+    );
+  });
+
   test('archived filter tab is visible and navigates to filter=archived URL', async ({ page }) => {
     await page.route('**/api/v1/mail/conversations**', async (route) => {
       await route.fulfill({
@@ -829,6 +909,7 @@ test.describe('Inbox page', () => {
             isPositive: false,
             isNew: true,
             isArchived: false,
+            hasAttachments: false,
             linkPath: '/inbox',
             eventAt: new Date().toISOString(),
             syncedAt: new Date().toISOString(),

@@ -7,6 +7,7 @@ import {
   Eye,
   EyeOff,
   Archive,
+  Paperclip,
 } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { ErrorState } from '@/components/ui/ErrorState';
@@ -177,6 +178,24 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
               <div className="rounded-xl border border-border/80 bg-muted/35 p-3 text-xs text-muted-foreground">
                 <p className="mb-1 font-medium text-foreground">נימוק</p>
                 <p className="whitespace-pre-wrap">{data.justification}</p>
+              </div>
+            )}
+            {data.files.length > 0 && (
+              <div className="rounded-xl border border-border/80 bg-muted/35 p-3">
+                <p className="mb-2 text-xs font-medium text-foreground">קבצים מצורפים</p>
+                <div className="space-y-1.5">
+                  {data.files.map((file) => (
+                    <a
+                      key={file.fileId}
+                      href={`/api/v1/children/${studentGuid}/behavior/${behaviorId}/files/${encodeURIComponent(file.fileId)}`}
+                      download={file.fileName}
+                      className="flex items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
+                      <span className="truncate underline-offset-2 hover:underline">{file.fileName}</span>
+                    </a>
+                  ))}
+                </div>
               </div>
             )}
           </article>

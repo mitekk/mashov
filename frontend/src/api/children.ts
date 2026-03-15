@@ -230,6 +230,7 @@ function normalizeBehavior(item: UnknownRecord) {
       : 'neutral';
   const achvaCode = Number(item.achvaCode ?? item.eventCode ?? 0);
   const behaviorMeta = classifyBehavior(achvaCode, String(item.achvaName ?? ''));
+  const files = Array.isArray(item.files) ? item.files : [];
 
   return {
     ...item,
@@ -259,6 +260,7 @@ function normalizeBehavior(item: UnknownRecord) {
       typeof item.justification === 'string' || item.justification === null
         ? item.justification
         : null,
+    files,
     eventAt: String(item.eventAt ?? ''),
     isNew: Boolean(item.isNew),
     isArchived: Boolean(item.isArchived),

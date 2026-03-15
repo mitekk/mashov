@@ -1,13 +1,11 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Users, Mail, MoreHorizontal } from 'lucide-react';
+import { Home, Mail, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useDashboard } from '@/hooks/useDashboard';
-import { useSelectedChild } from '@/hooks/useSelectedChild';
-import { getChildrenNavHref } from '@/lib/child-routes';
 
 interface NavItem {
   href: string;
@@ -21,25 +19,7 @@ interface NavItem {
 export function BottomNav() {
   const pathname = usePathname();
   const { data } = useDashboard();
-  const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
   const unreadCount = data?.summary.newConversations ?? 0;
-
-  const selectedChildExists = Boolean(
-    selectedChildGuid
-    && data?.children.some((child) => child.studentGuid === selectedChildGuid),
-  );
-
-  useEffect(() => {
-    if (!selectedChildGuid || !data) return;
-    if (!selectedChildExists) {
-      setSelectedChildGuid(null);
-    }
-  }, [selectedChildGuid, selectedChildExists, setSelectedChildGuid, data]);
-
-  const childrenHref = getChildrenNavHref(
-    selectedChildExists ? selectedChildGuid : null,
-    'homework',
-  );
 
   const navItems: NavItem[] = [
     {
@@ -47,13 +27,6 @@ export function BottomNav() {
       label: 'בית',
       testId: 'nav-home',
       icon: <Home className="w-5 h-5" />,
-    },
-    {
-      href: childrenHref,
-      activeRoot: '/children',
-      label: 'ילדים',
-      testId: 'nav-children',
-      icon: <Users className="w-5 h-5" />,
     },
     {
       href: '/inbox',

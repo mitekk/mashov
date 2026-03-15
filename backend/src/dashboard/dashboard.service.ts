@@ -27,6 +27,7 @@ export interface FeedItem {
   isPositive: boolean;
   isNew: boolean;
   isArchived: boolean;
+  hasAttachments: boolean;
   eventAt: string;
   syncedAt: string;
   linkPath: string;
@@ -262,6 +263,7 @@ export class DashboardService {
         isPositive: false,
         isNew: hw.isNew,
         isArchived: hw.isArchived,
+        hasAttachments: Array.isArray(hw.files) && hw.files.length > 0,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
         linkPath: `/children/${hw.studentGuid}`,
@@ -283,6 +285,7 @@ export class DashboardService {
         isPositive,
         isNew: b.isNew,
         isArchived: b.isArchived,
+        hasAttachments: this.extractFilesFromRawPayload(b.rawPayload).length > 0,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
         linkPath: `/children/${b.studentGuid}`,
@@ -303,6 +306,7 @@ export class DashboardService {
         isPositive: false,
         isNew: conv.isNew,
         isArchived: false,
+        hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),
         syncedAt: conv.lastFetchedAt.toISOString(),
         linkPath: `/inbox/${conv.conversationId}`,
@@ -311,6 +315,19 @@ export class DashboardService {
 
     allItems.sort((a, b) => new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime());
     return allItems.slice(0, 20);
+  }
+
+  private extractFilesFromRawPayload(value: unknown): unknown[] {
+    if (!value || typeof value !== 'object') return [];
+
+    const payload = value as Record<string, unknown>;
+    const directFiles = payload.files;
+    if (Array.isArray(directFiles)) return directFiles;
+
+    const attachments = payload.attachments;
+    if (Array.isArray(attachments)) return attachments;
+
+    return [];
   }
 
   private async getChildren(): Promise<ChildCard[]> {

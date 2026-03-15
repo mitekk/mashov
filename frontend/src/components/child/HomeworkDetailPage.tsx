@@ -176,10 +176,15 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
                 <p className="mb-2 text-xs font-medium text-foreground">קבצים מצורפים</p>
                 <div className="space-y-1.5">
                   {data.files.map((file) => (
-                    <div key={file.fileId} className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <a
+                      key={file.fileId}
+                      href={`/api/v1/children/${studentGuid}/homework/${homeworkId}/files/${encodeURIComponent(file.fileId)}`}
+                      download={file.fileName}
+                      className="flex items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    >
                       <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
-                      <span className="truncate">{file.fileName}</span>
-                    </div>
+                      <span className="truncate underline-offset-2 hover:underline">{file.fileName}</span>
+                    </a>
                   ))}
                 </div>
               </div>

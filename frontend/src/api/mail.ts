@@ -3,6 +3,7 @@ import type {
   MailSummary,
   ConversationsResponse,
   ConversationDetail,
+  ConversationAttachment,
   MailBulkActionRequest,
   MailBulkActionResponse,
 } from '@/types/api';
@@ -87,21 +88,24 @@ function normalizeConversationDetail(
           ? response.subject
           : 'ללא נושא',
       isNew: Boolean((response as unknown as UnknownRecord).isNew ?? (response as unknown as UnknownRecord).isUnread),
-      messages: response.messages.map((msg) => ({
-        ...msg,
-        isNew: Boolean((msg as unknown as UnknownRecord).isNew ?? (msg as unknown as UnknownRecord).isUnread),
-        bodyHtmlSanitized: normalizeMessageHtml(
-          msg.bodyHtmlSanitized,
-          msg.bodyTextPreview,
-        ),
-        bodyTextPreview: msg.bodyTextPreview ?? '',
-        recipients: Array.isArray(msg.recipients) ? msg.recipients : [],
-        hasAttachments: Boolean(
-          (msg as unknown as UnknownRecord).hasAttachments
-          ?? (Array.isArray((msg as unknown as UnknownRecord).files)
-            && ((msg as unknown as UnknownRecord).files as unknown[]).length > 0),
-        ),
-      })),
+      messages: response.messages.map((msg) => {
+        const files = normalizeMessageFiles((msg as unknown as UnknownRecord).files);
+        return {
+          ...msg,
+          isNew: Boolean((msg as unknown as UnknownRecord).isNew ?? (msg as unknown as UnknownRecord).isUnread),
+          bodyHtmlSanitized: normalizeMessageHtml(
+            msg.bodyHtmlSanitized,
+            msg.bodyTextPreview,
+          ),
+          bodyTextPreview: msg.bodyTextPreview ?? '',
+          recipients: Array.isArray(msg.recipients) ? msg.recipients : [],
+          files,
+          hasAttachments: Boolean(
+            (msg as unknown as UnknownRecord).hasAttachments
+            ?? files.length > 0,
+          ),
+        };
+      }),
     };
   }
 
@@ -123,6 +127,7 @@ function normalizeConversationDetail(
     lastFetchedAt: String(conversation.lastFetchedAt ?? new Date().toISOString()),
     messages: messages.map((msg, index) => {
       const message = msg as UnknownRecord;
+      const files = normalizeMessageFiles(message.files);
       return {
         messageId: String(message.messageId ?? `legacy-${index}`),
         conversationId: String(
@@ -139,9 +144,10 @@ function normalizeConversationDetail(
         sendTime: String(message.sendTime ?? new Date().toISOString()),
         isNew: Boolean(message.isNew ?? message.isUnread),
         recipients: normalizeRecipients(message.recipients),
+        files,
         hasAttachments: Boolean(
           message.hasAttachments
-          ?? (Array.isArray(message.files) && message.files.length > 0),
+          ?? files.length > 0,
         ),
         preventReply: Boolean(message.preventReply),
         sentViaEmail: Boolean(message.sentViaEmail),
@@ -182,6 +188,32 @@ function normalizeRecipients(value: unknown) {
       isGroup: false,
     };
   });
+}
+
+function normalizeMessageFiles(value: unknown): ConversationAttachment[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+
+      const candidate = entry as UnknownRecord;
+      const fileId = typeof candidate.fileId === 'string'
+        ? candidate.fileId
+        : typeof candidate.id === 'string'
+          ? candidate.id
+          : null;
+      if (!fileId) return null;
+
+      const fileName = typeof candidate.fileName === 'string'
+        ? candidate.fileName
+        : typeof candidate.name === 'string'
+          ? candidate.name
+          : fileId;
+
+      return { fileId, fileName };
+    })
+    .filter((entry): entry is ConversationAttachment => Boolean(entry));
 }
 
 function normalizeMessageHtml(html: unknown, preview: unknown): string {

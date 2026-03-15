@@ -109,7 +109,7 @@ async function mockCoreRoutes(page: Page) {
 
   await page.route('**/api/v1/mail/summary', (route) =>
     json(route, {
-      unreadConversations: 1,
+      newConversations: 1,
       recentConversations: [],
       lastSyncAt: new Date().toISOString(),
     }),
@@ -123,11 +123,10 @@ async function mockCoreRoutes(page: Page) {
           subject: 'Theme test conversation',
           senderNamePreview: 'Teacher',
           sendTime: new Date().toISOString(),
-          isUnread: true,
+          isNew: true,
           hasAttachments: false,
           preventReply: false,
           labels: [],
-          isHandled: false,
           lastFetchedAt: new Date().toISOString(),
         },
       ],
@@ -140,12 +139,11 @@ async function mockCoreRoutes(page: Page) {
       conversationId: CONVERSATION_ID,
       subject: 'Theme test conversation',
       sendTime: new Date().toISOString(),
-      isUnread: true,
+      isNew: true,
       hasDrafts: false,
       hasAttachments: false,
       preventReply: false,
       labels: [],
-      isHandled: false,
       messages: [
         {
           messageId: 'msg-theme-1',
@@ -156,8 +154,9 @@ async function mockCoreRoutes(page: Page) {
           bodyHtmlSanitized: '<p>Message body</p>',
           bodyTextPreview: 'Message body',
           sendTime: new Date().toISOString(),
-          isUnread: true,
+          isNew: true,
           recipients: [],
+          files: [],
           preventReply: false,
           sentViaEmail: false,
           sentViaSms: false,

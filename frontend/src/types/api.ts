@@ -72,6 +72,7 @@ export interface FeedItem {
   isPositive: boolean;
   isNew: boolean;
   isArchived: boolean;
+  hasAttachments: boolean;
   eventAt: string;
   syncedAt: string;
   linkPath: string;
@@ -184,6 +185,11 @@ export type HomeworkDetailResponse = HomeworkItem;
 
 export type BehaviorBucket = 'attention' | 'positive' | 'neutral';
 
+export interface BehaviorFile {
+  fileId: string;
+  fileName: string;
+}
+
 export interface BehaviorItem {
   id: string;
   studentGuid: string;
@@ -201,6 +207,7 @@ export interface BehaviorItem {
   reporter: string;
   remark: string | null;
   justification: string | null;
+  files: BehaviorFile[];
   eventAt: string;
   isNew: boolean;
   isArchived: boolean;
@@ -290,6 +297,11 @@ export interface MessageRecipient {
   isGroup: boolean;
 }
 
+export interface ConversationAttachment {
+  fileId: string;
+  fileName: string;
+}
+
 export interface ConversationMessage {
   messageId: string;
   conversationId: string;
@@ -301,6 +313,7 @@ export interface ConversationMessage {
   sendTime: string;
   isNew: boolean;
   recipients: MessageRecipient[];
+  files: ConversationAttachment[];
   hasAttachments: boolean;
   preventReply: boolean;
   sentViaEmail: boolean;

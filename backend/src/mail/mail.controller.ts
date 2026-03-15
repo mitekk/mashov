@@ -1,7 +1,8 @@
-import { Controller, Get, Param, Put, Body, Query } from '@nestjs/common';
+import { Controller, Get, Param, Put, Body, Query, Res, StreamableFile } from '@nestjs/common';
 import { IsArray, IsString, IsOptional, IsIn, IsBoolean, IsInt, Min, Max } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { MailService } from './mail.service';
+import type { Response } from 'express';
 
 class ConversationsQueryDto {
   @IsOptional()
@@ -74,6 +75,32 @@ export class MailController {
   @Get('conversations/:id')
   async getConversation(@Param('id') id: string) {
     return this.mailService.getConversationDetail(id);
+  }
+
+  @Get('conversations/:conversationId/messages/:messageId/files/:fileId')
+  async downloadMessageAttachment(
+    @Param('conversationId') conversationId: string,
+    @Param('messageId') messageId: string,
+    @Param('fileId') fileId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const file = await this.mailService.downloadMessageAttachment(
+      conversationId,
+      messageId,
+      fileId,
+    );
+
+    response.setHeader(
+      'Content-Type',
+      file.contentType ?? 'application/octet-stream',
+    );
+    response.setHeader(
+      'Content-Disposition',
+      file.contentDisposition
+        ?? `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName ?? fileId)}`,
+    );
+
+    return new StreamableFile(file.buffer);
   }
 
   @Put('conversations/mark-read')

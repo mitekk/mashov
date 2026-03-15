@@ -50,6 +50,7 @@ async function mockBaseRoutes(page: Page) {
           isPositive: false,
           isNew: true,
           isArchived: false,
+          hasAttachments: false,
           eventAt: new Date().toISOString(),
           syncedAt: new Date().toISOString(),
           linkPath: `/children/${STUDENT_GUID}`,
@@ -301,10 +302,6 @@ test.describe('Navigation and fallback hardening', () => {
     await page.getByTestId('nav-more').click();
     await expect(page).toHaveURL('/more');
     await expect(page.getByTestId('more-page')).toBeVisible();
-
-    await page.getByTestId('nav-children').click();
-    await expect(page).toHaveURL(childUrl('homework'));
-    await expect(page.getByTestId('child-workspace')).toBeVisible();
   });
 
   test('renders child workspace from legacy payload and keeps section/filter in query params', async ({
@@ -354,7 +351,8 @@ test.describe('Navigation and fallback hardening', () => {
             remark: null,
             justification: null,
             eventAt: new Date().toISOString(),
-            isHandled: false,
+            isNew: false,
+            isArchived: false,
             updatedAt: new Date().toISOString(),
           },
         ],
@@ -494,18 +492,12 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page.getByTestId('child-workspace')).toHaveCount(0);
   });
 
-  test('falls back to /children when selected child does not exist', async ({ page }) => {
+  test('does not render children tab in bottom nav', async ({ page }) => {
     await mockBaseRoutes(page);
-
-    await page.addInitScript(() => {
-      window.localStorage.setItem('mashov.selectedChildGuid', 'missing-guid');
-    });
 
     await page.goto('/inbox');
     await expect(page.getByTestId('inbox-page')).toBeVisible();
-
-    await page.getByTestId('nav-children').click();
-    await expect(page).toHaveURL('/children');
+    await expect(page.getByTestId('nav-children')).toHaveCount(0);
   });
 
   test('renders conversation detail from legacy nested payload with subject/body fallback', async ({
@@ -526,7 +518,6 @@ test.describe('Navigation and fallback hardening', () => {
             hasAttachments: false,
             preventReply: false,
             labels: [],
-            isHandled: false,
             lastFetchedAt: new Date().toISOString(),
           },
         ],
@@ -558,6 +549,7 @@ test.describe('Navigation and fallback hardening', () => {
             sendTime: new Date().toISOString(),
             isUnread: true,
             recipients: [],
+            files: [],
             preventReply: false,
             sentViaEmail: false,
             sentViaSms: false,
@@ -607,8 +599,9 @@ test.describe('Navigation and fallback hardening', () => {
             category: 'mail',
             priority: 'medium',
             isPositive: false,
-            isUnread: true,
-            isHandled: false,
+            isNew: true,
+            isArchived: false,
+            hasAttachments: false,
             eventAt: new Date().toISOString(),
             syncedAt: new Date().toISOString(),
             linkPath: '/timetable',

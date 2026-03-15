@@ -69,8 +69,25 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
       />
 
-      {/* Attachment indicator */}
-      {message.hasAttachments && (
+      {message.files.length > 0 && (
+        <div className="rounded-xl border border-border/80 bg-muted/35 p-3">
+          <p className="mb-2 text-xs font-medium text-foreground">קבצים מצורפים</p>
+          <div className="space-y-1.5">
+            {message.files.map((file) => (
+              <a
+                key={file.fileId}
+                href={`/api/v1/mail/conversations/${encodeURIComponent(message.conversationId)}/messages/${encodeURIComponent(message.messageId)}/files/${encodeURIComponent(file.fileId)}`}
+                download={file.fileName}
+                className="flex items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
+                <span className="truncate underline-offset-2 hover:underline">{file.fileName}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+      {message.hasAttachments && message.files.length === 0 && (
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <Paperclip className="w-3 h-3" />
           <span>יש קבצים מצורפים</span>

@@ -47,6 +47,7 @@ function makeBehaviorItem(overrides: object = {}) {
     reporter: 'Teacher',
     remark: null,
     justification: null,
+    files: [],
     eventAt: new Date().toISOString(),
     isNew: true,
     isArchived: false,
@@ -223,6 +224,32 @@ test.describe('Child workspace page', () => {
 
     await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
     await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
+  });
+
+  test('homework detail renders attachment download links', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework/hw-1`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          makeHomeworkItem({
+            files: [{ fileId: 'hw-file-1', fileName: 'homework.pdf' }],
+          }),
+        ),
+      });
+    });
+
+    await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
+    await page.waitForLoadState('networkidle');
+
+    const attachmentLink = page.getByRole('link', { name: 'homework.pdf' });
+    await expect(attachmentLink).toBeVisible();
+    await expect(attachmentLink).toHaveAttribute(
+      'href',
+      `/api/v1/children/${STUDENT_GUID}/homework/hw-1/files/hw-file-1`,
+    );
   });
 
   test('homework list shows Active tab by default and filters out archived items', async ({ page }) => {
@@ -469,6 +496,32 @@ test.describe('Child workspace page', () => {
 
     await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior/beh-1`);
     await expect(page.getByTestId('behavior-detail-beh-1')).toBeVisible();
+  });
+
+  test('behavior detail renders attachment download links', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior/beh-1`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          makeBehaviorItem({
+            files: [{ fileId: 'beh-file-1', fileName: 'behavior.pdf' }],
+          }),
+        ),
+      });
+    });
+
+    await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
+    await page.waitForLoadState('networkidle');
+
+    const attachmentLink = page.getByRole('link', { name: 'behavior.pdf' });
+    await expect(attachmentLink).toBeVisible();
+    await expect(attachmentLink).toHaveAttribute(
+      'href',
+      `/api/v1/children/${STUDENT_GUID}/behavior/beh-1/files/beh-file-1`,
+    );
   });
 
   test('behavior list shows Active tab by default and filters out archived items', async ({ page }) => {

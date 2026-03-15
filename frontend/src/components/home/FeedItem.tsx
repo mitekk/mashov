@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Eye, EyeOff, Archive } from 'lucide-react';
+import { Eye, EyeOff, Archive, Paperclip } from 'lucide-react';
 import type { FeedItem as FeedItemType } from '@/types/api';
 import { SourceTypeBadge } from '@/components/ui/Badge';
 import { formatRelativeHe } from '@/lib/dates';
@@ -101,6 +101,12 @@ export function FeedItem({ item }: FeedItemProps) {
                 {item.studentName}
               </p>
             )}
+            {item.hasAttachments && (
+              <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Paperclip className="h-3 w-3" />
+                <span>קבצים מצורפים</span>
+              </p>
+            )}
           </Link>
         ) : (
           <div
@@ -123,6 +129,12 @@ export function FeedItem({ item }: FeedItemProps) {
             {item.studentName && (
               <p className="text-xs text-muted-foreground mt-0.5">
                 {item.studentName}
+              </p>
+            )}
+            {item.hasAttachments && (
+              <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Paperclip className="h-3 w-3" />
+                <span>קבצים מצורפים</span>
               </p>
             )}
             <p className="text-[11px] text-muted-foreground mt-1">

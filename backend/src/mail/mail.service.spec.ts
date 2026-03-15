@@ -56,6 +56,10 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
 function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>>) {
   return {
     get: overrides.get ?? jest.fn().mockResolvedValue({}),
+    getResponse: overrides.getResponse ?? jest.fn().mockResolvedValue({
+      data: new ArrayBuffer(0),
+      headers: {},
+    }),
     put: overrides.put ?? jest.fn().mockResolvedValue({}),
   } as unknown as jest.Mocked<MashovHttpClient>;
 }
@@ -330,6 +334,174 @@ describe('MailService', () => {
       );
       expect(messageUpsert).toHaveBeenCalled();
       expect(result.messages[0].hasAttachments).toBe(true);
+    });
+  });
+
+  describe('downloadMessageAttachment', () => {
+    it('downloads using absolute attachment URL from message metadata', async () => {
+      const getResponse = jest.fn().mockResolvedValue({
+        data: Buffer.from('file-bytes'),
+        headers: { 'content-type': 'application/pdf' },
+      });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindUnique: jest.fn().mockResolvedValue(
+            makeConversation({ conversationId: 'conv-1' }),
+          ),
+          messageFindMany: jest.fn().mockResolvedValue([
+            {
+              messageId: 'msg-1',
+              conversationId: 'conv-1',
+              files: [
+                {
+                  fileId: 'file-1',
+                  fileName: 'document.pdf',
+                  url: 'https://cdn.example.com/download/file-1',
+                },
+              ],
+            },
+          ]),
+        }),
+        makeMockMashovClient({ getResponse }),
+      );
+
+      await service.downloadMessageAttachment('conv-1', 'msg-1', 'file-1');
+
+      expect(getResponse).toHaveBeenCalledWith(
+        'https://cdn.example.com/download/file-1',
+        expect.objectContaining({
+          responseType: 'arraybuffer',
+          headers: expect.objectContaining({
+            Referer: 'https://web.mashov.info/students/main/mailbox/conversation/conv-1',
+          }),
+        }),
+      );
+    });
+
+    it('supports Mashov download endpoint pattern with /download/:fileName', async () => {
+      const getResponse = jest.fn().mockImplementation(async (url: string) => {
+        if (url === '/api/mail/messages/msg-1/files/file-1/download/document.pdf') {
+          return {
+            data: Buffer.from('file-bytes'),
+            headers: { 'content-type': 'application/pdf' },
+          };
+        }
+        throw new Error('not found');
+      });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindUnique: jest.fn().mockResolvedValue(
+            makeConversation({ conversationId: 'conv-1' }),
+          ),
+          messageFindMany: jest.fn().mockResolvedValue([
+            {
+              messageId: 'msg-1',
+              conversationId: 'conv-1',
+              files: [{ fileId: 'file-1', fileName: 'document.pdf' }],
+            },
+          ]),
+        }),
+        makeMockMashovClient({ getResponse }),
+      );
+
+      await service.downloadMessageAttachment('conv-1', 'msg-1', 'file-1');
+
+      expect(getResponse).toHaveBeenCalledWith(
+        '/api/mail/messages/msg-1/files/file-1/download/document.pdf',
+        expect.any(Object),
+      );
+    });
+
+    it('refreshes conversation detail and retries attachment download when first attempt fails', async () => {
+      const initialMessage = {
+        messageId: 'msg-1',
+        conversationId: 'conv-1',
+        files: [{ fileId: 'file-1', fileName: 'document.pdf' }],
+      };
+      const refreshedMessage = {
+        messageId: 'msg-1',
+        conversationId: 'conv-1',
+        files: [
+          {
+            fileId: 'file-1',
+            fileName: 'document.pdf',
+            url: 'https://download.example.com/file-1',
+          },
+        ],
+      };
+
+      const messageFindMany = jest
+        .fn()
+        .mockResolvedValueOnce([initialMessage])
+        .mockResolvedValueOnce([refreshedMessage]);
+      const mashovGet = jest.fn().mockResolvedValue({
+        conversationId: 'conv-1',
+        subject: 'Subject',
+        sendTime: NOW.toISOString(),
+        isNew: true,
+        hasDrafts: false,
+        hasAttachments: true,
+        preventReply: false,
+        labels: [],
+        messages: [
+          {
+            messageId: 'msg-1',
+            conversationId: 'conv-1',
+            senderId: 'sender-1',
+            senderName: 'Teacher',
+            subject: 'Subject',
+            body: '<p>Body</p>',
+            sendTime: NOW.toISOString(),
+            isNew: true,
+            recipients: [],
+            files: [
+              {
+                fileId: 'file-1',
+                fileName: 'document.pdf',
+                url: 'https://download.example.com/file-1',
+              },
+            ],
+            preventReply: false,
+            sentViaEmail: false,
+            sentViaSms: false,
+          },
+        ],
+      });
+      const getResponse = jest.fn().mockImplementation(async (url: string) => {
+        if (url === 'https://download.example.com/file-1') {
+          return {
+            data: Buffer.from('file-bytes'),
+            headers: { 'content-type': 'application/pdf' },
+          };
+        }
+        throw new Error('not found');
+      });
+
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindUnique: jest.fn().mockResolvedValue(
+            makeConversation({ conversationId: 'conv-1' }),
+          ),
+          conversationUpdate: jest.fn().mockResolvedValue(makeConversation({ conversationId: 'conv-1' })),
+          messageFindMany,
+          messageUpsert: jest.fn().mockResolvedValue({}),
+        }),
+        makeMockMashovClient({
+          get: mashovGet,
+          getResponse,
+        }),
+      );
+
+      await service.downloadMessageAttachment('conv-1', 'msg-1', 'file-1');
+
+      expect(mashovGet).toHaveBeenCalledWith(
+        '/api/mail/conversations/conv-1',
+        expect.any(Object),
+      );
+      expect(getResponse).toHaveBeenCalledWith(
+        'https://download.example.com/file-1',
+        expect.any(Object),
+      );
     });
   });
 

@@ -22,6 +22,7 @@ function makeFeedItem(overrides: object = {}) {
     isPositive: false,
     isNew: true,
     isArchived: false,
+    hasAttachments: false,
     linkPath: '/children/student-guid-1',
     eventAt: new Date().toISOString(),
     syncedAt: new Date().toISOString(),
@@ -220,6 +221,34 @@ test.describe('Home page', () => {
     await homePage.navigate();
 
     await expect(homePage.feedItem('feed-new-item')).toBeVisible();
+  });
+
+  test('feed item shows attachment indicator when hasAttachments=true', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          summary: {
+            newConversations: 0,
+            recentHomeworkCount: 1,
+            recentBehaviorCount: 0,
+            childrenCount: 1,
+          },
+          feed: [
+            makeFeedItem({
+              id: 'feed-with-files',
+              hasAttachments: true,
+            }),
+          ],
+        }),
+      });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+
+    const feedItem = homePage.feedItem('feed-with-files');
+    await expect(feedItem).toBeVisible();
+    await expect(feedItem.getByText('קבצים מצורפים')).toBeVisible();
   });
 
   test('feed item with isArchived=true is excluded from feed results', async ({ page }) => {
