@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Put, Body, Query } from '@nestjs/common';
-import { IsArray, IsString, IsOptional, IsBoolean, IsInt, Min, Max } from 'class-validator';
+import { IsArray, IsString, IsOptional, IsIn, IsBoolean, IsInt, Min, Max } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { MailService } from './mail.service';
 
@@ -18,9 +18,20 @@ class ConversationsQueryDto {
   limit?: number = 20;
 
   @IsOptional()
+  @IsIn(['all', 'new', 'archived'])
+  filter?: 'all' | 'new' | 'archived' = 'all';
+
+  /** @deprecated use filter=new instead */
+  @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
-  unreadOnly?: boolean = false;
+  newOnly?: boolean = false;
+}
+
+class MarkReadDto {
+  @IsArray()
+  @IsString({ each: true })
+  conversationIds!: string[];
 }
 
 class MarkUnreadDto {
@@ -30,6 +41,12 @@ class MarkUnreadDto {
 }
 
 class ArchiveDto {
+  @IsArray()
+  @IsString({ each: true })
+  conversationIds!: string[];
+}
+
+class UnarchiveDto {
   @IsArray()
   @IsString({ each: true })
   conversationIds!: string[];
@@ -48,13 +65,20 @@ export class MailController {
   async getConversations(@Query() query: ConversationsQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const unreadOnly = query.unreadOnly ?? false;
-    return this.mailService.getConversations(page, limit, unreadOnly);
+    // Support legacy newOnly param for backward compat with older clients/tests
+    const filter: 'all' | 'new' | 'archived' =
+      query.filter ?? (query.newOnly ? 'new' : 'all');
+    return this.mailService.getConversations(page, limit, filter);
   }
 
   @Get('conversations/:id')
   async getConversation(@Param('id') id: string) {
     return this.mailService.getConversationDetail(id);
+  }
+
+  @Put('conversations/mark-read')
+  async markRead(@Body() body: MarkReadDto) {
+    return this.mailService.markConversationsRead(body.conversationIds);
   }
 
   @Put('conversations/mark-unread')
@@ -65,5 +89,10 @@ export class MailController {
   @Put('conversations/archive')
   async archive(@Body() body: ArchiveDto) {
     return this.mailService.archive(body.conversationIds);
+  }
+
+  @Put('conversations/unarchive')
+  async unarchive(@Body() body: UnarchiveDto) {
+    return this.mailService.unarchive(body.conversationIds);
   }
 }

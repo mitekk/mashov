@@ -20,6 +20,50 @@ function makeStudent() {
   };
 }
 
+function makeHomeworkRow(overrides: object = {}) {
+  return {
+    id: 'hw-1',
+    studentGuid: TEST_GUID,
+    lessonId: 1,
+    groupId: 2,
+    lessonDate: new Date('2026-03-10T00:00:00Z'),
+    lesson: 3,
+    subjectName: 'Math',
+    homeworkText: 'Page 10',
+    remark: null,
+    files: [],
+    isNew: true,
+    isArchived: false,
+    updatedAt: new Date('2026-03-10T01:00:00Z'),
+    ...overrides,
+  };
+}
+
+function makeBehaviorRow(overrides: object = {}) {
+  return {
+    id: 'beh-1',
+    studentGuid: TEST_GUID,
+    lessonId: 1,
+    groupId: 2,
+    eventCode: 2,
+    achvaCode: 2,
+    achvaName: 'חיסור',
+    classification: 'attention',
+    justifiable: false,
+    lessonDate: new Date('2026-03-11T00:00:00Z'),
+    lesson: 2,
+    subject: 'Math',
+    reporter: 'Teacher',
+    remark: null,
+    justification: null,
+    eventAt: new Date('2026-03-11T10:00:00Z'),
+    isNew: true,
+    isArchived: false,
+    updatedAt: new Date('2026-03-11T11:00:00Z'),
+    ...overrides,
+  };
+}
+
 function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
   const student = makeStudent();
   return {
@@ -30,12 +74,16 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     homeworkItem: {
       count: overrides.homeworkCount ?? jest.fn().mockResolvedValue(0),
       findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]),
+      findUnique: overrides.homeworkFindUnique ?? jest.fn().mockResolvedValue(null),
       findFirst: overrides.homeworkFindFirst ?? jest.fn().mockResolvedValue(null),
+      update: overrides.homeworkUpdate ?? jest.fn().mockResolvedValue(makeHomeworkRow()),
     },
     behaviorItem: {
       count: overrides.behaviorCount ?? jest.fn().mockResolvedValue(0),
       findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]),
+      findUnique: overrides.behaviorFindUnique ?? jest.fn().mockResolvedValue(null),
       findFirst: overrides.behaviorFindFirst ?? jest.fn().mockResolvedValue(null),
+      update: overrides.behaviorUpdate ?? jest.fn().mockResolvedValue(makeBehaviorRow()),
     },
     subjectEnrollment: {
       count: overrides.subjectCount ?? jest.fn().mockResolvedValue(0),
@@ -46,9 +94,6 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     },
     messageBoardItem: {
       findMany: overrides.noticeFindMany ?? jest.fn().mockResolvedValue([]),
-    },
-    readState: {
-      findMany: overrides.readStateFindMany ?? jest.fn().mockResolvedValue([]),
     },
     syncRun: {
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
@@ -138,61 +183,222 @@ describe('ChildrenService', () => {
   });
 
   describe('getHomework', () => {
-    it('returns paginated data and merges read-state handled flags', async () => {
+    it('returns paginated data with isNew and isArchived from homework_item directly', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
           homeworkFindMany: jest.fn().mockResolvedValue([
-            {
-              id: 'hw-1',
-              studentGuid: TEST_GUID,
-              lessonId: 1,
-              groupId: 2,
-              lessonDate: new Date('2026-03-10T00:00:00Z'),
-              lesson: 3,
-              subjectName: 'Math',
-              homeworkText: 'Page 10',
-              remark: null,
-              files: [],
-              updatedAt: new Date('2026-03-10T01:00:00Z'),
-            },
+            makeHomeworkRow({ isNew: true, isArchived: false }),
           ]),
           homeworkCount: jest.fn().mockResolvedValue(1),
-          readStateFindMany: jest.fn().mockResolvedValue([
-            { itemId: 'hw-1', isHandled: true },
-          ]),
         }),
         makeMockSession(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
       expect(result.pagination).toMatchObject({ total: 1, totalPages: 1 });
-      expect(result.data[0].isHandled).toBe(true);
+      expect(result.data[0].isNew).toBe(true);
+      expect(result.data[0].isArchived).toBe(false);
       expect(result.data[0].lessonDate).toBe('2026-03-10T00:00:00.000Z');
+    });
+
+    it('returns isNew=false and isArchived=true for archived items', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindMany: jest.fn().mockResolvedValue([
+            makeHomeworkRow({ isNew: false, isArchived: true }),
+          ]),
+          homeworkCount: jest.fn().mockResolvedValue(1),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getHomework(TEST_GUID, 1, 20);
+      expect(result.data[0].isNew).toBe(false);
+      expect(result.data[0].isArchived).toBe(true);
+    });
+
+    it('does not include isHandled field on homework items', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindMany: jest.fn().mockResolvedValue([makeHomeworkRow()]),
+          homeworkCount: jest.fn().mockResolvedValue(1),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getHomework(TEST_GUID, 1, 20);
+      expect(result.data[0]).not.toHaveProperty('isHandled');
+    });
+  });
+
+  describe('getHomeworkDetail', () => {
+    it('returns a single homework detail item with isNew and isArchived', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({ isNew: true, isArchived: false }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
+      expect(result).toMatchObject({
+        id: 'hw-1',
+        studentGuid: TEST_GUID,
+        isNew: true,
+        isArchived: false,
+      });
+      expect(result.lessonDate).toBe('2026-03-10T00:00:00.000Z');
+    });
+
+    it('does not include isHandled field on homework detail', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow()),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
+      expect(result).not.toHaveProperty('isHandled');
+    });
+
+    it('throws NotFoundException when homework item is missing', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getHomeworkDetail(TEST_GUID, 'missing-hw')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('throws NotFoundException when homework item belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({ studentGuid: 'other-student-guid' }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getHomeworkDetail(TEST_GUID, 'hw-1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('setHomeworkIsNew', () => {
+    it('updates isNew on the homework item and returns updated item', async () => {
+      const homeworkUpdate = jest.fn().mockResolvedValue(
+        makeHomeworkRow({ isNew: false }),
+      );
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow()),
+          homeworkUpdate,
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', false);
+      expect(homeworkUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'hw-1' },
+          data: expect.objectContaining({ isNew: false }),
+        }),
+      );
+      expect(result.isNew).toBe(false);
+    });
+
+    it('throws NotFoundException when homework belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({ studentGuid: 'other-guid' }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.setHomeworkIsNew(TEST_GUID, 'hw-1', false)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('setHomeworkArchived', () => {
+    it('sets isArchived=true and forces isNew=false when archiving', async () => {
+      const homeworkUpdate = jest.fn().mockResolvedValue(
+        makeHomeworkRow({ isNew: false, isArchived: true }),
+      );
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow({ isNew: true })),
+          homeworkUpdate,
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', true);
+      expect(homeworkUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isArchived: true, isNew: false }),
+        }),
+      );
+      expect(result.isArchived).toBe(true);
+      expect(result.isNew).toBe(false);
+    });
+
+    it('sets isArchived=false and restores isNew=true when unarchiving', async () => {
+      const homeworkUpdate = jest.fn().mockResolvedValue(
+        makeHomeworkRow({ isNew: true, isArchived: false }),
+      );
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({ isNew: false, isArchived: true }),
+          ),
+          homeworkUpdate,
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', false);
+      expect(homeworkUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isArchived: false, isNew: true }),
+        }),
+      );
+      expect(result.isArchived).toBe(false);
+      expect(result.isNew).toBe(true);
+    });
+
+    it('throws NotFoundException when homework belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({ studentGuid: 'other-guid' }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.setHomeworkArchived(TEST_GUID, 'hw-1', true)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
   describe('getBehavior', () => {
-    it('maps classification to bucket and eventCode to priority', async () => {
+    it('maps classification to bucket and eventCode to priority with isNew and isArchived', async () => {
       const mockFindMany = jest.fn().mockResolvedValue([
-        {
-          id: 'beh-1',
-          studentGuid: TEST_GUID,
-          lessonId: 1,
-          groupId: 2,
-          eventCode: 2,
-          achvaCode: 2,
-          achvaName: 'חיסור',
-          classification: 'attention',
-          justifiable: false,
-          lessonDate: new Date('2026-03-11T00:00:00Z'),
-          lesson: 2,
-          subject: 'Math',
-          reporter: 'Teacher',
-          remark: null,
-          justification: null,
-          eventAt: new Date('2026-03-11T10:00:00Z'),
-          updatedAt: new Date('2026-03-11T11:00:00Z'),
-        },
+        makeBehaviorRow({ isNew: true, isArchived: false }),
       ]);
       const service = new ChildrenService(
         makeMockPrisma({
@@ -205,11 +411,196 @@ describe('ChildrenService', () => {
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention');
       expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { studentGuid: TEST_GUID, classification: 'attention' },
+          where: expect.objectContaining({
+            studentGuid: TEST_GUID,
+            classification: 'attention',
+            isArchived: false,
+          }),
         }),
       );
       expect(result.data[0].bucket).toBe('attention');
       expect(result.data[0].priority).toBe('high');
+      expect(result.data[0].isNew).toBe(true);
+      expect(result.data[0].isArchived).toBe(false);
+    });
+
+    it('does not include isHandled field on behavior items', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindMany: jest.fn().mockResolvedValue([makeBehaviorRow()]),
+          behaviorCount: jest.fn().mockResolvedValue(1),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getBehavior(TEST_GUID, 1, 50, 'all');
+      expect(result.data[0]).not.toHaveProperty('isHandled');
+    });
+  });
+
+  describe('getBehaviorDetail', () => {
+    it('returns a single behavior detail item with isNew and isArchived', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({ isNew: true, isArchived: false }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
+      expect(result).toMatchObject({
+        id: 'beh-1',
+        studentGuid: TEST_GUID,
+        bucket: 'attention',
+        priority: 'high',
+        isNew: true,
+        isArchived: false,
+      });
+      expect(result.lessonDate).toBe('2026-03-11T00:00:00.000Z');
+    });
+
+    it('does not include isHandled field on behavior detail', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow()),
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
+      expect(result).not.toHaveProperty('isHandled');
+    });
+
+    it('throws NotFoundException when behavior item is missing', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getBehaviorDetail(TEST_GUID, 'missing-beh')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('throws NotFoundException when behavior item belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({ studentGuid: 'other-student-guid' }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.getBehaviorDetail(TEST_GUID, 'beh-1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('setBehaviorIsNew', () => {
+    it('updates isNew on the behavior item and returns updated item', async () => {
+      const behaviorUpdate = jest.fn().mockResolvedValue(
+        makeBehaviorRow({ isNew: false }),
+      );
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow()),
+          behaviorUpdate,
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', false);
+      expect(behaviorUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'beh-1' },
+          data: expect.objectContaining({ isNew: false }),
+        }),
+      );
+      expect(result.isNew).toBe(false);
+    });
+
+    it('throws NotFoundException when behavior belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({ studentGuid: 'other-guid' }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.setBehaviorIsNew(TEST_GUID, 'beh-1', false)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('setBehaviorArchived', () => {
+    it('sets isArchived=true and forces isNew=false when archiving', async () => {
+      const behaviorUpdate = jest.fn().mockResolvedValue(
+        makeBehaviorRow({ isNew: false, isArchived: true }),
+      );
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow({ isNew: true })),
+          behaviorUpdate,
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', true);
+      expect(behaviorUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isArchived: true, isNew: false }),
+        }),
+      );
+      expect(result.isArchived).toBe(true);
+      expect(result.isNew).toBe(false);
+    });
+
+    it('sets isArchived=false and restores isNew=true when unarchiving', async () => {
+      const behaviorUpdate = jest.fn().mockResolvedValue(
+        makeBehaviorRow({ isNew: true, isArchived: false }),
+      );
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({ isNew: false, isArchived: true }),
+          ),
+          behaviorUpdate,
+        }),
+        makeMockSession(),
+      );
+
+      const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', false);
+      expect(behaviorUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isArchived: false, isNew: true }),
+        }),
+      );
+      expect(result.isArchived).toBe(false);
+      expect(result.isNew).toBe(true);
+    });
+
+    it('throws NotFoundException when behavior belongs to another student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({ studentGuid: 'other-guid' }),
+          ),
+        }),
+        makeMockSession(),
+      );
+
+      await expect(service.setBehaviorArchived(TEST_GUID, 'beh-1', true)).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 

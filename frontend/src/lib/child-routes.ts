@@ -43,6 +43,14 @@ interface BuildChildSectionHrefOptions {
   behavior?: string | null | undefined;
 }
 
+function normalizeItemId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes('/')) return null;
+  return trimmed;
+}
+
 export function buildChildSectionHref(
   studentGuid: string | null | undefined,
   section: ChildSectionId = DEFAULT_CHILD_SECTION,
@@ -56,6 +64,26 @@ export function buildChildSectionHref(
   params.set('section', section);
   params.set('behavior', behavior);
   return `/children/${encodeURIComponent(normalizedGuid)}?${params.toString()}`;
+}
+
+export function buildHomeworkDetailHref(
+  studentGuid: string | null | undefined,
+  homeworkId: string | null | undefined,
+): string | null {
+  const normalizedGuid = normalizeStudentGuid(studentGuid);
+  const normalizedHomeworkId = normalizeItemId(homeworkId);
+  if (!normalizedGuid || !normalizedHomeworkId) return null;
+  return `/children/${encodeURIComponent(normalizedGuid)}/homework/${encodeURIComponent(normalizedHomeworkId)}`;
+}
+
+export function buildBehaviorDetailHref(
+  studentGuid: string | null | undefined,
+  behaviorId: string | null | undefined,
+): string | null {
+  const normalizedGuid = normalizeStudentGuid(studentGuid);
+  const normalizedBehaviorId = normalizeItemId(behaviorId);
+  if (!normalizedGuid || !normalizedBehaviorId) return null;
+  return `/children/${encodeURIComponent(normalizedGuid)}/behavior/${encodeURIComponent(normalizedBehaviorId)}`;
 }
 
 export function getChildrenNavHref(

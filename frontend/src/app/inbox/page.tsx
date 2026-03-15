@@ -9,14 +9,28 @@ import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { useArchive, useConversations, useMailSummary, useMarkUnread } from '@/hooks/useMail';
+import {
+  useArchive,
+  useConversations,
+  useMailSummary,
+  useMarkUnread,
+  useUnarchive,
+} from '@/hooks/useMail';
 import { Archive, Mail, MailOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+type InboxFilter = 'all' | 'new' | 'archived';
+
+function getFilterFromParam(param: string | null): InboxFilter {
+  if (param === 'new' || param === 'unread') return 'new';
+  if (param === 'archived') return 'archived';
+  return 'all';
+}
 
 function InboxPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const unreadOnly = searchParams.get('filter') === 'unread';
+  const activeFilter = getFilterFromParam(searchParams.get('filter'));
   const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
 
   const { data: summary } = useMailSummary();
@@ -28,21 +42,23 @@ function InboxPageContent() {
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
-  } = useConversations(unreadOnly);
+  } = useConversations(activeFilter);
   const { mutate: markUnread, isPending: isMarkUnreadPending } = useMarkUnread();
   const { mutate: archive, isPending: isArchivePending } = useArchive();
+  const { mutate: unarchive, isPending: isUnarchivePending } = useUnarchive();
 
   const conversations = useMemo(
     () => data?.pages.flatMap((page) => page.data) ?? [],
     [data],
   );
-  const isBulkActionPending = isMarkUnreadPending || isArchivePending;
+  const isBulkActionPending = isMarkUnreadPending || isArchivePending || isUnarchivePending;
   const hasSelection = selectedConversationIds.length > 0;
+  const isArchivedFilter = activeFilter === 'archived';
 
-  const setFilter = (val: boolean) => {
+  const setFilter = (val: InboxFilter) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (val) params.set('filter', 'unread');
-    else params.delete('filter');
+    if (val === 'all') params.delete('filter');
+    else params.set('filter', val);
     const nextQuery = params.toString();
     router.replace(nextQuery ? `/inbox?${nextQuery}` : '/inbox');
     setSelectedConversationIds([]);
@@ -85,13 +101,22 @@ function InboxPageContent() {
     });
   };
 
+  const handleUnarchiveSelected = () => {
+    if (!hasSelection || isBulkActionPending) return;
+    unarchive(selectedConversationIds, {
+      onSuccess: () => {
+        setSelectedConversationIds([]);
+      },
+    });
+  };
+
   return (
     <div data-testid="inbox-page" className="page-shell space-y-5">
       <header className="page-header items-center">
         <div className="flex items-center gap-2">
           <h1 className="page-title">דואר</h1>
-          {summary && summary.unreadConversations > 0 && (
-            <UnreadBadge count={summary.unreadConversations} />
+          {summary && summary.newConversations > 0 && (
+            <UnreadBadge count={summary.newConversations} />
           )}
         </div>
 
@@ -100,10 +125,10 @@ function InboxPageContent() {
           <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm">
             <button
               data-testid="filter-all"
-              onClick={() => setFilter(false)}
+              onClick={() => setFilter('all')}
               className={cn(
                 'px-3 py-1.5 transition-colors',
-                !unreadOnly
+                activeFilter === 'all'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent',
               )}
@@ -112,15 +137,27 @@ function InboxPageContent() {
             </button>
             <button
               data-testid="filter-unread"
-              onClick={() => setFilter(true)}
+              onClick={() => setFilter('new')}
               className={cn(
                 'px-3 py-1.5 transition-colors',
-                unreadOnly
+                activeFilter === 'new'
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent',
               )}
             >
               לא נקראו
+            </button>
+            <button
+              data-testid="filter-archived"
+              onClick={() => setFilter('archived')}
+              className={cn(
+                'px-3 py-1.5 transition-colors',
+                activeFilter === 'archived'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent',
+              )}
+            >
+              ארכיון
             </button>
           </div>
           <ThemeToggle />
@@ -144,26 +181,41 @@ function InboxPageContent() {
           >
             בחר הכל
           </button>
-          <button
-            type="button"
-            data-testid="bulk-mark-unread"
-            onClick={handleMarkUnreadSelected}
-            disabled={isBulkActionPending}
-            className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-          >
-            <MailOpen className="h-3.5 w-3.5" />
-            סמן כלא נקרא
-          </button>
-          <button
-            type="button"
-            data-testid="bulk-archive"
-            onClick={handleArchiveSelected}
-            disabled={isBulkActionPending}
-            className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-          >
-            <Archive className="h-3.5 w-3.5" />
-            ארכיון
-          </button>
+          {isArchivedFilter ? (
+            <button
+              type="button"
+              data-testid="bulk-unarchive"
+              onClick={handleUnarchiveSelected}
+              disabled={isBulkActionPending}
+              className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              שחזר מארכיון
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                data-testid="bulk-mark-unread"
+                onClick={handleMarkUnreadSelected}
+                disabled={isBulkActionPending}
+                className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                <MailOpen className="h-3.5 w-3.5" />
+                סמן כלא נקרא
+              </button>
+              <button
+                type="button"
+                data-testid="bulk-archive"
+                onClick={handleArchiveSelected}
+                disabled={isBulkActionPending}
+                className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                <Archive className="h-3.5 w-3.5" />
+                ארכיון
+              </button>
+            </>
+          )}
           <button
             type="button"
             data-testid="bulk-clear-selection"
@@ -183,7 +235,13 @@ function InboxPageContent() {
           conversations.length === 0 ? (
             <EmptyState
               icon={<Mail className="w-10 h-10" />}
-              title={unreadOnly ? 'אין הודעות שלא נקראו' : 'תיבת הדואר ריקה'}
+              title={
+                activeFilter === 'new'
+                  ? 'אין הודעות שלא נקראו'
+                  : activeFilter === 'archived'
+                    ? 'אין פריטים בארכיון'
+                    : 'תיבת הדואר ריקה'
+              }
             />
           ) : (
             <ConversationList

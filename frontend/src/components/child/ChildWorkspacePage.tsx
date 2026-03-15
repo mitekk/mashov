@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertTriangle, BookOpen, Bell, GraduationCap } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
@@ -44,6 +44,7 @@ export function ChildWorkspacePage({
   const { data, isLoading, isError, refetch } = useChild(studentGuid);
   const activeSection = parseChildSection(searchParams.get('section'));
   const activeBehaviorFilter = parseChildBehaviorFilter(searchParams.get('behavior'));
+  const [behaviorStatusFilter, setBehaviorStatusFilter] = useState<'active' | 'archived'>('active');
 
   useEffect(() => {
     setSelectedChildGuid(studentGuid);
@@ -158,12 +159,18 @@ export function ChildWorkspacePage({
           </div>
         </div>
 
-        {activeSection === 'homework' && <HomeworkSection studentGuid={studentGuid} />}
+        {activeSection === 'homework' && (
+          <HomeworkSection
+            studentGuid={studentGuid}
+          />
+        )}
         {activeSection === 'behavior' && (
           <BehaviorSection
             studentGuid={studentGuid}
             activeFilter={activeBehaviorFilter}
             onFilterChange={handleBehaviorFilterChange}
+            statusFilter={behaviorStatusFilter}
+            onStatusFilterChange={setBehaviorStatusFilter}
           />
         )}
         {activeSection === 'subjects' && <SubjectsSection studentGuid={studentGuid} />}

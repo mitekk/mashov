@@ -96,6 +96,8 @@ export class HomeworkTask {
                 homeworkText: item.homework,
                 remark,
                 files: files as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                isNew: true,
+                isArchived: false,
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
@@ -106,6 +108,7 @@ export class HomeworkTask {
                 homeworkText: item.homework,
                 remark,
                 files: files as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                // Do NOT overwrite isNew/isArchived on updates
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
             });

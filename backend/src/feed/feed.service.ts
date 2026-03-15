@@ -12,8 +12,8 @@ export interface FeedItem {
   category: string;
   priority: 'high' | 'medium' | 'low';
   isPositive: boolean;
-  isUnread: boolean;
-  isHandled: boolean;
+  isNew: boolean;
+  isArchived: boolean;
   eventAt: string;
   syncedAt: string;
   linkPath: string;
@@ -32,9 +32,11 @@ export class FeedService {
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
+        where: { isArchived: false },
         orderBy: { lessonDate: 'desc' },
       }),
       this.prisma.behaviorItem.findMany({
+        where: { isArchived: false },
         orderBy: { eventAt: 'desc' },
       }),
       this.prisma.mailConversation.findMany({
@@ -59,8 +61,8 @@ export class FeedService {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isUnread: false,
-        isHandled: false,
+        isNew: hw.isNew,
+        isArchived: hw.isArchived,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
         linkPath: `/children/${hw.studentGuid}`,
@@ -80,8 +82,8 @@ export class FeedService {
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
-        isUnread: false,
-        isHandled: false,
+        isNew: b.isNew,
+        isArchived: b.isArchived,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
         linkPath: `/children/${b.studentGuid}`,
@@ -98,10 +100,10 @@ export class FeedService {
         title: conv.subject,
         summary: conv.senderNamePreview ?? conv.subject,
         category: 'mail',
-        priority: conv.isUnread ? 'high' : 'medium',
+        priority: conv.isNew ? 'high' : 'medium',
         isPositive: false,
-        isUnread: conv.isUnread,
-        isHandled: false,
+        isNew: conv.isNew,
+        isArchived: false,
         eventAt: conv.sendTime.toISOString(),
         syncedAt: conv.lastFetchedAt.toISOString(),
         linkPath: `/inbox/${conv.conversationId}`,
@@ -111,54 +113,12 @@ export class FeedService {
     allItems.sort((a, b) => new Date(b.eventAt).getTime() - new Date(a.eventAt).getTime());
 
     const total = allItems.length;
-    const totalPages = Math.ceil(total / limit);
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
     const offset = (page - 1) * limit;
     const data = allItems.slice(offset, offset + limit);
 
-    const genericFeedIds = data
-      .filter((item) => item.sourceType !== 'mail')
-      .map((item) => item.id);
-    const mailConversationIds = data
-      .filter((item) => item.sourceType === 'mail')
-      .map((item) => item.sourceId);
-
-    const [feedReadStateRows, mailReadStateRows] = await Promise.all([
-      genericFeedIds.length > 0
-        ? this.prisma.readState.findMany({
-          where: {
-            itemType: 'feed_item',
-            itemId: { in: genericFeedIds },
-            scopeType: 'household',
-            scopeId: 'default',
-          },
-          select: { itemId: true, isHandled: true },
-        })
-        : Promise.resolve([]),
-      mailConversationIds.length > 0
-        ? this.prisma.readState.findMany({
-          where: {
-            itemType: 'mail_conversation',
-            itemId: { in: mailConversationIds },
-            scopeType: 'household',
-            scopeId: 'default',
-          },
-          select: { itemId: true, isHandled: true },
-        })
-        : Promise.resolve([]),
-    ]);
-
-    const feedHandledMap = new Map(feedReadStateRows.map((row) => [row.itemId, row.isHandled]));
-    const mailHandledMap = new Map(mailReadStateRows.map((row) => [row.itemId, row.isHandled]));
-
-    const withReadState = data.map((item) => ({
-      ...item,
-      isHandled: item.sourceType === 'mail'
-        ? (mailHandledMap.get(item.sourceId) ?? false)
-        : (feedHandledMap.get(item.id) ?? false),
-    }));
-
     return {
-      data: withReadState,
+      data,
       pagination: {
         page,
         limit,

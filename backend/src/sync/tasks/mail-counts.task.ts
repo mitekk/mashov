@@ -41,7 +41,7 @@ export class MailCountsTask {
       if (household) {
         await this.prisma.householdConnection.update({
           where: { id: household.id },
-          data: { cachedUnreadCount: unreadCount },
+          data: { cachedNewCount: unreadCount },
         });
       }
 

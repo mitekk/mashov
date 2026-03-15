@@ -7,7 +7,6 @@ import { PrismaClient } from '../../backend/node_modules/@prisma/client';
 import { HealthModule } from '../../backend/src/health/health.module';
 import { ChildrenModule } from '../../backend/src/children/children.module';
 import { MailModule } from '../../backend/src/mail/mail.module';
-import { ReadStateModule } from '../../backend/src/read-state/read-state.module';
 import { SyncModule } from '../../backend/src/sync/sync.module';
 import { SettingsModule } from '../../backend/src/settings/settings.module';
 import { PrismaModule } from '../../backend/src/prisma/prisma.module';
@@ -36,7 +35,7 @@ async function seedStudent(prisma: PrismaClient): Promise<void> {
   });
 }
 
-describe('API Integration Tests (Phase 1 contract)', () => {
+describe('API Integration Tests (isNew refactor contract)', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
   let mashovGetMock: jest.Mock;
@@ -59,7 +58,6 @@ describe('API Integration Tests (Phase 1 contract)', () => {
         HealthModule,
         ChildrenModule,
         MailModule,
-        ReadStateModule,
         SyncModule,
         SettingsModule,
         DashboardModule,
@@ -85,7 +83,6 @@ describe('API Integration Tests (Phase 1 contract)', () => {
   });
 
   beforeEach(async () => {
-    await prisma.readState.deleteMany({});
     await prisma.mailMessage.deleteMany({});
     await prisma.mailConversation.deleteMany({});
     await prisma.homeworkItem.deleteMany({});
@@ -153,7 +150,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       expect(Array.isArray(noticesRes.body.data)).toBe(true);
     });
 
-    it('GET homework/behavior include isHandled and behavior bucket/priority', async () => {
+    it('GET homework/behavior include isNew and isArchived (not isHandled)', async () => {
       await seedStudent(prisma);
 
       const homework = await prisma.homeworkItem.create({
@@ -165,6 +162,8 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           lesson: 2,
           subjectName: 'Math',
           homeworkText: 'Do pages 1-2',
+          isNew: true,
+          isArchived: false,
           rawPayload: {},
         },
       });
@@ -183,28 +182,14 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           subject: 'Math',
           reporter: 'Teacher',
           eventAt: new Date('2026-03-10T10:00:00Z'),
+          isNew: false,
+          isArchived: false,
           rawPayload: {},
         },
       });
 
-      await prisma.readState.createMany({
-        data: [
-          {
-            itemType: 'homework',
-            itemId: homework.id,
-            scopeType: 'household',
-            scopeId: 'default',
-            isHandled: true,
-          },
-          {
-            itemType: 'behavior',
-            itemId: behavior.id,
-            scopeType: 'household',
-            scopeId: 'default',
-            isHandled: true,
-          },
-        ],
-      });
+      void homework;
+      void behavior;
 
       const homeworkRes = await request(app.getHttpServer()).get(
         `/api/v1/children/${TEST_STUDENT_GUID}/homework`,
@@ -214,18 +199,247 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       );
 
       expect(homeworkRes.status).toBe(200);
-      expect(homeworkRes.body.data[0].isHandled).toBe(true);
+      expect(homeworkRes.body.data[0]).toHaveProperty('isNew');
+      expect(homeworkRes.body.data[0]).toHaveProperty('isArchived');
+      expect(homeworkRes.body.data[0]).not.toHaveProperty('isHandled');
+      expect(homeworkRes.body.data[0].isNew).toBe(true);
+
       expect(behaviorRes.status).toBe(200);
       expect(behaviorRes.body.data[0]).toMatchObject({
         bucket: 'attention',
         priority: 'high',
-        isHandled: true,
+        isNew: false,
+        isArchived: false,
       });
+      expect(behaviorRes.body.data[0]).not.toHaveProperty('isHandled');
+    });
+
+    it('GET homework with ?status=active returns only non-archived items', async () => {
+      await seedStudent(prisma);
+
+      await prisma.homeworkItem.createMany({
+        data: [
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 1,
+            groupId: 1,
+            lessonDate: new Date('2026-03-10T00:00:00Z'),
+            lesson: 2,
+            subjectName: 'Math',
+            homeworkText: 'Active homework',
+            isNew: true,
+            isArchived: false,
+            rawPayload: {},
+          },
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 2,
+            groupId: 1,
+            lessonDate: new Date('2026-03-09T00:00:00Z'),
+            lesson: 1,
+            subjectName: 'Science',
+            homeworkText: 'Archived homework',
+            isNew: false,
+            isArchived: true,
+            rawPayload: {},
+          },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=active`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].isArchived).toBe(false);
+    });
+
+    it('GET homework with ?status=archived returns only archived items', async () => {
+      await seedStudent(prisma);
+
+      await prisma.homeworkItem.createMany({
+        data: [
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 1,
+            groupId: 1,
+            lessonDate: new Date('2026-03-10T00:00:00Z'),
+            lesson: 2,
+            subjectName: 'Math',
+            homeworkText: 'Active homework',
+            isNew: true,
+            isArchived: false,
+            rawPayload: {},
+          },
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 2,
+            groupId: 1,
+            lessonDate: new Date('2026-03-09T00:00:00Z'),
+            lesson: 1,
+            subjectName: 'Science',
+            homeworkText: 'Archived homework',
+            isNew: false,
+            isArchived: true,
+            rawPayload: {},
+          },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=archived`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].isArchived).toBe(true);
+    });
+
+    it('PUT /api/v1/children/:guid/homework/:id/is-new updates isNew flag', async () => {
+      await seedStudent(prisma);
+
+      const hw = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 1,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 2,
+          subjectName: 'Math',
+          homeworkText: 'Homework',
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/homework/${hw.id}/is-new`)
+        .send({ isNew: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.isNew).toBe(false);
+    });
+
+    it('PUT /api/v1/children/:guid/homework/:id/archive sets isArchived=true and isNew=false', async () => {
+      await seedStudent(prisma);
+
+      const hw = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 1,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 2,
+          subjectName: 'Math',
+          homeworkText: 'Homework',
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/homework/${hw.id}/archive`)
+        .send({ isArchived: true });
+
+      expect(res.status).toBe(200);
+      expect(res.body.isArchived).toBe(true);
+      expect(res.body.isNew).toBe(false);
+    });
+
+    it('PUT /api/v1/children/:guid/homework/:id/archive with isArchived=false restores isNew=true', async () => {
+      await seedStudent(prisma);
+
+      const hw = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 1,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 2,
+          subjectName: 'Math',
+          homeworkText: 'Homework',
+          isNew: false,
+          isArchived: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/homework/${hw.id}/archive`)
+        .send({ isArchived: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.isArchived).toBe(false);
+      expect(res.body.isNew).toBe(true);
+    });
+
+    it('PUT /api/v1/children/:guid/behavior/:id/is-new updates isNew flag', async () => {
+      await seedStudent(prisma);
+
+      const beh = await prisma.behaviorItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 1,
+          groupId: 1,
+          eventCode: 2,
+          achvaCode: 2,
+          achvaName: 'Absence',
+          classification: 'attention',
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 2,
+          subject: 'Math',
+          reporter: 'Teacher',
+          eventAt: new Date('2026-03-10T10:00:00Z'),
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/behavior/${beh.id}/is-new`)
+        .send({ isNew: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.isNew).toBe(false);
+    });
+
+    it('PUT /api/v1/children/:guid/behavior/:id/archive sets isArchived=true and isNew=false', async () => {
+      await seedStudent(prisma);
+
+      const beh = await prisma.behaviorItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 1,
+          groupId: 1,
+          eventCode: 2,
+          achvaCode: 2,
+          achvaName: 'Absence',
+          classification: 'attention',
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 2,
+          subject: 'Math',
+          reporter: 'Teacher',
+          eventAt: new Date('2026-03-10T10:00:00Z'),
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/behavior/${beh.id}/archive`)
+        .send({ isArchived: true });
+
+      expect(res.status).toBe(200);
+      expect(res.body.isArchived).toBe(true);
+      expect(res.body.isNew).toBe(false);
     });
   });
 
   describe('Mail API', () => {
-    it('GET /api/v1/mail/summary uses cached unread count from household when present', async () => {
+    it('GET /api/v1/mail/summary uses newConversations key with cached count from household', async () => {
       await prisma.householdConnection.create({
         data: {
           schoolCode: 1234,
@@ -234,7 +448,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           encryptedPassword: 'enc',
           schoolName: 'School',
           active: true,
-          cachedUnreadCount: 17,
+          cachedNewCount: 17,
         },
       });
       await prisma.mailConversation.create({
@@ -243,34 +457,26 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           subject: 'Message',
           senderNamePreview: 'School',
           sendTime: new Date('2026-03-12T10:00:00Z'),
-          isUnread: true,
+          isNew: true,
           rawPayload: {},
         },
       });
 
       const res = await request(app.getHttpServer()).get('/api/v1/mail/summary');
       expect(res.status).toBe(200);
-      expect(res.body.unreadConversations).toBe(17);
+      expect(res.body.newConversations).toBe(17);
+      expect(res.body).not.toHaveProperty('unreadConversations');
     });
 
-    it('GET /api/v1/mail/conversations includes isHandled', async () => {
+    it('GET /api/v1/mail/conversations includes isNew (not isHandled)', async () => {
       await prisma.mailConversation.create({
         data: {
           conversationId: 'conv-1',
           subject: 'Message',
           senderNamePreview: 'School',
           sendTime: new Date('2026-03-12T10:00:00Z'),
-          isUnread: true,
+          isNew: true,
           rawPayload: {},
-        },
-      });
-      await prisma.readState.create({
-        data: {
-          itemType: 'mail_conversation',
-          itemId: 'conv-1',
-          scopeType: 'household',
-          scopeId: 'default',
-          isHandled: true,
         },
       });
 
@@ -278,8 +484,37 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       expect(res.status).toBe(200);
       expect(res.body.data[0]).toMatchObject({
         conversationId: 'conv-1',
-        isHandled: true,
+        isNew: true,
       });
+      expect(res.body.data[0]).not.toHaveProperty('isHandled');
+    });
+
+    it('GET /api/v1/mail/conversations with filter=new returns only isNew=true conversations', async () => {
+      await prisma.mailConversation.createMany({
+        data: [
+          {
+            conversationId: 'conv-new',
+            subject: 'New message',
+            senderNamePreview: 'School',
+            sendTime: new Date('2026-03-12T10:00:00Z'),
+            isNew: true,
+            rawPayload: {},
+          },
+          {
+            conversationId: 'conv-read',
+            subject: 'Read message',
+            senderNamePreview: 'School',
+            sendTime: new Date('2026-03-11T10:00:00Z'),
+            isNew: false,
+            rawPayload: {},
+          },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/mail/conversations?filter=new');
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].conversationId).toBe('conv-new');
     });
 
     it('GET /api/v1/mail/conversations excludes archived-labeled conversations', async () => {
@@ -290,7 +525,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
             subject: 'Visible',
             senderNamePreview: 'School',
             sendTime: new Date('2026-03-12T10:00:00Z'),
-            isUnread: true,
+            isNew: true,
             labels: [],
             rawPayload: {},
           },
@@ -299,7 +534,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
             subject: 'Archived',
             senderNamePreview: 'School',
             sendTime: new Date('2026-03-11T10:00:00Z'),
-            isUnread: true,
+            isNew: true,
             labels: ['archived'],
             rawPayload: {},
           },
@@ -312,14 +547,14 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       expect(res.body.data[0].conversationId).toBe('conv-visible');
     });
 
-    it('GET /api/v1/mail/conversations/:id returns flattened contract shape', async () => {
+    it('GET /api/v1/mail/conversations/:id returns flattened contract shape with isNew', async () => {
       await prisma.mailConversation.create({
         data: {
           conversationId: 'conv-1',
           subject: 'Message Subject',
           senderNamePreview: 'School',
           sendTime: new Date('2026-03-12T10:00:00Z'),
-          isUnread: true,
+          isNew: false,
           rawPayload: {},
         },
       });
@@ -341,7 +576,9 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       expect(res.body).toMatchObject({
         conversationId: 'conv-1',
         subject: 'Message Subject',
+        isNew: false,
       });
+      expect(res.body).not.toHaveProperty('isHandled');
       expect(Array.isArray(res.body.messages)).toBe(true);
       expect(res.body.messages[0].messageId).toBe('msg-1');
     });
@@ -353,7 +590,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           subject: 'Message Subject',
           senderNamePreview: 'School',
           sendTime: new Date('2026-03-12T10:00:00Z'),
-          isUnread: true,
+          isNew: true,
           rawPayload: {},
         },
       });
@@ -408,6 +645,30 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       );
     });
 
+    it('PUT /api/v1/mail/conversations/mark-read sets isNew=false on specified conversations', async () => {
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-mark-read',
+          subject: 'Message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isNew: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put('/api/v1/mail/conversations/mark-read')
+        .send({ conversationIds: ['conv-mark-read'] });
+      expect(res.status).toBe(200);
+      expect(res.body.updated).toBe(1);
+
+      const conv = await prisma.mailConversation.findUnique({
+        where: { conversationId: 'conv-mark-read' },
+      });
+      expect(conv?.isNew).toBe(false);
+    });
+
     it('PUT /api/v1/mail/conversations/mark-unread proxies raw id array to upstream', async () => {
       await prisma.mailConversation.create({
         data: {
@@ -415,7 +676,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           subject: 'Message',
           senderNamePreview: 'School',
           sendTime: new Date('2026-03-12T10:00:00Z'),
-          isUnread: false,
+          isNew: false,
           rawPayload: {},
         },
       });
@@ -439,7 +700,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           subject: 'Message',
           senderNamePreview: 'School',
           sendTime: new Date('2026-03-12T10:00:00Z'),
-          isUnread: false,
+          isNew: false,
           rawPayload: {},
         },
       });
@@ -471,10 +732,63 @@ describe('API Integration Tests (Phase 1 contract)', () => {
       expect(listRes.status).toBe(200);
       expect(listRes.body.data).toHaveLength(0);
     });
+
+    it('PUT /api/v1/mail/conversations/unarchive restores archived conversation to inbox and sets isNew=true', async () => {
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-unarchive',
+          subject: 'Archived Message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T10:00:00Z'),
+          isNew: false,
+          labels: ['archived'],
+          rawPayload: {},
+        },
+      });
+
+      const unarchiveRes = await request(app.getHttpServer())
+        .put('/api/v1/mail/conversations/unarchive')
+        .send({ conversationIds: ['conv-unarchive'] });
+      expect(unarchiveRes.status).toBe(200);
+      expect(unarchiveRes.body.updated).toBe(1);
+      expect(mashovPutMock).toHaveBeenCalledWith(
+        '/api/mail/conversations/markAsUnread',
+        ['conv-unarchive'],
+        expect.any(Object),
+      );
+
+      const archivedListRes = await request(app.getHttpServer())
+        .get('/api/v1/mail/conversations?filter=archived');
+      expect(archivedListRes.status).toBe(200);
+      expect(archivedListRes.body.data).toHaveLength(0);
+
+      const inboxListRes = await request(app.getHttpServer()).get('/api/v1/mail/conversations');
+      expect(inboxListRes.status).toBe(200);
+      expect(inboxListRes.body.data).toHaveLength(1);
+      expect(inboxListRes.body.data[0].conversationId).toBe('conv-unarchive');
+      expect(inboxListRes.body.data[0].isNew).toBe(true);
+    });
+  });
+
+  describe('Read-state API (removed)', () => {
+    it('POST /api/v1/read-state returns 404', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/read-state')
+        .send({ itemType: 'homework', itemId: 'hw-1', isHandled: true });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('DELETE /api/v1/read-state returns 404', async () => {
+      const res = await request(app.getHttpServer())
+        .delete('/api/v1/read-state');
+
+      expect(res.status).toBe(404);
+    });
   });
 
   describe('Dashboard API', () => {
-    it('GET /api/v1/dashboard summary unreadConversations uses cached mail count', async () => {
+    it('GET /api/v1/dashboard summary newConversations uses cached mail count', async () => {
       await prisma.householdConnection.create({
         data: {
           schoolCode: 1234,
@@ -483,7 +797,7 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           encryptedPassword: 'enc',
           schoolName: 'School',
           active: true,
-          cachedUnreadCount: 23,
+          cachedNewCount: 23,
         },
       });
       await prisma.mailConversation.create({
@@ -492,14 +806,15 @@ describe('API Integration Tests (Phase 1 contract)', () => {
           subject: 'Message',
           senderNamePreview: 'School',
           sendTime: new Date('2026-03-12T10:00:00Z'),
-          isUnread: true,
+          isNew: true,
           rawPayload: {},
         },
       });
 
       const res = await request(app.getHttpServer()).get('/api/v1/dashboard');
       expect(res.status).toBe(200);
-      expect(res.body.summary.unreadConversations).toBe(23);
+      expect(res.body.summary.newConversations).toBe(23);
+      expect(res.body.summary).not.toHaveProperty('unreadConversations');
     });
   });
 
@@ -552,50 +867,6 @@ describe('API Integration Tests (Phase 1 contract)', () => {
         schoolYear: 2026,
         schoolCode: 1234,
       });
-    });
-  });
-
-  describe('Read-state API', () => {
-    it('POST /api/v1/read-state upserts state', async () => {
-      const res = await request(app.getHttpServer())
-        .post('/api/v1/read-state')
-        .send({ itemType: 'feed_item', itemId: 'item-1', isRead: true, isHandled: false });
-
-      expect(res.status).toBe(201);
-      expect(res.body).toMatchObject({
-        itemType: 'feed_item',
-        itemId: 'item-1',
-        isRead: true,
-      });
-    });
-
-    it('POST /api/v1/read-state returns 400 on missing required fields', async () => {
-      const res = await request(app.getHttpServer())
-        .post('/api/v1/read-state')
-        .send({ itemId: 'item-1' });
-
-      expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe('VALIDATION_ERROR');
-    });
-
-    it('POST /api/v1/read-state clearAll=true clears read state', async () => {
-      await prisma.readState.create({
-        data: {
-          itemType: 'feed_item',
-          itemId: 'item-1',
-          scopeType: 'household',
-          scopeId: 'default',
-          isRead: true,
-          isHandled: true,
-        },
-      });
-
-      const res = await request(app.getHttpServer())
-        .post('/api/v1/read-state')
-        .send({ clearAll: true });
-
-      expect(res.status).toBe(201);
-      expect(res.body).toEqual({ deleted: 1 });
     });
   });
 

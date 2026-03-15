@@ -22,7 +22,7 @@ export function BottomNav() {
   const pathname = usePathname();
   const { data } = useDashboard();
   const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
-  const unreadCount = data?.summary.unreadConversations ?? 0;
+  const unreadCount = data?.summary.newConversations ?? 0;
 
   const selectedChildExists = Boolean(
     selectedChildGuid

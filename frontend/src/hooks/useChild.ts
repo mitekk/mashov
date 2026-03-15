@@ -1,13 +1,14 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   fetchChild,
   fetchChildHomework,
+  fetchChildHomeworkDetail,
   fetchChildBehavior,
+  fetchChildBehaviorDetail,
   fetchChildSubjects,
   fetchChildNotices,
 } from '@/api/children';
-import { upsertReadState } from '@/api/readState';
-import type { BehaviorBucket, ReadStateRequest } from '@/types/api';
+import type { BehaviorBucket } from '@/types/api';
 
 export function useChild(studentGuid: string) {
   return useQuery({
@@ -18,12 +19,25 @@ export function useChild(studentGuid: string) {
   });
 }
 
-export function useChildHomework(studentGuid: string, page = 1) {
+export function useChildHomework(
+  studentGuid: string,
+  page = 1,
+  status: 'active' | 'archived' = 'active',
+) {
   return useQuery({
-    queryKey: ['child-homework', studentGuid, page],
-    queryFn: () => fetchChildHomework(studentGuid, page),
+    queryKey: ['child-homework', studentGuid, page, status],
+    queryFn: () => fetchChildHomework(studentGuid, page, 50, status),
     staleTime: 60_000,
     enabled: Boolean(studentGuid),
+  });
+}
+
+export function useChildHomeworkDetail(studentGuid: string, homeworkId: string) {
+  return useQuery({
+    queryKey: ['child-homework-detail', studentGuid, homeworkId],
+    queryFn: () => fetchChildHomeworkDetail(studentGuid, homeworkId),
+    staleTime: 60_000,
+    enabled: Boolean(studentGuid && homeworkId),
   });
 }
 
@@ -31,12 +45,22 @@ export function useChildBehavior(
   studentGuid: string,
   page = 1,
   bucket: BehaviorBucket | 'all' = 'all',
+  status: 'active' | 'archived' = 'active',
 ) {
   return useQuery({
-    queryKey: ['child-behavior', studentGuid, page, bucket],
-    queryFn: () => fetchChildBehavior(studentGuid, page, 50, bucket),
+    queryKey: ['child-behavior', studentGuid, page, bucket, status],
+    queryFn: () => fetchChildBehavior(studentGuid, page, 50, bucket, status),
     staleTime: 60_000,
     enabled: Boolean(studentGuid),
+  });
+}
+
+export function useChildBehaviorDetail(studentGuid: string, behaviorId: string) {
+  return useQuery({
+    queryKey: ['child-behavior-detail', studentGuid, behaviorId],
+    queryFn: () => fetchChildBehaviorDetail(studentGuid, behaviorId),
+    staleTime: 60_000,
+    enabled: Boolean(studentGuid && behaviorId),
   });
 }
 
@@ -55,22 +79,5 @@ export function useChildNotices(studentGuid: string) {
     queryFn: () => fetchChildNotices(studentGuid),
     staleTime: 5 * 60_000,
     enabled: Boolean(studentGuid),
-  });
-}
-
-export function useMarkHandled() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (req: ReadStateRequest) => upsertReadState(req),
-    onSuccess: (_data, variables) => {
-      // Invalidate relevant queries
-      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      if (variables.itemType === 'homework') {
-        void queryClient.invalidateQueries({ queryKey: ['child-homework'] });
-      }
-      if (variables.itemType === 'behavior') {
-        void queryClient.invalidateQueries({ queryKey: ['child-behavior'] });
-      }
-    },
   });
 }

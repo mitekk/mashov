@@ -1,7 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchConversationDetail } from '@/api/mail';
-import { upsertReadState } from '@/api/readState';
-import type { ReadStateRequest } from '@/types/api';
+import type { MailBulkActionResponse } from '@/types/api';
+import {
+  fetchConversationDetail,
+  markConversationsRead,
+  markConversationsUnread,
+  unarchiveConversations,
+} from '@/api/mail';
 
 export function useConversation(conversationId: string) {
   return useQuery({
@@ -12,13 +16,18 @@ export function useConversation(conversationId: string) {
   });
 }
 
-export function useMarkConversationHandled() {
+export function useMarkConversationNew() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (req: ReadStateRequest) => upsertReadState(req),
-    onSuccess: (_data, variables) => {
+    mutationFn: ({ conversationId, isNew }: { conversationId: string; isNew: boolean }) => {
+      if (!isNew) {
+        return markConversationsRead([conversationId]);
+      }
+      return markConversationsUnread([conversationId]);
+    },
+    onSuccess: (_data: MailBulkActionResponse, variables: { conversationId: string; isNew: boolean }) => {
       void queryClient.invalidateQueries({
-        queryKey: ['conversation', variables.itemId],
+        queryKey: ['conversation', variables.conversationId],
       });
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
@@ -28,7 +37,27 @@ export function useMarkConversationHandled() {
 }
 
 export function useMarkConversationRead() {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (req: ReadStateRequest) => upsertReadState(req),
+    mutationFn: (conversationId: string) => markConversationsRead([conversationId]),
+    onSuccess: (_data: MailBulkActionResponse, conversationId: string) => {
+      void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function useUnarchiveConversation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (conversationId: string) => unarchiveConversations([conversationId]),
+    onSuccess: (_data: MailBulkActionResponse, conversationId: string) => {
+      void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
   });
 }

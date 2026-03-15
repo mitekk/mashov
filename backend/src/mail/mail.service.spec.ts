@@ -12,7 +12,7 @@ function makeConversation(overrides?: object) {
     subject: 'Parent meeting',
     senderNamePreview: 'Principal',
     sendTime: NOW,
-    isUnread: false,
+    isNew: false,
     hasDrafts: false,
     hasAttachments: false,
     preventReply: false,
@@ -24,9 +24,15 @@ function makeConversation(overrides?: object) {
 }
 
 function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
+  const householdUpdate = overrides.householdUpdate
+    ?? overrides.householdUpdateMany
+    ?? jest.fn().mockResolvedValue({ count: 0 });
+
   return {
     householdConnection: {
       findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
+      update: householdUpdate,
+      updateMany: householdUpdate,
     },
     mailConversation: {
       count: overrides.conversationCount ?? jest.fn().mockResolvedValue(0),
@@ -40,11 +46,6 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
       findMany: overrides.messageFindMany ?? jest.fn().mockResolvedValue([]),
       upsert: overrides.messageUpsert ?? jest.fn().mockResolvedValue({}),
       deleteMany: overrides.messageDeleteMany ?? jest.fn().mockResolvedValue({ count: 0 }),
-    },
-    readState: {
-      findMany: overrides.readStateFindMany ?? jest.fn().mockResolvedValue([]),
-      findUnique: overrides.readStateFindUnique ?? jest.fn().mockResolvedValue(null),
-      deleteMany: overrides.readStateDeleteMany ?? jest.fn().mockResolvedValue({ count: 0 }),
     },
     syncRun: {
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
@@ -61,13 +62,13 @@ function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>>) {
 
 describe('MailService', () => {
   describe('getSummary', () => {
-    it('returns unread count from cached household count when available', async () => {
+    it('returns newConversations count from cached household count when available', async () => {
       const service = new MailService(
         makeMockPrisma({
-          householdFindFirst: jest.fn().mockResolvedValue({ cachedUnreadCount: 68 }),
+          householdFindFirst: jest.fn().mockResolvedValue({ cachedNewCount: 68 }),
           conversationCount: jest.fn().mockResolvedValue(2),
           conversationFindMany: jest.fn().mockResolvedValue([
-            makeConversation({ isUnread: true }),
+            makeConversation({ isNew: true }),
           ]),
           syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
         }),
@@ -75,12 +76,12 @@ describe('MailService', () => {
       );
 
       const result = await service.getSummary();
-      expect(result.unreadConversations).toBe(68);
+      expect(result.newConversations).toBe(68);
       expect(result.recentConversations[0].conversationId).toBe('conv-upstream-1');
       expect(result.lastSyncAt).toBe(NOW.toISOString());
     });
 
-    it('falls back to unread count from DB when household cache is missing', async () => {
+    it('falls back to new count from DB when household cache is missing', async () => {
       const service = new MailService(
         makeMockPrisma({
           householdFindFirst: jest.fn().mockResolvedValue(null),
@@ -90,31 +91,56 @@ describe('MailService', () => {
       );
 
       const result = await service.getSummary();
-      expect(result.unreadConversations).toBe(4);
+      expect(result.newConversations).toBe(4);
+    });
+
+    it('does not include unreadConversations field in summary', async () => {
+      const service = new MailService(
+        makeMockPrisma({
+          householdFindFirst: jest.fn().mockResolvedValue(null),
+          conversationCount: jest.fn().mockResolvedValue(2),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      const result = await service.getSummary();
+      expect(result).not.toHaveProperty('unreadConversations');
     });
   });
 
   describe('getConversations', () => {
-    it('returns paginated list with isHandled from read_state', async () => {
+    it('returns paginated list with isNew from mail_conversation directly', async () => {
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindMany: jest.fn().mockResolvedValue([
+            makeConversation({ conversationId: 'conv-1', isNew: true }),
+          ]),
+          conversationCount: jest.fn().mockResolvedValue(1),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      const result = await service.getConversations(1, 20, 'all');
+      expect(result.pagination).toMatchObject({ page: 1, total: 1, totalPages: 1 });
+      expect(result.data[0]).toMatchObject({
+        conversationId: 'conv-1',
+        isNew: true,
+      });
+    });
+
+    it('does not include isHandled field on conversation list items', async () => {
       const service = new MailService(
         makeMockPrisma({
           conversationFindMany: jest.fn().mockResolvedValue([
             makeConversation({ conversationId: 'conv-1' }),
           ]),
           conversationCount: jest.fn().mockResolvedValue(1),
-          readStateFindMany: jest.fn().mockResolvedValue([
-            { itemId: 'conv-1', isHandled: true },
-          ]),
         }),
         makeMockMashovClient({}),
       );
 
-      const result = await service.getConversations(1, 20, false);
-      expect(result.pagination).toMatchObject({ page: 1, total: 1, totalPages: 1 });
-      expect(result.data[0]).toMatchObject({
-        conversationId: 'conv-1',
-        isHandled: true,
-      });
+      const result = await service.getConversations(1, 20, 'all');
+      expect(result.data[0]).not.toHaveProperty('isHandled');
     });
   });
 
@@ -132,11 +158,11 @@ describe('MailService', () => {
       );
     });
 
-    it('returns flattened contract shape', async () => {
+    it('returns flattened contract shape with isNew from conversation record', async () => {
       const service = new MailService(
         makeMockPrisma({
           conversationFindUnique: jest.fn().mockResolvedValue(
-            makeConversation({ conversationId: 'conv-1' }),
+            makeConversation({ conversationId: 'conv-1', isNew: false }),
           ),
           messageFindMany: jest.fn().mockResolvedValue([
             {
@@ -155,7 +181,6 @@ describe('MailService', () => {
               sentViaSms: false,
             },
           ]),
-          readStateFindUnique: jest.fn().mockResolvedValue({ isHandled: true }),
         }),
         makeMockMashovClient({}),
       );
@@ -163,8 +188,9 @@ describe('MailService', () => {
       const result = await service.getConversationDetail('conv-1');
       expect(result).toMatchObject({
         conversationId: 'conv-1',
-        isHandled: true,
+        isNew: false,
       });
+      expect(result).not.toHaveProperty('isHandled');
       expect(Array.isArray(result.messages)).toBe(true);
       expect(result.messages[0].messageId).toBe('msg-1');
       expect(result.messages[0].hasAttachments).toBe(false);
@@ -307,18 +333,70 @@ describe('MailService', () => {
     });
   });
 
-  describe('mail actions', () => {
-    it('markUnread updates DB and returns updated count', async () => {
-      const mashovPut = jest.fn().mockResolvedValue({});
+  describe('markConversationsRead', () => {
+    it('sets isNew=false on conversations and updates cachedNewCount', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
       const service = new MailService(
         makeMockPrisma({
-          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 2 }),
+          conversationUpdateMany,
+          householdUpdate,
+          conversationCount: jest.fn().mockResolvedValue(5),
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      const result = await service.markConversationsRead(['conv-1', 'conv-2']);
+      expect(result.updated).toBe(2);
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ conversationId: { in: ['conv-1', 'conv-2'] } }),
+          data: expect.objectContaining({ isNew: false }),
+        }),
+      );
+    });
+
+    it('updates cachedNewCount after marking conversations as read', async () => {
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          householdUpdate,
+          conversationCount: jest.fn().mockResolvedValue(3),
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markConversationsRead(['conv-1']);
+      expect(householdUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'household-1' }),
+          data: expect.objectContaining({ cachedNewCount: 3 }),
+        }),
+      );
+    });
+  });
+
+  describe('mail actions', () => {
+    it('markUnread sets isNew=true and returns updated count', async () => {
+      const mashovPut = jest.fn().mockResolvedValue({});
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany,
         }),
         makeMockMashovClient({ put: mashovPut }),
       );
 
       const result = await service.markUnread(['conv-1', 'conv-2']);
       expect(result.updated).toBe(2);
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isNew: true }),
+        }),
+      );
       expect(mashovPut).toHaveBeenCalledWith(
         '/api/mail/conversations/markAsUnread',
         ['conv-1', 'conv-2'],
@@ -326,16 +404,13 @@ describe('MailService', () => {
       );
     });
 
-    it('archive deletes conversations and messages and returns deleted count', async () => {
-      const conversationDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
-      const messageDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
-      const readStateDeleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    it('archive sets labels to archived and isNew=false', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       const mashovPut = jest.fn().mockResolvedValue({});
       const service = new MailService(
         makeMockPrisma({
-          conversationDeleteMany,
-          messageDeleteMany,
-          readStateDeleteMany,
+          conversationUpdateMany,
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({ put: mashovPut }),
       );
@@ -347,9 +422,47 @@ describe('MailService', () => {
         ['conv-upstream-1'],
         expect.any(Object),
       );
-      expect(messageDeleteMany).toHaveBeenCalled();
-      expect(conversationDeleteMany).toHaveBeenCalled();
-      expect(readStateDeleteMany).toHaveBeenCalled();
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ conversationId: { in: ['conv-upstream-1'] } }),
+          data: expect.objectContaining({ isNew: false, labels: ['archived'] }),
+        }),
+      );
+    });
+
+    it('unarchive clears archived label and sets isNew=true', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
+      const mashovPut = jest.fn().mockResolvedValue({});
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany,
+          householdUpdate,
+          conversationCount: jest.fn().mockResolvedValue(7),
+          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
+        }),
+        makeMockMashovClient({ put: mashovPut }),
+      );
+
+      const result = await service.unarchive(['conv-archived-1']);
+      expect(result.updated).toBe(1);
+      expect(mashovPut).toHaveBeenCalledWith(
+        '/api/mail/conversations/markAsUnread',
+        ['conv-archived-1'],
+        expect.any(Object),
+      );
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ conversationId: { in: ['conv-archived-1'] } }),
+          data: expect.objectContaining({ isNew: true, labels: [] }),
+        }),
+      );
+      expect(householdUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'household-1' }),
+          data: expect.objectContaining({ cachedNewCount: 7 }),
+        }),
+      );
     });
   });
 });

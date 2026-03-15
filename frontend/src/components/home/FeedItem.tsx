@@ -2,14 +2,16 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { CheckCircle, Circle } from 'lucide-react';
+import { Eye, EyeOff, Archive } from 'lucide-react';
 import type { FeedItem as FeedItemType } from '@/types/api';
 import { SourceTypeBadge } from '@/components/ui/Badge';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
-import { useMarkHandled } from '@/hooks/useReadState';
+import { useMarkNew } from '@/hooks/useMarkNew';
+import { useArchive } from '@/hooks/useArchive';
+import { useArchive as useMailArchive } from '@/hooks/useMail';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
-import { buildChildSectionHref } from '@/lib/child-routes';
+import { buildBehaviorDetailHref, buildChildSectionHref, buildHomeworkDetailHref } from '@/lib/child-routes';
 
 interface FeedItemProps {
   item: FeedItemType;
@@ -18,9 +20,13 @@ interface FeedItemProps {
 function getSafeFeedHref(item: FeedItemType): string | null {
   if (item.studentGuid) {
     if (item.sourceType === 'homework') {
+      const detailHref = buildHomeworkDetailHref(item.studentGuid, item.sourceId);
+      if (detailHref) return detailHref;
       return buildChildSectionHref(item.studentGuid, 'homework');
     }
     if (item.sourceType === 'behavior' || item.sourceType === 'positive') {
+      const detailHref = buildBehaviorDetailHref(item.studentGuid, item.sourceId);
+      if (detailHref) return detailHref;
       return buildChildSectionHref(item.studentGuid, 'behavior');
     }
   }
@@ -38,24 +44,35 @@ function getSafeFeedHref(item: FeedItemType): string | null {
 
 export function FeedItem({ item }: FeedItemProps) {
   const isMailItem = item.sourceType === 'mail';
-  const { markHandled, isPending } = useMarkHandled(
-    isMailItem ? 'mail_conversation' : 'feed_item',
-    isMailItem ? item.sourceId : item.id,
-    isMailItem
-      ? [['dashboard'], ['conversations'], ['conversation', item.sourceId]]
-      : [['dashboard']],
-  );
+  const isArchivable = item.sourceType === 'homework' || item.sourceType === 'behavior' || item.sourceType === 'positive';
 
-  const isHandled = item.isHandled;
+  const markNewKeys = isMailItem
+    ? [['dashboard'], ['conversations'], ['conversation', item.sourceId]]
+    : [['dashboard']];
+
+  const { mutate: mutateMarkNew, isPending: isMarkNewPending } = useMarkNew({
+    type: isMailItem ? 'conversation' : (item.sourceType === 'homework' ? 'homework' : 'behavior'),
+    id: isMailItem ? item.sourceId : item.id,
+    studentGuid: item.studentGuid ?? undefined,
+    invalidateKeys: markNewKeys,
+  });
+
+  const archiveInvalidateKeys = [['dashboard']];
+  const { mutate: mutateArchive, isPending: isArchivePending } = useArchive({
+    type: item.sourceType === 'homework' ? 'homework' : 'behavior',
+    id: item.id,
+    studentGuid: item.studentGuid ?? '',
+    invalidateKeys: archiveInvalidateKeys,
+  });
+
+  const { mutate: mutateMailArchive, isPending: isMailArchivePending } = useMailArchive();
+
   const safeHref = getPhase1HrefOrNull(getSafeFeedHref(item));
 
   return (
     <div
       data-testid={`feed-item-${item.id}`}
-      className={cn(
-        'card-base p-4 flex gap-3 items-start transition-opacity',
-        isHandled ? 'opacity-50' : 'opacity-100',
-      )}
+      className="card-base p-4 flex gap-3 items-start"
     >
       <div className="flex-1 min-w-0">
         {safeHref ? (
@@ -68,8 +85,8 @@ export function FeedItem({ item }: FeedItemProps) {
             </div>
             <p
               className={cn(
-                'text-sm font-medium text-foreground truncate group-hover:underline',
-                !item.isUnread && 'font-normal',
+                'text-sm text-foreground truncate group-hover:underline',
+                item.isNew ? 'font-semibold' : 'font-normal',
               )}
             >
               {item.title}
@@ -114,19 +131,43 @@ export function FeedItem({ item }: FeedItemProps) {
           </div>
         )}
       </div>
-      <button
-        data-testid={`mark-handled-${item.id}`}
-        onClick={() => markHandled(!isHandled)}
-        disabled={isPending}
-        aria-label={isHandled ? 'בטל טיפול' : 'סמן כטופל'}
-        className="flex-shrink-0 mt-0.5 text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
-      >
-        {isHandled ? (
-          <CheckCircle className="w-5 h-5 text-primary" />
-        ) : (
-          <Circle className="w-5 h-5" />
+      <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
+        <button
+          data-testid={`feed-item-mark-new-${item.id}`}
+          onClick={() => mutateMarkNew(!item.isNew)}
+          disabled={isMarkNewPending}
+          aria-label={item.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
+          className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+        >
+          {item.isNew ? (
+            <Eye className="w-5 h-5 text-primary" />
+          ) : (
+            <EyeOff className="w-5 h-5" />
+          )}
+        </button>
+        {isArchivable && (
+          <button
+            data-testid={`feed-item-archive-${item.id}`}
+            onClick={() => mutateArchive(!item.isArchived)}
+            disabled={isArchivePending}
+            aria-label={item.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
+            className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+          >
+            <Archive className={cn('w-4 h-4', item.isArchived && 'text-primary')} />
+          </button>
         )}
-      </button>
+        {isMailItem && (
+          <button
+            data-testid={`feed-item-archive-${item.id}`}
+            onClick={() => mutateMailArchive([item.sourceId])}
+            disabled={isMailArchivePending}
+            aria-label="העבר לארכיון"
+            className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+          >
+            <Archive className="w-4 h-4" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

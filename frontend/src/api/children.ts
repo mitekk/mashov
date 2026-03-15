@@ -4,10 +4,16 @@ import type {
   ChildrenResponse,
   ChildWorkspaceResponse,
   HomeworkResponse,
+  HomeworkDetailResponse,
+  HomeworkItem,
   BehaviorResponse,
+  BehaviorDetailResponse,
+  BehaviorItem,
   SubjectsResponse,
   NoticesResponse,
   BehaviorBucket,
+  MarkIsNewRequest,
+  MarkArchivedRequest,
 } from '@/types/api';
 import { classifyBehavior } from '@/lib/behavior';
 
@@ -40,9 +46,15 @@ export async function fetchChildHomework(
   studentGuid: string,
   page = 1,
   limit = 50,
+  status: 'active' | 'archived' = 'active',
 ): Promise<HomeworkResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    status,
+  });
   const response = await apiFetch<HomeworkResponse>(
-    `/children/${studentGuid}/homework?page=${page}&limit=${limit}`,
+    `/children/${studentGuid}/homework?${params.toString()}`,
   );
   return {
     data: Array.isArray(response.data)
@@ -54,16 +66,28 @@ export async function fetchChildHomework(
   };
 }
 
+export async function fetchChildHomeworkDetail(
+  studentGuid: string,
+  homeworkId: string,
+): Promise<HomeworkDetailResponse> {
+  const response = await apiFetch<UnknownRecord>(
+    `/children/${studentGuid}/homework/${homeworkId}`,
+  );
+  return normalizeHomework(response);
+}
+
 export async function fetchChildBehavior(
   studentGuid: string,
   page = 1,
   limit = 50,
   bucket: BehaviorBucket | 'all' = 'all',
+  status: 'active' | 'archived' = 'active',
 ): Promise<BehaviorResponse> {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
     bucket,
+    status,
   });
   const response = await apiFetch<BehaviorResponse>(
     `/children/${studentGuid}/behavior?${params.toString()}`,
@@ -76,6 +100,16 @@ export async function fetchChildBehavior(
       : [],
     pagination: response.pagination,
   };
+}
+
+export async function fetchChildBehaviorDetail(
+  studentGuid: string,
+  behaviorId: string,
+): Promise<BehaviorDetailResponse> {
+  const response = await apiFetch<UnknownRecord>(
+    `/children/${studentGuid}/behavior/${behaviorId}`,
+  );
+  return normalizeBehavior(response);
 }
 
 export async function fetchChildSubjects(studentGuid: string): Promise<SubjectsResponse> {
@@ -179,7 +213,8 @@ function normalizeHomework(item: UnknownRecord) {
         ? item.remark
         : null,
     files: Array.isArray(item.files) ? item.files : [],
-    isHandled: Boolean(item.isHandled),
+    isNew: Boolean(item.isNew),
+    isArchived: Boolean(item.isArchived),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }
@@ -225,7 +260,8 @@ function normalizeBehavior(item: UnknownRecord) {
         ? item.justification
         : null,
     eventAt: String(item.eventAt ?? ''),
-    isHandled: Boolean(item.isHandled),
+    isNew: Boolean(item.isNew),
+    isArchived: Boolean(item.isArchived),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }
@@ -257,4 +293,52 @@ function normalizeNotice(item: UnknownRecord) {
     inSite: Boolean(item.inSite),
     updatedAt: String(item.updatedAt ?? ''),
   };
+}
+
+export function markHomeworkIsNew(
+  studentGuid: string,
+  homeworkId: string,
+  isNew: boolean,
+): Promise<HomeworkItem> {
+  const body: MarkIsNewRequest = { isNew };
+  return apiFetch<HomeworkItem>(
+    `/children/${studentGuid}/homework/${homeworkId}/is-new`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function archiveHomework(
+  studentGuid: string,
+  homeworkId: string,
+  isArchived: boolean,
+): Promise<HomeworkItem> {
+  const body: MarkArchivedRequest = { isArchived };
+  return apiFetch<HomeworkItem>(
+    `/children/${studentGuid}/homework/${homeworkId}/archive`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function markBehaviorIsNew(
+  studentGuid: string,
+  behaviorId: string,
+  isNew: boolean,
+): Promise<BehaviorItem> {
+  const body: MarkIsNewRequest = { isNew };
+  return apiFetch<BehaviorItem>(
+    `/children/${studentGuid}/behavior/${behaviorId}/is-new`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function archiveBehavior(
+  studentGuid: string,
+  behaviorId: string,
+  isArchived: boolean,
+): Promise<BehaviorItem> {
+  const body: MarkArchivedRequest = { isArchived };
+  return apiFetch<BehaviorItem>(
+    `/children/${studentGuid}/behavior/${behaviorId}/archive`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
 }

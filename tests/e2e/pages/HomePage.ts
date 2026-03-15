@@ -1,4 +1,4 @@
-import { Page, Locator } from '@playwright/test';
+import { Page, Locator, expect } from '@playwright/test';
 
 export class HomePage {
   readonly page: Page;
@@ -19,7 +19,7 @@ export class HomePage {
 
   async navigate(): Promise<void> {
     await this.page.goto('/home');
-    await this.page.waitForLoadState('networkidle');
+    await expect(this.homeHeader).toBeVisible({ timeout: 15_000 });
   }
 
   async clickRefresh(): Promise<void> {
@@ -30,7 +30,11 @@ export class HomePage {
     return this.page.getByTestId(`feed-item-${id}`);
   }
 
-  markHandledButton(itemId: string): Locator {
-    return this.page.getByTestId(`mark-handled-${itemId}`);
+  markNewButton(itemId: string): Locator {
+    return this.page.getByTestId(`feed-item-mark-new-${itemId}`);
+  }
+
+  archiveButton(itemId: string): Locator {
+    return this.page.getByTestId(`feed-item-archive-${itemId}`);
   }
 }

@@ -65,21 +65,21 @@ export class MailService {
   ) {}
 
   async getSummary() {
-    const [household, unreadFallback, recentConversations, lastSync] = await Promise.all([
+    const [household, newFallback, recentConversations, lastSync] = await Promise.all([
       this.prisma.householdConnection.findFirst({
         where: { active: true },
         orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedUnreadCount: true },
+        select: { cachedNewCount: true },
       }),
       this.prisma.mailConversation.count({
         where: {
-          isUnread: true,
+          isNew: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
       }),
       this.prisma.mailConversation.findMany({
         where: {
-          isUnread: true,
+          isNew: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
         orderBy: { sendTime: 'desc' },
@@ -92,16 +92,16 @@ export class MailService {
       }),
     ]);
 
-    const unreadConversations = household?.cachedUnreadCount ?? unreadFallback;
+    const newConversations = household?.cachedNewCount ?? newFallback;
 
     return {
-      unreadConversations,
+      newConversations,
       recentConversations: recentConversations.map((c) => ({
         conversationId: c.conversationId,
         subject: c.subject,
         senderNamePreview: c.senderNamePreview ?? '',
         sendTime: c.sendTime.toISOString(),
-        isUnread: c.isUnread,
+        isNew: c.isNew,
         hasAttachments: c.hasAttachments,
         preventReply: c.preventReply,
       })),
@@ -109,8 +109,8 @@ export class MailService {
     };
   }
 
-  async getConversations(page: number, limit: number, unreadOnly: boolean) {
-    const where = this.buildInboxWhere(unreadOnly);
+  async getConversations(page: number, limit: number, filter: 'all' | 'new' | 'archived') {
+    const where = this.buildInboxWhere(filter);
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
         where,
@@ -121,28 +121,16 @@ export class MailService {
       this.prisma.mailConversation.count({ where }),
     ]);
 
-    const readStateRows = await this.prisma.readState.findMany({
-      where: {
-        itemType: 'mail_conversation',
-        itemId: { in: items.map((item) => item.conversationId) },
-        scopeType: 'household',
-        scopeId: 'default',
-      },
-      select: { itemId: true, isHandled: true },
-    });
-    const handledMap = new Map(readStateRows.map((row) => [row.itemId, row.isHandled]));
-
     return {
       data: items.map((item) => ({
         conversationId: item.conversationId,
         subject: item.subject,
         senderNamePreview: item.senderNamePreview ?? '',
         sendTime: item.sendTime.toISOString(),
-        isUnread: item.isUnread,
+        isNew: item.isNew,
         hasAttachments: item.hasAttachments,
         preventReply: item.preventReply,
         labels: this.asStringArray(item.labels),
-        isHandled: handledMap.get(item.conversationId) ?? false,
         lastFetchedAt: item.lastFetchedAt.toISOString(),
       })),
       pagination: {
@@ -160,10 +148,6 @@ export class MailService {
     });
 
     if (!conversation) {
-      throw new NotFoundException(`Conversation not found: ${conversationId}`);
-    }
-
-    if (this.asStringArray(conversation.labels).includes('archived')) {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
 
@@ -194,7 +178,7 @@ export class MailService {
             subject: upstream.subject ?? conversation.subject,
             senderNamePreview: upstream.messages?.[0]?.senderName ?? conversation.senderNamePreview,
             sendTime: upstream.sendTime ? new Date(upstream.sendTime) : conversation.sendTime,
-            isUnread: upstream.isNew ?? conversation.isUnread,
+            isNew: upstream.isNew ?? conversation.isNew,
             hasDrafts: upstream.hasDrafts ?? conversation.hasDrafts,
             hasAttachments: upstream.hasAttachments ?? conversation.hasAttachments,
             preventReply: upstream.preventReply ?? conversation.preventReply,
@@ -227,7 +211,7 @@ export class MailService {
                 bodyHtmlSanitized: sanitized,
                 bodyTextPreview: preview,
                 sendTime: new Date(msg.sendTime),
-                isUnread: msg.isNew,
+                isNew: msg.isNew,
                 recipients: recipients as Prisma.InputJsonValue,
                 files: files as Prisma.InputJsonValue,
                 preventReply: msg.preventReply,
@@ -242,7 +226,7 @@ export class MailService {
                 bodyHtmlSanitized: sanitized,
                 bodyTextPreview: preview,
                 sendTime: new Date(msg.sendTime),
-                isUnread: msg.isNew,
+                isNew: msg.isNew,
                 recipients: recipients as Prisma.InputJsonValue,
                 files: files as Prisma.InputJsonValue,
                 preventReply: msg.preventReply,
@@ -271,28 +255,15 @@ export class MailService {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
 
-    const readState = await this.prisma.readState.findUnique({
-      where: {
-        itemType_itemId_scopeType_scopeId: {
-          itemType: 'mail_conversation',
-          itemId: conversationId,
-          scopeType: 'household',
-          scopeId: 'default',
-        },
-      },
-      select: { isHandled: true },
-    });
-
     return {
       conversationId: resolvedConversation.conversationId,
       subject: resolvedConversation.subject,
       sendTime: resolvedConversation.sendTime.toISOString(),
-      isUnread: resolvedConversation.isUnread,
+      isNew: resolvedConversation.isNew,
       hasDrafts: resolvedConversation.hasDrafts,
       hasAttachments: resolvedConversation.hasAttachments,
       preventReply: resolvedConversation.preventReply,
       labels: this.asStringArray(resolvedConversation.labels),
-      isHandled: readState?.isHandled ?? false,
       messages: messages.map((msg) => ({
         messageId: msg.messageId,
         conversationId: msg.conversationId,
@@ -302,7 +273,7 @@ export class MailService {
         bodyHtmlSanitized: msg.bodyHtmlSanitized ?? '',
         bodyTextPreview: msg.bodyTextPreview ?? '',
         sendTime: msg.sendTime.toISOString(),
-        isUnread: msg.isUnread,
+        isNew: msg.isNew,
         recipients: this.normalizeRecipients(msg.recipients),
         preventReply: msg.preventReply,
         sentViaEmail: msg.sentViaEmail,
@@ -313,9 +284,12 @@ export class MailService {
     };
   }
 
-  private buildInboxWhere(unreadOnly: boolean): Prisma.MailConversationWhereInput {
+  private buildInboxWhere(filter: 'all' | 'new' | 'archived'): Prisma.MailConversationWhereInput {
+    if (filter === 'archived') {
+      return { labels: { array_contains: ['archived'] } };
+    }
     return {
-      ...(unreadOnly ? { isUnread: true } : {}),
+      ...(filter === 'new' ? { isNew: true } : {}),
       NOT: { labels: { array_contains: ['archived'] } },
     };
   }
@@ -366,6 +340,17 @@ export class MailService {
     return Array.isArray(value) && value.length > 0;
   }
 
+  async markConversationsRead(conversationIds: string[]) {
+    await this.prisma.mailConversation.updateMany({
+      where: { conversationId: { in: conversationIds } },
+      data: { isNew: false },
+    });
+
+    await this.updateCachedNewCount();
+
+    return { updated: conversationIds.length };
+  }
+
   async markUnread(conversationIds: string[]) {
     try {
       await this.mashovClient.put(
@@ -382,8 +367,10 @@ export class MailService {
 
     await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isUnread: true },
+      data: { isNew: true },
     });
+
+    await this.updateCachedNewCount();
 
     return { updated: conversationIds.length };
   }
@@ -402,23 +389,57 @@ export class MailService {
       this.logger.warn(`Upstream archive failed: ${msg}; updating DB only`);
     }
 
-    await this.prisma.mailMessage.deleteMany({
+    const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
+      data: { isNew: false, labels: ['archived'] as unknown as Prisma.InputJsonValue },
     });
 
-    const deleted = await this.prisma.mailConversation.deleteMany({
+    await this.updateCachedNewCount();
+
+    return { updated: updated.count };
+  }
+
+  async unarchive(conversationIds: string[]) {
+    try {
+      await this.mashovClient.put(
+        '/api/mail/conversations/markAsUnread',
+        conversationIds,
+        {
+          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+        },
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Upstream unarchive(markAsUnread) failed: ${msg}; updating DB only`);
+    }
+
+    const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
+      data: { isNew: true, labels: [] as unknown as Prisma.InputJsonValue },
     });
 
-    await this.prisma.readState.deleteMany({
+    await this.updateCachedNewCount();
+
+    return { updated: updated.count };
+  }
+
+  private async updateCachedNewCount(): Promise<void> {
+    const newCount = await this.prisma.mailConversation.count({
       where: {
-        itemType: 'mail_conversation',
-        itemId: { in: conversationIds },
-        scopeType: 'household',
-        scopeId: 'default',
+        isNew: true,
+        NOT: { labels: { array_contains: ['archived'] } },
       },
     });
 
-    return { updated: deleted.count };
+    const household = await this.prisma.householdConnection.findFirst({
+      where: { active: true },
+    });
+
+    if (household) {
+      await this.prisma.householdConnection.update({
+        where: { id: household.id },
+        data: { cachedNewCount: newCount },
+      });
+    }
   }
 }

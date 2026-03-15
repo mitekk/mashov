@@ -1,6 +1,5 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { fetchSourceHealth, fetchProfile } from '@/api/settings';
-import { clearAllReadState } from '@/api/readState';
 
 export function useSourceHealth() {
   return useQuery({
@@ -16,18 +15,5 @@ export function useProfile() {
     queryKey: ['profile'],
     queryFn: fetchProfile,
     staleTime: 5 * 60_000,
-  });
-}
-
-export function useClearAllReadState() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: clearAllReadState,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
-      void queryClient.invalidateQueries({ queryKey: ['child-homework'] });
-      void queryClient.invalidateQueries({ queryKey: ['child-behavior'] });
-    },
   });
 }
