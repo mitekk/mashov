@@ -46,7 +46,7 @@ export async function fetchChildHomework(
   studentGuid: string,
   page = 1,
   limit = 50,
-  status: 'active' | 'archived' = 'active',
+  status: 'new' | 'archived' | 'all' = 'new',
 ): Promise<HomeworkResponse> {
   const params = new URLSearchParams({
     page: String(page),
@@ -81,7 +81,7 @@ export async function fetchChildBehavior(
   page = 1,
   limit = 50,
   bucket: BehaviorBucket | 'all' = 'all',
-  status: 'active' | 'archived' = 'active',
+  status: 'new' | 'archived' | 'all' = 'new',
 ): Promise<BehaviorResponse> {
   const params = new URLSearchParams({
     page: String(page),

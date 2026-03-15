@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { MailBulkActionResponse } from '@/types/api';
 import {
   fetchConversationDetail,
+  archiveConversations,
   markConversationsRead,
   markConversationsUnread,
   unarchiveConversations,
@@ -53,6 +54,19 @@ export function useUnarchiveConversation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (conversationId: string) => unarchiveConversations([conversationId]),
+    onSuccess: (_data: MailBulkActionResponse, conversationId: string) => {
+      void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-summary'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+}
+
+export function useArchiveConversation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (conversationId: string) => archiveConversations([conversationId]),
     onSuccess: (_data: MailBulkActionResponse, conversationId: string) => {
       void queryClient.invalidateQueries({ queryKey: ['conversation', conversationId] });
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });

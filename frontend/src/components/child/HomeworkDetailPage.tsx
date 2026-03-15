@@ -57,11 +57,12 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
   )?.fullName;
 
   useEffect(() => {
+    if (data?.isArchived) return;
     if (!data?.isNew) return;
     if (autoMarkedReadHomeworkId.current === homeworkId) return;
     autoMarkedReadHomeworkId.current = homeworkId;
     mutateMarkNew(false);
-  }, [data?.isNew, homeworkId, mutateMarkNew]);
+  }, [data?.isArchived, data?.isNew, homeworkId, mutateMarkNew]);
 
   const handleBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) {
@@ -86,26 +87,28 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
           </button>
           {data && (
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                data-testid={`homework-detail-toggle-new-${homeworkId}`}
-                onClick={() => mutateMarkNew(!data.isNew)}
-                disabled={isMarkNewPending}
-                aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כלא נקרא'}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              >
-                {data.isNew ? (
-                  <>
-                    <Eye className="h-4 w-4" />
-                    <span>סמן כנקרא</span>
-                  </>
-                ) : (
-                  <>
-                    <EyeOff className="h-4 w-4" />
-                    <span>סמן כלא נקרא</span>
-                  </>
-                )}
-              </button>
+              {!data.isArchived && (
+                <button
+                  type="button"
+                  data-testid={`homework-detail-toggle-new-${homeworkId}`}
+                  onClick={() => mutateMarkNew(!data.isNew)}
+                  disabled={isMarkNewPending}
+                  aria-label={data.isNew ? 'סמן כנקרא' : 'סמן כלא נקרא'}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                >
+                  {data.isNew ? (
+                    <>
+                      <Eye className="h-4 w-4" />
+                      <span>סמן כנקרא</span>
+                    </>
+                  ) : (
+                    <>
+                      <EyeOff className="h-4 w-4" />
+                      <span>סמן כלא נקרא</span>
+                    </>
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 data-testid={`homework-detail-archive-${homeworkId}`}

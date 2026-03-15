@@ -194,11 +194,12 @@ describe('ChildrenService', () => {
 
   describe('getHomework', () => {
     it('returns paginated data with isNew and isArchived from homework_item directly', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([
+        makeHomeworkRow({ isNew: true, isArchived: false }),
+      ]);
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkFindMany: jest.fn().mockResolvedValue([
-            makeHomeworkRow({ isNew: true, isArchived: false }),
-          ]),
+          homeworkFindMany: mockFindMany,
           homeworkCount: jest.fn().mockResolvedValue(1),
         }),
         makeMockSession(),
@@ -206,6 +207,15 @@ describe('ChildrenService', () => {
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
+      expect(mockFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            studentGuid: TEST_GUID,
+            isArchived: false,
+            isNew: true,
+          }),
+        }),
+      );
       expect(result.pagination).toMatchObject({ total: 1, totalPages: 1 });
       expect(result.data[0].isNew).toBe(true);
       expect(result.data[0].isArchived).toBe(false);
@@ -224,7 +234,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
       );
 
-      const result = await service.getHomework(TEST_GUID, 1, 20);
+      const result = await service.getHomework(TEST_GUID, 1, 20, 'archived');
       expect(result.data[0].isNew).toBe(false);
       expect(result.data[0].isArchived).toBe(true);
     });
@@ -349,6 +359,25 @@ describe('ChildrenService', () => {
         NotFoundException,
       );
     });
+
+    it('does not update archived homework isNew state', async () => {
+      const homeworkUpdate = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindUnique: jest.fn().mockResolvedValue(
+            makeHomeworkRow({ isNew: false, isArchived: true }),
+          ),
+          homeworkUpdate,
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', true);
+      expect(homeworkUpdate).not.toHaveBeenCalled();
+      expect(result.isArchived).toBe(true);
+      expect(result.isNew).toBe(false);
+    });
   });
 
   describe('setHomeworkArchived', () => {
@@ -431,13 +460,14 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
       );
 
-      const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention');
+      const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'new');
       expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
             studentGuid: TEST_GUID,
             classification: 'attention',
             isArchived: false,
+            isNew: true,
           }),
         }),
       );
@@ -568,6 +598,25 @@ describe('ChildrenService', () => {
       await expect(service.setBehaviorIsNew(TEST_GUID, 'beh-1', false)).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    it('does not update archived behavior isNew state', async () => {
+      const behaviorUpdate = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindUnique: jest.fn().mockResolvedValue(
+            makeBehaviorRow({ isNew: false, isArchived: true }),
+          ),
+          behaviorUpdate,
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', true);
+      expect(behaviorUpdate).not.toHaveBeenCalled();
+      expect(result.isArchived).toBe(true);
+      expect(result.isNew).toBe(false);
     });
   });
 

@@ -7,6 +7,8 @@ export class HomePage {
   readonly refreshButton: Locator;
   readonly summaryStrip: Locator;
   readonly latestFeed: Locator;
+  readonly feedFilterAllButton: Locator;
+  readonly feedFilterUnreadButton: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -15,6 +17,8 @@ export class HomePage {
     this.refreshButton = page.getByTestId('refresh-button');
     this.summaryStrip = page.getByTestId('summary-strip');
     this.latestFeed = page.getByTestId('latest-feed');
+    this.feedFilterAllButton = page.getByTestId('home-feed-filter-all');
+    this.feedFilterUnreadButton = page.getByTestId('home-feed-filter-unread');
   }
 
   async navigate(): Promise<void> {
@@ -24,6 +28,14 @@ export class HomePage {
 
   async clickRefresh(): Promise<void> {
     await this.refreshButton.click();
+  }
+
+  async clickFeedFilterAll(): Promise<void> {
+    await this.feedFilterAllButton.click();
+  }
+
+  async clickFeedFilterUnread(): Promise<void> {
+    await this.feedFilterUnreadButton.click();
   }
 
   feedItem(id: string): Locator {

@@ -557,6 +557,10 @@ describe('MailService', () => {
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
       const service = new MailService(
         makeMockPrisma({
+          conversationFindMany: jest.fn().mockResolvedValue([
+            { conversationId: 'conv-1' },
+            { conversationId: 'conv-2' },
+          ]),
           conversationUpdateMany,
         }),
         makeMockMashovClient({ put: mashovPut }),
@@ -574,6 +578,23 @@ describe('MailService', () => {
         ['conv-1', 'conv-2'],
         expect.any(Object),
       );
+    });
+
+    it('markUnread skips archived conversations', async () => {
+      const mashovPut = jest.fn().mockResolvedValue({});
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindMany: jest.fn().mockResolvedValue([]),
+          conversationUpdateMany,
+        }),
+        makeMockMashovClient({ put: mashovPut }),
+      );
+
+      const result = await service.markUnread(['conv-archived-1']);
+      expect(result.updated).toBe(0);
+      expect(mashovPut).not.toHaveBeenCalled();
+      expect(conversationUpdateMany).not.toHaveBeenCalled();
     });
 
     it('archive sets labels to archived and isNew=false', async () => {

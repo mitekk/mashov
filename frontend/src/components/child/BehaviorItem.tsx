@@ -91,19 +91,21 @@ export function BehaviorItem({
         </Link>
       ) : content}
       <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
-        <button
-          data-testid={`behavior-mark-new-${item.id}`}
-          onClick={() => mutateMarkNew(!item.isNew)}
-          disabled={isMarkNewPending}
-          aria-label={item.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
-          className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
-        >
-          {item.isNew ? (
-            <Eye className="w-5 h-5 text-primary" />
-          ) : (
-            <EyeOff className="w-5 h-5" />
-          )}
-        </button>
+        {!item.isArchived && (
+          <button
+            data-testid={`behavior-mark-new-${item.id}`}
+            onClick={() => mutateMarkNew(!item.isNew)}
+            disabled={isMarkNewPending}
+            aria-label={item.isNew ? 'סמן כנקרא' : 'סמן כלא נקרא'}
+            className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+          >
+            {item.isNew ? (
+              <Eye className="w-5 h-5 text-primary" />
+            ) : (
+              <EyeOff className="w-5 h-5" />
+            )}
+          </button>
+        )}
         <button
           data-testid={`behavior-archive-${item.id}`}
           onClick={() => mutateArchive(!item.isArchived)}

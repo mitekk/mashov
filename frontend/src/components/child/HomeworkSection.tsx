@@ -10,14 +10,14 @@ import { FeedSkeleton } from '@/components/ui/LoadingState';
 import { buildHomeworkDetailHref } from '@/lib/child-routes';
 import { cn } from '@/lib/utils';
 
-type HomeworkStatusFilter = 'active' | 'archived';
+type HomeworkStatusFilter = 'new' | 'archived' | 'all';
 
 interface HomeworkSectionProps {
   studentGuid: string;
 }
 
 export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
-  const [statusFilter, setStatusFilter] = useState<HomeworkStatusFilter>('active');
+  const [statusFilter, setStatusFilter] = useState<HomeworkStatusFilter>('new');
   const { data, isLoading, isError, refetch } = useChildHomework(
     studentGuid,
     1,
@@ -32,16 +32,16 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
       </h2>
       <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm w-fit">
         <button
-          data-testid="homework-filter-active"
-          onClick={() => setStatusFilter('active')}
+          data-testid="homework-filter-new"
+          onClick={() => setStatusFilter('new')}
           className={cn(
             'px-3 py-1.5 transition-colors',
-            statusFilter === 'active'
+            statusFilter === 'new'
               ? 'bg-primary text-primary-foreground'
               : 'text-muted-foreground hover:bg-accent',
           )}
         >
-          פעיל
+          לא נקרא
         </button>
         <button
           data-testid="homework-filter-archived"
@@ -55,6 +55,18 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
         >
           ארכיון
         </button>
+        <button
+          data-testid="homework-filter-all"
+          onClick={() => setStatusFilter('all')}
+          className={cn(
+            'px-3 py-1.5 transition-colors',
+            statusFilter === 'all'
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:bg-accent',
+          )}
+        >
+          הכל
+        </button>
       </div>
       {isLoading && <FeedSkeleton count={3} />}
       {isError && (
@@ -66,7 +78,13 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
       {!isLoading && !isError && filteredItems.length === 0 && (
         <EmptyState
           icon={<BookOpen className="w-8 h-8" />}
-          title={statusFilter === 'archived' ? 'אין שיעורי בית בארכיון' : 'אין שיעורי בית אחרונים'}
+          title={
+            statusFilter === 'archived'
+              ? 'אין שיעורי בית בארכיון'
+              : statusFilter === 'new'
+                ? 'אין שיעורי בית שלא נקראו'
+                : 'אין שיעורי בית'
+          }
         />
       )}
       {filteredItems.length > 0 && (

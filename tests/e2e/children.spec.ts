@@ -252,7 +252,7 @@ test.describe('Child workspace page', () => {
     );
   });
 
-  test('homework list shows Active tab by default and filters out archived items', async ({ page }) => {
+  test('homework list shows unread tab by default and filters out archived items', async ({ page }) => {
     await stubWorkspaceRoutes(page);
 
     await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
@@ -283,7 +283,7 @@ test.describe('Child workspace page', () => {
     const workspace = new ChildWorkspacePage(page);
     await workspace.navigate(STUDENT_GUID, 'homework', 'all');
 
-    // Active tab is default — active item is visible
+    // Unread tab is default — unread item is visible
     await expect(page.getByTestId('homework-item-link-hw-active')).toBeVisible();
     await expect(page.getByTestId('homework-item-link-hw-archived')).toHaveCount(0);
   });
@@ -320,12 +320,12 @@ test.describe('Child workspace page', () => {
     await workspace.navigate(STUDENT_GUID, 'homework', 'all');
 
     // Click the archived tab
-    const archivedTab = page.getByTestId('homework-tab-archived');
-    if (await archivedTab.isVisible()) {
-      await archivedTab.click();
-      await expect(page.getByTestId('homework-item-link-hw-archived-tab')).toBeVisible();
-      await expect(page.getByTestId('homework-item-link-hw-active-tab')).toHaveCount(0);
-    }
+    const archivedTab = page.getByTestId('homework-filter-archived');
+    await archivedTab.click();
+    await expect(page.getByTestId('homework-item-link-hw-archived-tab')).toBeVisible();
+    await expect(page.getByTestId('homework-item-link-hw-active-tab')).toHaveCount(0);
+    await expect(page.getByTestId('homework-mark-new-hw-archived-tab')).toHaveCount(0);
+    await expect(page.getByTestId('homework-archive-hw-archived-tab')).toBeVisible();
   });
 
   test('toggle isNew on homework detail page calls is-new endpoint', async ({ page }) => {
@@ -357,12 +357,11 @@ test.describe('Child workspace page', () => {
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
     await page.waitForLoadState('networkidle');
 
-    const toggleButton = page.getByTestId('homework-toggle-is-new');
-    if (await toggleButton.isVisible()) {
-      await toggleButton.click();
-      await expect.poll(() => isNewRequestBody).not.toBeNull();
-      expect(isNewRequestBody).toMatchObject({ isNew: false });
-    }
+    const toggleButton = page.getByTestId('homework-detail-toggle-new-hw-1');
+    await expect(toggleButton).toBeVisible();
+    await toggleButton.click();
+    await expect.poll(() => isNewRequestBody).not.toBeNull();
+    expect(isNewRequestBody).toMatchObject({ isNew: false });
   });
 
   test('archive action on homework detail calls archive endpoint and sets isArchived=true', async ({ page }) => {
@@ -394,12 +393,11 @@ test.describe('Child workspace page', () => {
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
     await page.waitForLoadState('networkidle');
 
-    const archiveButton = page.getByTestId('homework-archive-button');
-    if (await archiveButton.isVisible()) {
-      await archiveButton.click();
-      await expect.poll(() => archiveRequestBody).not.toBeNull();
-      expect(archiveRequestBody).toMatchObject({ isArchived: true });
-    }
+    const archiveButton = page.getByTestId('homework-detail-archive-hw-1');
+    await expect(archiveButton).toBeVisible();
+    await archiveButton.click();
+    await expect.poll(() => archiveRequestBody).not.toBeNull();
+    expect(archiveRequestBody).toMatchObject({ isArchived: true });
   });
 
   test('unarchive action on homework restores isNew=true', async ({ page }) => {
@@ -431,12 +429,12 @@ test.describe('Child workspace page', () => {
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
     await page.waitForLoadState('networkidle');
 
-    const unarchiveButton = page.getByTestId('homework-unarchive-button');
-    if (await unarchiveButton.isVisible()) {
-      await unarchiveButton.click();
-      await expect.poll(() => archiveRequestBody).not.toBeNull();
-      expect(archiveRequestBody).toMatchObject({ isArchived: false });
-    }
+    await expect(page.getByTestId('homework-detail-toggle-new-hw-1')).toHaveCount(0);
+    const unarchiveButton = page.getByTestId('homework-detail-archive-hw-1');
+    await expect(unarchiveButton).toBeVisible();
+    await unarchiveButton.click();
+    await expect.poll(() => archiveRequestBody).not.toBeNull();
+    expect(archiveRequestBody).toMatchObject({ isArchived: false });
   });
 
   test('behavior item opens dedicated detail page', async ({ page }) => {
@@ -524,7 +522,7 @@ test.describe('Child workspace page', () => {
     );
   });
 
-  test('behavior list shows Active tab by default and filters out archived items', async ({ page }) => {
+  test('behavior list shows unread tab by default and filters out archived items', async ({ page }) => {
     await stubWorkspaceRoutes(page);
 
     await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, async (route) => {
@@ -590,12 +588,12 @@ test.describe('Child workspace page', () => {
     const workspace = new ChildWorkspacePage(page);
     await workspace.navigate(STUDENT_GUID, 'behavior', 'all');
 
-    const archivedTab = page.getByTestId('behavior-tab-archived');
-    if (await archivedTab.isVisible()) {
-      await archivedTab.click();
-      await expect(page.getByTestId('behavior-item-link-beh-archived-tab')).toBeVisible();
-      await expect(page.getByTestId('behavior-item-link-beh-active-tab')).toHaveCount(0);
-    }
+    const archivedTab = page.getByTestId('behavior-status-archived');
+    await archivedTab.click();
+    await expect(page.getByTestId('behavior-item-link-beh-archived-tab')).toBeVisible();
+    await expect(page.getByTestId('behavior-item-link-beh-active-tab')).toHaveCount(0);
+    await expect(page.getByTestId('behavior-mark-new-beh-archived-tab')).toHaveCount(0);
+    await expect(page.getByTestId('behavior-archive-beh-archived-tab')).toBeVisible();
   });
 
   test('toggle isNew on behavior detail page calls is-new endpoint', async ({ page }) => {
@@ -627,12 +625,11 @@ test.describe('Child workspace page', () => {
     await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
     await page.waitForLoadState('networkidle');
 
-    const toggleButton = page.getByTestId('behavior-toggle-is-new');
-    if (await toggleButton.isVisible()) {
-      await toggleButton.click();
-      await expect.poll(() => isNewRequestBody).not.toBeNull();
-      expect(isNewRequestBody).toMatchObject({ isNew: false });
-    }
+    const toggleButton = page.getByTestId('behavior-detail-toggle-new-beh-1');
+    await expect(toggleButton).toBeVisible();
+    await toggleButton.click();
+    await expect.poll(() => isNewRequestBody).not.toBeNull();
+    expect(isNewRequestBody).toMatchObject({ isNew: false });
   });
 
   test('archive action on behavior calls archive endpoint', async ({ page }) => {
@@ -664,11 +661,10 @@ test.describe('Child workspace page', () => {
     await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
     await page.waitForLoadState('networkidle');
 
-    const archiveButton = page.getByTestId('behavior-archive-button');
-    if (await archiveButton.isVisible()) {
-      await archiveButton.click();
-      await expect.poll(() => archiveRequestBody).not.toBeNull();
-      expect(archiveRequestBody).toMatchObject({ isArchived: true });
-    }
+    const archiveButton = page.getByTestId('behavior-detail-archive-beh-1');
+    await expect(archiveButton).toBeVisible();
+    await archiveButton.click();
+    await expect.poll(() => archiveRequestBody).not.toBeNull();
+    expect(archiveRequestBody).toMatchObject({ isArchived: true });
   });
 });

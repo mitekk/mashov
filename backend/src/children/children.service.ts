@@ -27,6 +27,8 @@ interface AttachmentMeta {
   lessonId?: number;
 }
 
+type ItemStatusFilter = 'new' | 'archived' | 'all';
+
 @Injectable()
 export class ChildrenService {
   constructor(
@@ -190,13 +192,14 @@ export class ChildrenService {
     studentGuid: string,
     page: number,
     limit: number,
-    status: 'active' | 'archived' = 'active',
+    status: ItemStatusFilter = 'new',
   ) {
     await this.requireStudent(studentGuid);
 
     const where = {
       studentGuid,
-      isArchived: status === 'archived',
+      ...(status === 'new' ? { isArchived: false, isNew: true } : {}),
+      ...(status === 'archived' ? { isArchived: true } : {}),
     };
 
     const [items, total] = await Promise.all([
@@ -238,13 +241,14 @@ export class ChildrenService {
     page: number,
     limit: number,
     bucket: 'all' | 'attention' | 'positive' | 'neutral',
-    status: 'active' | 'archived' = 'active',
+    status: ItemStatusFilter = 'new',
   ) {
     await this.requireStudent(studentGuid);
 
     const where = {
       studentGuid,
-      isArchived: status === 'archived',
+      ...(status === 'new' ? { isArchived: false, isNew: true } : {}),
+      ...(status === 'archived' ? { isArchived: true } : {}),
       ...(bucket !== 'all' ? { classification: bucket } : {}),
     };
 
@@ -359,6 +363,9 @@ export class ChildrenService {
     if (!item || item.studentGuid !== studentGuid) {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
+    if (item.isArchived) {
+      return this.mapHomeworkItem(item);
+    }
 
     const updated = await this.prisma.homeworkItem.update({
       where: { id: homeworkId },
@@ -394,6 +401,9 @@ export class ChildrenService {
     const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
     if (!item || item.studentGuid !== studentGuid) {
       throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
+    }
+    if (item.isArchived) {
+      return this.mapBehaviorItem(item);
     }
 
     const updated = await this.prisma.behaviorItem.update({

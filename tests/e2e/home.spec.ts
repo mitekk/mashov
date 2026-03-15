@@ -144,6 +144,59 @@ test.describe('Home page', () => {
     await expect(homePage.latestFeed).toBeVisible();
   });
 
+  test('latest feed unread filter shows only isNew=true items', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          feed: [
+            makeFeedItem({ id: 'feed-unread-1', isNew: true }),
+            makeFeedItem({ id: 'feed-read-1', isNew: false }),
+            makeFeedItem({ id: 'feed-unread-2', isNew: true }),
+          ],
+        }),
+      });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+
+    await expect(
+      homePage.latestFeed.locator('[data-testid="home-feed-filter-unread"] + [data-testid="home-feed-filter-all"]'),
+    ).toHaveCount(1);
+
+    await expect(homePage.feedItem('feed-unread-1')).toBeVisible();
+    await expect(homePage.feedItem('feed-unread-2')).toBeVisible();
+    await expect(homePage.feedItem('feed-read-1')).toHaveCount(0);
+
+    await homePage.clickFeedFilterAll();
+    await expect(homePage.feedItem('feed-read-1')).toBeVisible();
+
+    await expect(homePage.feedItem('feed-unread-1')).toBeVisible();
+    await expect(homePage.feedItem('feed-unread-2')).toBeVisible();
+    await homePage.clickFeedFilterUnread();
+    await expect(homePage.feedItem('feed-read-1')).toHaveCount(0);
+  });
+
+  test('latest feed unread filter shows unread empty state when all items are read', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          feed: [
+            makeFeedItem({ id: 'feed-read-only-1', isNew: false }),
+            makeFeedItem({ id: 'feed-read-only-2', isNew: false }),
+          ],
+        }),
+      });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+
+    await expect(homePage.feedItem('feed-read-only-1')).toHaveCount(0);
+    await expect(homePage.feedItem('feed-read-only-2')).toHaveCount(0);
+    await expect(page.getByText('אין עדכונים שלא נקראו')).toBeVisible();
+  });
+
   test('refresh button stays disabled/spinning through manual refresh and dashboard refetch', async ({ page }) => {
     let dashboardCalls = 0;
 

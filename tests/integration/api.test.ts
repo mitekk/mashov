@@ -182,7 +182,7 @@ describe('API Integration Tests (isNew refactor contract)', () => {
           subject: 'Math',
           reporter: 'Teacher',
           eventAt: new Date('2026-03-10T10:00:00Z'),
-          isNew: false,
+          isNew: true,
           isArchived: false,
           rawPayload: {},
         },
@@ -208,13 +208,13 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       expect(behaviorRes.body.data[0]).toMatchObject({
         bucket: 'attention',
         priority: 'high',
-        isNew: false,
+        isNew: true,
         isArchived: false,
       });
       expect(behaviorRes.body.data[0]).not.toHaveProperty('isHandled');
     });
 
-    it('GET homework with ?status=active returns only non-archived items', async () => {
+    it('GET homework with ?status=new returns only unread non-archived items', async () => {
       await seedStudent(prisma);
 
       await prisma.homeworkItem.createMany({
@@ -247,11 +247,12 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       });
 
       const res = await request(app.getHttpServer()).get(
-        `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=active`,
+        `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=new`,
       );
       expect(res.status).toBe(200);
       expect(res.body.data).toHaveLength(1);
       expect(res.body.data[0].isArchived).toBe(false);
+      expect(res.body.data[0].isNew).toBe(true);
     });
 
     it('GET homework with ?status=archived returns only archived items', async () => {
@@ -292,6 +293,45 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       expect(res.status).toBe(200);
       expect(res.body.data).toHaveLength(1);
       expect(res.body.data[0].isArchived).toBe(true);
+    });
+
+    it('GET homework with ?status=all returns archived and non-archived items', async () => {
+      await seedStudent(prisma);
+
+      await prisma.homeworkItem.createMany({
+        data: [
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 1,
+            groupId: 1,
+            lessonDate: new Date('2026-03-10T00:00:00Z'),
+            lesson: 2,
+            subjectName: 'Math',
+            homeworkText: 'Unread homework',
+            isNew: true,
+            isArchived: false,
+            rawPayload: {},
+          },
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 2,
+            groupId: 1,
+            lessonDate: new Date('2026-03-09T00:00:00Z'),
+            lesson: 1,
+            subjectName: 'Science',
+            homeworkText: 'Archived homework',
+            isNew: false,
+            isArchived: true,
+            rawPayload: {},
+          },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=all`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(2);
     });
 
     it('PUT /api/v1/children/:guid/homework/:id/is-new updates isNew flag', async () => {

@@ -44,7 +44,7 @@ export function ChildWorkspacePage({
   const { data, isLoading, isError, refetch } = useChild(studentGuid);
   const activeSection = parseChildSection(searchParams.get('section'));
   const activeBehaviorFilter = parseChildBehaviorFilter(searchParams.get('behavior'));
-  const [behaviorStatusFilter, setBehaviorStatusFilter] = useState<'active' | 'archived'>('active');
+  const [behaviorStatusFilter, setBehaviorStatusFilter] = useState<'new' | 'archived' | 'all'>('new');
 
   useEffect(() => {
     setSelectedChildGuid(studentGuid);

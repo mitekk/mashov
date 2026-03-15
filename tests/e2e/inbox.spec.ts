@@ -63,12 +63,35 @@ test.describe('Inbox page', () => {
     expect(itemCount).toBe(0);
   });
 
-  test('both filter buttons are visible', async ({ page }) => {
+  test('all filter buttons are visible', async ({ page }) => {
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
 
     await expect(inboxPage.filterAllButton).toBeVisible();
     await expect(inboxPage.filterUnreadButton).toBeVisible();
+    await expect(inboxPage.filterArchivedButton).toBeVisible();
+  });
+
+  test('inbox route defaults to unread filter', async ({ page }) => {
+    let requestedFilter: string | null = null;
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      const url = new URL(route.request().url());
+      requestedFilter = url.searchParams.get('filter');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [],
+          pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+        }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+
+    expect(requestedFilter).toBe('new');
   });
 
   test('clicking filter-unread adds filter=new to the URL', async ({ page }) => {
@@ -80,14 +103,14 @@ test.describe('Inbox page', () => {
     expect(page.url()).toContain('filter=new');
   });
 
-  test('clicking filter-all removes the new filter from the URL', async ({ page }) => {
+  test('clicking filter-all sets filter=all in the URL', async ({ page }) => {
     const inboxPage = new InboxPage(page);
     await page.goto('/inbox?filter=new');
     await page.waitForLoadState('networkidle');
 
     await inboxPage.clickFilterAll();
 
-    expect(page.url()).not.toContain('filter=new');
+    expect(page.url()).toContain('filter=all');
   });
 
   test('inbox page renders correctly after page reload', async ({ page }) => {
@@ -303,12 +326,51 @@ test.describe('Inbox page', () => {
 
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
+    await inboxPage.clickFilterAll();
     await inboxPage.toggleConversationSelection('conv-bulk-1');
     await expect(inboxPage.bulkActionsBar).toBeVisible();
 
     await page.getByTestId('bulk-mark-unread').click();
     await expect.poll(() => markUnreadRequestBody).not.toBeNull();
     expect(markUnreadRequestBody).toEqual({ conversationIds: ['conv-bulk-1'] });
+  });
+
+  test('bulk mark-unread action is hidden in unread tab', async ({ page }) => {
+    await page.route('**/api/v1/mail/summary', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          newConversations: 1,
+          recentConversations: [],
+          lastSyncAt: null,
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/mail/conversations**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            makeConversation({
+              conversationId: 'conv-no-bulk-unread-1',
+              subject: 'Unread tab item',
+              isNew: true,
+            }),
+          ],
+          pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const inboxPage = new InboxPage(page);
+    await inboxPage.navigate();
+    await inboxPage.toggleConversationSelection('conv-no-bulk-unread-1');
+
+    await expect(page.getByTestId('bulk-mark-unread')).toHaveCount(0);
+    await expect(page.getByTestId('bulk-archive')).toBeVisible();
   });
 
   test('bulk archive action removes conversation from inbox list after refetch', async ({ page }) => {
@@ -630,6 +692,8 @@ test.describe('Inbox page', () => {
     await inboxPage.navigate();
     await inboxPage.clickFilterArchived();
     await inboxPage.toggleConversationSelection('conv-archived-bulk-1');
+    await expect(page.getByTestId('bulk-mark-unread')).toHaveCount(0);
+    await expect(page.getByTestId('bulk-archive')).toHaveCount(0);
 
     await page.getByTestId('bulk-unarchive').click();
     await expect.poll(() => unarchiveRequestBody).not.toBeNull();
@@ -638,8 +702,9 @@ test.describe('Inbox page', () => {
     await expect(inboxPage.conversationItem('conv-archived-bulk-1')).toHaveCount(0);
   });
 
-  test('conversation detail auto-fires mark-read on open and shows mark-new toggle', async ({ page }) => {
+  test('conversation detail auto-fires mark-read and exposes mark-unread + archive actions', async ({ page }) => {
     let markReadRequestBody: unknown = null;
+    let archiveRequestBody: unknown = null;
 
     await page.route('**/api/v1/mail/summary', async (route) => {
       await route.fulfill({
@@ -703,6 +768,15 @@ test.describe('Inbox page', () => {
       });
     });
 
+    await page.route('**/api/v1/mail/conversations/archive', async (route) => {
+      archiveRequestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ updated: 1 }),
+      });
+    });
+
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
     await inboxPage.clickConversation('conv-read-1');
@@ -714,6 +788,11 @@ test.describe('Inbox page', () => {
 
     // mark-new toggle visible
     await expect(page.getByTestId('mark-new-conv-read-1')).toBeVisible();
+    await expect(page.getByTestId('archive-conv-read-1')).toBeVisible();
+
+    await page.getByTestId('archive-conv-read-1').click();
+    await expect.poll(() => archiveRequestBody).not.toBeNull();
+    expect(archiveRequestBody).toEqual({ conversationIds: ['conv-read-1'] });
   });
 
   test('archived conversation detail shows unarchive action and calls unarchive endpoint', async ({ page }) => {

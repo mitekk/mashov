@@ -674,10 +674,23 @@ export class MailService {
   }
 
   async markUnread(conversationIds: string[]) {
+    const eligibleConversations = await this.prisma.mailConversation.findMany({
+      where: {
+        conversationId: { in: conversationIds },
+        NOT: { labels: { array_contains: ['archived'] } },
+      },
+      select: { conversationId: true },
+    });
+    const eligibleConversationIds = eligibleConversations.map((item) => item.conversationId);
+
+    if (eligibleConversationIds.length === 0) {
+      return { updated: 0 };
+    }
+
     try {
       await this.mashovClient.put(
         '/api/mail/conversations/markAsUnread',
-        conversationIds,
+        eligibleConversationIds,
         {
           headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
         },
@@ -687,14 +700,17 @@ export class MailService {
       this.logger.warn(`Upstream markAsUnread failed: ${msg}; updating DB only`);
     }
 
-    await this.prisma.mailConversation.updateMany({
-      where: { conversationId: { in: conversationIds } },
+    const updated = await this.prisma.mailConversation.updateMany({
+      where: {
+        conversationId: { in: eligibleConversationIds },
+        NOT: { labels: { array_contains: ['archived'] } },
+      },
       data: { isNew: true },
     });
 
     await this.updateCachedNewCount();
 
-    return { updated: conversationIds.length };
+    return { updated: updated.count };
   }
 
   async archive(conversationIds: string[]) {

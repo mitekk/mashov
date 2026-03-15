@@ -22,9 +22,11 @@ import { cn } from '@/lib/utils';
 type InboxFilter = 'all' | 'new' | 'archived';
 
 function getFilterFromParam(param: string | null): InboxFilter {
+  if (param === null) return 'new';
   if (param === 'new' || param === 'unread') return 'new';
   if (param === 'archived') return 'archived';
-  return 'all';
+  if (param === 'all') return 'all';
+  return 'new';
 }
 
 function InboxPageContent() {
@@ -53,12 +55,28 @@ function InboxPageContent() {
   );
   const isBulkActionPending = isMarkUnreadPending || isArchivePending || isUnarchivePending;
   const hasSelection = selectedConversationIds.length > 0;
-  const isArchivedFilter = activeFilter === 'archived';
+  const selectedConversations = useMemo(
+    () => conversations.filter((conversation) => selectedConversationIds.includes(conversation.conversationId)),
+    [conversations, selectedConversationIds],
+  );
+  const selectedArchivedIds = useMemo(
+    () => selectedConversations
+      .filter((conversation) => conversation.labels.includes('archived'))
+      .map((conversation) => conversation.conversationId),
+    [selectedConversations],
+  );
+  const selectedNonArchivedIds = useMemo(
+    () => selectedConversations
+      .filter((conversation) => !conversation.labels.includes('archived'))
+      .map((conversation) => conversation.conversationId),
+    [selectedConversations],
+  );
+  const hasArchivedSelection = selectedArchivedIds.length > 0;
+  const hasNonArchivedSelection = selectedNonArchivedIds.length > 0;
 
   const setFilter = (val: InboxFilter) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (val === 'all') params.delete('filter');
-    else params.set('filter', val);
+    params.set('filter', val);
     const nextQuery = params.toString();
     router.replace(nextQuery ? `/inbox?${nextQuery}` : '/inbox');
     setSelectedConversationIds([]);
@@ -84,8 +102,8 @@ function InboxPageContent() {
   };
 
   const handleMarkUnreadSelected = () => {
-    if (!hasSelection || isBulkActionPending) return;
-    markUnread(selectedConversationIds, {
+    if (!hasSelection || isBulkActionPending || selectedNonArchivedIds.length === 0) return;
+    markUnread(selectedNonArchivedIds, {
       onSuccess: () => {
         setSelectedConversationIds([]);
       },
@@ -93,8 +111,8 @@ function InboxPageContent() {
   };
 
   const handleArchiveSelected = () => {
-    if (!hasSelection || isBulkActionPending) return;
-    archive(selectedConversationIds, {
+    if (!hasSelection || isBulkActionPending || selectedNonArchivedIds.length === 0) return;
+    archive(selectedNonArchivedIds, {
       onSuccess: () => {
         setSelectedConversationIds([]);
       },
@@ -102,8 +120,8 @@ function InboxPageContent() {
   };
 
   const handleUnarchiveSelected = () => {
-    if (!hasSelection || isBulkActionPending) return;
-    unarchive(selectedConversationIds, {
+    if (!hasSelection || isBulkActionPending || selectedArchivedIds.length === 0) return;
+    unarchive(selectedArchivedIds, {
       onSuccess: () => {
         setSelectedConversationIds([]);
       },
@@ -124,18 +142,6 @@ function InboxPageContent() {
           {/* Filter toggle */}
           <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm">
             <button
-              data-testid="filter-all"
-              onClick={() => setFilter('all')}
-              className={cn(
-                'px-3 py-1.5 transition-colors',
-                activeFilter === 'all'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent',
-              )}
-            >
-              הכל
-            </button>
-            <button
               data-testid="filter-unread"
               onClick={() => setFilter('new')}
               className={cn(
@@ -145,7 +151,7 @@ function InboxPageContent() {
                   : 'text-muted-foreground hover:bg-accent',
               )}
             >
-              לא נקראו
+              לא נקרא
             </button>
             <button
               data-testid="filter-archived"
@@ -158,6 +164,18 @@ function InboxPageContent() {
               )}
             >
               ארכיון
+            </button>
+            <button
+              data-testid="filter-all"
+              onClick={() => setFilter('all')}
+              className={cn(
+                'px-3 py-1.5 transition-colors',
+                activeFilter === 'all'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-accent',
+              )}
+            >
+              הכל
             </button>
           </div>
           <ThemeToggle />
@@ -181,7 +199,7 @@ function InboxPageContent() {
           >
             בחר הכל
           </button>
-          {isArchivedFilter ? (
+          {hasArchivedSelection && (
             <button
               type="button"
               data-testid="bulk-unarchive"
@@ -192,18 +210,21 @@ function InboxPageContent() {
               <Archive className="h-3.5 w-3.5" />
               שחזר מארכיון
             </button>
-          ) : (
+          )}
+          {hasNonArchivedSelection && (
             <>
-              <button
-                type="button"
-                data-testid="bulk-mark-unread"
-                onClick={handleMarkUnreadSelected}
-                disabled={isBulkActionPending}
-                className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              >
-                <MailOpen className="h-3.5 w-3.5" />
-                סמן כלא נקרא
-              </button>
+              {activeFilter !== 'new' && (
+                <button
+                  type="button"
+                  data-testid="bulk-mark-unread"
+                  onClick={handleMarkUnreadSelected}
+                  disabled={isBulkActionPending}
+                  className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                >
+                  <MailOpen className="h-3.5 w-3.5" />
+                  סמן כלא נקרא
+                </button>
+              )}
               <button
                 type="button"
                 data-testid="bulk-archive"

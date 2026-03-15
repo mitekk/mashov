@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
 import { getBucketLabel } from '@/lib/behavior';
 import { buildBehaviorDetailHref, type ChildBehaviorFilter } from '@/lib/child-routes';
 
-type BehaviorStatusFilter = 'active' | 'archived';
+type BehaviorStatusFilter = 'new' | 'archived' | 'all';
 
 interface BehaviorSectionProps {
   studentGuid: string;
@@ -43,19 +43,19 @@ export function BehaviorSection({
       <h2 className="text-lg font-semibold text-foreground">
         אירועי התנהגות
       </h2>
-      {/* Status (Active / Archived) tabs */}
+      {/* Status tabs */}
       <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm w-fit">
         <button
-          data-testid="behavior-status-active"
-          onClick={() => onStatusFilterChange('active')}
+          data-testid="behavior-status-new"
+          onClick={() => onStatusFilterChange('new')}
           className={cn(
             'px-3 py-1.5 transition-colors',
-            statusFilter === 'active'
+            statusFilter === 'new'
               ? 'bg-primary text-primary-foreground'
               : 'text-muted-foreground hover:bg-accent',
           )}
         >
-          פעיל
+          לא נקרא
         </button>
         <button
           data-testid="behavior-status-archived"
@@ -68,6 +68,18 @@ export function BehaviorSection({
           )}
         >
           ארכיון
+        </button>
+        <button
+          data-testid="behavior-status-all"
+          onClick={() => onStatusFilterChange('all')}
+          className={cn(
+            'px-3 py-1.5 transition-colors',
+            statusFilter === 'all'
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:bg-accent',
+          )}
+        >
+          הכל
         </button>
       </div>
       {/* Bucket filter chips */}
@@ -98,7 +110,13 @@ export function BehaviorSection({
       {!isLoading && !isError && filteredItems.length === 0 && (
         <EmptyState
           icon={<AlertTriangle className="w-8 h-8" />}
-          title={statusFilter === 'archived' ? 'אין אירועי התנהגות בארכיון' : 'אין אירועי התנהגות'}
+          title={
+            statusFilter === 'archived'
+              ? 'אין אירועי התנהגות בארכיון'
+              : statusFilter === 'new'
+                ? 'אין אירועי התנהגות שלא נקראו'
+                : 'אין אירועי התנהגות'
+          }
           subtitle={activeFilter !== 'all' ? 'נסה לשנות את הסינון' : undefined}
         />
       )}

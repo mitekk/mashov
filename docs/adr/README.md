@@ -15,3 +15,5 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0005](0005-tanstack-query-state-management.md) | State Management — TanStack Query for Server State, No Global Client Store | Accepted | Frontend agent | 2026-03-11 |
 | [ADR-0006](0006-react-hook-form-zod.md) | Form Validation — React Hook Form + Zod | Accepted | Frontend agent | 2026-03-11 |
 | [ADR-0007](0007-component-architecture.md) | Component Architecture — Feature-Based Folder Structure with Shared UI Primitives | Accepted | Frontend agent | 2026-03-11 |
+| [ADR-0008](0008-refresh-button-lifecycle-local-state.md) | Manual Refresh Lifecycle — Blocking Sync API + Awaited Query Invalidation | Accepted | Frontend + backend agent | 2026-03-15 |
+| [ADR-0009](0009-home-feed-read-unread-filter.md) | Home Feed Read/Unread Filter — Client-Side Toggle over Server-Side Query Param | Accepted | Frontend agent | 2026-03-15 |

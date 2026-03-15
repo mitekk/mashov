@@ -34,7 +34,7 @@ export class InboxPage {
 
   async clickFilterAll(): Promise<void> {
     await this.filterAllButton.click();
-    await this.page.waitForURL((url) => !url.searchParams.has('filter'));
+    await this.page.waitForURL((url) => url.searchParams.get('filter') === 'all');
   }
 
   async clickFilterUnread(): Promise<void> {

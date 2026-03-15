@@ -21,8 +21,8 @@ class PaginationQueryDto {
 
 class HomeworkQueryDto extends PaginationQueryDto {
   @IsOptional()
-  @IsIn(['active', 'archived'])
-  status?: 'active' | 'archived' = 'active';
+  @IsIn(['new', 'archived', 'all'])
+  status?: 'new' | 'archived' | 'all' = 'new';
 }
 
 class BehaviorQueryDto extends PaginationQueryDto {
@@ -31,8 +31,8 @@ class BehaviorQueryDto extends PaginationQueryDto {
   bucket?: 'all' | 'attention' | 'positive' | 'neutral' = 'all';
 
   @IsOptional()
-  @IsIn(['active', 'archived'])
-  status?: 'active' | 'archived' = 'active';
+  @IsIn(['new', 'archived', 'all'])
+  status?: 'new' | 'archived' | 'all' = 'new';
 }
 
 class SetIsNewDto {
@@ -66,7 +66,7 @@ export class ChildrenController {
   ) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const status = query.status ?? 'active';
+    const status = query.status ?? 'new';
     return this.childrenService.getHomework(studentGuid, page, limit, status);
   }
 
@@ -130,7 +130,7 @@ export class ChildrenController {
     const page = query.page ?? 1;
     const limit = query.limit ?? 50;
     const bucket = query.bucket ?? 'all';
-    const status = query.status ?? 'active';
+    const status = query.status ?? 'new';
     return this.childrenService.getBehavior(studentGuid, page, limit, bucket, status);
   }
 
