@@ -144,9 +144,41 @@ test.describe('Home page', () => {
     await expect(homePage.latestFeed).toBeVisible();
   });
 
-  test('refresh button is visible and clickable', async ({ page }) => {
+  test('refresh button stays disabled/spinning through manual refresh and dashboard refetch', async ({ page }) => {
+    let dashboardCalls = 0;
+
     await page.route('**/api/v1/dashboard', async (route) => {
-      await route.fulfill({ json: makeEmptyDashboard() });
+      dashboardCalls++;
+      if (dashboardCalls === 1) {
+        await route.fulfill({ json: makeEmptyDashboard() });
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          freshness: {
+            state: 'fresh',
+            lastSyncAt: new Date().toISOString(),
+            staleSources: [],
+          },
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/sync/refresh', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'success',
+          startedAt: new Date().toISOString(),
+          endedAt: new Date().toISOString(),
+          durationMs: 250,
+          tasks: [],
+        }),
+      });
     });
 
     const homePage = new HomePage(page);
@@ -156,7 +188,10 @@ test.describe('Home page', () => {
     await expect(homePage.refreshButton).toBeEnabled();
 
     await homePage.clickRefresh();
+    await expect(homePage.refreshButton).toBeDisabled();
+    await expect(homePage.refreshButton.locator('svg')).toHaveClass(/animate-spin/);
     await expect(homePage.refreshButton).toBeEnabled({ timeout: 10000 });
+    expect(dashboardCalls).toBeGreaterThanOrEqual(2);
   });
 
   test('summary strip shows newConversations count from dashboard response', async ({ page }) => {

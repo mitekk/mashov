@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import type { SyncTaskRunResult } from '../sync.types';
 import * as crypto from 'crypto';
 
 interface MashovNotification {
@@ -33,14 +34,16 @@ export class NotificationsTask {
 
   @Cron('*/5 * * * *')
   async run(): Promise<void> {
-    return this.execute();
+    await this.execute();
   }
 
-  async execute(): Promise<void> {
+  async execute(): Promise<SyncTaskRunResult> {
     const syncRun = await this.syncRunService.openRun(NotificationsTask.SOURCE);
     let fetchedCount = 0;
     let createdCount = 0;
     let updatedCount = 0;
+    let failedCount = 0;
+    const errorMessages: string[] = [];
 
     try {
       const notifications = await this.mashovClient.get<MashovNotification[]>(
@@ -135,6 +138,8 @@ export class NotificationsTask {
         } catch (itemErr) {
           const msg = itemErr instanceof Error ? itemErr.message : String(itemErr);
           this.logger.warn(`Failed to upsert notification: ${msg}`);
+          failedCount++;
+          if (errorMessages.length < 10) errorMessages.push(msg);
         }
       }
 
@@ -144,10 +149,30 @@ export class NotificationsTask {
         updatedCount,
       });
       this.logger.debug(`Notifications sync: fetched=${fetchedCount} created=${createdCount} updated=${updatedCount}`);
+      return {
+        status: failedCount > 0 ? 'failed' : 'success',
+        summary: {
+          fetchedCount,
+          createdCount,
+          updatedCount,
+          failedCount,
+        },
+        errorMessages,
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Notifications sync failed: ${msg}`);
       await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+      return {
+        status: 'failed',
+        summary: {
+          fetchedCount,
+          createdCount,
+          updatedCount,
+          failedCount: failedCount + 1,
+        },
+        errorMessages: [...errorMessages, msg],
+      };
     }
   }
 }

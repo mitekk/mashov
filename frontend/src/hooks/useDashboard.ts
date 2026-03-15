@@ -15,11 +15,13 @@ export function useSyncRefresh() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: triggerSyncRefresh,
-    onSuccess: () => {
-      // Invalidate dashboard + feed + health after sync
-      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      void queryClient.invalidateQueries({ queryKey: ['feed'] });
-      void queryClient.invalidateQueries({ queryKey: ['source-health'] });
+    onSuccess: async () => {
+      // Keep mutation pending until active queries have been invalidated and refetched.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['feed'] }),
+        queryClient.invalidateQueries({ queryKey: ['source-health'] }),
+      ]);
     },
   });
 }

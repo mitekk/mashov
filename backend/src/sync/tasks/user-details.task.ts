@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovUserDetails {
   semel: number;
@@ -31,11 +32,13 @@ export class UserDetailsTask {
 
   @Cron('0 6 * * *')
   async run(): Promise<void> {
-    return this.execute();
+    await this.execute();
   }
 
-  async execute(): Promise<void> {
+  async execute(): Promise<SyncTaskRunResult> {
     const syncRun = await this.syncRunService.openRun(UserDetailsTask.SOURCE);
+    let createdCount = 0;
+    let updatedCount = 0;
 
     try {
       const details = await this.mashovClient.get<MashovUserDetails>(
@@ -59,6 +62,7 @@ export class UserDetailsTask {
             rawPayload: details as unknown as import('@prisma/client').Prisma.InputJsonValue,
           },
         });
+        updatedCount = 1;
       } else {
         await this.prisma.parentProfile.create({
           data: {
@@ -69,14 +73,35 @@ export class UserDetailsTask {
             rawPayload: details as unknown as import('@prisma/client').Prisma.InputJsonValue,
           },
         });
+        createdCount = 1;
       }
 
       await this.syncRunService.closeRun(syncRun.id, 'success', { fetchedCount: 1 });
       this.logger.debug(`User details sync: userId=${details.userId}`);
+      return {
+        status: 'success',
+        summary: {
+          fetchedCount: 1,
+          createdCount,
+          updatedCount,
+          failedCount: 0,
+        },
+        errorMessages: [],
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`User details sync failed: ${msg}`);
       await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+      return {
+        status: 'failed',
+        summary: {
+          fetchedCount: 0,
+          createdCount,
+          updatedCount,
+          failedCount: 1,
+        },
+        errorMessages: [msg],
+      };
     }
   }
 }

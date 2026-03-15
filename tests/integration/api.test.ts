@@ -871,11 +871,14 @@ describe('API Integration Tests (isNew refactor contract)', () => {
   });
 
   describe('Sync API', () => {
-    it('POST /api/v1/sync/refresh returns 202', async () => {
+    it('POST /api/v1/sync/refresh returns completion payload', async () => {
       const res = await request(app.getHttpServer()).post('/api/v1/sync/refresh');
-      expect(res.status).toBe(202);
-      expect(res.body.started).toBe(true);
-      expect(typeof res.body.message).toBe('string');
+      expect(res.status).toBe(200);
+      expect(['success', 'partial']).toContain(res.body.status);
+      expect(typeof res.body.startedAt).toBe('string');
+      expect(typeof res.body.endedAt).toBe('string');
+      expect(typeof res.body.durationMs).toBe('number');
+      expect(Array.isArray(res.body.tasks)).toBe(true);
     });
   });
 });

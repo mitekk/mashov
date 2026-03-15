@@ -4,6 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { BehaviorClassifierService } from '../behavior-classifier.service';
+import type { SyncTaskRunResult } from '../sync.types';
 
 // Same shape as /behave response
 interface MashovDailyBehaviorItem {
@@ -41,14 +42,27 @@ export class DailyBehaveTask {
     private readonly configService: ConfigService,
   ) {}
 
-  async execute(): Promise<void> {
+  async execute(): Promise<SyncTaskRunResult> {
     const featureEnabled = this.configService.get<string>('FEATURE_DAILY_BEHAVE') === 'true';
     if (!featureEnabled) {
       this.logger.debug('DailyBehave feature flag is disabled, skipping');
-      return;
+      return {
+        status: 'success',
+        summary: {
+          fetchedCount: 0,
+          createdCount: 0,
+          updatedCount: 0,
+          failedCount: 0,
+        },
+        errorMessages: [],
+      };
     }
 
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
+    let totalFetchedCount = 0;
+    let totalUpsertCount = 0;
+    let failedCount = 0;
+    const errorMessages: string[] = [];
 
     for (const student of students) {
       const source = `${DailyBehaveTask.SOURCE}:${student.studentGuid}`;
@@ -62,6 +76,7 @@ export class DailyBehaveTask {
         );
 
         fetchedCount = items.length;
+        totalFetchedCount += fetchedCount;
 
         for (const item of items) {
           try {
@@ -109,9 +124,12 @@ export class DailyBehaveTask {
               },
             });
             upsertCount++;
+            totalUpsertCount++;
           } catch (itemErr) {
             const msg = itemErr instanceof Error ? itemErr.message : String(itemErr);
             this.logger.warn(`Failed to upsert dailyBehave item: ${msg}`);
+            failedCount++;
+            if (errorMessages.length < 10) errorMessages.push(msg);
           }
         }
 
@@ -123,7 +141,20 @@ export class DailyBehaveTask {
         const msg = error instanceof Error ? error.message : String(error);
         this.logger.error(`DailyBehave sync failed for ${student.studentGuid}: ${msg}`);
         await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+        failedCount++;
+        if (errorMessages.length < 10) errorMessages.push(msg);
       }
     }
+
+    return {
+      status: failedCount > 0 ? 'failed' : 'success',
+      summary: {
+        fetchedCount: totalFetchedCount,
+        createdCount: 0,
+        updatedCount: totalUpsertCount,
+        failedCount,
+      },
+      errorMessages,
+    };
   }
 }

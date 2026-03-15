@@ -46,7 +46,7 @@ export default function HomePage() {
   } = useSelectedChild();
 
   const handleRefresh = () => {
-    triggerRefresh(undefined, { onSuccess: () => void refetch() });
+    triggerRefresh();
   };
 
   const dashboard = data ?? EMPTY_DASHBOARD;

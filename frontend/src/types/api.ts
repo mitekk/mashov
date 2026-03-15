@@ -372,9 +372,32 @@ export interface MarkArchivedRequest { isArchived: boolean }
 
 // ─── Sync ──────────────────────────────────────────────────────────────────
 
+export type SyncTaskStatus = 'success' | 'failed';
+export type SyncRefreshStatus = 'success' | 'partial';
+
+export interface SyncTaskSummary {
+  fetchedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  failedCount: number;
+}
+
+export interface SyncTaskResult {
+  task: string;
+  status: SyncTaskStatus;
+  summary: SyncTaskSummary;
+  errorMessages: string[];
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+}
+
 export interface SyncRefreshResponse {
-  started: boolean;
-  message: string;
+  status: SyncRefreshStatus;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  tasks: SyncTaskResult[];
 }
 
 // ─── Bulk Mail Actions ─────────────────────────────────────────────────────

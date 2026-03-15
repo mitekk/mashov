@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovMessage {
   messageId: string;
@@ -48,13 +49,15 @@ export class MailInboxTask {
 
   @Cron('*/7 * * * *')
   async run(): Promise<void> {
-    return this.execute();
+    await this.execute();
   }
 
-  async execute(): Promise<void> {
+  async execute(): Promise<SyncTaskRunResult> {
     const syncRun = await this.syncRunService.openRun(MailInboxTask.SOURCE);
     let fetchedCount = 0;
     let upsertCount = 0;
+    let failedCount = 0;
+    const errorMessages: string[] = [];
 
     try {
       const conversations = await this.mashovClient.get<MashovConversation[]>(
@@ -134,6 +137,8 @@ export class MailInboxTask {
         } catch (itemErr) {
           const msg = itemErr instanceof Error ? itemErr.message : String(itemErr);
           this.logger.warn(`Failed to upsert conversation ${conv.conversationId}: ${msg}`);
+          failedCount++;
+          if (errorMessages.length < 10) errorMessages.push(msg);
         }
       }
 
@@ -142,10 +147,30 @@ export class MailInboxTask {
         updatedCount: upsertCount,
       });
       this.logger.debug(`Mail inbox sync: fetched=${fetchedCount} upserted=${upsertCount}`);
+      return {
+        status: failedCount > 0 ? 'failed' : 'success',
+        summary: {
+          fetchedCount,
+          createdCount: 0,
+          updatedCount: upsertCount,
+          failedCount,
+        },
+        errorMessages,
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Mail inbox sync failed: ${msg}`);
       await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+      return {
+        status: 'failed',
+        summary: {
+          fetchedCount,
+          createdCount: 0,
+          updatedCount: upsertCount,
+          failedCount: failedCount + 1,
+        },
+        errorMessages: [...errorMessages, msg],
+      };
     }
   }
 }

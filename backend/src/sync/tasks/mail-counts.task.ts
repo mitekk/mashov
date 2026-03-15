@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import type { SyncTaskRunResult } from '../sync.types';
 
 interface MailCountsResponse {
   unreadConversations: number;
@@ -21,11 +22,12 @@ export class MailCountsTask {
 
   @Cron('*/5 * * * *')
   async run(): Promise<void> {
-    return this.execute();
+    await this.execute();
   }
 
-  async execute(): Promise<void> {
+  async execute(): Promise<SyncTaskRunResult> {
     const syncRun = await this.syncRunService.openRun(MailCountsTask.SOURCE);
+    let updatedCount = 0;
 
     try {
       const data = await this.mashovClient.get<MailCountsResponse>(
@@ -43,14 +45,35 @@ export class MailCountsTask {
           where: { id: household.id },
           data: { cachedNewCount: unreadCount },
         });
+        updatedCount = 1;
       }
 
       await this.syncRunService.closeRun(syncRun.id, 'success', { fetchedCount: 1 });
       this.logger.debug(`Mail counts sync: unreadConversations=${unreadCount}`);
+      return {
+        status: 'success',
+        summary: {
+          fetchedCount: 1,
+          createdCount: 0,
+          updatedCount,
+          failedCount: 0,
+        },
+        errorMessages: [],
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Mail counts sync failed: ${msg}`);
       await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+      return {
+        status: 'failed',
+        summary: {
+          fetchedCount: 0,
+          createdCount: 0,
+          updatedCount,
+          failedCount: 1,
+        },
+        errorMessages: [msg],
+      };
     }
   }
 }
