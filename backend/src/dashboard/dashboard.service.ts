@@ -339,6 +339,7 @@ export class DashboardService {
           this.prisma.homeworkItem.count({
             where: {
               studentGuid: student.studentGuid,
+              isNew: true,
               isArchived: false,
               lessonDate: { gte: sevenDaysAgo },
             },
@@ -346,6 +347,7 @@ export class DashboardService {
           this.prisma.behaviorItem.count({
             where: {
               studentGuid: student.studentGuid,
+              isNew: true,
               isArchived: false,
               lessonDate: { gte: sevenDaysAgo },
               classification: { not: 'positive' },

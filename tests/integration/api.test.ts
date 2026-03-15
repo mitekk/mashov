@@ -857,6 +857,48 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       expect(res.body.summary).not.toHaveProperty('unreadConversations');
     });
 
+    it('GET /api/v1/dashboard children badge counts only unread (isNew=true), non-archived, within 7 days', async () => {
+      await seedStudent(prisma);
+
+      const now = new Date();
+      const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+      const tenDaysAgo = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
+
+      await prisma.homeworkItem.createMany({
+        data: [
+          // counts: unread + recent
+          { studentGuid: TEST_STUDENT_GUID, lessonId: 1, groupId: 1, lessonDate: threeDaysAgo, lesson: 1, subjectName: 'Math', homeworkText: 'Unread recent', isNew: true, isArchived: false, rawPayload: {} },
+          // excluded: read
+          { studentGuid: TEST_STUDENT_GUID, lessonId: 2, groupId: 1, lessonDate: threeDaysAgo, lesson: 1, subjectName: 'Math', homeworkText: 'Read recent', isNew: false, isArchived: false, rawPayload: {} },
+          // excluded: archived
+          { studentGuid: TEST_STUDENT_GUID, lessonId: 3, groupId: 1, lessonDate: threeDaysAgo, lesson: 1, subjectName: 'Math', homeworkText: 'Archived', isNew: true, isArchived: true, rawPayload: {} },
+          // excluded: older than 7 days
+          { studentGuid: TEST_STUDENT_GUID, lessonId: 4, groupId: 1, lessonDate: tenDaysAgo, lesson: 1, subjectName: 'Math', homeworkText: 'Old unread', isNew: true, isArchived: false, rawPayload: {} },
+        ],
+      });
+
+      await prisma.behaviorItem.createMany({
+        data: [
+          // counts: unread + recent + non-positive
+          { studentGuid: TEST_STUDENT_GUID, lessonId: 1, groupId: 1, eventCode: 2, achvaCode: 2, achvaName: 'Absence', classification: 'attention', lessonDate: threeDaysAgo, lesson: 1, subject: 'Math', reporter: 'Teacher', eventAt: threeDaysAgo, isNew: true, isArchived: false, rawPayload: {} },
+          // excluded: read
+          { studentGuid: TEST_STUDENT_GUID, lessonId: 2, groupId: 1, eventCode: 2, achvaCode: 2, achvaName: 'Late', classification: 'attention', lessonDate: threeDaysAgo, lesson: 1, subject: 'Math', reporter: 'Teacher', eventAt: threeDaysAgo, isNew: false, isArchived: false, rawPayload: {} },
+          // excluded: positive
+          { studentGuid: TEST_STUDENT_GUID, lessonId: 3, groupId: 1, eventCode: 2, achvaCode: 2, achvaName: 'Good', classification: 'positive', lessonDate: threeDaysAgo, lesson: 1, subject: 'Math', reporter: 'Teacher', eventAt: threeDaysAgo, isNew: true, isArchived: false, rawPayload: {} },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/dashboard');
+      expect(res.status).toBe(200);
+
+      const child = res.body.children.find(
+        (c: { studentGuid: string }) => c.studentGuid === TEST_STUDENT_GUID,
+      );
+      expect(child).toBeDefined();
+      expect(child.recentHomeworkCount).toBe(1);
+      expect(child.recentBehaviorCount).toBe(1);
+    });
+
     it('GET /api/v1/dashboard feed includes archived homework/behavior/mail items', async () => {
       await seedStudent(prisma);
 
