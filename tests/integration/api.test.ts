@@ -856,6 +856,78 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       expect(res.body.summary.newConversations).toBe(23);
       expect(res.body.summary).not.toHaveProperty('unreadConversations');
     });
+
+    it('GET /api/v1/dashboard feed includes archived homework/behavior/mail items', async () => {
+      await seedStudent(prisma);
+
+      await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 1,
+          groupId: 1,
+          lessonDate: new Date('2026-03-12T10:00:00Z'),
+          lesson: 2,
+          subjectName: 'Math',
+          homeworkText: 'Archived homework',
+          isNew: false,
+          isArchived: true,
+          rawPayload: {},
+        },
+      });
+
+      await prisma.behaviorItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 2,
+          groupId: 1,
+          eventCode: 2,
+          achvaCode: 2,
+          achvaName: 'Archived behavior',
+          classification: 'attention',
+          lessonDate: new Date('2026-03-12T11:00:00Z'),
+          lesson: 3,
+          subject: 'Math',
+          reporter: 'Teacher',
+          eventAt: new Date('2026-03-12T11:00:00Z'),
+          isNew: false,
+          isArchived: true,
+          rawPayload: {},
+        },
+      });
+
+      await prisma.mailConversation.create({
+        data: {
+          conversationId: 'conv-dashboard-archived-1',
+          subject: 'Archived message',
+          senderNamePreview: 'School',
+          sendTime: new Date('2026-03-12T12:00:00Z'),
+          isNew: false,
+          labels: ['archived'],
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer()).get('/api/v1/dashboard');
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.feed)).toBe(true);
+      expect(res.body.feed).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            sourceType: 'homework',
+            isArchived: true,
+          }),
+          expect.objectContaining({
+            sourceType: 'behavior',
+            isArchived: true,
+          }),
+          expect.objectContaining({
+            sourceType: 'mail',
+            sourceId: 'conv-dashboard-archived-1',
+            isArchived: true,
+          }),
+        ]),
+      );
+    });
   });
 
   describe('Settings API', () => {

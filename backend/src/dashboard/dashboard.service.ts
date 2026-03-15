@@ -229,19 +229,14 @@ export class DashboardService {
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
-        where: { isArchived: false },
         orderBy: { lessonDate: 'desc' },
         take: 20,
       }),
       this.prisma.behaviorItem.findMany({
-        where: { isArchived: false },
         orderBy: { eventAt: 'desc' },
         take: 20,
       }),
       this.prisma.mailConversation.findMany({
-        where: {
-          NOT: { labels: { array_contains: ['archived'] } },
-        },
         orderBy: { sendTime: 'desc' },
         take: 20,
       }),
@@ -305,7 +300,7 @@ export class DashboardService {
         priority: conv.isNew ? 'high' : 'medium',
         isPositive: false,
         isNew: conv.isNew,
-        isArchived: false,
+        isArchived: Array.isArray(conv.labels) && conv.labels.includes('archived'),
         hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),
         syncedAt: conv.lastFetchedAt.toISOString(),

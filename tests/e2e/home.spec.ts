@@ -177,6 +177,8 @@ test.describe('Home page', () => {
     await expect(homePage.feedItem('feed-archived-1')).toBeVisible();
     await expect(homePage.feedItem('feed-unread-1')).toHaveCount(0);
     await expect(homePage.feedItem('feed-read-1')).toHaveCount(0);
+    await expect(homePage.markNewButton('feed-archived-1')).toHaveCount(0);
+    await expect(homePage.archiveButton('feed-archived-1')).toBeVisible();
 
     await homePage.clickFeedFilterUnread();
     await expect(homePage.feedItem('feed-read-1')).toHaveCount(0);

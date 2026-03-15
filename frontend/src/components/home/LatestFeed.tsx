@@ -97,7 +97,11 @@ export function LatestFeed({ items }: LatestFeedProps) {
       ) : (
         <div className="section-stack">
           {visibleItems.map((item) => (
-            <FeedItem key={item.id} item={item} />
+            <FeedItem
+              key={item.id}
+              item={item}
+              forceRestoreOnly={activeFilter === 'archived'}
+            />
           ))}
           {hasMore && (
             <button

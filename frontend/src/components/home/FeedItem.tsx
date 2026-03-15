@@ -9,12 +9,13 @@ import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { useMarkNew } from '@/hooks/useMarkNew';
 import { useArchive } from '@/hooks/useArchive';
-import { useArchive as useMailArchive } from '@/hooks/useMail';
+import { useArchive as useMailArchive, useUnarchive as useMailUnarchive } from '@/hooks/useMail';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 import { buildBehaviorDetailHref, buildChildSectionHref, buildHomeworkDetailHref } from '@/lib/child-routes';
 
 interface FeedItemProps {
   item: FeedItemType;
+  forceRestoreOnly?: boolean;
 }
 
 function getSafeFeedHref(item: FeedItemType): string | null {
@@ -42,9 +43,10 @@ function getSafeFeedHref(item: FeedItemType): string | null {
   return '/home';
 }
 
-export function FeedItem({ item }: FeedItemProps) {
+export function FeedItem({ item, forceRestoreOnly = false }: FeedItemProps) {
   const isMailItem = item.sourceType === 'mail';
   const isArchivable = item.sourceType === 'homework' || item.sourceType === 'behavior' || item.sourceType === 'positive';
+  const canToggleReadState = !item.isArchived && !forceRestoreOnly;
 
   const markNewKeys = isMailItem
     ? [['dashboard'], ['conversations'], ['conversation', item.sourceId]]
@@ -74,6 +76,7 @@ export function FeedItem({ item }: FeedItemProps) {
   });
 
   const { mutate: mutateMailArchive, isPending: isMailArchivePending } = useMailArchive();
+  const { mutate: mutateMailUnarchive, isPending: isMailUnarchivePending } = useMailUnarchive();
 
   const safeHref = getPhase1HrefOrNull(getSafeFeedHref(item));
 
@@ -152,39 +155,47 @@ export function FeedItem({ item }: FeedItemProps) {
         )}
       </div>
       <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
-        <button
-          data-testid={`feed-item-mark-new-${item.id}`}
-          onClick={() => mutateMarkNew(!item.isNew)}
-          disabled={isMarkNewPending}
-          aria-label={item.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
-          className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
-        >
-          {item.isNew ? (
-            <Eye className="w-5 h-5 text-primary" />
-          ) : (
-            <EyeOff className="w-5 h-5" />
-          )}
-        </button>
+        {canToggleReadState && (
+          <button
+            data-testid={`feed-item-mark-new-${item.id}`}
+            onClick={() => mutateMarkNew(!item.isNew)}
+            disabled={isMarkNewPending}
+            aria-label={item.isNew ? 'סמן כנקרא' : 'סמן כחדש'}
+            className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+          >
+            {item.isNew ? (
+              <Eye className="w-5 h-5 text-primary" />
+            ) : (
+              <EyeOff className="w-5 h-5" />
+            )}
+          </button>
+        )}
         {isArchivable && (
           <button
             data-testid={`feed-item-archive-${item.id}`}
-            onClick={() => mutateArchive(!item.isArchived)}
+            onClick={() => mutateArchive(forceRestoreOnly ? false : !item.isArchived)}
             disabled={isArchivePending}
-            aria-label={item.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
+            aria-label={item.isArchived || forceRestoreOnly ? 'שחזר מארכיון' : 'העבר לארכיון'}
             className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
           >
-            <Archive className={cn('w-4 h-4', item.isArchived && 'text-primary')} />
+            <Archive className={cn('w-4 h-4', (item.isArchived || forceRestoreOnly) && 'text-primary')} />
           </button>
         )}
         {isMailItem && (
           <button
             data-testid={`feed-item-archive-${item.id}`}
-            onClick={() => mutateMailArchive([item.sourceId])}
-            disabled={isMailArchivePending}
-            aria-label="העבר לארכיון"
+            onClick={() => {
+              if (item.isArchived || forceRestoreOnly) {
+                mutateMailUnarchive([item.sourceId]);
+                return;
+              }
+              mutateMailArchive([item.sourceId]);
+            }}
+            disabled={isMailArchivePending || isMailUnarchivePending}
+            aria-label={item.isArchived || forceRestoreOnly ? 'שחזר מארכיון' : 'העבר לארכיון'}
             className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
           >
-            <Archive className="w-4 h-4" />
+            <Archive className={cn('w-4 h-4', (item.isArchived || forceRestoreOnly) && 'text-primary')} />
           </button>
         )}
       </div>
