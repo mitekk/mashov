@@ -453,3 +453,42 @@ export interface MailBulkActionRequest {
 export interface MailBulkActionResponse {
   updated: number;
 }
+
+// ─── Auth / User ───────────────────────────────────────────────────────────
+
+export interface ConnectedSchool {
+  schoolName: string;
+  schoolYear: number;
+}
+
+export interface AppUser {
+  mashovUserId: string;
+  username: string;
+  displayName: string;
+  connectedSchool: ConnectedSchool | null;
+}
+
+export interface School {
+  semel: number;
+  name: string;
+  years: number[];
+}
+
+export interface LoginRequest {
+  semel: number;
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  ok: boolean;
+  isFirstLogin: boolean;
+}
+
+// ─── Sync Status ───────────────────────────────────────────────────────────
+
+export interface SyncStatus {
+  done: boolean;
+  sourcesCompleted: number;
+  sourcesTotal: number;
+}

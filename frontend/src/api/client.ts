@@ -14,6 +14,14 @@ export class ApiError extends Error {
   }
 }
 
+function handle401Redirect(): void {
+  if (typeof window !== 'undefined') {
+    const event = new CustomEvent('mashov:session-expired');
+    window.dispatchEvent(event);
+    window.location.href = '/auth/sign-in';
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   options?: RequestInit,
@@ -24,8 +32,18 @@ export async function apiFetch<T>(
       'Content-Type': 'application/json',
       ...(options?.headers ?? {}),
     },
+    credentials: 'include',
     ...options,
   });
+
+  if (res.status === 401) {
+    const body = await res.json().catch(() => ({}));
+    handle401Redirect();
+    const message =
+      (body as { error?: { message?: string } })?.error?.message ??
+      'Unauthorized';
+    throw new ApiError(res.status, message, body);
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
