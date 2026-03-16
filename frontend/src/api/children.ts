@@ -11,6 +11,7 @@ import type {
   BehaviorItem,
   SubjectsResponse,
   NoticesResponse,
+  TimetableResponse,
   BehaviorBucket,
   MarkIsNewRequest,
   MarkArchivedRequest,
@@ -143,6 +144,21 @@ export async function fetchChildNotices(studentGuid: string): Promise<NoticesRes
   const items = Array.isArray(response.data) ? response.data : [];
   return {
     data: items.map((item) => normalizeNotice(item as unknown as UnknownRecord)),
+  };
+}
+
+export async function fetchChildTimetable(studentGuid: string): Promise<TimetableResponse> {
+  const response = await apiFetch<TimetableResponse | { data: unknown[] } | unknown[]>(
+    `/children/${encodeURIComponent(studentGuid)}/timetable`,
+  );
+  if (Array.isArray(response)) {
+    return {
+      data: response.map((item) => normalizeTimetableEntry(item as unknown as UnknownRecord)),
+    };
+  }
+  const items = Array.isArray(response.data) ? response.data : [];
+  return {
+    data: items.map((item) => normalizeTimetableEntry(item as unknown as UnknownRecord)),
   };
 }
 
@@ -293,6 +309,29 @@ function normalizeNotice(item: UnknownRecord) {
     eventText: String(item.eventText ?? ''),
     expirationDate: String(item.expirationDate ?? ''),
     inSite: Boolean(item.inSite),
+    updatedAt: String(item.updatedAt ?? ''),
+  };
+}
+
+function normalizeTimetableEntry(item: UnknownRecord) {
+  const teachersRaw = Array.isArray(item.teachers) ? item.teachers : [];
+  return {
+    id: String(item.id ?? ''),
+    studentGuid: String(item.studentGuid ?? ''),
+    groupId: Number(item.groupId ?? 0),
+    day: Number(item.day ?? 0),
+    lesson: Number(item.lesson ?? 0),
+    roomNum: String(item.roomNum ?? ''),
+    weeks: Number(item.weeks ?? -1),
+    groupName: String(item.groupName ?? ''),
+    subjectName: String(item.subjectName ?? ''),
+    teachers: teachersRaw.map((t) => {
+      const teacher = t as UnknownRecord;
+      return {
+        teacherGuid: String(teacher.teacherGuid ?? ''),
+        teacherName: String(teacher.teacherName ?? ''),
+      };
+    }),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }

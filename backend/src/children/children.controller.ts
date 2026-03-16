@@ -186,6 +186,11 @@ export class ChildrenController {
     return this.childrenService.setBehaviorArchived(studentGuid, behaviorId, body.isArchived);
   }
 
+  @Get(':studentGuid/timetable')
+  getTimetable(@Param('studentGuid') studentGuid: string) {
+    return this.childrenService.getTimetable(studentGuid);
+  }
+
   @Get(':studentGuid/subjects')
   async getSubjects(@Param('studentGuid') studentGuid: string) {
     return this.childrenService.getSubjects(studentGuid);

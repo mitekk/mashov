@@ -12,6 +12,7 @@ import { MessageBoardTask } from './tasks/message-board.task';
 import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
+import { TimetableTask } from './tasks/timetable.task';
 
 function makeResult(status: 'success' | 'failed' = 'success'): SyncTaskRunResult {
   return {
@@ -33,6 +34,8 @@ function makeMockTask(result: SyncTaskRunResult) {
 }
 
 describe('SyncService', () => {
+  const EXPECTED_TASK_COUNT = 13;
+
   function createService(overrides: Partial<Record<string, { execute: jest.Mock }>> = {}) {
     const notifications = overrides.notifications ?? makeMockTask(makeResult());
     const mailCounts = overrides.mailCounts ?? makeMockTask(makeResult());
@@ -46,6 +49,7 @@ describe('SyncService', () => {
     const userDetails = overrides.userDetails ?? makeMockTask(makeResult());
     const dailyBehave = overrides.dailyBehave ?? makeMockTask(makeResult());
     const outBehave = overrides.outBehave ?? makeMockTask(makeResult());
+    const timetable = overrides.timetable ?? makeMockTask(makeResult());
 
     const service = new SyncService(
       notifications as unknown as NotificationsTask,
@@ -60,6 +64,7 @@ describe('SyncService', () => {
       userDetails as unknown as UserDetailsTask,
       dailyBehave as unknown as DailyBehaveTask,
       outBehave as unknown as OutBehaveTask,
+      timetable as unknown as TimetableTask,
     );
 
     return {
@@ -77,6 +82,7 @@ describe('SyncService', () => {
         userDetails,
         dailyBehave,
         outBehave,
+        timetable,
       },
     };
   }
@@ -87,8 +93,9 @@ describe('SyncService', () => {
     const result = await service.refreshAll();
 
     expect(result.status).toBe('success');
-    expect(result.tasks).toHaveLength(12);
+    expect(result.tasks).toHaveLength(EXPECTED_TASK_COUNT);
     expect(result.tasks.every((task) => task.status === 'success')).toBe(true);
+    expect(result.tasks.find((task) => task.task === 'timetable')?.status).toBe('success');
     expect(typeof result.durationMs).toBe('number');
   });
 

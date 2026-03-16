@@ -19,6 +19,7 @@ import { MessageBoardTask } from './tasks/message-board.task';
 import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
+import { TimetableTask } from './tasks/timetable.task';
 
 @Module({
   imports: [ConfigModule, PrismaModule, SessionModule],
@@ -40,6 +41,7 @@ import { OutBehaveTask } from './tasks/out-behave.task';
     UserDetailsTask,
     DailyBehaveTask,
     OutBehaveTask,
+    TimetableTask,
   ],
   exports: [SyncRunService, BehaviorClassifierService, FreshnessService, SyncService],
 })

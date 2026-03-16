@@ -7,6 +7,7 @@ import {
   fetchChildBehaviorDetail,
   fetchChildSubjects,
   fetchChildNotices,
+  fetchChildTimetable,
 } from '@/api/children';
 import type { BehaviorBucket } from '@/types/api';
 
@@ -77,6 +78,15 @@ export function useChildNotices(studentGuid: string) {
   return useQuery({
     queryKey: ['child-notices', studentGuid],
     queryFn: () => fetchChildNotices(studentGuid),
+    staleTime: 5 * 60_000,
+    enabled: Boolean(studentGuid),
+  });
+}
+
+export function useChildTimetable(studentGuid: string) {
+  return useQuery({
+    queryKey: ['child-timetable', studentGuid],
+    queryFn: () => fetchChildTimetable(studentGuid),
     staleTime: 5 * 60_000,
     enabled: Boolean(studentGuid),
   });

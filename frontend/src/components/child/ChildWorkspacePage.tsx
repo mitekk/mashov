@@ -2,13 +2,14 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { AlertTriangle, BookOpen, Bell, GraduationCap } from 'lucide-react';
+import { AlertTriangle, BookOpen, Bell, GraduationCap, CalendarDays } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { ChildHeader, type ChildHeaderOption } from '@/components/child/ChildHeader';
 import { HomeworkSection } from '@/components/child/HomeworkSection';
 import { BehaviorSection } from '@/components/child/BehaviorSection';
 import { SubjectsSection } from '@/components/child/SubjectsSection';
 import { NoticesSection } from '@/components/child/NoticesSection';
+import { TimetableSection } from '@/components/child/TimetableSection';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useChild } from '@/hooks/useChild';
@@ -32,6 +33,7 @@ const SECTIONS: Array<{ id: ChildSectionId; label: string; icon: React.ReactNode
   { id: 'behavior', label: 'התנהגות', icon: <AlertTriangle className="w-3.5 h-3.5" /> },
   { id: 'subjects', label: 'מקצועות', icon: <GraduationCap className="w-3.5 h-3.5" /> },
   { id: 'notices', label: 'הודעות', icon: <Bell className="w-3.5 h-3.5" /> },
+  { id: 'timetable', label: 'לוח שיעורים', icon: <CalendarDays className="w-3.5 h-3.5" /> },
 ];
 
 export function ChildWorkspacePage({
@@ -175,6 +177,7 @@ export function ChildWorkspacePage({
         )}
         {activeSection === 'subjects' && <SubjectsSection studentGuid={studentGuid} />}
         {activeSection === 'notices' && <NoticesSection studentGuid={studentGuid} />}
+        {activeSection === 'timetable' && <TimetableSection studentGuid={studentGuid} />}
       </div>
     </AppShell>
   );

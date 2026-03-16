@@ -11,6 +11,7 @@ import { MessageBoardTask } from './tasks/message-board.task';
 import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
+import { TimetableTask } from './tasks/timetable.task';
 import type { ManualSyncRefreshResponse, ManualSyncTaskResult, SyncTaskRunResult } from './sync.types';
 
 @Injectable()
@@ -31,6 +32,7 @@ export class SyncService {
     private readonly userDetailsTask: UserDetailsTask,
     private readonly dailyBehaveTask: DailyBehaveTask,
     private readonly outBehaveTask: OutBehaveTask,
+    private readonly timetableTask: TimetableTask,
   ) {}
 
   async refreshAll(): Promise<ManualSyncRefreshResponse> {
@@ -62,6 +64,7 @@ export class SyncService {
       { name: 'userDetails', fn: () => this.userDetailsTask.execute() },
       { name: 'dailyBehave', fn: () => this.dailyBehaveTask.execute() },
       { name: 'outBehave', fn: () => this.outBehaveTask.execute() },
+      { name: 'timetable', fn: () => this.timetableTask.execute() },
     ];
 
     const taskResults = await Promise.all(tasks.map((task) => this.executeTask(task.name, task.fn)));

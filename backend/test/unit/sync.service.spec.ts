@@ -12,6 +12,7 @@ import { MessageBoardTask } from '../../src/sync/tasks/message-board.task';
 import { UserDetailsTask } from '../../src/sync/tasks/user-details.task';
 import { DailyBehaveTask } from '../../src/sync/tasks/daily-behave.task';
 import { OutBehaveTask } from '../../src/sync/tasks/out-behave.task';
+import { TimetableTask } from '../../src/sync/tasks/timetable.task';
 
 const createMockTask = () => ({
   execute: jest.fn().mockResolvedValue({
@@ -27,6 +28,8 @@ const createMockTask = () => ({
 });
 
 describe('SyncService', () => {
+  const EXPECTED_TASK_COUNT = 13;
+
   let service: SyncService;
   let notificationsTask: ReturnType<typeof createMockTask>;
   let mailCountsTask: ReturnType<typeof createMockTask>;
@@ -40,6 +43,7 @@ describe('SyncService', () => {
   let userDetailsTask: ReturnType<typeof createMockTask>;
   let dailyBehaveTask: ReturnType<typeof createMockTask>;
   let outBehaveTask: ReturnType<typeof createMockTask>;
+  let timetableTask: ReturnType<typeof createMockTask>;
 
   beforeEach(async () => {
     notificationsTask = createMockTask();
@@ -54,6 +58,7 @@ describe('SyncService', () => {
     userDetailsTask = createMockTask();
     dailyBehaveTask = createMockTask();
     outBehaveTask = createMockTask();
+    timetableTask = createMockTask();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -70,6 +75,7 @@ describe('SyncService', () => {
         { provide: UserDetailsTask, useValue: userDetailsTask },
         { provide: DailyBehaveTask, useValue: dailyBehaveTask },
         { provide: OutBehaveTask, useValue: outBehaveTask },
+        { provide: TimetableTask, useValue: timetableTask },
       ],
     }).compile();
 
@@ -92,6 +98,7 @@ describe('SyncService', () => {
       expect(userDetailsTask.execute).toHaveBeenCalledTimes(1);
       expect(dailyBehaveTask.execute).toHaveBeenCalledTimes(1);
       expect(outBehaveTask.execute).toHaveBeenCalledTimes(1);
+      expect(timetableTask.execute).toHaveBeenCalledTimes(1);
     });
 
     it('does not reject when one task throws an error', async () => {
@@ -99,7 +106,7 @@ describe('SyncService', () => {
 
       const result = await service.refreshAll();
       expect(result.status).toBe('partial');
-      expect(result.tasks).toHaveLength(12);
+      expect(result.tasks).toHaveLength(EXPECTED_TASK_COUNT);
       expect(result.tasks.find((task) => task.task === 'notifications')).toMatchObject({
         status: 'failed',
         errorMessages: ['Upstream unavailable'],
@@ -134,10 +141,11 @@ describe('SyncService', () => {
       userDetailsTask.execute.mockRejectedValue(error);
       dailyBehaveTask.execute.mockRejectedValue(error);
       outBehaveTask.execute.mockRejectedValue(error);
+      timetableTask.execute.mockRejectedValue(error);
 
       const result = await service.refreshAll();
       expect(result.status).toBe('partial');
-      expect(result.tasks).toHaveLength(12);
+      expect(result.tasks).toHaveLength(EXPECTED_TASK_COUNT);
       result.tasks.forEach((task) => {
         expect(task.status).toBe('failed');
         expect(task.errorMessages).toContain('Network unavailable');

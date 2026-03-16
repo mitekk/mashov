@@ -96,6 +96,9 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     messageBoardItem: {
       findMany: overrides.noticeFindMany ?? jest.fn().mockResolvedValue([]),
     },
+    timetableEntry: {
+      findMany: overrides.timetableFindMany ?? jest.fn().mockResolvedValue([]),
+    },
     syncRun: {
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
     },
@@ -727,6 +730,68 @@ describe('ChildrenService', () => {
       expect(Array.isArray(notices.data)).toBe(true);
       expect(subjects.data[0].updatedAt).toBe('2026-03-12T00:00:00.000Z');
       expect(notices.data[0].expirationDate).toBe('2026-03-20T00:00:00.000Z');
+    });
+  });
+
+  describe('getTimetable', () => {
+    it('returns ordered entries in {data} envelope with JSON teachers mapped to arrays', async () => {
+      const timetableFindMany = jest.fn().mockResolvedValue([
+        {
+          id: 'tt-1',
+          studentGuid: TEST_GUID,
+          groupId: 20,
+          day: 1,
+          lesson: 2,
+          roomNum: '104',
+          weeks: 1,
+          groupName: 'Science 1',
+          subjectName: 'Science',
+          teachers: [{ teacherGuid: 't-1', teacherName: 'Dana Levi' }],
+          updatedAt: new Date('2026-03-15T00:00:00Z'),
+        },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          timetableFindMany,
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      const result = await service.getTimetable(TEST_GUID);
+      expect(timetableFindMany).toHaveBeenCalledWith({
+        where: { studentGuid: TEST_GUID },
+        orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
+      });
+      expect(result).toEqual({
+        data: [
+          {
+            id: 'tt-1',
+            studentGuid: TEST_GUID,
+            groupId: 20,
+            day: 1,
+            lesson: 2,
+            roomNum: '104',
+            weeks: 1,
+            groupName: 'Science 1',
+            subjectName: 'Science',
+            teachers: [{ teacherGuid: 't-1', teacherName: 'Dana Levi' }],
+            updatedAt: '2026-03-15T00:00:00.000Z',
+          },
+        ],
+      });
+    });
+
+    it('throws NotFoundException for unknown student', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          studentFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      await expect(service.getTimetable(TEST_GUID)).rejects.toThrow(NotFoundException);
     });
   });
 

@@ -38,37 +38,37 @@ export function ChildHeader({
     <header className="card-base px-4 py-5">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <Select
-            value={selectedChildGuid}
-            onValueChange={onChildChange}
-            disabled={childOptions.length === 0}
-            dir="rtl"
-          >
-            <SelectTrigger
-              id="child-header-selector"
-              aria-label="בחר ילד"
-              data-testid="child-header-selector"
-              className="tap-target h-auto w-auto max-w-xs border-transparent bg-transparent px-0 shadow-none hover:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 gap-2 items-center"
+          <h1 className="m-0 text-2xl font-semibold tracking-tight text-foreground leading-tight">
+            <Select
+              value={selectedChildGuid}
+              onValueChange={onChildChange}
+              disabled={childOptions.length === 0}
+              dir="rtl"
             >
-              <span className="text-2xl font-semibold tracking-tight text-foreground leading-tight">
-                {student.fullName}
-              </span>
-            </SelectTrigger>
-            <SelectContent align="start" className="max-h-72">
-              <div className="space-y-1">
-                {childOptions.map((child) => (
-                  <SelectItem
-                    key={child.studentGuid}
-                    value={child.studentGuid}
-                    className="text-base"
-                  >
-                    {child.fullName}
-                    {child.isActive ? '' : ' (לא פעיל)'}
-                  </SelectItem>
-                ))}
-              </div>
-            </SelectContent>
-          </Select>
+              <SelectTrigger
+                id="child-header-selector"
+                aria-label="בחר ילד"
+                data-testid="child-header-selector"
+                className="tap-target h-auto w-auto max-w-xs border-transparent bg-transparent px-0 text-inherit shadow-none hover:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 gap-2 items-center font-inherit"
+              >
+                <span>{student.fullName}</span>
+              </SelectTrigger>
+              <SelectContent align="start" className="max-h-72">
+                <div className="space-y-1">
+                  {childOptions.map((child) => (
+                    <SelectItem
+                      key={child.studentGuid}
+                      value={child.studentGuid}
+                      className="text-base"
+                    >
+                      {child.fullName}
+                      {child.isActive ? '' : ' (לא פעיל)'}
+                    </SelectItem>
+                  ))}
+                </div>
+              </SelectContent>
+            </Select>
+          </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             כיתה {student.classCode}{student.classNum}
           </p>

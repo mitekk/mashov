@@ -19,3 +19,4 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0009](0009-home-feed-read-unread-filter.md) | Home Feed Read/Unread Filter — Client-Side Toggle over Server-Side Query Param | Accepted | Frontend agent | 2026-03-15 |
 | [ADR-0010](0010-ui-interaction-patterns.md) | UI Interaction Patterns — Bulk Actions, Feed Filtering, Selection Highlight, and Post-Action Navigation | Accepted | Frontend agent | 2026-03-15 |
 | [ADR-0011](0011-child-card-badge-unread-count.md) | Child Card Badge Counts — Unread + Non-Archived Only, No Date Window | Proposed | Frontend + backend agent | 2026-03-15 |
+| [ADR-0012](0012-timetable-data-persistence.md) | Timetable Data Persistence — Sync-and-Store over Live Proxy | Accepted | Backend agent, Planner | 2026-03-16 |

@@ -434,6 +434,31 @@ export class ChildrenService {
     return this.mapBehaviorItem(updated);
   }
 
+  async getTimetable(studentGuid: string) {
+    await this.requireStudent(studentGuid);
+
+    const entries = await this.prisma.timetableEntry.findMany({
+      where: { studentGuid },
+      orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
+    });
+
+    return {
+      data: entries.map((e) => ({
+        id: e.id,
+        studentGuid: e.studentGuid,
+        groupId: e.groupId,
+        day: e.day,
+        lesson: e.lesson,
+        roomNum: e.roomNum,
+        weeks: e.weeks,
+        groupName: e.groupName,
+        subjectName: e.subjectName,
+        teachers: this.asArray(e.teachers),
+        updatedAt: e.updatedAt.toISOString(),
+      })),
+    };
+  }
+
   async getSubjects(studentGuid: string) {
     await this.requireStudent(studentGuid);
 

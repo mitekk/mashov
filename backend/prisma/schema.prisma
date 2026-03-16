@@ -234,3 +234,21 @@ model RecipientDirectory {
 
   @@map("recipient_directory")
 }
+
+model TimetableEntry {
+  id          String   @id @default(cuid())
+  studentGuid String
+  groupId     Int
+  day         Int
+  lesson      Int
+  roomNum     String   @default("")
+  weeks       Int      @default(-1)
+  groupName   String
+  subjectName String
+  teachers    Json     @default("[]")
+  updatedAt   DateTime @updatedAt
+
+  @@unique([studentGuid, day, lesson])
+  @@index([studentGuid])
+  @@map("timetable_entry")
+}

@@ -400,6 +400,24 @@ export interface SyncRefreshResponse {
   tasks: SyncTaskResult[];
 }
 
+// ─── Timetable ─────────────────────────────────────────────────────────────
+
+export interface TimetableEntry {
+  id: string;
+  studentGuid: string;
+  groupId: number;
+  day: number;
+  lesson: number;
+  roomNum: string;
+  weeks: number;
+  groupName: string;
+  subjectName: string;
+  teachers: TeacherInfo[];
+  updatedAt: string;
+}
+
+export type TimetableResponse = { data: TimetableEntry[] };
+
 // ─── Bulk Mail Actions ─────────────────────────────────────────────────────
 
 export interface MailBulkActionRequest {
