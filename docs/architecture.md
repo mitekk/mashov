@@ -1,6 +1,6 @@
 # Architecture: Mashov School Parent Command Center
 
-**PRD source:** `docs/prd/PRD-current.md` (v1, 2026-03-11)
+**PRD source:** `docs/prd/PRD-current.md` (Phase 1: v1 2026-03-11 | Phase 2: v2 2026-03-16)
 
 ---
 
@@ -201,12 +201,11 @@ Chosen for this project because:
 - Decorators for controllers keep route code concise
 - Trade-off: slightly heavier than Fastify; acceptable at this data scale
 
-### 2. No Redis
-Justified because:
-- The sync cadence is 5–15 min for primary sources; DB read latency is negligible vs. network fetch
-- PostgreSQL with proper indexes serves the dashboard query in < 50ms
-- Eliminates an infra dependency that adds ops burden for a household deployment
-- Phase 2 can introduce Redis for session storage if multi-household scale demands it
+### 2. Redis (Phase 2, conditional)
+Phase 1 had no Redis (correct for that workload). Phase 2 justifies Redis on two concrete grounds:
+- Session validation cache: every API request now validates a session cookie; frontend polls every 3s; Redis cache-aside (5 min TTL) eliminates DB round-trip on the hot path
+- Rate-limit counters: failed login attempts stored as TTL-keyed Redis keys — survives restarts, no DB writes on each request
+Redis is **not** a data cache. PostgreSQL remains source of truth. See ADR-0017.
 
 ### 3. Next.js 15 (App Router) over Vite
 Justified by PRD spec and:
@@ -393,3 +392,190 @@ Tasks are ordered by dependency. Each task is scoped for a single agent session.
 | 4 | `mail_message` — the inbox list sync only provides message metadata (no body). When `GET /conversations/:id` is called, should the body be fetched from upstream and stored, or served fresh on every open? | Storage vs. freshness | Backend |
 | 5 | Timezone handling for `notification_event.eventAt`: naive timestamps are school-local time. Is Israel always UTC+2 (standard) or UTC+3 (DST)? Need confirmed timezone identifier for correct ISO storage. | Data integrity | Backend |
 | 6 | `household_connection.encryptedPassword` — what encryption scheme? AES-256-GCM with `ENCRYPTION_KEY` env var is the recommended approach, but needs confirmation before implementation. | Security | Backend |
+
+---
+
+---
+
+# Phase 2: Authentication & Multi-Household
+
+**PRD source:** `docs/prd/PRD-current.md` (v2, 2026-03-16)
+**Phase scope:** Auth, per-user data scoping, multi-household isolation
+
+---
+
+## Phase 2 Scope
+
+### In scope
+- Parent authentication via direct Mashov credential login (school selected from list + username + password)
+- Server-side DB session management (`app_session` table + httpOnly cookie + Redis cache-aside)
+- Per-user read/archive state via normalized `user_item_state` table
+- Multi-household sync isolation (each `sync_run` keyed to `householdConnectionId`)
+- Phase 1 → Phase 2 data migration (migrate `isNew`/`isArchived` columns → `user_item_state`)
+- Next.js middleware for route protection (redirect unauthenticated to `/auth/sign-in`)
+- Settings page additions: show connected school, update/disconnect credentials, sign out
+
+### Out of scope (Phase 2)
+- OAuth / social sign-in
+- Multiple school connections per user
+- Admin user management UI
+- Account deletion UI (only `DELETE /api/v1/connection` for data removal)
+
+---
+
+## Phase 2 Architecture Changes
+
+### New NestJS Modules
+
+| Module | Responsibility |
+|--------|---------------|
+| `AuthModule` | Mashov credential validation (`POST /api/login`), school list fetch, session creation on login |
+| `AppSessionModule` | Session middleware (validate cookie on every request via Redis cache-aside + DB), `SessionGuard` for protected routes |
+| `ConnectionModule` | School credential management: update, disconnect; AES-256-GCM encryption |
+| `RedisModule` | Redis client (session cache, rate-limit counters); global singleton |
+
+> **Rename**: existing `SessionModule` (Mashov upstream session) → `MashovSessionModule` to avoid naming conflict with the new app session module.
+
+### New Frontend Routes / Pages
+
+| Route | Page | Notes |
+|-------|------|-------|
+| `/auth/sign-in` | Mashov credential login | School selector (from `/api/schools`) + username + password; single generic error on failure |
+| `/auth/syncing` | Sync progress screen | Polls `GET /api/v1/sync/status` every 3s; shown after first successful login |
+
+Next.js `middleware.ts` at root: reads session cookie, calls backend `/api/v1/auth/me` (or lightweight session-check), redirects unauthenticated requests to `/auth/sign-in?next=<original-path>`.
+
+### Database Schema Changes
+
+#### New Tables
+
+```prisma
+model AppUser {
+  id            String   @id @default(uuid())
+  mashovUserId  String   @unique   // credential.userId from Mashov login response
+  semel         Int
+  username      String
+  displayName   String             // credential.displayName from Mashov response
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  sessions      AppSession[]
+  connections   HouseholdConnection[]
+}
+
+model AppSession {
+  id             String    @id @default(uuid())
+  userId         String
+  sessionToken   String    @unique  // crypto.randomBytes(32).toString('hex')
+  expiresAt      DateTime
+  lastActivityAt DateTime
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  user           AppUser   @relation(fields: [userId], references: [id])
+  @@index([sessionToken])
+}
+
+model UserItemState {
+  id         String   @id @default(uuid())
+  userId     String
+  itemType   String   // "homework" | "behavior" | "mail_conversation"
+  itemId     String
+  isNew      Boolean  @default(true)
+  isArchived Boolean  @default(false)
+  updatedAt  DateTime @updatedAt
+  @@unique([userId, itemType, itemId])
+}
+```
+
+#### Modified Tables
+
+- `HouseholdConnection`: add `userId String` FK → `AppUser.id` (nullable during migration, required after)
+- `HomeworkItem`: drop `isNew`, `isArchived` columns
+- `BehaviorItem`: drop `isNew`, `isArchived` columns
+- `MailConversation`: drop `isNew` column
+
+### Session Middleware Flow
+
+```
+Incoming request (Next.js middleware.ts)
+  → Read session cookie
+  → If no cookie: redirect to /auth/sign-in?next=<path>
+  → Forward cookie to NestJS
+NestJS AppSessionGuard (applied globally to all /api/v1/* routes)
+  → Redis GET session:<token>
+    HIT  → attach userId, continue (no DB hit)
+    MISS → DB SELECT * FROM app_session WHERE sessionToken = $1 AND revokedAt IS NULL
+             VALID   → Redis SET session:<token> EX 300 → attach userId, continue
+             INVALID → Redis DEL session:<token> (if stale) → return 401
+  → On valid request: Redis EXPIRE session:<token> 300 (rolling TTL)
+    DB UPDATE lastActivityAt debounced to max once per 60s
+  → On logout: DB UPDATE revokedAt + Redis DEL session:<token>
+```
+
+### Multi-Household Sync Changes
+
+- All cron tasks loop over `SELECT * FROM household_connection WHERE userId IS NOT NULL`
+- Each iteration runs the full source sync for that connection's credentials
+- `sync_run` records include `householdConnectionId` FK
+- `POST /api/v1/sync/refresh` triggers sync only for the authenticated user's connection
+- `GET /api/v1/settings/source-health` scoped to authenticated user's connection
+
+### Email Transport
+
+Configurable at startup — exactly one of:
+- SMTP via Nodemailer: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
+- Resend API: `RESEND_API_KEY`
+
+`MagicLinkService.sendMagicLink(email, token)` dispatches via whichever transport is configured. Magic-link URL: `${APP_URL}/auth/verify?token=<raw_token>`.
+
+---
+
+## Phase 2 Task List
+
+### Backend — Auth Foundation
+
+1. **[MVP]** Rename `SessionModule` → `MashovSessionModule`; update all imports
+2. **[MVP]** Add Prisma migration: create `app_user` (mashovUserId, semel, username, displayName), `app_session`, `user_item_state` tables; add `userId` FK to `household_connection`; no `magic_link_token` table
+3. **[MVP]** Create `RedisModule`: global `ioredis` client; exposes `get`, `set`, `del`, `expire` helpers; configured via `REDIS_URL` env var
+4. **[MVP]** Create `AppSessionModule`: `AppSessionService` with `createSession()`, `validateSession()` (Redis cache-aside + DB), `revokeSession()` (DB + Redis DEL), `revokeAllSessionsForUser()`, `cleanupExpiredSessions()`; `AppSessionGuard` applied globally; session cookie middleware; rolling TTL debounced to 60s DB writes
+5. **[MVP]** Create `AuthModule` / `AuthController`: `POST /api/v1/auth/login` (validate against Mashov API, upsert `app_user`, create session, redirect to `/auth/syncing` on first login), `DELETE /api/v1/auth/session`, `GET /api/v1/auth/me`; rate limiting on login endpoint (5 failed attempts/IP/15min via Redis)
+6. **[MVP]** Create `ConnectionModule` / `ConnectionController`: `PUT /api/v1/connection`, `DELETE /api/v1/connection`; AES-256-GCM credential encryption using `CREDENTIAL_ENCRYPTION_KEY` env var; `POST /api/v1/connection` is implicit at login (first-time connection created from Mashov login response)
+7. **[MVP]** Update `SyncController`: `GET /api/v1/sync/status` (for polling from `/auth/syncing`); scope `POST /api/v1/sync/refresh` to authenticated user's connection
+8. **[MVP]** Apply `AppSessionGuard` globally — all `/api/v1/*` routes require valid session cookie except `POST /api/v1/auth/login`, `/health`
+
+### Backend — Data Migration
+
+9. **[MVP]** Write Phase 2 migration script (`scripts/migrate-phase2.ts` or Prisma migration): on first login, reassign existing `household_connection` to the newly created `app_user`; copy `homework_item.isNew/isArchived`, `behavior_item.isNew/isArchived`, `mail_conversation.isNew` → `user_item_state` rows, drop source columns; register as `npm run migrate:phase2`
+10. **[MVP]** Update all service layer methods that read/write `isNew`/`isArchived` to read from/write to `user_item_state` via `userId` from session context
+
+### Backend — Multi-Household Sync
+
+11. **[MVP]** Update all cron sync tasks to loop over active `household_connection` records; pass `householdConnectionId` and credentials to each sync invocation; ensure failure isolation per connection
+12. **[MVP]** Add cleanup cron (`0 2 * * *`): purge `app_session` rows where `revokedAt IS NOT NULL AND revokedAt < NOW() - INTERVAL 7 days`; purge `magic_link_token` rows where `expiresAt < NOW() - INTERVAL 24 hours`
+
+### Frontend — Auth Pages
+
+13. **[MVP]** Create Next.js `middleware.ts`: read session cookie, call `GET /api/v1/auth/me`, redirect unauthenticated requests to `/auth/sign-in?next=<path>`; exclude `/auth/*` routes from protection
+14. **[MVP]** Build `/auth/sign-in` page: fetch school list from Mashov `/api/schools` on load; render school selector (search/autocomplete) + username + password + submit → `POST /api/v1/auth/login`; on success redirect to `/auth/syncing` (first login) or Home (returning user); show single generic error message on failure ("Invalid credentials, please try again"); minimalistic design matching app style
+15. **[MVP]** Build `/auth/syncing` page: "Setting up your account…" progress screen; poll `GET /api/v1/sync/status` every 3s; show "N / M sources complete"; on `done: true` redirect to Home; skip button after 10s
+16. **[MVP]** Update Settings page (`/more`): add connected school name + year (read-only), "Update credentials" inline form, "Disconnect account" confirmation modal, "Sign out" button
+17. **[MVP]** Add app shell auth UI: show user `displayName` or initials in header; handle 401 responses with toast "Session expired — sign in again" + redirect to `/auth/sign-in`
+
+### QA — Phase 2 Tests
+
+20. **[MVP]** Integration tests: login flow (valid credentials → session created; invalid credentials → 401; rate limit after 5 failures); session validation (valid/revoked/expired, Redis cache hit and miss paths); connection update/delete; user isolation (two users, same item, independent state)
+21. **[MVP]** Integration test: Phase 1 → Phase 2 migration script — confirm `user_item_state` rows match original column values
+22. **[MVP]** E2E (Playwright): full login → sync-progress → Home flow; sign-out; session-protected route redirect; credential update flow
+
+---
+
+## Phase 2 Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Migration script data loss | Low | Critical | Test against Phase 1 DB snapshot; run in transaction; verify row counts before committing |
+| Mashov API downtime blocks login | Low | High | Existing sessions remain valid (DB + Redis); only new logins blocked; display "School portal unavailable" error |
+| Mashov changes login API shape | Low | High | Login adapter isolated in `AuthModule`; raw response logged for debugging |
+| Session cookie not sent cross-origin | Medium | High | Confirm Next.js proxy config routes all `/api/v1/*` through backend; SameSite=Strict only safe with same-origin |
+| Redis restart invalidates all session cache | Low | Low | All clients transparently re-validate against DB on next request; no data loss |
+| AES key rotation breaks existing sessions | Low | Medium | `credentials:rotate` CLI script re-encrypts all connections atomically |
+| Sync loop failure hides auth bugs | Low | Medium | Each cron task has explicit `try/catch` per connection; `sync_run` record logs failure |

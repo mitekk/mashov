@@ -1,7 +1,7 @@
 # ADR-0014: Authentication Strategy — Custom Magic-Link with DB Sessions
 
 - **Date**: 2026-03-16
-- **Status**: Accepted
+- **Status**: Superseded by [ADR-0018](0018-direct-mashov-credential-login.md)
 - **Deciders**: Planner, Backend agent
 
 ## Context and Problem Statement

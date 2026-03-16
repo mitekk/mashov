@@ -1,9 +1,9 @@
 # API Contract: Mashov School Parent Command Center
 
-**Version:** Phase 1
-**PRD source:** `docs/prd/PRD-current.md` (v1)
-**Status:** All endpoints `implemented`
-**Auth:** None in Phase 1 — all endpoints unauthenticated
+**Version:** Phase 1 (implemented) + Phase 2 (planned)
+**PRD source:** `docs/prd/PRD-current.md` (v2 active)
+**Status:** Phase 1 endpoints `implemented`; Phase 2 endpoints `planned`
+**Auth:** Phase 1 = no auth. Phase 2 = all `/api/v1/*` require session cookie except auth endpoints and `/health`
 
 > This table is the source of truth for backend and frontend agents. Update it when routes change. All paths use the `/api/v1` prefix. All IDs are UUIDs (strings). All timestamps are ISO 8601 UTC. Pagination uses `page` + `limit` with the standard envelope.
 
@@ -41,34 +41,52 @@
 
 | Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
 |--------|------|-------|----------------------------|---------------|-------------|--------|
+**Phase 2 auth note:** All Phase 1 endpoints below change from `Auth: No` → `Auth: Yes` in Phase 2. Status changes to `changed`. The `/health` endpoint remains unauthenticated.
+
+### Phase 2 — New Auth & Connection Endpoints
+
+| Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
+|--------|------|-------|----------------------------|---------------|-------------|--------|
+| GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | planned |
+| POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
+| DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
+| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, connectedSchool: { schoolName: string, schoolYear: number } \| null }` | 200, 401 | planned |
+| PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404 | planned |
+| DELETE | `/api/v1/connection` | Yes | — | `{ ok: true }` | 200, 401, 404 | planned |
+| GET | `/api/v1/sync/status` | Yes | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number }` | 200, 401 | planned |
+
+### Phase 1 Endpoints (all require Auth: Yes in Phase 2)
+
+| Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
+|--------|------|-------|----------------------------|---------------|-------------|--------|
 | GET | `/health` | No | — | `{ status: "ok" \| "degraded", db: "connected" \| "error" }` | 200 | implemented |
-| GET | `/api/v1/dashboard` | No | — | See [Dashboard Response](#get-apiv1dashboard) | 200 | implemented |
-| GET | `/api/v1/feed` | No | `?page=1&limit=20` | See [Feed Response](#get-apiv1feed) | 200 | implemented |
-| GET | `/api/v1/children` | No | — | See [Children List Response](#get-apiv1children) | 200 | implemented |
-| GET | `/api/v1/children/:studentGuid` | No | — | See [Child Workspace Response](#get-apiv1childrenstudentguid) | 200, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50&status=all\|new\|archived` (`all` excludes archived) | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/is-new` | No | `{ isNew: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/archive` | No | `{ isArchived: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/homework/is-new` | No | `{ homeworkIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/homework/archive` | No | `{ homeworkIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral&status=all\|new\|archived` (`all` excludes archived) | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/is-new` | No | `{ isNew: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/archive` | No | `{ isArchived: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/behavior/is-new` | No | `{ behaviorIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
-| PUT | `/api/v1/children/:studentGuid/behavior/archive` | No | `{ behaviorIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/subjects` | No | — | See [Subjects Response](#get-apiv1childrenstudentguidsubjects) | 200, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/notices` | No | — | See [Notices Response](#get-apiv1childrenstudentguidnotices) | 200, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/timetable` | No | — | See [Timetable Response](#get-apiv1childrenstudentguidtimetable) | 200, 404 | implemented |
-| GET | `/api/v1/mail/summary` | No | — | See [Mail Summary Response](#get-apiv1mailsummary) | 200 | implemented |
-| GET | `/api/v1/mail/conversations` | No | `?page=1&limit=20&filter=all\|new\|archived` | See [Conversations List Response](#get-apiv1mailconversations) | 200 | implemented |
-| GET | `/api/v1/mail/conversations/:id` | No | — | See [Conversation Detail Response](#get-apiv1mailconversationsid) | 200, 404 | implemented |
-| PUT | `/api/v1/mail/conversations/mark-read` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
-| PUT | `/api/v1/mail/conversations/mark-unread` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
-| PUT | `/api/v1/mail/conversations/archive` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
-| PUT | `/api/v1/mail/conversations/unarchive` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
-| GET | `/api/v1/settings/source-health` | No | — | See [Source Health Response](#get-apiv1settingssource-health) | 200 | implemented |
-| GET | `/api/v1/settings/profile` | No | — | See [Profile Response](#get-apiv1settingsprofile) | 200 | implemented |
-| POST | `/api/v1/sync/refresh` | No | — | `{ started: true, message: string }` | 202 | implemented |
+| GET | `/api/v1/dashboard` | **Yes** (Phase 2) | — | See [Dashboard Response](#get-apiv1dashboard) | 200, 401 | changed |
+| GET | `/api/v1/feed` | **Yes** (Phase 2) | `?page=1&limit=20` | See [Feed Response](#get-apiv1feed) | 200, 401 | changed |
+| GET | `/api/v1/children` | **Yes** (Phase 2) | — | See [Children List Response](#get-apiv1children) | 200, 401 | changed |
+| GET | `/api/v1/children/:studentGuid` | **Yes** (Phase 2) | — | See [Child Workspace Response](#get-apiv1childrenstudentguid) | 200, 401, 404 | changed |
+| GET | `/api/v1/children/:studentGuid/homework` | **Yes** (Phase 2) | `?page=1&limit=50&status=all\|new\|archived` (`all` excludes archived) | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/is-new` | **Yes** (Phase 2) | `{ isNew: boolean }` | See [Homework Item](#homework-item-shape) | 200, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/archive` | **Yes** (Phase 2) | `{ isArchived: boolean }` | See [Homework Item](#homework-item-shape) | 200, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/homework/is-new` | **Yes** (Phase 2) | `{ homeworkIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/homework/archive` | **Yes** (Phase 2) | `{ homeworkIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 401, 404 | changed |
+| GET | `/api/v1/children/:studentGuid/behavior` | **Yes** (Phase 2) | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral&status=all\|new\|archived` (`all` excludes archived) | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/is-new` | **Yes** (Phase 2) | `{ isNew: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/archive` | **Yes** (Phase 2) | `{ isArchived: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/behavior/is-new` | **Yes** (Phase 2) | `{ behaviorIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 401, 404 | changed |
+| PUT | `/api/v1/children/:studentGuid/behavior/archive` | **Yes** (Phase 2) | `{ behaviorIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 401, 404 | changed |
+| GET | `/api/v1/children/:studentGuid/subjects` | **Yes** (Phase 2) | — | See [Subjects Response](#get-apiv1childrenstudentguidsubjects) | 200, 401, 404 | changed |
+| GET | `/api/v1/children/:studentGuid/notices` | **Yes** (Phase 2) | — | See [Notices Response](#get-apiv1childrenstudentguidnotices) | 200, 401, 404 | changed |
+| GET | `/api/v1/children/:studentGuid/timetable` | **Yes** (Phase 2) | — | See [Timetable Response](#get-apiv1childrenstudentguidtimetable) | 200, 401, 404 | changed |
+| GET | `/api/v1/mail/summary` | **Yes** (Phase 2) | — | See [Mail Summary Response](#get-apiv1mailsummary) | 200, 401 | changed |
+| GET | `/api/v1/mail/conversations` | **Yes** (Phase 2) | `?page=1&limit=20&filter=all\|new\|archived` | See [Conversations List Response](#get-apiv1mailconversations) | 200, 401 | changed |
+| GET | `/api/v1/mail/conversations/:id` | **Yes** (Phase 2) | — | See [Conversation Detail Response](#get-apiv1mailconversationsid) | 200, 401, 404 | changed |
+| PUT | `/api/v1/mail/conversations/mark-read` | **Yes** (Phase 2) | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400, 401 | changed |
+| PUT | `/api/v1/mail/conversations/mark-unread` | **Yes** (Phase 2) | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400, 401 | changed |
+| PUT | `/api/v1/mail/conversations/archive` | **Yes** (Phase 2) | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400, 401 | changed |
+| PUT | `/api/v1/mail/conversations/unarchive` | **Yes** (Phase 2) | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400, 401 | changed |
+| GET | `/api/v1/settings/source-health` | **Yes** (Phase 2) | — | See [Source Health Response](#get-apiv1settingssource-health) | 200, 401 | changed |
+| GET | `/api/v1/settings/profile` | **Yes** (Phase 2) | — | See [Profile Response](#get-apiv1settingsprofile) | 200, 401 | changed |
+| POST | `/api/v1/sync/refresh` | **Yes** (Phase 2) | — | `{ started: true, message: string }` | 202, 401 | changed |
 
 ---
 
@@ -590,8 +608,9 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 
 | Method | Upstream Path | Used By |
 |--------|--------------|---------|
-| GET | `https://web.mashov.info/students/login` | SessionService — CSRF bootstrap |
-| POST | `/api/login` | SessionService — authenticate |
+| GET | `https://web.mashov.info/api/schools` | AuthController — school list for login form (proxied to frontend, no auth required) |
+| GET | `https://web.mashov.info/students/login` | MashovSessionService — CSRF bootstrap |
+| POST | `/api/login` | MashovSessionService — authenticate; also called by AuthController on user login |
 | GET | `/api/user/notifications?skip=0&take=50` | NotificationSyncTask |
 | GET | `/api/mail/counts?$select=unreadConversations` | MailCountSyncTask |
 | GET | `/api/mail/inbox/conversations?skip=0&take=50` | InboxSyncTask |

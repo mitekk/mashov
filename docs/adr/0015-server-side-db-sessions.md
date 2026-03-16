@@ -1,7 +1,7 @@
 # ADR-0015: Session Token Strategy — Server-Side DB Sessions over JWT Cookies
 
 - **Date**: 2026-03-16
-- **Status**: Accepted
+- **Status**: Superseded by [ADR-0019](0019-session-strategy-db-with-redis-cache.md)
 - **Deciders**: Planner, Backend agent
 
 ## Context and Problem Statement

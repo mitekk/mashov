@@ -1,7 +1,7 @@
 # ADR-0002: No Redis — PostgreSQL as the Read Layer
 
 - **Date**: 2026-03-11
-- **Status**: Accepted
+- **Status**: Superseded by [ADR-0017](0017-caching-strategy-conditional-redis.md)
 - **Deciders**: Planner (Step 1 architecture)
 
 ## Context and Problem Statement

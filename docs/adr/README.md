@@ -9,7 +9,7 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | ID | Title | Status | Deciders | Date |
 |----|-------|--------|----------|------|
 | [ADR-0001](0001-backend-framework-nestjs.md) | Backend Framework — NestJS over Fastify | Accepted | Planner | 2026-03-11 |
-| [ADR-0002](0002-no-redis-postgres-cache.md) | No Redis — PostgreSQL as the Read Layer | Accepted | Planner | 2026-03-11 |
+| [ADR-0002](0002-no-redis-postgres-cache.md) | No Redis — PostgreSQL as the Read Layer | Superseded | Planner | 2026-03-11 |
 | [ADR-0003](0003-nextjs-app-router.md) | Frontend Framework — Next.js 15 App Router over React + Vite | Accepted | PRD author, Planner | 2026-03-11 |
 | [ADR-0004](0004-prisma-orm.md) | Data Access — Prisma ORM over Knex or Raw SQL | Accepted | Planner | 2026-03-11 |
 | [ADR-0005](0005-tanstack-query-state-management.md) | State Management — TanStack Query for Server State, No Global Client Store | Accepted | Frontend agent | 2026-03-11 |
@@ -21,6 +21,9 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0011](0011-child-card-badge-unread-count.md) | Child Card Badge Counts — Unread + Non-Archived Only, No Date Window | Proposed | Frontend + backend agent | 2026-03-15 |
 | [ADR-0012](0012-timetable-data-persistence.md) | Timetable Data Persistence — Sync-and-Store over Live Proxy | Accepted | Backend agent, Planner | 2026-03-16 |
 | [ADR-0013](0013-bulk-actions-homework-behavior.md) | Bulk Actions for Homework and Behavior Sections — Inline Bar, Filter-Aware Visibility, Dedicated Backend Endpoints | Accepted | Frontend agent, Backend agent | 2026-03-16 |
-| [ADR-0014](0014-magic-link-authentication.md) | Authentication Strategy — Custom Magic-Link with DB Sessions | Accepted | Planner, Backend agent | 2026-03-16 |
-| [ADR-0015](0015-server-side-db-sessions.md) | Session Token Strategy — Server-Side DB Sessions over JWT Cookies | Accepted | Planner, Backend agent | 2026-03-16 |
+| [ADR-0014](0014-magic-link-authentication.md) | Authentication Strategy — Custom Magic-Link with DB Sessions | Superseded | Planner, Backend agent | 2026-03-16 |
+| [ADR-0015](0015-server-side-db-sessions.md) | Session Token Strategy — Server-Side DB Sessions over JWT Cookies | Superseded | Planner, Backend agent | 2026-03-16 |
 | [ADR-0016](0016-per-user-item-state.md) | Per-User Read/Archive State — Normalized user_item_state Table over Item-Level Columns | Accepted | Planner, Backend agent | 2026-03-16 |
+| [ADR-0017](0017-caching-strategy-conditional-redis.md) | Caching Strategy — Conditional Redis | Accepted | Planner | 2026-03-16 |
+| [ADR-0018](0018-direct-mashov-credential-login.md) | Authentication — Direct Mashov Credential Login | Accepted | Planner, Backend agent | 2026-03-16 |
+| [ADR-0019](0019-session-strategy-db-with-redis-cache.md) | Session Strategy — DB Sessions with Redis Cache | Accepted | Planner, Backend agent | 2026-03-16 |
