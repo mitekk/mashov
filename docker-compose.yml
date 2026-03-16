@@ -101,10 +101,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@db:5432/mashov
+      REDIS_URL: redis://redis:6379
       ENCRYPTION_KEY: test-encryption-key-32-chars-long!
+      SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
       MASHOV_YEAR: "2026"
       MASHOV_USERNAME: test
@@ -125,10 +129,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@db:5432/mashov
+      REDIS_URL: redis://redis:6379
       ENCRYPTION_KEY: test-encryption-key-32-chars-long!
+      SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
       MASHOV_YEAR: "2026"
       MASHOV_USERNAME: test
