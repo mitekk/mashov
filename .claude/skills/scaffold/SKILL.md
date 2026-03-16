@@ -185,6 +185,8 @@ Once the human confirms, invoke the `adr` agent with the contents of `docs/archi
 
 ADRs go in `docs/adr/`. Include them in the Step 1 committer commit — rename it to: `docs: add architecture plan, API contract, and initial ADRs`
 
+> **Context check — Step 1 complete (Yellow threshold)**: Planner output + ADRs loaded in context. Run `/context-guard` or compact before dispatching backend + frontend. Also check scope: count endpoints in `docs/api-contract.md` and pages in `docs/architecture.md` — if backend >8 endpoints or frontend >5 pages, plan to decompose into sequential sub-agents per `.claude/rules/context.md`.
+
 ### Parallelism Gate
 
 Before dispatching backend and frontend, evaluate all of the following:
@@ -250,6 +252,8 @@ Once frontend is complete, invoke the `adr` agent with context from the implemen
 
 Include `docs/adr/` in the `feat(frontend)` committer commit.
 
+> **Context check — Steps 2+3 both complete (Orange threshold)**: Two heavy agent returns are in context — compact now before Step 3.5. Read from `docs/step-2-backend-summary.md` and `docs/step-3-frontend-summary.md` if agents wrote them, rather than holding full raw outputs. Run `/compact`, then proceed.
+
 ### Step 3.5 — Compose Assembly + API Contract Reconciliation
 
 **First: add the frontend service to docker-compose.yml**
@@ -286,6 +290,8 @@ Run `/review --static` — lint, types, API conventions, security, README. No ru
   - Run the **Verification command** from the debug output to confirm the fix → `committer` (`fix`) → re-run `/review --static`
 - See Rollback Protocol for failure-type routing table
 
+> **Context check — before QA (Orange threshold)**: QA reads the full codebase and writes extensive test suites — it is the heaviest agent. Compact now before dispatching. QA always benefits from decomposition: dispatch as 3 sequential sub-agents (1→ unit tests, 2→ integration tests, 3→ E2E + CI) to keep each sub-agent's context manageable.
+
 ### Step 5 — QA & CI (qa)
 
 Delegate to the `qa` agent with:
@@ -321,6 +327,8 @@ Run `/review` (full mode, no flag) after QA completes. Now all checks are meanin
   - **Owning agent: `qa`** → fix directly in the test files
   - Run the **Verification command** from the debug output to confirm the fix → re-run `/review`
 - See Rollback Protocol for failure-type routing table
+
+> **Context check — before Smoke Test (Red candidate)**: Multiple review cycles + QA results in context. Run `/context-guard` now. If Red (75%+): write `docs/context-handoff.md`, run `/compact`, then proceed. The verifier runs as a fresh agent, so this is a clean session boundary — compact fully before dispatching.
 
 ### Step 5.7 — Smoke Test (/smoke-test)
 
