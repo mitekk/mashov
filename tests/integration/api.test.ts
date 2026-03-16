@@ -16,12 +16,17 @@ import { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
 import { HttpExceptionFilter } from '../../backend/src/common/filters/http-exception.filter';
 
 const TEST_STUDENT_GUID = 'test-student-guid-001';
+const OTHER_STUDENT_GUID = 'test-student-guid-002';
 
 async function seedStudent(prisma: PrismaClient): Promise<void> {
+  await seedStudentWithGuid(prisma, TEST_STUDENT_GUID);
+}
+
+async function seedStudentWithGuid(prisma: PrismaClient, studentGuid: string): Promise<void> {
   await prisma.student.upsert({
-    where: { studentGuid: TEST_STUDENT_GUID },
+    where: { studentGuid },
     create: {
-      studentGuid: TEST_STUDENT_GUID,
+      studentGuid,
       privateName: 'Test',
       familyName: 'Student',
       fullName: 'Test Student',
@@ -475,6 +480,230 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       expect(res.status).toBe(200);
       expect(res.body.isArchived).toBe(true);
       expect(res.body.isNew).toBe(false);
+    });
+
+    it('PUT /api/v1/children/:guid/homework/is-new bulk updates only non-archived homework items', async () => {
+      await seedStudent(prisma);
+
+      const activeHomework = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 10,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 1,
+          subjectName: 'Math',
+          homeworkText: 'Active homework',
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+      const archivedHomework = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 11,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 2,
+          subjectName: 'Science',
+          homeworkText: 'Archived homework',
+          isNew: false,
+          isArchived: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/homework/is-new`)
+        .send({ homeworkIds: [activeHomework.id, archivedHomework.id], isNew: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ updated: 1 });
+
+      const updatedActive = await prisma.homeworkItem.findUnique({ where: { id: activeHomework.id } });
+      const unchangedArchived = await prisma.homeworkItem.findUnique({ where: { id: archivedHomework.id } });
+
+      expect(updatedActive?.isNew).toBe(false);
+      expect(updatedActive?.isArchived).toBe(false);
+      expect(unchangedArchived?.isArchived).toBe(true);
+      expect(unchangedArchived?.isNew).toBe(false);
+    });
+
+    it('PUT /api/v1/children/:guid/homework/archive bulk archives items and forces isNew=false', async () => {
+      await seedStudent(prisma);
+
+      const homework = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 12,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 1,
+          subjectName: 'History',
+          homeworkText: 'Archive me',
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/homework/archive`)
+        .send({ homeworkIds: [homework.id], isArchived: true });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ updated: 1 });
+
+      const updatedHomework = await prisma.homeworkItem.findUnique({ where: { id: homework.id } });
+      expect(updatedHomework?.isArchived).toBe(true);
+      expect(updatedHomework?.isNew).toBe(false);
+    });
+
+    it('PUT /api/v1/children/:guid/behavior/is-new bulk updates only non-archived behavior items', async () => {
+      await seedStudent(prisma);
+
+      const activeBehavior = await prisma.behaviorItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 20,
+          groupId: 1,
+          eventCode: 2,
+          achvaCode: 2,
+          achvaName: 'Absence',
+          classification: 'attention',
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 1,
+          subject: 'Math',
+          reporter: 'Teacher',
+          eventAt: new Date('2026-03-10T10:00:00Z'),
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+      const archivedBehavior = await prisma.behaviorItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 21,
+          groupId: 1,
+          eventCode: 2,
+          achvaCode: 2,
+          achvaName: 'Late',
+          classification: 'attention',
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 2,
+          subject: 'Science',
+          reporter: 'Teacher',
+          eventAt: new Date('2026-03-10T11:00:00Z'),
+          isNew: false,
+          isArchived: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/behavior/is-new`)
+        .send({ behaviorIds: [activeBehavior.id, archivedBehavior.id], isNew: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ updated: 1 });
+
+      const updatedActive = await prisma.behaviorItem.findUnique({ where: { id: activeBehavior.id } });
+      const unchangedArchived = await prisma.behaviorItem.findUnique({ where: { id: archivedBehavior.id } });
+
+      expect(updatedActive?.isNew).toBe(false);
+      expect(updatedActive?.isArchived).toBe(false);
+      expect(unchangedArchived?.isArchived).toBe(true);
+      expect(unchangedArchived?.isNew).toBe(false);
+    });
+
+    it('PUT /api/v1/children/:guid/behavior/archive bulk unarchives items and restores isNew=true', async () => {
+      await seedStudent(prisma);
+
+      const behavior = await prisma.behaviorItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 22,
+          groupId: 1,
+          eventCode: 2,
+          achvaCode: 2,
+          achvaName: 'Restorable',
+          classification: 'attention',
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 1,
+          subject: 'Math',
+          reporter: 'Teacher',
+          eventAt: new Date('2026-03-10T10:00:00Z'),
+          isNew: false,
+          isArchived: true,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/behavior/archive`)
+        .send({ behaviorIds: [behavior.id], isArchived: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ updated: 1 });
+
+      const updatedBehavior = await prisma.behaviorItem.findUnique({ where: { id: behavior.id } });
+      expect(updatedBehavior?.isArchived).toBe(false);
+      expect(updatedBehavior?.isNew).toBe(true);
+    });
+
+    it('bulk homework endpoint does not modify items that belong to another student', async () => {
+      await seedStudent(prisma);
+      await seedStudentWithGuid(prisma, OTHER_STUDENT_GUID);
+
+      const ownHomework = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: TEST_STUDENT_GUID,
+          lessonId: 30,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 1,
+          subjectName: 'Math',
+          homeworkText: 'Own homework',
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+      const otherHomework = await prisma.homeworkItem.create({
+        data: {
+          studentGuid: OTHER_STUDENT_GUID,
+          lessonId: 31,
+          groupId: 1,
+          lessonDate: new Date('2026-03-10T00:00:00Z'),
+          lesson: 1,
+          subjectName: 'Math',
+          homeworkText: 'Other homework',
+          isNew: true,
+          isArchived: false,
+          rawPayload: {},
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .put(`/api/v1/children/${TEST_STUDENT_GUID}/homework/is-new`)
+        .send({ homeworkIds: [ownHomework.id, otherHomework.id], isNew: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ updated: 1 });
+
+      const unchangedOther = await prisma.homeworkItem.findUnique({ where: { id: otherHomework.id } });
+      expect(unchangedOther?.isNew).toBe(true);
+      expect(unchangedOther?.isArchived).toBe(false);
+    });
+
+    it('bulk behavior endpoint returns 404 for unknown student', async () => {
+      const res = await request(app.getHttpServer())
+        .put('/api/v1/children/missing-student-guid/behavior/archive')
+        .send({ behaviorIds: ['beh-1'], isArchived: true });
+
+      expect(res.status).toBe(404);
     });
   });
 

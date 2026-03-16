@@ -15,12 +15,16 @@ interface BehaviorItemProps {
   item: BehaviorItemType;
   studentGuid: string;
   detailHref?: string | null;
+  selected?: boolean;
+  onToggleSelect?: (behaviorId: string, checked: boolean) => void;
 }
 
 export function BehaviorItem({
   item,
   studentGuid,
   detailHref = null,
+  selected = false,
+  onToggleSelect,
 }: BehaviorItemProps) {
   const invalidateKeys = [['child-behavior', studentGuid], ['dashboard']];
 
@@ -79,8 +83,17 @@ export function BehaviorItem({
       className={cn(
         'card-base p-4 flex gap-3 items-start border-s-4',
         colors.border,
+        selected && 'border-primary/50 bg-primary/5',
       )}
     >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={(event) => onToggleSelect?.(item.id, event.target.checked)}
+        data-testid={`behavior-select-${item.id}`}
+        className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+        aria-label="בחר אירוע התנהגות"
+      />
       {detailHref ? (
         <Link
           href={detailHref}

@@ -375,6 +375,23 @@ export class ChildrenService {
     return this.mapHomeworkItem(updated);
   }
 
+  async setHomeworkManyIsNew(studentGuid: string, homeworkIds: string[], isNew: boolean) {
+    await this.requireStudent(studentGuid);
+    if (homeworkIds.length === 0) return { updated: 0 };
+
+    const updated = await this.prisma.homeworkItem.updateMany({
+      where: {
+        studentGuid,
+        id: { in: homeworkIds },
+        isArchived: false,
+        isNew: { not: isNew },
+      },
+      data: { isNew },
+    });
+
+    return { updated: updated.count };
+  }
+
   async setHomeworkArchived(studentGuid: string, homeworkId: string, isArchived: boolean) {
     await this.requireStudent(studentGuid);
 
@@ -393,6 +410,25 @@ export class ChildrenService {
     });
 
     return this.mapHomeworkItem(updated);
+  }
+
+  async setHomeworkManyArchived(studentGuid: string, homeworkIds: string[], isArchived: boolean) {
+    await this.requireStudent(studentGuid);
+    if (homeworkIds.length === 0) return { updated: 0 };
+
+    const updated = await this.prisma.homeworkItem.updateMany({
+      where: {
+        studentGuid,
+        id: { in: homeworkIds },
+        isArchived: { not: isArchived },
+      },
+      data: {
+        isArchived,
+        isNew: !isArchived,
+      },
+    });
+
+    return { updated: updated.count };
   }
 
   async setBehaviorIsNew(studentGuid: string, behaviorId: string, isNew: boolean) {
@@ -414,6 +450,23 @@ export class ChildrenService {
     return this.mapBehaviorItem(updated);
   }
 
+  async setBehaviorManyIsNew(studentGuid: string, behaviorIds: string[], isNew: boolean) {
+    await this.requireStudent(studentGuid);
+    if (behaviorIds.length === 0) return { updated: 0 };
+
+    const updated = await this.prisma.behaviorItem.updateMany({
+      where: {
+        studentGuid,
+        id: { in: behaviorIds },
+        isArchived: false,
+        isNew: { not: isNew },
+      },
+      data: { isNew },
+    });
+
+    return { updated: updated.count };
+  }
+
   async setBehaviorArchived(studentGuid: string, behaviorId: string, isArchived: boolean) {
     await this.requireStudent(studentGuid);
 
@@ -432,6 +485,25 @@ export class ChildrenService {
     });
 
     return this.mapBehaviorItem(updated);
+  }
+
+  async setBehaviorManyArchived(studentGuid: string, behaviorIds: string[], isArchived: boolean) {
+    await this.requireStudent(studentGuid);
+    if (behaviorIds.length === 0) return { updated: 0 };
+
+    const updated = await this.prisma.behaviorItem.updateMany({
+      where: {
+        studentGuid,
+        id: { in: behaviorIds },
+        isArchived: { not: isArchived },
+      },
+      data: {
+        isArchived,
+        isNew: !isArchived,
+      },
+    });
+
+    return { updated: updated.count };
   }
 
   async getTimetable(studentGuid: string) {

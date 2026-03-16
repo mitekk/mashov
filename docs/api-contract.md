@@ -49,9 +49,13 @@
 | GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50&status=all\|new\|archived` | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/is-new` | No | `{ isNew: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/archive` | No | `{ isArchived: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/homework/is-new` | No | `{ homeworkIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/homework/archive` | No | `{ homeworkIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
 | GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral&status=all\|new\|archived` | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/is-new` | No | `{ isNew: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/archive` | No | `{ isArchived: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/behavior/is-new` | No | `{ behaviorIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/behavior/archive` | No | `{ behaviorIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
 | GET | `/api/v1/children/:studentGuid/subjects` | No | — | See [Subjects Response](#get-apiv1childrenstudentguidsubjects) | 200, 404 | implemented |
 | GET | `/api/v1/children/:studentGuid/notices` | No | — | See [Notices Response](#get-apiv1childrenstudentguidnotices) | 200, 404 | implemented |
 | GET | `/api/v1/children/:studentGuid/timetable` | No | — | See [Timetable Response](#get-apiv1childrenstudentguidtimetable) | 200, 404 | implemented |
@@ -260,6 +264,36 @@ Used in both list and mutation responses:
 }
 ```
 
+### PUT /api/v1/children/:studentGuid/homework/is-new
+
+```typescript
+// Request
+{
+  homeworkIds: string[];
+  isNew: boolean;
+}
+
+// Response
+{
+  updated: number;
+}
+```
+
+### PUT /api/v1/children/:studentGuid/homework/archive
+
+```typescript
+// Request
+{
+  homeworkIds: string[];
+  isArchived: boolean;
+}
+
+// Response
+{
+  updated: number;
+}
+```
+
 ### GET /api/v1/children/:studentGuid/behavior
 
 ```typescript
@@ -321,6 +355,36 @@ Used in both list and mutation responses:
   isNew: boolean;
   isArchived: boolean;
   updatedAt: string;
+}
+```
+
+### PUT /api/v1/children/:studentGuid/behavior/is-new
+
+```typescript
+// Request
+{
+  behaviorIds: string[];
+  isNew: boolean;
+}
+
+// Response
+{
+  updated: number;
+}
+```
+
+### PUT /api/v1/children/:studentGuid/behavior/archive
+
+```typescript
+// Request
+{
+  behaviorIds: string[];
+  isArchived: boolean;
+}
+
+// Response
+{
+  updated: number;
 }
 ```
 

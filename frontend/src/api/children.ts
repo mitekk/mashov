@@ -15,6 +15,11 @@ import type {
   BehaviorBucket,
   MarkIsNewRequest,
   MarkArchivedRequest,
+  BulkUpdateResponse,
+  HomeworkBulkIsNewRequest,
+  HomeworkBulkArchiveRequest,
+  BehaviorBulkIsNewRequest,
+  BehaviorBulkArchiveRequest,
 } from '@/types/api';
 import { classifyBehavior } from '@/lib/behavior';
 
@@ -380,6 +385,54 @@ export function archiveBehavior(
   const body: MarkArchivedRequest = { isArchived };
   return apiFetch<BehaviorItem>(
     `/children/${studentGuid}/behavior/${behaviorId}/archive`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function markHomeworkManyIsNew(
+  studentGuid: string,
+  homeworkIds: string[],
+  isNew: boolean,
+): Promise<BulkUpdateResponse> {
+  const body: HomeworkBulkIsNewRequest = { homeworkIds, isNew };
+  return apiFetch<BulkUpdateResponse>(
+    `/children/${studentGuid}/homework/is-new`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function archiveHomeworkMany(
+  studentGuid: string,
+  homeworkIds: string[],
+  isArchived: boolean,
+): Promise<BulkUpdateResponse> {
+  const body: HomeworkBulkArchiveRequest = { homeworkIds, isArchived };
+  return apiFetch<BulkUpdateResponse>(
+    `/children/${studentGuid}/homework/archive`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function markBehaviorManyIsNew(
+  studentGuid: string,
+  behaviorIds: string[],
+  isNew: boolean,
+): Promise<BulkUpdateResponse> {
+  const body: BehaviorBulkIsNewRequest = { behaviorIds, isNew };
+  return apiFetch<BulkUpdateResponse>(
+    `/children/${studentGuid}/behavior/is-new`,
+    { method: 'PUT', body: JSON.stringify(body) },
+  );
+}
+
+export function archiveBehaviorMany(
+  studentGuid: string,
+  behaviorIds: string[],
+  isArchived: boolean,
+): Promise<BulkUpdateResponse> {
+  const body: BehaviorBulkArchiveRequest = { behaviorIds, isArchived };
+  return apiFetch<BulkUpdateResponse>(
+    `/children/${studentGuid}/behavior/archive`,
     { method: 'PUT', body: JSON.stringify(body) },
   );
 }

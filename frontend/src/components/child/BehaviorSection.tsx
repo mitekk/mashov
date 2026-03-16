@@ -1,8 +1,9 @@
 'use client';
 
-import React from 'react';
-import { AlertTriangle } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Archive, Mail, MailOpen } from 'lucide-react';
 import { useChildBehavior } from '@/hooks/useChild';
+import { useBulkBehaviorArchive, useBulkBehaviorIsNew } from '@/hooks/useChildBulkActions';
 import { BehaviorItem } from './BehaviorItem';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
@@ -30,13 +31,98 @@ export function BehaviorSection({
   statusFilter,
   onStatusFilterChange,
 }: BehaviorSectionProps) {
+  const [selectedBehaviorIds, setSelectedBehaviorIds] = useState<string[]>([]);
   const { data, isLoading, isError, refetch } = useChildBehavior(
     studentGuid,
     1,
     activeFilter,
     statusFilter,
   );
-  const filteredItems = data?.data ?? [];
+  const { mutate: mutateBulkIsNew, isPending: isBulkIsNewPending } = useBulkBehaviorIsNew(studentGuid);
+  const { mutate: mutateBulkArchive, isPending: isBulkArchivePending } = useBulkBehaviorArchive(studentGuid);
+  const filteredItems = useMemo(() => data?.data ?? [], [data?.data]);
+  const isBulkActionPending = isBulkIsNewPending || isBulkArchivePending;
+  const hasSelection = selectedBehaviorIds.length > 0;
+
+  const selectedItems = useMemo(
+    () => filteredItems.filter((item) => selectedBehaviorIds.includes(item.id)),
+    [filteredItems, selectedBehaviorIds],
+  );
+  const selectedArchivedIds = useMemo(
+    () => selectedItems.filter((item) => item.isArchived).map((item) => item.id),
+    [selectedItems],
+  );
+  const selectedNonArchivedIds = useMemo(
+    () => selectedItems.filter((item) => !item.isArchived).map((item) => item.id),
+    [selectedItems],
+  );
+  const selectedNewIds = useMemo(
+    () => selectedItems.filter((item) => !item.isArchived && item.isNew).map((item) => item.id),
+    [selectedItems],
+  );
+  const selectedReadIds = useMemo(
+    () => selectedItems.filter((item) => !item.isArchived && !item.isNew).map((item) => item.id),
+    [selectedItems],
+  );
+
+  useEffect(() => {
+    setSelectedBehaviorIds([]);
+  }, [statusFilter, activeFilter]);
+
+  const handleToggleSelect = (behaviorId: string, checked: boolean) => {
+    setSelectedBehaviorIds((prev) => {
+      if (checked) {
+        if (prev.includes(behaviorId)) return prev;
+        return [...prev, behaviorId];
+      }
+      return prev.filter((id) => id !== behaviorId);
+    });
+  };
+
+  const handleSelectAllVisible = () => {
+    setSelectedBehaviorIds(filteredItems.map((item) => item.id));
+  };
+
+  const handleClearSelection = () => {
+    setSelectedBehaviorIds([]);
+  };
+
+  const handleStatusFilterChange = (nextStatus: BehaviorStatusFilter) => {
+    onStatusFilterChange(nextStatus);
+    setSelectedBehaviorIds([]);
+  };
+
+  const handleBulkMarkRead = () => {
+    if (selectedNewIds.length === 0 || isBulkActionPending) return;
+    mutateBulkIsNew(
+      { behaviorIds: selectedNewIds, isNew: false },
+      { onSuccess: handleClearSelection },
+    );
+  };
+
+  const handleBulkMarkUnread = () => {
+    if (selectedReadIds.length === 0 || isBulkActionPending) return;
+    mutateBulkIsNew(
+      { behaviorIds: selectedReadIds, isNew: true },
+      { onSuccess: handleClearSelection },
+    );
+  };
+
+  const handleBulkArchive = () => {
+    if (selectedNonArchivedIds.length === 0 || isBulkActionPending) return;
+    mutateBulkArchive(
+      { behaviorIds: selectedNonArchivedIds, isArchived: true },
+      { onSuccess: handleClearSelection },
+    );
+  };
+
+  const handleBulkUnarchive = () => {
+    if (selectedArchivedIds.length === 0 || isBulkActionPending) return;
+    mutateBulkArchive(
+      { behaviorIds: selectedArchivedIds, isArchived: false },
+      { onSuccess: handleClearSelection },
+    );
+  };
 
   return (
     <section data-testid="behavior-section" className="section-stack py-1">
@@ -47,7 +133,7 @@ export function BehaviorSection({
       <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm w-fit">
         <button
           data-testid="behavior-status-new"
-          onClick={() => onStatusFilterChange('new')}
+          onClick={() => handleStatusFilterChange('new')}
           className={cn(
             'px-3 py-1.5 transition-colors',
             statusFilter === 'new'
@@ -59,7 +145,7 @@ export function BehaviorSection({
         </button>
         <button
           data-testid="behavior-status-archived"
-          onClick={() => onStatusFilterChange('archived')}
+          onClick={() => handleStatusFilterChange('archived')}
           className={cn(
             'px-3 py-1.5 transition-colors',
             statusFilter === 'archived'
@@ -71,7 +157,7 @@ export function BehaviorSection({
         </button>
         <button
           data-testid="behavior-status-all"
-          onClick={() => onStatusFilterChange('all')}
+          onClick={() => handleStatusFilterChange('all')}
           className={cn(
             'px-3 py-1.5 transition-colors',
             statusFilter === 'all'
@@ -82,6 +168,87 @@ export function BehaviorSection({
           הכל
         </button>
       </div>
+      {hasSelection && (
+        <section
+          data-testid="behavior-bulk-actions"
+          className="card-base flex flex-wrap items-center gap-2 px-3 py-2.5"
+        >
+          <span className="text-sm font-medium text-foreground">
+            נבחרו {selectedBehaviorIds.length}
+          </span>
+          <button
+            type="button"
+            data-testid="behavior-bulk-select-all-visible"
+            onClick={handleSelectAllVisible}
+            disabled={isBulkActionPending}
+            className="tap-target rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          >
+            בחר הכל
+          </button>
+
+          {(statusFilter === 'new' || statusFilter === 'all') && selectedNewIds.length > 0 && (
+            <button
+              type="button"
+              data-testid="behavior-bulk-mark-read"
+              onClick={handleBulkMarkRead}
+              disabled={isBulkActionPending}
+              className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              סמן כנקרא
+            </button>
+          )}
+
+          {statusFilter === 'all' && selectedReadIds.length > 0 && (
+            <button
+              type="button"
+              data-testid="behavior-bulk-mark-unread"
+              onClick={handleBulkMarkUnread}
+              disabled={isBulkActionPending}
+              className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              <MailOpen className="h-3.5 w-3.5" />
+              סמן כלא נקרא
+            </button>
+          )}
+
+          {(statusFilter === 'new' || statusFilter === 'all') && selectedNonArchivedIds.length > 0 && (
+            <button
+              type="button"
+              data-testid="behavior-bulk-archive"
+              onClick={handleBulkArchive}
+              disabled={isBulkActionPending}
+              className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              ארכיון
+            </button>
+          )}
+
+          {(statusFilter === 'archived' || statusFilter === 'all') && selectedArchivedIds.length > 0 && (
+            <button
+              type="button"
+              data-testid="behavior-bulk-unarchive"
+              onClick={handleBulkUnarchive}
+              disabled={isBulkActionPending}
+              className="tap-target inline-flex items-center gap-1 rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              שחזר מארכיון
+            </button>
+          )}
+
+          <button
+            type="button"
+            data-testid="behavior-bulk-clear-selection"
+            onClick={handleClearSelection}
+            disabled={isBulkActionPending}
+            className="tap-target rounded-full border border-border/80 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          >
+            נקה בחירה
+          </button>
+        </section>
+      )}
       {/* Bucket filter chips */}
       <div className="flex gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
         {FILTER_TABS.map((tab) => (
@@ -128,6 +295,8 @@ export function BehaviorSection({
               item={item}
               studentGuid={studentGuid}
               detailHref={buildBehaviorDetailHref(studentGuid, item.id)}
+              selected={selectedBehaviorIds.includes(item.id)}
+              onToggleSelect={handleToggleSelect}
             />
           ))}
         </div>

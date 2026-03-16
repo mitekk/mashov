@@ -370,6 +370,32 @@ export interface ParentProfile {
 export interface MarkIsNewRequest { isNew: boolean }
 export interface MarkArchivedRequest { isArchived: boolean }
 
+// ─── Bulk Child Actions ────────────────────────────────────────────────────
+
+export interface BulkUpdateResponse {
+  updated: number;
+}
+
+export interface HomeworkBulkIsNewRequest {
+  homeworkIds: string[];
+  isNew: boolean;
+}
+
+export interface HomeworkBulkArchiveRequest {
+  homeworkIds: string[];
+  isArchived: boolean;
+}
+
+export interface BehaviorBulkIsNewRequest {
+  behaviorIds: string[];
+  isNew: boolean;
+}
+
+export interface BehaviorBulkArchiveRequest {
+  behaviorIds: string[];
+  isArchived: boolean;
+}
+
 // ─── Sync ──────────────────────────────────────────────────────────────────
 
 export type SyncTaskStatus = 'success' | 'failed';

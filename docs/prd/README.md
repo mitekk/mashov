@@ -4,6 +4,7 @@
 |---|---|---|
 | v0 | 2026-03-10 | Placeholder before first scaffold run |
 | v1 | 2026-03-11 | Full PRD from requirements-v3.md + 18 API docs; Phase 1 (no auth) + Phase 2 (magic-link auth); CSRF bootstrap resolved; messageBoard + mail actions added; timetable deferred to Phase 2 |
+| v2 | 2026-03-16 | Phase 2 PRD: magic-link auth, per-user data scoping, multi-household, school account connection/management, user_item_state migration from item-level flags, new DB tables (app_user, app_session, magic_link_token, user_item_state) |
 
 ## Update Protocol
 

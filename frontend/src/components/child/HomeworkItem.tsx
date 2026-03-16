@@ -13,12 +13,16 @@ interface HomeworkItemProps {
   item: HomeworkItemType;
   studentGuid: string;
   detailHref?: string | null;
+  selected?: boolean;
+  onToggleSelect?: (homeworkId: string, checked: boolean) => void;
 }
 
 export function HomeworkItem({
   item,
   studentGuid,
   detailHref = null,
+  selected = false,
+  onToggleSelect,
 }: HomeworkItemProps) {
   const invalidateKeys = [['child-homework', studentGuid], ['dashboard']];
 
@@ -71,8 +75,19 @@ export function HomeworkItem({
   return (
     <div
       data-testid={`homework-item-${item.id}`}
-      className="card-base flex items-start gap-3 p-4"
+      className={cn(
+        'card-base flex items-start gap-3 p-4',
+        selected && 'border-primary/50 bg-primary/5',
+      )}
     >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={(event) => onToggleSelect?.(item.id, event.target.checked)}
+        data-testid={`homework-select-${item.id}`}
+        className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+        aria-label="בחר שיעורי בית"
+      />
       {detailHref ? (
         <Link
           href={detailHref}

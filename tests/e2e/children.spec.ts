@@ -379,6 +379,183 @@ test.describe('Child workspace page', () => {
     await expect(page.getByTestId('homework-archive-hw-archived-tab')).toBeVisible();
   });
 
+  test('homework new-tab bulk actions call is-new and archive endpoints', async ({ page }) => {
+    let markReadBody: unknown = null;
+    let archiveBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+
+      if (req.method() === 'PUT' && url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/is-new`)) {
+        markReadBody = req.postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ updated: 1 }),
+        });
+        return;
+      }
+
+      if (req.method() === 'PUT' && url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/archive`)) {
+        archiveBody = req.postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ updated: 1 }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            makeHomeworkItem({ id: 'hw-bulk-1', isNew: true, isArchived: false }),
+            makeHomeworkItem({ id: 'hw-bulk-2', isNew: true, isArchived: false }),
+          ],
+          pagination: { page: 1, limit: 50, total: 2, totalPages: 1 },
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'homework', 'all');
+
+    await page.getByTestId('homework-select-hw-bulk-1').check();
+    await expect(page.getByTestId('homework-bulk-actions')).toBeVisible();
+    await expect(page.getByTestId('homework-bulk-mark-read')).toBeVisible();
+    await expect(page.getByTestId('homework-bulk-archive')).toBeVisible();
+    await expect(page.getByTestId('homework-bulk-mark-unread')).toHaveCount(0);
+
+    await page.getByTestId('homework-bulk-mark-read').click();
+    await expect.poll(() => markReadBody).not.toBeNull();
+    expect(markReadBody).toEqual({ homeworkIds: ['hw-bulk-1'], isNew: false });
+    await expect(page.getByTestId('homework-bulk-actions')).toHaveCount(0);
+
+    await page.getByTestId('homework-select-hw-bulk-2').check();
+    await page.getByTestId('homework-bulk-archive').click();
+    await expect.poll(() => archiveBody).not.toBeNull();
+    expect(archiveBody).toEqual({ homeworkIds: ['hw-bulk-2'], isArchived: true });
+    await expect(page.getByTestId('homework-bulk-actions')).toHaveCount(0);
+  });
+
+  test('homework archived-tab bulk action calls unarchive', async ({ page }) => {
+    let unarchiveBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      const status = url.searchParams.get('status');
+
+      if (req.method() === 'PUT' && url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/archive`)) {
+        unarchiveBody = req.postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ updated: 1 }),
+        });
+        return;
+      }
+
+      if (status === 'archived') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            data: [makeHomeworkItem({ id: 'hw-bulk-archived', isNew: false, isArchived: true })],
+            pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [makeHomeworkItem({ id: 'hw-bulk-active', isNew: true, isArchived: false })],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'homework', 'all');
+
+    await page.getByTestId('homework-filter-archived').click();
+    await page.getByTestId('homework-select-hw-bulk-archived').check();
+    await expect(page.getByTestId('homework-bulk-unarchive')).toBeVisible();
+    await expect(page.getByTestId('homework-bulk-archive')).toHaveCount(0);
+    await page.getByTestId('homework-bulk-unarchive').click();
+
+    await expect.poll(() => unarchiveBody).not.toBeNull();
+    expect(unarchiveBody).toEqual({ homeworkIds: ['hw-bulk-archived'], isArchived: false });
+    await expect(page.getByTestId('homework-bulk-actions')).toHaveCount(0);
+  });
+
+  test('homework bulk selection clears on action success and status filter change', async ({ page }) => {
+    let markReadBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      const status = url.searchParams.get('status');
+
+      if (req.method() === 'PUT' && url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/is-new`)) {
+        markReadBody = req.postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ updated: 1 }),
+        });
+        return;
+      }
+
+      if (status === 'archived') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            data: [makeHomeworkItem({ id: 'hw-selection-archived', isNew: false, isArchived: true })],
+            pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [makeHomeworkItem({ id: 'hw-selection-new', isNew: true, isArchived: false })],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'homework', 'all');
+
+    await page.getByTestId('homework-select-hw-selection-new').check();
+    await expect(page.getByTestId('homework-bulk-actions')).toBeVisible();
+    await page.getByTestId('homework-bulk-mark-read').click();
+    await expect.poll(() => markReadBody).not.toBeNull();
+    await expect(page.getByTestId('homework-bulk-actions')).toHaveCount(0);
+
+    await page.getByTestId('homework-select-hw-selection-new').check();
+    await expect(page.getByTestId('homework-bulk-actions')).toBeVisible();
+    await page.getByTestId('homework-filter-archived').click();
+    await expect(page.getByTestId('homework-bulk-actions')).toHaveCount(0);
+  });
+
   test('toggle isNew on homework detail page calls is-new endpoint', async ({ page }) => {
     let isNewRequestBody: unknown = null;
 
@@ -742,6 +919,114 @@ test.describe('Child workspace page', () => {
     await expect(page.getByTestId('behavior-item-link-beh-active-tab')).toHaveCount(0);
     await expect(page.getByTestId('behavior-mark-new-beh-archived-tab')).toHaveCount(0);
     await expect(page.getByTestId('behavior-archive-beh-archived-tab')).toBeVisible();
+  });
+
+  test('behavior all-tab bulk actions are selection-aware for mixed item states', async ({ page }) => {
+    let markReadBody: unknown = null;
+    let markUnreadBody: unknown = null;
+    let archiveBody: unknown = null;
+    let unarchiveBody: unknown = null;
+
+    await stubWorkspaceRoutes(page);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/behavior**`, async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      const status = url.searchParams.get('status');
+
+      if (req.method() === 'PUT' && url.pathname.endsWith(`/children/${STUDENT_GUID}/behavior/is-new`)) {
+        const payload = req.postDataJSON() as { isNew?: boolean };
+        if (payload?.isNew) {
+          markUnreadBody = payload;
+        } else {
+          markReadBody = payload;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ updated: 1 }),
+        });
+        return;
+      }
+
+      if (req.method() === 'PUT' && url.pathname.endsWith(`/children/${STUDENT_GUID}/behavior/archive`)) {
+        const payload = req.postDataJSON() as { isArchived?: boolean };
+        if (payload?.isArchived) {
+          archiveBody = payload;
+        } else {
+          unarchiveBody = payload;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ updated: 1 }),
+        });
+        return;
+      }
+
+      if (status === 'all') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            data: [
+              makeBehaviorItem({ id: 'beh-all-new', isNew: true, isArchived: false }),
+              makeBehaviorItem({ id: 'beh-all-read', isNew: false, isArchived: false }),
+              makeBehaviorItem({ id: 'beh-all-archived', isNew: false, isArchived: true }),
+            ],
+            pagination: { page: 1, limit: 50, total: 3, totalPages: 1 },
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [makeBehaviorItem({ id: 'beh-default-new', isNew: true, isArchived: false })],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'behavior', 'all');
+
+    await page.getByTestId('behavior-status-all').click();
+    await page.getByTestId('behavior-select-beh-all-new').check();
+    await page.getByTestId('behavior-select-beh-all-read').check();
+    await page.getByTestId('behavior-select-beh-all-archived').check();
+
+    await expect(page.getByTestId('behavior-bulk-mark-read')).toBeVisible();
+    await expect(page.getByTestId('behavior-bulk-mark-unread')).toBeVisible();
+    await expect(page.getByTestId('behavior-bulk-archive')).toBeVisible();
+    await expect(page.getByTestId('behavior-bulk-unarchive')).toBeVisible();
+
+    await page.getByTestId('behavior-bulk-mark-read').click();
+    await expect.poll(() => markReadBody).not.toBeNull();
+    expect(markReadBody).toEqual({ behaviorIds: ['beh-all-new'], isNew: false });
+
+    await page.getByTestId('behavior-select-beh-all-new').check();
+    await page.getByTestId('behavior-select-beh-all-read').check();
+    await page.getByTestId('behavior-select-beh-all-archived').check();
+    await page.getByTestId('behavior-bulk-mark-unread').click();
+    await expect.poll(() => markUnreadBody).not.toBeNull();
+    expect(markUnreadBody).toEqual({ behaviorIds: ['beh-all-read'], isNew: true });
+
+    await page.getByTestId('behavior-select-beh-all-new').check();
+    await page.getByTestId('behavior-select-beh-all-read').check();
+    await page.getByTestId('behavior-select-beh-all-archived').check();
+    await page.getByTestId('behavior-bulk-archive').click();
+    await expect.poll(() => archiveBody).not.toBeNull();
+    expect(archiveBody).toEqual({ behaviorIds: ['beh-all-new', 'beh-all-read'], isArchived: true });
+
+    await page.getByTestId('behavior-select-beh-all-new').check();
+    await page.getByTestId('behavior-select-beh-all-read').check();
+    await page.getByTestId('behavior-select-beh-all-archived').check();
+    await page.getByTestId('behavior-bulk-unarchive').click();
+    await expect.poll(() => unarchiveBody).not.toBeNull();
+    expect(unarchiveBody).toEqual({ behaviorIds: ['beh-all-archived'], isArchived: false });
   });
 
   test('toggle isNew on behavior detail page calls is-new endpoint', async ({ page }) => {
