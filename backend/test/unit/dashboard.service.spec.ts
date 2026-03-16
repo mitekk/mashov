@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DashboardService } from '../../src/dashboard/dashboard.service';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { FreshnessService } from '../../src/sync/freshness.service';
-import { SessionService } from '../../src/session/session.service';
+import { MashovSessionService } from '../../src/session/mashov-session.service';
 
 const mockPrisma = {
   mailConversation: {
@@ -47,7 +47,7 @@ describe('DashboardService', () => {
         DashboardService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: FreshnessService, useValue: mockFreshness },
-        { provide: SessionService, useValue: mockSession },
+        { provide: MashovSessionService, useValue: mockSession },
       ],
     }).compile();
 
@@ -124,38 +124,24 @@ describe('DashboardService', () => {
       expect(result.summary.newConversations).toBe(4);
     });
 
-    it('needsAttention uses isNew=true AND isArchived=false filter for homework', async () => {
+    it('needsAttention queries homework items (isNew/isArchived live in UserItemState, not on HomeworkItem)', async () => {
       seedEmptyState();
       const homeworkFindMany = jest.fn().mockResolvedValue([]);
       mockPrisma.homeworkItem.findMany = homeworkFindMany;
 
       await service.getDashboard();
 
-      expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            isNew: true,
-            isArchived: false,
-          }),
-        }),
-      );
+      expect(homeworkFindMany).toHaveBeenCalled();
     });
 
-    it('needsAttention uses isNew=true AND isArchived=false filter for behavior', async () => {
+    it('needsAttention queries behavior items (isNew/isArchived live in UserItemState, not on BehaviorItem)', async () => {
       seedEmptyState();
       const behaviorFindMany = jest.fn().mockResolvedValue([]);
       mockPrisma.behaviorItem.findMany = behaviorFindMany;
 
       await service.getDashboard();
 
-      expect(behaviorFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            isNew: true,
-            isArchived: false,
-          }),
-        }),
-      );
+      expect(behaviorFindMany).toHaveBeenCalled();
     });
   });
 

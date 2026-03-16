@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovGroup {
@@ -22,6 +23,7 @@ export class GroupsTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('0 6 * * *')
@@ -30,6 +32,11 @@ export class GroupsTask {
   }
 
   async execute(): Promise<SyncTaskRunResult> {
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId: { not: null }, active: true },
+    });
+    const useSharedSession = connections.length === 0;
+
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -43,14 +50,42 @@ export class GroupsTask {
       let upsertCount = 0;
 
       try {
-        const groups = await this.mashovClient.get<MashovGroup[]>(
-          `/api/students/${student.studentGuid}/groups`,
-          {
-            headers: {
-              'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behaveCounter`,
+        let groups: MashovGroup[];
+
+        if (useSharedSession) {
+          groups = await this.mashovClient.get<MashovGroup[]>(
+            `/api/students/${student.studentGuid}/groups`,
+            {
+              headers: {
+                'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behaveCounter`,
+              },
             },
-          },
-        );
+          );
+        } else {
+          groups = [];
+          for (const conn of connections) {
+            try {
+              const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              groups = await this.mashovClient.getForConnection<MashovGroup[]>(
+                `/api/students/${student.studentGuid}/groups`,
+                conn.id,
+                conn.schoolCode,
+                conn.schoolYear,
+                conn.username,
+                password,
+                {
+                  headers: {
+                    'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behaveCounter`,
+                  },
+                },
+              );
+              break;
+            } catch (connErr) {
+              const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
+              this.logger.warn(`Groups: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
+            }
+          }
+        }
 
         fetchedCount = groups.length;
         totalFetchedCount += fetchedCount;

@@ -2,6 +2,7 @@ import { SyncRun } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import { TimetableTask } from './timetable.task';
 
 function makeTimetableItem(overrides: Record<string, unknown> = {}) {
@@ -36,14 +37,16 @@ function makeSyncRun(id: string): SyncRun {
     createdCount: null,
     updatedCount: null,
     errorMessage: null,
+    householdConnectionId: null,
   };
 }
 
 describe('TimetableTask', () => {
   let task: TimetableTask;
   let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'get'>>;
-  let mockPrisma: jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry'>>;
+  let mockPrisma: jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry' | 'householdConnection'>>;
   let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun'>>;
+  let mockEncryptionService: jest.Mocked<Pick<EncryptionService, 'decrypt'>>;
 
   beforeEach(() => {
     mockMashovClient = {
@@ -56,16 +59,23 @@ describe('TimetableTask', () => {
       timetableEntry: {
         upsert: jest.fn(),
       } as unknown as PrismaService['timetableEntry'],
-    } as unknown as jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry'>>;
+      householdConnection: {
+        findMany: jest.fn().mockResolvedValue([]),
+      } as unknown as PrismaService['householdConnection'],
+    } as unknown as jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry' | 'householdConnection'>>;
     mockSyncRunService = {
       openRun: jest.fn(),
       closeRun: jest.fn(),
+    };
+    mockEncryptionService = {
+      decrypt: jest.fn().mockReturnValue('decrypted-password'),
     };
 
     task = new TimetableTask(
       mockMashovClient as unknown as MashovHttpClient,
       mockPrisma as unknown as PrismaService,
       mockSyncRunService as unknown as SyncRunService,
+      mockEncryptionService as unknown as EncryptionService,
     );
   });
 

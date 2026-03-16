@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../prisma/prisma.module';
-import { SessionModule } from '../session/session.module';
+import { MashovSessionModule } from '../session/mashov-session.module';
 import { SyncRunService } from './sync-run.service';
 import { BehaviorClassifierService } from './behavior-classifier.service';
 import { FreshnessService } from './freshness.service';
@@ -22,7 +22,7 @@ import { OutBehaveTask } from './tasks/out-behave.task';
 import { TimetableTask } from './tasks/timetable.task';
 
 @Module({
-  imports: [ConfigModule, PrismaModule, SessionModule],
+  imports: [ConfigModule, PrismaModule, MashovSessionModule],
   controllers: [SyncController],
   providers: [
     SyncRunService,

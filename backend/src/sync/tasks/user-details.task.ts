@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovUserDetails {
@@ -28,6 +29,7 @@ export class UserDetailsTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('0 6 * * *')
@@ -41,12 +43,24 @@ export class UserDetailsTask {
     let updatedCount = 0;
 
     try {
-      const details = await this.mashovClient.get<MashovUserDetails>(
-        '/api/user/details',
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/settings' },
-        },
-      );
+      const conn = await this.prisma.householdConnection.findFirst({
+        where: { userId: { not: null }, active: true },
+      });
+
+      const details = conn
+        ? await this.mashovClient.getForConnection<MashovUserDetails>(
+            '/api/user/details',
+            conn.id,
+            conn.schoolCode,
+            conn.schoolYear,
+            conn.username,
+            this.encryptionService.decrypt(conn.encryptedPassword),
+            { headers: { 'Referer': 'https://web.mashov.info/students/main/settings' } },
+          )
+        : await this.mashovClient.get<MashovUserDetails>(
+            '/api/user/details',
+            { headers: { 'Referer': 'https://web.mashov.info/students/main/settings' } },
+          );
 
       const existing = await this.prisma.parentProfile.findUnique({
         where: { upstreamUserId: details.userId },

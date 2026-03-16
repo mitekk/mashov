@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 import * as crypto from 'crypto';
 
@@ -27,6 +28,7 @@ export class HomeworkTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('*/12 * * * *')
@@ -35,11 +37,18 @@ export class HomeworkTask {
   }
 
   async execute(): Promise<SyncTaskRunResult> {
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId: { not: null }, active: true },
+    });
+
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
     let failedCount = 0;
     const errorMessages: string[] = [];
+
+    // Fall back to single shared session when no user-owned connections exist
+    const useSharedSession = connections.length === 0;
 
     for (const student of students) {
       const source = `${HomeworkTask.SOURCE}:${student.studentGuid}`;
@@ -48,14 +57,43 @@ export class HomeworkTask {
       let upsertCount = 0;
 
       try {
-        const items = await this.mashovClient.get<MashovHomework[]>(
-          `/api/students/${student.studentGuid}/homework`,
-          {
-            headers: {
-              'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/homework`,
+        let items: MashovHomework[];
+
+        if (useSharedSession) {
+          items = await this.mashovClient.get<MashovHomework[]>(
+            `/api/students/${student.studentGuid}/homework`,
+            {
+              headers: {
+                'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/homework`,
+              },
             },
-          },
-        );
+          );
+        } else {
+          // Try each connection; use the first successful response
+          items = [];
+          for (const conn of connections) {
+            try {
+              const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              items = await this.mashovClient.getForConnection<MashovHomework[]>(
+                `/api/students/${student.studentGuid}/homework`,
+                conn.id,
+                conn.schoolCode,
+                conn.schoolYear,
+                conn.username,
+                password,
+                {
+                  headers: {
+                    'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/homework`,
+                  },
+                },
+              );
+              break;
+            } catch (connErr) {
+              const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
+              this.logger.warn(`Homework: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
+            }
+          }
+        }
 
         fetchedCount = items.length;
         totalFetchedCount += fetchedCount;
@@ -102,8 +140,6 @@ export class HomeworkTask {
                 homeworkText: item.homework,
                 remark,
                 files: files as unknown as import('@prisma/client').Prisma.InputJsonValue,
-                isNew: true,
-                isArchived: false,
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
@@ -114,7 +150,6 @@ export class HomeworkTask {
                 homeworkText: item.homework,
                 remark,
                 files: files as unknown as import('@prisma/client').Prisma.InputJsonValue,
-                // Do NOT overwrite isNew/isArchived on updates
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
             });

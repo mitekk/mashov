@@ -18,10 +18,54 @@ model HouseholdConnection {
   cachedNewCount   Int       @default(0)
   lastLoginAt      DateTime?
   active           Boolean   @default(true)
+  userId           String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
+  user             AppUser?  @relation(fields: [userId], references: [id])
+
   @@map("household_connection")
+}
+
+model AppUser {
+  id            String   @id @default(uuid())
+  mashovUserId  String   @unique
+  semel         Int
+  username      String
+  displayName   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  sessions      AppSession[]
+  connections   HouseholdConnection[]
+
+  @@map("app_user")
+}
+
+model AppSession {
+  id             String    @id @default(uuid())
+  userId         String
+  sessionToken   String    @unique
+  expiresAt      DateTime
+  lastActivityAt DateTime
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  user           AppUser   @relation(fields: [userId], references: [id])
+
+  @@index([sessionToken])
+  @@map("app_session")
+}
+
+model UserItemState {
+  id         String   @id @default(uuid())
+  userId     String
+  itemType   String
+  itemId     String
+  isNew      Boolean  @default(true)
+  isArchived Boolean  @default(false)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, itemType, itemId])
+  @@map("user_item_state")
 }
 
 model ParentProfile {
@@ -79,7 +123,7 @@ model MailConversation {
   subject           String
   senderNamePreview String?
   sendTime          DateTime
-  isNew             Boolean   @default(false)
+  isUnread          Boolean   @default(false)
   hasDrafts         Boolean   @default(false)
   hasAttachments    Boolean   @default(false)
   preventReply      Boolean   @default(false)
@@ -126,8 +170,6 @@ model HomeworkItem {
   homeworkText String
   remark       String?
   files        Json     @default("[]")
-  isNew        Boolean  @default(false)
-  isArchived   Boolean  @default(false)
   rawPayload   Json?
   updatedAt    DateTime @updatedAt
 
@@ -152,8 +194,6 @@ model BehaviorItem {
   remark         String?
   justification  String?
   eventAt        DateTime
-  isNew          Boolean  @default(false)
-  isArchived     Boolean  @default(false)
   rawPayload     Json?
   updatedAt      DateTime @updatedAt
 
@@ -209,15 +249,16 @@ model MessageBoardItem {
 
 
 model SyncRun {
-  id           String    @id @default(cuid())
-  source       String
-  status       String
-  startedAt    DateTime
-  endedAt      DateTime?
-  fetchedCount Int?
-  createdCount Int?
-  updatedCount Int?
-  errorMessage String?
+  id                    String    @id @default(cuid())
+  source                String
+  status                String
+  startedAt             DateTime
+  endedAt               DateTime?
+  fetchedCount          Int?
+  createdCount          Int?
+  updatedCount          Int?
+  errorMessage          String?
+  householdConnectionId String?
 
   @@map("sync_run")
 }

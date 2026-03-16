@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovMessage {
@@ -45,6 +46,7 @@ export class MailInboxTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('*/7 * * * *')
@@ -53,24 +55,62 @@ export class MailInboxTask {
   }
 
   async execute(): Promise<SyncTaskRunResult> {
-    const syncRun = await this.syncRunService.openRun(MailInboxTask.SOURCE);
-    let fetchedCount = 0;
-    let upsertCount = 0;
-    let failedCount = 0;
-    let pageCount = 0;
-    const errorMessages: string[] = [];
-    const pageSize = 50;
-    const maxPages = 200;
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId: { not: null }, active: true },
+    });
+    const useSharedSession = connections.length === 0;
+
+    // Determine which connections to sync: all user-owned ones, or fall back to shared session
+    const connectionList = useSharedSession ? [null] : connections;
+
+    let totalFetchedCount = 0;
+    let totalUpsertCount = 0;
+    let totalFailedCount = 0;
+    const allErrorMessages: string[] = [];
+
+    for (const conn of connectionList) {
+      const source = conn ? `${MailInboxTask.SOURCE}:${conn.id}` : MailInboxTask.SOURCE;
+      const syncRun = await this.syncRunService.openRun(source);
+      let fetchedCount = 0;
+      let upsertCount = 0;
+      let failedCount = 0;
+      let pageCount = 0;
+      const errorMessages: string[] = [];
+      const pageSize = 50;
+      const maxPages = 200;
+
+      let password: string | undefined;
+      if (conn) {
+        try {
+          password = this.encryptionService.decrypt(conn.encryptedPassword);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.logger.error(`Mail inbox: failed to decrypt password for connection ${conn.id}: ${msg}`);
+          await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+          totalFailedCount++;
+          continue;
+        }
+      }
 
     try {
       for (let page = 0; page < maxPages; page++) {
         const skip = page * pageSize;
-        const conversations = await this.mashovClient.get<MashovConversation[]>(
-          `/api/mail/inbox/conversations?skip=${skip}&take=${pageSize}`,
-          {
-            headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-          },
-        );
+        const conversations = conn && password
+          ? await this.mashovClient.getForConnection<MashovConversation[]>(
+              `/api/mail/inbox/conversations?skip=${skip}&take=${pageSize}`,
+              conn.id,
+              conn.schoolCode,
+              conn.schoolYear,
+              conn.username,
+              password,
+              { headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' } },
+            )
+          : await this.mashovClient.get<MashovConversation[]>(
+              `/api/mail/inbox/conversations?skip=${skip}&take=${pageSize}`,
+              {
+                headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+              },
+            );
 
         if (conversations.length === 0) break;
         pageCount++;
@@ -88,7 +128,7 @@ export class MailInboxTask {
                 subject: conv.subject,
                 senderNamePreview: senderName,
                 sendTime,
-                isNew: conv.isNew,
+                isUnread: conv.isNew,
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,
@@ -100,7 +140,7 @@ export class MailInboxTask {
                 subject: conv.subject,
                 senderNamePreview: senderName,
                 sendTime,
-                isNew: conv.isNew,
+                isUnread: conv.isNew,
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,
@@ -162,32 +202,30 @@ export class MailInboxTask {
         );
       }
       this.logger.debug(
-        `Mail inbox sync: pages=${pageCount} fetched=${fetchedCount} upserted=${upsertCount}`,
+        `Mail inbox sync (conn=${conn?.id ?? 'shared'}): pages=${pageCount} fetched=${fetchedCount} upserted=${upsertCount}`,
       );
-      return {
-        status: failedCount > 0 ? 'failed' : 'success',
-        summary: {
-          fetchedCount,
-          createdCount: 0,
-          updatedCount: upsertCount,
-          failedCount,
-        },
-        errorMessages,
-      };
+      totalFetchedCount += fetchedCount;
+      totalUpsertCount += upsertCount;
+      totalFailedCount += failedCount;
+      allErrorMessages.push(...errorMessages);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Mail inbox sync failed: ${msg}`);
+      this.logger.error(`Mail inbox sync failed (conn=${conn?.id ?? 'shared'}): ${msg}`);
       await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
-      return {
-        status: 'failed',
-        summary: {
-          fetchedCount,
-          createdCount: 0,
-          updatedCount: upsertCount,
-          failedCount: failedCount + 1,
-        },
-        errorMessages: [...errorMessages, msg],
-      };
+      totalFailedCount += failedCount + 1;
+      allErrorMessages.push(...errorMessages, msg);
     }
+    } // end connection loop
+
+    return {
+      status: totalFailedCount > 0 ? 'failed' : 'success',
+      summary: {
+        fetchedCount: totalFetchedCount,
+        createdCount: 0,
+        updatedCount: totalUpsertCount,
+        failedCount: totalFailedCount,
+      },
+      errorMessages: allErrorMessages.slice(0, 10),
+    };
   }
 }

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { SessionService } from './session.service';
+import { MashovSessionService } from './mashov-session.service';
 
 @Injectable()
 export class MashovHttpClient {
@@ -8,7 +8,7 @@ export class MashovHttpClient {
   private readonly httpClient: AxiosInstance;
   private readonly baseUrl = 'https://web.mashov.info';
 
-  constructor(private readonly sessionService: SessionService) {
+  constructor(private readonly sessionService: MashovSessionService) {
     this.httpClient = axios.create({
       baseURL: this.baseUrl,
       timeout: 30000,
@@ -34,6 +34,58 @@ export class MashovHttpClient {
   async put<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
     const response = await this.requestWithRetryResponse<T>('PUT', url, data, config);
     return response.data;
+  }
+
+  /**
+   * Make a GET request scoped to a specific household connection's credentials.
+   * Authenticates using stored encrypted credentials for that connection.
+   */
+  async getForConnection<T>(
+    url: string,
+    connectionId: string,
+    semel: number,
+    year: number,
+    username: string,
+    password: string,
+    config?: AxiosRequestConfig,
+    isRetry = false,
+  ): Promise<T> {
+    const authHeaders = await this.sessionService.getAuthHeadersForConnection(
+      connectionId,
+      semel,
+      year,
+      username,
+      password,
+    );
+    const headers = { ...authHeaders, ...(config?.headers ?? {}) };
+
+    try {
+      const response = await this.httpClient.get<T>(url, { ...config, headers });
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if ((status === 401 || status === 403) && !isRetry) {
+          this.logger.debug(
+            `Connection ${connectionId} got ${status}, refreshing session and retrying`,
+          );
+          const refreshedHeaders = await this.sessionService.getAuthHeadersForConnection(
+            connectionId,
+            semel,
+            year,
+            username,
+            password,
+            true,
+          );
+          const retryHeaders = { ...refreshedHeaders, ...(config?.headers ?? {}) };
+          const retryResponse = await this.httpClient.get<T>(url, { ...config, headers: retryHeaders });
+          return retryResponse.data;
+        }
+        const msg = `Upstream GET ${url} (connection ${connectionId}) failed with status ${status ?? 'unknown'}: ${error.message}`;
+        throw new Error(msg);
+      }
+      throw error;
+    }
   }
 
   private async requestWithRetryResponse<T>(

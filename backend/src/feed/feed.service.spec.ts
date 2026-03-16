@@ -79,19 +79,8 @@ describe('FeedService', () => {
       expect(result.data[0]).not.toHaveProperty('isHandled');
     });
 
-    it('excludes archived homework items from feed results', async () => {
-      const archived = {
-        id: 'hw-archived',
-        studentGuid: 'student-abc',
-        subjectName: 'Math',
-        homeworkText: 'Old homework',
-        lessonDate: new Date('2026-03-09T00:00:00Z'),
-        isNew: false,
-        isArchived: true,
-        updatedAt: new Date('2026-03-09T05:00:00Z'),
-      };
-
-      const homeworkFindMany = jest.fn().mockResolvedValue([archived]);
+    it('queries homework items ordered by lessonDate desc (no isArchived filter — field lives in UserItemState)', async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([]);
       const service = new FeedService(
         makeMockPrisma({ homeworkFindMany }),
       );
@@ -99,12 +88,12 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ isArchived: false }),
+          orderBy: { lessonDate: 'desc' },
         }),
       );
     });
 
-    it('excludes archived behavior items from feed results', async () => {
+    it('queries behavior items ordered by eventAt desc (no isArchived filter — field lives in UserItemState)', async () => {
       const behaviorFindMany = jest.fn().mockResolvedValue([]);
       const service = new FeedService(
         makeMockPrisma({ behaviorFindMany }),
@@ -113,12 +102,12 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ isArchived: false }),
+          orderBy: { eventAt: 'desc' },
         }),
       );
     });
 
-    it('maps positive behavior items to sourceType=positive with isNew and isArchived', async () => {
+    it('maps positive behavior items to sourceType=positive with isNew defaulted to true and isArchived=false', async () => {
       const behavior = {
         id: 'beh-1',
         studentGuid: 'student-abc',
@@ -126,8 +115,6 @@ describe('FeedService', () => {
         remark: null,
         classification: 'positive',
         eventAt: new Date('2026-03-11T09:00:00Z'),
-        isNew: false,
-        isArchived: false,
         updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
@@ -140,7 +127,7 @@ describe('FeedService', () => {
         sourceType: 'positive',
         priority: 'low',
         isPositive: true,
-        isNew: false,
+        isNew: true,
         isArchived: false,
         linkPath: '/children/student-abc',
       });
@@ -173,14 +160,14 @@ describe('FeedService', () => {
       });
     });
 
-    it('maps mail conversations to route-aware feed items with isNew from conversation', async () => {
+    it('maps mail conversations to route-aware feed items with isNew from isUnread field', async () => {
       const conv = {
         id: 'conv-db-1',
         conversationId: 'conv-public-1',
         subject: 'Parent evening',
         senderNamePreview: 'Principal',
         sendTime: new Date('2026-03-11T10:00:00Z'),
-        isNew: true,
+        isUnread: true,
         lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
@@ -208,7 +195,7 @@ describe('FeedService', () => {
         subject: 'Parent evening',
         senderNamePreview: 'Principal',
         sendTime: new Date('2026-03-11T10:00:00Z'),
-        isNew: true,
+        isUnread: true,
         lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
@@ -316,15 +303,13 @@ describe('FeedService', () => {
       expect(result.data[0].isNew).toBe(true);
     });
 
-    it('applies isNew=false directly from source table when not new', async () => {
+    it('defaults isNew=true for homework items (per-user state not available without userId)', async () => {
       const hw = {
         id: 'hw-old-flag',
         studentGuid: 'student-1',
         subjectName: 'Math',
         homeworkText: 'Done',
         lessonDate: new Date('2026-03-11T08:00:00Z'),
-        isNew: false,
-        isArchived: false,
         updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
@@ -335,7 +320,7 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].isNew).toBe(false);
+      expect(result.data[0].isNew).toBe(true);
     });
 
     it('applies pagination correctly', async () => {

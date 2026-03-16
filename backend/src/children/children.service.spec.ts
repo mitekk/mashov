@@ -1,8 +1,9 @@
 import { NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChildrenService } from './children.service';
-import { SessionService } from '../session/session.service';
+import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import { UserItemStateService } from '../common/user-item-state.service';
 
 const TEST_GUID = 'student-guid-001';
 
@@ -33,8 +34,6 @@ function makeHomeworkRow(overrides: object = {}) {
     homeworkText: 'Page 10',
     remark: null,
     files: [],
-    isNew: true,
-    isArchived: false,
     updatedAt: new Date('2026-03-10T01:00:00Z'),
     ...overrides,
   };
@@ -58,11 +57,18 @@ function makeBehaviorRow(overrides: object = {}) {
     remark: null,
     justification: null,
     eventAt: new Date('2026-03-11T10:00:00Z'),
-    isNew: true,
-    isArchived: false,
     updatedAt: new Date('2026-03-11T11:00:00Z'),
     ...overrides,
   };
+}
+
+function makeMockUserItemStateService(): jest.Mocked<UserItemStateService> {
+  return {
+    getState: jest.fn().mockResolvedValue({ isNew: true, isArchived: false }),
+    getStateBatch: jest.fn().mockResolvedValue(new Map()),
+    setState: jest.fn().mockResolvedValue({ isNew: true, isArchived: false }),
+    setStateBatch: jest.fn().mockResolvedValue(0),
+  } as unknown as jest.Mocked<UserItemStateService>;
 }
 
 function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
@@ -111,7 +117,7 @@ function makeMockSession(overrides: Partial<Record<string, jest.Mock>> = {}) {
   return {
     ensureStudentsAvailable:
       overrides.ensureStudentsAvailable ?? jest.fn().mockResolvedValue(undefined),
-  } as unknown as jest.Mocked<SessionService>;
+  } as unknown as jest.Mocked<MashovSessionService>;
 }
 
 function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>> = {}) {
@@ -137,6 +143,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getChildren();
@@ -168,6 +175,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -189,6 +197,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.getChildWorkspace('missing-guid')).rejects.toThrow(
@@ -198,10 +207,8 @@ describe('ChildrenService', () => {
   });
 
   describe('getHomework', () => {
-    it('returns paginated data with isNew and isArchived from homework_item directly', async () => {
-      const mockFindMany = jest.fn().mockResolvedValue([
-        makeHomeworkRow({ isNew: true, isArchived: false }),
-      ]);
+    it('returns paginated data with isNew and isArchived defaults when no userId', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([makeHomeworkRow()]);
       const service = new ChildrenService(
         makeMockPrisma({
           homeworkFindMany: mockFindMany,
@@ -209,62 +216,57 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
       expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({
-            studentGuid: TEST_GUID,
-            isArchived: false,
-            isNew: true,
-          }),
+          where: expect.objectContaining({ studentGuid: TEST_GUID }),
         }),
       );
+      // without userId, state defaults to isNew=true, isArchived=false
       expect(result.pagination).toMatchObject({ total: 1, totalPages: 1 });
       expect(result.data[0].isNew).toBe(true);
       expect(result.data[0].isArchived).toBe(false);
       expect(result.data[0].lessonDate).toBe('2026-03-10T00:00:00.000Z');
     });
 
-    it('returns isNew=false and isArchived=true for archived items', async () => {
+    it('status=archived returns no items when all items default to isNew=true', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkFindMany: jest.fn().mockResolvedValue([
-            makeHomeworkRow({ isNew: false, isArchived: true }),
-          ]),
+          homeworkFindMany: jest.fn().mockResolvedValue([makeHomeworkRow()]),
           homeworkCount: jest.fn().mockResolvedValue(1),
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
+      // No userId → defaults to isNew=true, isArchived=false → 'archived' filter returns 0
       const result = await service.getHomework(TEST_GUID, 1, 20, 'archived');
-      expect(result.data[0].isNew).toBe(false);
-      expect(result.data[0].isArchived).toBe(true);
+      expect(result.data).toHaveLength(0);
     });
 
-    it('status=all still excludes archived homework items', async () => {
-      const mockFindMany = jest.fn().mockResolvedValue([]);
+    it('status=all does not filter out non-archived items', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([makeHomeworkRow()]);
       const service = new ChildrenService(
         makeMockPrisma({
           homeworkFindMany: mockFindMany,
-          homeworkCount: jest.fn().mockResolvedValue(0),
+          homeworkCount: jest.fn().mockResolvedValue(1),
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
-      await service.getHomework(TEST_GUID, 1, 20, 'all');
-
-      const findManyArgs = mockFindMany.mock.calls[0]?.[0];
-      expect(findManyArgs.where).toEqual(
+      const result = await service.getHomework(TEST_GUID, 1, 20, 'all');
+      expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          studentGuid: TEST_GUID,
-          isArchived: false,
+          where: expect.objectContaining({ studentGuid: TEST_GUID }),
         }),
       );
-      expect(findManyArgs.where).not.toHaveProperty('isNew');
+      expect(result.data).toHaveLength(1);
     });
 
     it('does not include isHandled field on homework items', async () => {
@@ -275,6 +277,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -283,15 +286,14 @@ describe('ChildrenService', () => {
   });
 
   describe('getHomeworkDetail', () => {
-    it('returns a single homework detail item with isNew and isArchived', async () => {
+    it('returns a single homework detail item with isNew and isArchived defaults when no userId', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkFindUnique: jest.fn().mockResolvedValue(
-            makeHomeworkRow({ isNew: true, isArchived: false }),
-          ),
+          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow()),
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -311,6 +313,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -324,6 +327,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'missing-hw')).rejects.toThrow(
@@ -340,6 +344,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'hw-1')).rejects.toThrow(
@@ -349,10 +354,8 @@ describe('ChildrenService', () => {
   });
 
   describe('setHomeworkIsNew', () => {
-    it('updates isNew on the homework item and returns updated item', async () => {
-      const homeworkUpdate = jest.fn().mockResolvedValue(
-        makeHomeworkRow({ isNew: false }),
-      );
+    it('returns item with new isNew value when no userId (no DB write)', async () => {
+      const homeworkUpdate = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({
           homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow()),
@@ -360,15 +363,12 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', false);
-      expect(homeworkUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'hw-1' },
-          data: expect.objectContaining({ isNew: false }),
-        }),
-      );
+      // Without userId, no DB write — just returns mapped item with requested isNew
+      expect(homeworkUpdate).not.toHaveBeenCalled();
       expect(result.isNew).toBe(false);
     });
 
@@ -381,6 +381,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.setHomeworkIsNew(TEST_GUID, 'hw-1', false)).rejects.toThrow(
@@ -388,48 +389,45 @@ describe('ChildrenService', () => {
       );
     });
 
-    it('does not update archived homework isNew state', async () => {
-      const homeworkUpdate = jest.fn();
+    it('with userId: does not update isNew when item is archived', async () => {
+      const mockGetState = jest.fn().mockResolvedValue({ isNew: false, isArchived: true });
+      const mockSetState = jest.fn();
+      const mockUserItemState = {
+        getState: mockGetState,
+        getStateBatch: jest.fn().mockResolvedValue(new Map()),
+        setState: mockSetState,
+        setStateBatch: jest.fn().mockResolvedValue(0),
+      } as unknown as jest.Mocked<UserItemStateService>;
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkFindUnique: jest.fn().mockResolvedValue(
-            makeHomeworkRow({ isNew: false, isArchived: true }),
-          ),
-          homeworkUpdate,
+          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow()),
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        mockUserItemState,
       );
 
-      const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', true);
-      expect(homeworkUpdate).not.toHaveBeenCalled();
+      const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', true, 'user-1');
+      expect(mockSetState).not.toHaveBeenCalled();
       expect(result.isArchived).toBe(true);
       expect(result.isNew).toBe(false);
     });
   });
 
   describe('setHomeworkManyIsNew', () => {
-    it('updates only non-archived homework rows and returns updated count', async () => {
-      const homeworkUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
+    it('returns updated count equal to ids length when no userId (no DB write)', async () => {
+      const homeworkUpdateMany = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({ homeworkUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, ['hw-1', 'hw-2'], false);
 
-      expect(homeworkUpdateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            studentGuid: TEST_GUID,
-            id: { in: ['hw-1', 'hw-2'] },
-            isArchived: false,
-            isNew: { not: false },
-          }),
-          data: { isNew: false },
-        }),
-      );
+      // Without userId, no DB write — returns count of provided ids
+      expect(homeworkUpdateMany).not.toHaveBeenCalled();
       expect(result).toEqual({ updated: 2 });
     });
 
@@ -439,6 +437,7 @@ describe('ChildrenService', () => {
         makeMockPrisma({ homeworkUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, [], false);
@@ -454,6 +453,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(
@@ -463,50 +463,39 @@ describe('ChildrenService', () => {
   });
 
   describe('setHomeworkArchived', () => {
-    it('sets isArchived=true and forces isNew=false when archiving', async () => {
-      const homeworkUpdate = jest.fn().mockResolvedValue(
-        makeHomeworkRow({ isNew: false, isArchived: true }),
-      );
+    it('sets isArchived=true and forces isNew=false when archiving (no userId)', async () => {
+      const homeworkUpdate = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow({ isNew: true })),
+          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow()),
           homeworkUpdate,
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', true);
-      expect(homeworkUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ isArchived: true, isNew: false }),
-        }),
-      );
+      // No userId → no DB write, returns item with derived state
+      expect(homeworkUpdate).not.toHaveBeenCalled();
       expect(result.isArchived).toBe(true);
       expect(result.isNew).toBe(false);
     });
 
-    it('sets isArchived=false and restores isNew=true when unarchiving', async () => {
-      const homeworkUpdate = jest.fn().mockResolvedValue(
-        makeHomeworkRow({ isNew: true, isArchived: false }),
-      );
+    it('sets isArchived=false and restores isNew=true when unarchiving (no userId)', async () => {
+      const homeworkUpdate = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkFindUnique: jest.fn().mockResolvedValue(
-            makeHomeworkRow({ isNew: false, isArchived: true }),
-          ),
+          homeworkFindUnique: jest.fn().mockResolvedValue(makeHomeworkRow()),
           homeworkUpdate,
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', false);
-      expect(homeworkUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ isArchived: false, isNew: true }),
-        }),
-      );
+      expect(homeworkUpdate).not.toHaveBeenCalled();
       expect(result.isArchived).toBe(false);
       expect(result.isNew).toBe(true);
     });
@@ -520,6 +509,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.setHomeworkArchived(TEST_GUID, 'hw-1', true)).rejects.toThrow(
@@ -529,52 +519,39 @@ describe('ChildrenService', () => {
   });
 
   describe('setHomeworkManyArchived', () => {
-    it('sets isArchived and derived isNew in one updateMany call', async () => {
-      const homeworkUpdateMany = jest.fn().mockResolvedValue({ count: 3 });
+    it('returns updated count equal to ids length when no userId (no DB write)', async () => {
+      const homeworkUpdateMany = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({ homeworkUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1', 'hw-2', 'hw-3'], true);
 
-      expect(homeworkUpdateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            studentGuid: TEST_GUID,
-            id: { in: ['hw-1', 'hw-2', 'hw-3'] },
-            isArchived: { not: true },
-          }),
-          data: { isArchived: true, isNew: false },
-        }),
-      );
+      expect(homeworkUpdateMany).not.toHaveBeenCalled();
       expect(result).toEqual({ updated: 3 });
     });
 
-    it('restores isNew=true when bulk unarchiving', async () => {
-      const homeworkUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    it('returns updated count when bulk unarchiving without userId', async () => {
+      const homeworkUpdateMany = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({ homeworkUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
-      await service.setHomeworkManyArchived(TEST_GUID, ['hw-1'], false);
-
-      expect(homeworkUpdateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { isArchived: false, isNew: true },
-        }),
-      );
+      const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1'], false);
+      expect(homeworkUpdateMany).not.toHaveBeenCalled();
+      expect(result).toEqual({ updated: 1 });
     });
   });
 
   describe('getBehavior', () => {
-    it('maps classification to bucket and eventCode to priority with isNew and isArchived', async () => {
-      const mockFindMany = jest.fn().mockResolvedValue([
-        makeBehaviorRow({ isNew: true, isArchived: false }),
-      ]);
+    it('maps classification to bucket and eventCode to priority with default isNew/isArchived when no userId', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([makeBehaviorRow()]);
       const service = new ChildrenService(
         makeMockPrisma({
           behaviorFindMany: mockFindMany,
@@ -582,6 +559,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'new');
@@ -590,13 +568,12 @@ describe('ChildrenService', () => {
           where: expect.objectContaining({
             studentGuid: TEST_GUID,
             classification: 'attention',
-            isArchived: false,
-            isNew: true,
           }),
         }),
       );
       expect(result.data[0].bucket).toBe('attention');
       expect(result.data[0].priority).toBe('high');
+      // defaults: isNew=true, isArchived=false
       expect(result.data[0].isNew).toBe(true);
       expect(result.data[0].isArchived).toBe(false);
     });
@@ -609,47 +586,47 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'all');
       expect(result.data[0]).not.toHaveProperty('isHandled');
     });
 
-    it('status=all still excludes archived behavior items', async () => {
-      const mockFindMany = jest.fn().mockResolvedValue([]);
+    it('status=all does not filter out non-archived behavior items', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([makeBehaviorRow()]);
       const service = new ChildrenService(
         makeMockPrisma({
           behaviorFindMany: mockFindMany,
-          behaviorCount: jest.fn().mockResolvedValue(0),
+          behaviorCount: jest.fn().mockResolvedValue(1),
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
-      await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'all');
-
-      const findManyArgs = mockFindMany.mock.calls[0]?.[0];
-      expect(findManyArgs.where).toEqual(
+      const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'all');
+      expect(mockFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          studentGuid: TEST_GUID,
-          classification: 'attention',
-          isArchived: false,
+          where: expect.objectContaining({
+            studentGuid: TEST_GUID,
+            classification: 'attention',
+          }),
         }),
       );
-      expect(findManyArgs.where).not.toHaveProperty('isNew');
+      expect(result.data).toHaveLength(1);
     });
   });
 
   describe('getBehaviorDetail', () => {
-    it('returns a single behavior detail item with isNew and isArchived', async () => {
+    it('returns a single behavior detail item with default isNew/isArchived when no userId', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
-          behaviorFindUnique: jest.fn().mockResolvedValue(
-            makeBehaviorRow({ isNew: true, isArchived: false }),
-          ),
+          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow()),
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -671,6 +648,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -684,6 +662,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'missing-beh')).rejects.toThrow(
@@ -700,6 +679,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'beh-1')).rejects.toThrow(
@@ -709,10 +689,8 @@ describe('ChildrenService', () => {
   });
 
   describe('setBehaviorIsNew', () => {
-    it('updates isNew on the behavior item and returns updated item', async () => {
-      const behaviorUpdate = jest.fn().mockResolvedValue(
-        makeBehaviorRow({ isNew: false }),
-      );
+    it('returns item with new isNew value when no userId (no DB write)', async () => {
+      const behaviorUpdate = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({
           behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow()),
@@ -720,15 +698,11 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', false);
-      expect(behaviorUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'beh-1' },
-          data: expect.objectContaining({ isNew: false }),
-        }),
-      );
+      expect(behaviorUpdate).not.toHaveBeenCalled();
       expect(result.isNew).toBe(false);
     });
 
@@ -741,6 +715,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.setBehaviorIsNew(TEST_GUID, 'beh-1', false)).rejects.toThrow(
@@ -748,48 +723,44 @@ describe('ChildrenService', () => {
       );
     });
 
-    it('does not update archived behavior isNew state', async () => {
-      const behaviorUpdate = jest.fn();
+    it('with userId: does not update isNew when behavior item is archived', async () => {
+      const mockGetState = jest.fn().mockResolvedValue({ isNew: false, isArchived: true });
+      const mockSetState = jest.fn();
+      const mockUserItemState = {
+        getState: mockGetState,
+        getStateBatch: jest.fn().mockResolvedValue(new Map()),
+        setState: mockSetState,
+        setStateBatch: jest.fn().mockResolvedValue(0),
+      } as unknown as jest.Mocked<UserItemStateService>;
       const service = new ChildrenService(
         makeMockPrisma({
-          behaviorFindUnique: jest.fn().mockResolvedValue(
-            makeBehaviorRow({ isNew: false, isArchived: true }),
-          ),
-          behaviorUpdate,
+          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow()),
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        mockUserItemState,
       );
 
-      const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', true);
-      expect(behaviorUpdate).not.toHaveBeenCalled();
+      const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', true, 'user-1');
+      expect(mockSetState).not.toHaveBeenCalled();
       expect(result.isArchived).toBe(true);
       expect(result.isNew).toBe(false);
     });
   });
 
   describe('setBehaviorManyIsNew', () => {
-    it('updates only non-archived behavior rows and returns updated count', async () => {
-      const behaviorUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
+    it('returns updated count equal to ids length when no userId (no DB write)', async () => {
+      const behaviorUpdateMany = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({ behaviorUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, ['beh-1', 'beh-2'], false);
 
-      expect(behaviorUpdateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            studentGuid: TEST_GUID,
-            id: { in: ['beh-1', 'beh-2'] },
-            isArchived: false,
-            isNew: { not: false },
-          }),
-          data: { isNew: false },
-        }),
-      );
+      expect(behaviorUpdateMany).not.toHaveBeenCalled();
       expect(result).toEqual({ updated: 2 });
     });
 
@@ -799,6 +770,7 @@ describe('ChildrenService', () => {
         makeMockPrisma({ behaviorUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, [], true);
@@ -809,50 +781,38 @@ describe('ChildrenService', () => {
   });
 
   describe('setBehaviorArchived', () => {
-    it('sets isArchived=true and forces isNew=false when archiving', async () => {
-      const behaviorUpdate = jest.fn().mockResolvedValue(
-        makeBehaviorRow({ isNew: false, isArchived: true }),
-      );
+    it('sets isArchived=true and forces isNew=false when archiving (no userId)', async () => {
+      const behaviorUpdate = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({
-          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow({ isNew: true })),
+          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow()),
           behaviorUpdate,
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', true);
-      expect(behaviorUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ isArchived: true, isNew: false }),
-        }),
-      );
+      expect(behaviorUpdate).not.toHaveBeenCalled();
       expect(result.isArchived).toBe(true);
       expect(result.isNew).toBe(false);
     });
 
-    it('sets isArchived=false and restores isNew=true when unarchiving', async () => {
-      const behaviorUpdate = jest.fn().mockResolvedValue(
-        makeBehaviorRow({ isNew: true, isArchived: false }),
-      );
+    it('sets isArchived=false and restores isNew=true when unarchiving (no userId)', async () => {
+      const behaviorUpdate = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({
-          behaviorFindUnique: jest.fn().mockResolvedValue(
-            makeBehaviorRow({ isNew: false, isArchived: true }),
-          ),
+          behaviorFindUnique: jest.fn().mockResolvedValue(makeBehaviorRow()),
           behaviorUpdate,
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', false);
-      expect(behaviorUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ isArchived: false, isNew: true }),
-        }),
-      );
+      expect(behaviorUpdate).not.toHaveBeenCalled();
       expect(result.isArchived).toBe(false);
       expect(result.isNew).toBe(true);
     });
@@ -866,6 +826,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.setBehaviorArchived(TEST_GUID, 'beh-1', true)).rejects.toThrow(
@@ -875,44 +836,33 @@ describe('ChildrenService', () => {
   });
 
   describe('setBehaviorManyArchived', () => {
-    it('sets isArchived and derived isNew in one updateMany call', async () => {
-      const behaviorUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
+    it('returns updated count equal to ids length when no userId (no DB write)', async () => {
+      const behaviorUpdateMany = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({ behaviorUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1', 'beh-2'], true);
 
-      expect(behaviorUpdateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            studentGuid: TEST_GUID,
-            id: { in: ['beh-1', 'beh-2'] },
-            isArchived: { not: true },
-          }),
-          data: { isArchived: true, isNew: false },
-        }),
-      );
+      expect(behaviorUpdateMany).not.toHaveBeenCalled();
       expect(result).toEqual({ updated: 2 });
     });
 
-    it('restores isNew=true when bulk unarchiving', async () => {
-      const behaviorUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    it('returns updated count when bulk unarchiving without userId', async () => {
+      const behaviorUpdateMany = jest.fn();
       const service = new ChildrenService(
         makeMockPrisma({ behaviorUpdateMany }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
-      await service.setBehaviorManyArchived(TEST_GUID, ['beh-1'], false);
-
-      expect(behaviorUpdateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { isArchived: false, isNew: true },
-        }),
-      );
+      const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1'], false);
+      expect(behaviorUpdateMany).not.toHaveBeenCalled();
+      expect(result).toEqual({ updated: 1 });
     });
   });
 
@@ -948,6 +898,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const subjects = await service.getSubjects(TEST_GUID);
@@ -983,6 +934,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getTimetable(TEST_GUID);
@@ -1016,6 +968,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.getTimetable(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -1035,6 +988,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession({ ensureStudentsAvailable }),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -1051,6 +1005,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession({ ensureStudentsAvailable }),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(service.getSubjects(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -1081,6 +1036,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient({ getResponse }),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.downloadHomeworkAttachment(TEST_GUID, 'hw-1', 'hw-file-1');
@@ -1108,6 +1064,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(
@@ -1149,6 +1106,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient({ getResponse }),
+        makeMockUserItemStateService(),
       );
 
       const result = await service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1');
@@ -1173,6 +1131,7 @@ describe('ChildrenService', () => {
         }),
         makeMockSession(),
         makeMockMashovClient(),
+        makeMockUserItemStateService(),
       );
 
       await expect(

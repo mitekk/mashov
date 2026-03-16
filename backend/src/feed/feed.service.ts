@@ -33,11 +33,9 @@ export class FeedService {
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
-        where: { isArchived: false },
         orderBy: { lessonDate: 'desc' },
       }),
       this.prisma.behaviorItem.findMany({
-        where: { isArchived: false },
         orderBy: { eventAt: 'desc' },
       }),
       this.prisma.mailConversation.findMany({
@@ -62,8 +60,8 @@ export class FeedService {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isNew: hw.isNew,
-        isArchived: hw.isArchived,
+        isNew: true,
+        isArchived: false,
         hasAttachments: Array.isArray(hw.files) && hw.files.length > 0,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
@@ -84,8 +82,8 @@ export class FeedService {
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
-        isNew: b.isNew,
-        isArchived: b.isArchived,
+        isNew: true,
+        isArchived: false,
         hasAttachments: this.extractFilesFromRawPayload(b.rawPayload).length > 0,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
@@ -103,9 +101,9 @@ export class FeedService {
         title: conv.subject,
         summary: conv.senderNamePreview ?? conv.subject,
         category: 'mail',
-        priority: conv.isNew ? 'high' : 'medium',
+        priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
-        isNew: conv.isNew,
+        isNew: conv.isUnread,
         isArchived: false,
         hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),

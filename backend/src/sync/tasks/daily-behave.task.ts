@@ -4,6 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { BehaviorClassifierService } from '../behavior-classifier.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 // Same shape as /behave response
@@ -40,6 +41,7 @@ export class DailyBehaveTask {
     private readonly syncRunService: SyncRunService,
     private readonly behaviorClassifier: BehaviorClassifierService,
     private readonly configService: ConfigService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   async execute(): Promise<SyncTaskRunResult> {
@@ -58,6 +60,10 @@ export class DailyBehaveTask {
       };
     }
 
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId: { not: null }, active: true },
+    });
+    const useSharedSession = connections.length === 0;
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -71,9 +77,24 @@ export class DailyBehaveTask {
       let upsertCount = 0;
 
       try {
-        const items = await this.mashovClient.get<MashovDailyBehaviorItem[]>(
-          `/api/students/${student.studentGuid}/dailyBehave`,
-        );
+        let items: MashovDailyBehaviorItem[];
+        if (useSharedSession) {
+          items = await this.mashovClient.get<MashovDailyBehaviorItem[]>(
+            `/api/students/${student.studentGuid}/dailyBehave`,
+          );
+        } else {
+          items = [];
+          for (const conn of connections) {
+            try {
+              const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              items = await this.mashovClient.getForConnection<MashovDailyBehaviorItem[]>(
+                `/api/students/${student.studentGuid}/dailyBehave`,
+                conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
+              );
+              break;
+            } catch { /* try next connection */ }
+          }
+        }
 
         fetchedCount = items.length;
         totalFetchedCount += fetchedCount;

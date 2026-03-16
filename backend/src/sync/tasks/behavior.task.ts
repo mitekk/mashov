@@ -4,6 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { BehaviorClassifierService } from '../behavior-classifier.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovBehaviorItem {
@@ -38,6 +39,7 @@ export class BehaviorTask {
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
     private readonly behaviorClassifier: BehaviorClassifierService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('*/12 * * * *')
@@ -46,6 +48,11 @@ export class BehaviorTask {
   }
 
   async execute(): Promise<SyncTaskRunResult> {
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId: { not: null }, active: true },
+    });
+    const useSharedSession = connections.length === 0;
+
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -59,14 +66,42 @@ export class BehaviorTask {
       let upsertCount = 0;
 
       try {
-        const items = await this.mashovClient.get<MashovBehaviorItem[]>(
-          `/api/students/${student.studentGuid}/behave`,
-          {
-            headers: {
-              'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behave`,
+        let items: MashovBehaviorItem[];
+
+        if (useSharedSession) {
+          items = await this.mashovClient.get<MashovBehaviorItem[]>(
+            `/api/students/${student.studentGuid}/behave`,
+            {
+              headers: {
+                'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behave`,
+              },
             },
-          },
-        );
+          );
+        } else {
+          items = [];
+          for (const conn of connections) {
+            try {
+              const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              items = await this.mashovClient.getForConnection<MashovBehaviorItem[]>(
+                `/api/students/${student.studentGuid}/behave`,
+                conn.id,
+                conn.schoolCode,
+                conn.schoolYear,
+                conn.username,
+                password,
+                {
+                  headers: {
+                    'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behave`,
+                  },
+                },
+              );
+              break;
+            } catch (connErr) {
+              const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
+              this.logger.warn(`Behavior: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
+            }
+          }
+        }
 
         fetchedCount = items.length;
         totalFetchedCount += fetchedCount;
@@ -109,8 +144,6 @@ export class BehaviorTask {
                 remark,
                 justification,
                 eventAt,
-                isNew: true,
-                isArchived: false,
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
@@ -125,7 +158,6 @@ export class BehaviorTask {
                 remark,
                 justification,
                 eventAt,
-                // Do NOT overwrite isNew/isArchived on updates
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
             });

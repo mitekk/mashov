@@ -12,7 +12,7 @@ function makeConversation(overrides?: object) {
     subject: 'Parent meeting',
     senderNamePreview: 'Principal',
     sendTime: NOW,
-    isNew: false,
+    isUnread: false,
     hasDrafts: false,
     hasAttachments: false,
     preventReply: false,
@@ -72,7 +72,7 @@ describe('MailService', () => {
           householdFindFirst: jest.fn().mockResolvedValue({ cachedNewCount: 68 }),
           conversationCount: jest.fn().mockResolvedValue(2),
           conversationFindMany: jest.fn().mockResolvedValue([
-            makeConversation({ isNew: true }),
+            makeConversation({ isUnread: true }),
           ]),
           syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
         }),
@@ -117,7 +117,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({
           conversationFindMany: jest.fn().mockResolvedValue([
-            makeConversation({ conversationId: 'conv-1', isNew: true }),
+            makeConversation({ conversationId: 'conv-1', isUnread: true }),
           ]),
           conversationCount: jest.fn().mockResolvedValue(1),
         }),
@@ -166,7 +166,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({
           conversationFindUnique: jest.fn().mockResolvedValue(
-            makeConversation({ conversationId: 'conv-1', isNew: false }),
+            makeConversation({ conversationId: 'conv-1', isUnread: false }),
           ),
           messageFindMany: jest.fn().mockResolvedValue([
             {
@@ -524,7 +524,7 @@ describe('MailService', () => {
       expect(conversationUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ conversationId: { in: ['conv-1', 'conv-2'] } }),
-          data: expect.objectContaining({ isNew: false }),
+          data: expect.objectContaining({ isUnread: false }),
         }),
       );
     });
@@ -552,7 +552,7 @@ describe('MailService', () => {
   });
 
   describe('mail actions', () => {
-    it('markUnread sets isNew=true and returns updated count', async () => {
+    it('markUnread sets isUnread=true and returns updated count', async () => {
       const mashovPut = jest.fn().mockResolvedValue({});
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
       const service = new MailService(
@@ -570,7 +570,7 @@ describe('MailService', () => {
       expect(result.updated).toBe(2);
       expect(conversationUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ isNew: true }),
+          data: expect.objectContaining({ isUnread: true }),
         }),
       );
       expect(mashovPut).toHaveBeenCalledWith(
@@ -597,7 +597,7 @@ describe('MailService', () => {
       expect(conversationUpdateMany).not.toHaveBeenCalled();
     });
 
-    it('archive sets labels to archived and isNew=false', async () => {
+    it('archive sets labels to archived and isUnread=false', async () => {
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       const mashovPut = jest.fn().mockResolvedValue({});
       const service = new MailService(
@@ -618,12 +618,12 @@ describe('MailService', () => {
       expect(conversationUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ conversationId: { in: ['conv-upstream-1'] } }),
-          data: expect.objectContaining({ isNew: false, labels: ['archived'] }),
+          data: expect.objectContaining({ isUnread: false, labels: ['archived'] }),
         }),
       );
     });
 
-    it('unarchive clears archived label and sets isNew=true', async () => {
+    it('unarchive clears archived label and sets isUnread=true', async () => {
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
       const mashovPut = jest.fn().mockResolvedValue({});
@@ -647,7 +647,7 @@ describe('MailService', () => {
       expect(conversationUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ conversationId: { in: ['conv-archived-1'] } }),
-          data: expect.objectContaining({ isNew: true, labels: [] }),
+          data: expect.objectContaining({ isUnread: true, labels: [] }),
         }),
       );
       expect(householdUpdate).toHaveBeenCalledWith(

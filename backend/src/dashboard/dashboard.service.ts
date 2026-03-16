@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService } from '../sync/freshness.service';
-import { SessionService } from '../session/session.service';
+import { MashovSessionService } from '../session/mashov-session.service';
 
 export interface NeedsAttentionItem {
   id: string;
@@ -51,7 +51,7 @@ export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly freshnessService: FreshnessService,
-    private readonly sessionService: SessionService,
+    private readonly sessionService: MashovSessionService,
   ) {}
 
   async getDashboard() {
@@ -85,20 +85,18 @@ export class DashboardService {
       }),
       this.prisma.mailConversation.count({
         where: {
-          isNew: true,
+          isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
       }),
       this.prisma.student.count({ where: { isActive: true } }),
       this.prisma.homeworkItem.count({
         where: {
-          isArchived: false,
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
         },
       }),
       this.prisma.behaviorItem.count({
         where: {
-          isArchived: false,
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
           classification: { not: 'positive' },
         },
@@ -131,7 +129,7 @@ export class DashboardService {
     // Priority 1: new (unread) conversations
     const conversations = await this.prisma.mailConversation.findMany({
       where: {
-        isNew: true,
+        isUnread: true,
         NOT: { labels: { array_contains: ['archived'] } },
       },
       orderBy: { sendTime: 'desc' },
@@ -155,8 +153,6 @@ export class DashboardService {
     // Priority 2: negative behavior (not positive, not neutral)
     const behaviors = await this.prisma.behaviorItem.findMany({
       where: {
-        isNew: true,
-        isArchived: false,
         classification: 'attention',
         lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
       },
@@ -178,11 +174,9 @@ export class DashboardService {
 
     if (items.length >= 5) return items.slice(0, 5);
 
-    // Priority 3: recent new homework
+    // Priority 3: recent homework
     const homework = await this.prisma.homeworkItem.findMany({
       where: {
-        isNew: true,
-        isArchived: false,
         lessonDate: { gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
       },
       orderBy: { lessonDate: 'desc' },
@@ -256,8 +250,8 @@ export class DashboardService {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isNew: hw.isNew,
-        isArchived: hw.isArchived,
+        isNew: true,
+        isArchived: false,
         hasAttachments: Array.isArray(hw.files) && hw.files.length > 0,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
@@ -278,8 +272,8 @@ export class DashboardService {
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
-        isNew: b.isNew,
-        isArchived: b.isArchived,
+        isNew: true,
+        isArchived: false,
         hasAttachments: this.extractFilesFromRawPayload(b.rawPayload).length > 0,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
@@ -297,9 +291,9 @@ export class DashboardService {
         studentGuid: null,
         studentName: null,
         category: 'mail',
-        priority: conv.isNew ? 'high' : 'medium',
+        priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
-        isNew: conv.isNew,
+        isNew: conv.isUnread,
         isArchived: Array.isArray(conv.labels) && conv.labels.includes('archived'),
         hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),
@@ -339,16 +333,12 @@ export class DashboardService {
           this.prisma.homeworkItem.count({
             where: {
               studentGuid: student.studentGuid,
-              isNew: true,
-              isArchived: false,
               lessonDate: { gte: sevenDaysAgo },
             },
           }),
           this.prisma.behaviorItem.count({
             where: {
               studentGuid: student.studentGuid,
-              isNew: true,
-              isArchived: false,
               lessonDate: { gte: sevenDaysAgo },
               classification: { not: 'positive' },
             },

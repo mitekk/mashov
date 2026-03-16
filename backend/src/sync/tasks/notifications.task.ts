@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 import * as crypto from 'crypto';
 
@@ -30,6 +31,7 @@ export class NotificationsTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('*/5 * * * *')
@@ -46,12 +48,24 @@ export class NotificationsTask {
     const errorMessages: string[] = [];
 
     try {
-      const notifications = await this.mashovClient.get<MashovNotification[]>(
-        '/api/user/notifications?skip=0&take=50',
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/home' },
-        },
-      );
+      const conn = await this.prisma.householdConnection.findFirst({
+        where: { userId: { not: null }, active: true },
+      });
+      const refererHeaders = { 'Referer': 'https://web.mashov.info/students/main/home' };
+      const notifications = conn
+        ? await this.mashovClient.getForConnection<MashovNotification[]>(
+            '/api/user/notifications?skip=0&take=50',
+            conn.id,
+            conn.schoolCode,
+            conn.schoolYear,
+            conn.username,
+            this.encryptionService.decrypt(conn.encryptedPassword),
+            { headers: refererHeaders },
+          )
+        : await this.mashovClient.get<MashovNotification[]>(
+            '/api/user/notifications?skip=0&take=50',
+            { headers: refererHeaders },
+          );
 
       fetchedCount = notifications.length;
 

@@ -86,13 +86,13 @@ export class MailService {
       }),
       this.prisma.mailConversation.count({
         where: {
-          isNew: true,
+          isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
       }),
       this.prisma.mailConversation.findMany({
         where: {
-          isNew: true,
+          isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
         orderBy: { sendTime: 'desc' },
@@ -114,7 +114,7 @@ export class MailService {
         subject: c.subject,
         senderNamePreview: c.senderNamePreview ?? '',
         sendTime: c.sendTime.toISOString(),
-        isNew: c.isNew,
+        isNew: c.isUnread,
         hasAttachments: c.hasAttachments,
         preventReply: c.preventReply,
       })),
@@ -140,7 +140,7 @@ export class MailService {
         subject: item.subject,
         senderNamePreview: item.senderNamePreview ?? '',
         sendTime: item.sendTime.toISOString(),
-        isNew: item.isNew,
+        isNew: item.isUnread,
         hasAttachments: item.hasAttachments,
         preventReply: item.preventReply,
         labels: this.asStringArray(item.labels),
@@ -193,7 +193,7 @@ export class MailService {
       conversationId: resolvedConversation.conversationId,
       subject: resolvedConversation.subject,
       sendTime: resolvedConversation.sendTime.toISOString(),
-      isNew: resolvedConversation.isNew,
+      isNew: resolvedConversation.isUnread,
       hasDrafts: resolvedConversation.hasDrafts,
       hasAttachments: resolvedConversation.hasAttachments,
       preventReply: resolvedConversation.preventReply,
@@ -334,7 +334,7 @@ export class MailService {
       subject: string;
       senderNamePreview: string | null;
       sendTime: Date;
-      isNew: boolean;
+      isUnread: boolean;
       hasDrafts: boolean;
       hasAttachments: boolean;
       preventReply: boolean;
@@ -370,7 +370,7 @@ export class MailService {
       subject: string;
       senderNamePreview: string | null;
       sendTime: Date;
-      isNew: boolean;
+      isUnread: boolean;
       hasDrafts: boolean;
       hasAttachments: boolean;
       preventReply: boolean;
@@ -383,7 +383,7 @@ export class MailService {
         subject: upstream.subject ?? fallbackConversation.subject,
         senderNamePreview: upstream.messages?.[0]?.senderName ?? fallbackConversation.senderNamePreview,
         sendTime: upstream.sendTime ? new Date(upstream.sendTime) : fallbackConversation.sendTime,
-        isNew: upstream.isNew ?? fallbackConversation.isNew,
+        isUnread: upstream.isNew ?? fallbackConversation.isUnread,
         hasDrafts: upstream.hasDrafts ?? fallbackConversation.hasDrafts,
         hasAttachments: upstream.hasAttachments ?? fallbackConversation.hasAttachments,
         preventReply: upstream.preventReply ?? fallbackConversation.preventReply,
@@ -449,7 +449,7 @@ export class MailService {
       return { labels: { array_contains: ['archived'] } };
     }
     return {
-      ...(filter === 'new' ? { isNew: true } : {}),
+      ...(filter === 'new' ? { isUnread: true } : {}),
       NOT: { labels: { array_contains: ['archived'] } },
     };
   }
@@ -665,7 +665,7 @@ export class MailService {
   async markConversationsRead(conversationIds: string[]) {
     await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isNew: false },
+      data: { isUnread: false },
     });
 
     await this.updateCachedNewCount();
@@ -705,7 +705,7 @@ export class MailService {
         conversationId: { in: eligibleConversationIds },
         NOT: { labels: { array_contains: ['archived'] } },
       },
-      data: { isNew: true },
+      data: { isUnread: true },
     });
 
     await this.updateCachedNewCount();
@@ -729,7 +729,7 @@ export class MailService {
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isNew: false, labels: ['archived'] as unknown as Prisma.InputJsonValue },
+      data: { isUnread: false, labels: ['archived'] as unknown as Prisma.InputJsonValue },
     });
 
     await this.updateCachedNewCount();
@@ -753,7 +753,7 @@ export class MailService {
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isNew: true, labels: [] as unknown as Prisma.InputJsonValue },
+      data: { isUnread: true, labels: [] as unknown as Prisma.InputJsonValue },
     });
 
     await this.updateCachedNewCount();
@@ -764,7 +764,7 @@ export class MailService {
   private async updateCachedNewCount(): Promise<void> {
     const newCount = await this.prisma.mailConversation.count({
       where: {
-        isNew: true,
+        isUnread: true,
         NOT: { labels: { array_contains: ['archived'] } },
       },
     });

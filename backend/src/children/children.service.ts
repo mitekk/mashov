@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { SessionService } from '../session/session.service';
+import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import { UserItemStateService } from '../common/user-item-state.service';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -33,8 +34,9 @@ type ItemStatusFilter = 'new' | 'archived' | 'all';
 export class ChildrenService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly sessionService: SessionService,
+    private readonly sessionService: MashovSessionService,
     private readonly mashovClient: MashovHttpClient,
+    private readonly userItemStateService: UserItemStateService,
   ) {}
 
   async getChildren() {
@@ -193,27 +195,38 @@ export class ChildrenService {
     page: number,
     limit: number,
     status: ItemStatusFilter = 'new',
+    userId?: string,
   ) {
     await this.requireStudent(studentGuid);
 
-    const where = {
-      studentGuid,
-      ...(status === 'archived' ? { isArchived: true } : { isArchived: false }),
-      ...(status === 'new' ? { isNew: true } : {}),
-    };
+    // Fetch all non-filtered items for state-based filtering
+    const allItems = await this.prisma.homeworkItem.findMany({
+      where: { studentGuid },
+      orderBy: { lessonDate: 'desc' },
+    });
 
-    const [items, total] = await Promise.all([
-      this.prisma.homeworkItem.findMany({
-        where,
-        orderBy: { lessonDate: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.homeworkItem.count({ where }),
-    ]);
+    const allIds = allItems.map((i) => i.id);
+    const stateMap = userId
+      ? await this.userItemStateService.getStateBatch(userId, 'homework', allIds)
+      : new Map<string, { isNew: boolean; isArchived: boolean }>();
+
+    const defaultState = { isNew: true, isArchived: false };
+
+    const filtered = allItems.filter((item) => {
+      const state = stateMap.get(item.id) ?? defaultState;
+      if (status === 'archived') return state.isArchived;
+      if (status === 'new') return state.isNew && !state.isArchived;
+      return !state.isArchived; // 'all' excludes archived
+    });
+
+    const total = filtered.length;
+    const paged = filtered.slice((page - 1) * limit, page * limit);
 
     return {
-      data: items.map((item) => this.mapHomeworkItem(item)),
+      data: paged.map((item) => {
+        const state = stateMap.get(item.id) ?? defaultState;
+        return this.mapHomeworkItem(item, state.isNew, state.isArchived);
+      }),
       pagination: {
         page,
         limit,
@@ -223,7 +236,7 @@ export class ChildrenService {
     };
   }
 
-  async getHomeworkDetail(studentGuid: string, homeworkId: string) {
+  async getHomeworkDetail(studentGuid: string, homeworkId: string, userId?: string) {
     await this.requireStudent(studentGuid);
 
     const item = await this.prisma.homeworkItem.findUnique({
@@ -233,7 +246,11 @@ export class ChildrenService {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
 
-    return this.mapHomeworkItem(item);
+    const state = userId
+      ? await this.userItemStateService.getState(userId, 'homework', homeworkId)
+      : { isNew: true, isArchived: false };
+
+    return this.mapHomeworkItem(item, state.isNew, state.isArchived);
   }
 
   async getBehavior(
@@ -242,28 +259,40 @@ export class ChildrenService {
     limit: number,
     bucket: 'all' | 'attention' | 'positive' | 'neutral',
     status: ItemStatusFilter = 'new',
+    userId?: string,
   ) {
     await this.requireStudent(studentGuid);
 
-    const where = {
-      studentGuid,
-      ...(status === 'archived' ? { isArchived: true } : { isArchived: false }),
-      ...(status === 'new' ? { isNew: true } : {}),
-      ...(bucket !== 'all' ? { classification: bucket } : {}),
-    };
+    const allItems = await this.prisma.behaviorItem.findMany({
+      where: {
+        studentGuid,
+        ...(bucket !== 'all' ? { classification: bucket } : {}),
+      },
+      orderBy: { eventAt: 'desc' },
+    });
 
-    const [items, total] = await Promise.all([
-      this.prisma.behaviorItem.findMany({
-        where,
-        orderBy: { eventAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.behaviorItem.count({ where }),
-    ]);
+    const allIds = allItems.map((i) => i.id);
+    const stateMap = userId
+      ? await this.userItemStateService.getStateBatch(userId, 'behavior', allIds)
+      : new Map<string, { isNew: boolean; isArchived: boolean }>();
+
+    const defaultState = { isNew: true, isArchived: false };
+
+    const filtered = allItems.filter((item) => {
+      const state = stateMap.get(item.id) ?? defaultState;
+      if (status === 'archived') return state.isArchived;
+      if (status === 'new') return state.isNew && !state.isArchived;
+      return !state.isArchived;
+    });
+
+    const total = filtered.length;
+    const paged = filtered.slice((page - 1) * limit, page * limit);
 
     return {
-      data: items.map((item) => this.mapBehaviorItem(item)),
+      data: paged.map((item) => {
+        const state = stateMap.get(item.id) ?? defaultState;
+        return this.mapBehaviorItem(item, state.isNew, state.isArchived);
+      }),
       pagination: {
         page,
         limit,
@@ -273,7 +302,7 @@ export class ChildrenService {
     };
   }
 
-  async getBehaviorDetail(studentGuid: string, behaviorId: string) {
+  async getBehaviorDetail(studentGuid: string, behaviorId: string, userId?: string) {
     await this.requireStudent(studentGuid);
 
     const item = await this.prisma.behaviorItem.findUnique({
@@ -283,7 +312,11 @@ export class ChildrenService {
       throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
     }
 
-    return this.mapBehaviorItem(item);
+    const state = userId
+      ? await this.userItemStateService.getState(userId, 'behavior', behaviorId)
+      : { isNew: true, isArchived: false };
+
+    return this.mapBehaviorItem(item, state.isNew, state.isArchived);
   }
 
   async downloadHomeworkAttachment(
@@ -356,43 +389,7 @@ export class ChildrenService {
     );
   }
 
-  async setHomeworkIsNew(studentGuid: string, homeworkId: string, isNew: boolean) {
-    await this.requireStudent(studentGuid);
-
-    const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
-    if (!item || item.studentGuid !== studentGuid) {
-      throw new NotFoundException(`Homework not found: ${homeworkId}`);
-    }
-    if (item.isArchived) {
-      return this.mapHomeworkItem(item);
-    }
-
-    const updated = await this.prisma.homeworkItem.update({
-      where: { id: homeworkId },
-      data: { isNew },
-    });
-
-    return this.mapHomeworkItem(updated);
-  }
-
-  async setHomeworkManyIsNew(studentGuid: string, homeworkIds: string[], isNew: boolean) {
-    await this.requireStudent(studentGuid);
-    if (homeworkIds.length === 0) return { updated: 0 };
-
-    const updated = await this.prisma.homeworkItem.updateMany({
-      where: {
-        studentGuid,
-        id: { in: homeworkIds },
-        isArchived: false,
-        isNew: { not: isNew },
-      },
-      data: { isNew },
-    });
-
-    return { updated: updated.count };
-  }
-
-  async setHomeworkArchived(studentGuid: string, homeworkId: string, isArchived: boolean) {
+  async setHomeworkIsNew(studentGuid: string, homeworkId: string, isNew: boolean, userId?: string) {
     await this.requireStudent(studentGuid);
 
     const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
@@ -400,74 +397,68 @@ export class ChildrenService {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
 
-    // Archive rules: archive=true forces isNew=false; unarchive=false forces isNew=true
-    const updated = await this.prisma.homeworkItem.update({
-      where: { id: homeworkId },
-      data: {
-        isArchived,
-        isNew: isArchived ? false : true,
-      },
-    });
+    if (userId) {
+      const currentState = await this.userItemStateService.getState(userId, 'homework', homeworkId);
+      if (currentState.isArchived) {
+        return this.mapHomeworkItem(item, currentState.isNew, currentState.isArchived);
+      }
+      const newState = await this.userItemStateService.setState(userId, 'homework', homeworkId, isNew, undefined);
+      return this.mapHomeworkItem(item, newState.isNew, newState.isArchived);
+    }
 
-    return this.mapHomeworkItem(updated);
+    return this.mapHomeworkItem(item, isNew, false);
   }
 
-  async setHomeworkManyArchived(studentGuid: string, homeworkIds: string[], isArchived: boolean) {
+  async setHomeworkManyIsNew(studentGuid: string, homeworkIds: string[], isNew: boolean, userId?: string) {
     await this.requireStudent(studentGuid);
     if (homeworkIds.length === 0) return { updated: 0 };
 
-    const updated = await this.prisma.homeworkItem.updateMany({
-      where: {
-        studentGuid,
-        id: { in: homeworkIds },
-        isArchived: { not: isArchived },
-      },
-      data: {
-        isArchived,
-        isNew: !isArchived,
-      },
-    });
+    if (userId) {
+      const count = await this.userItemStateService.setStateBatch(userId, 'homework', homeworkIds, isNew, undefined);
+      return { updated: count };
+    }
 
-    return { updated: updated.count };
+    return { updated: homeworkIds.length };
   }
 
-  async setBehaviorIsNew(studentGuid: string, behaviorId: string, isNew: boolean) {
+  async setHomeworkArchived(studentGuid: string, homeworkId: string, isArchived: boolean, userId?: string) {
     await this.requireStudent(studentGuid);
 
-    const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
+    const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
     if (!item || item.studentGuid !== studentGuid) {
-      throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
-    }
-    if (item.isArchived) {
-      return this.mapBehaviorItem(item);
+      throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
 
-    const updated = await this.prisma.behaviorItem.update({
-      where: { id: behaviorId },
-      data: { isNew },
-    });
+    if (userId) {
+      // Archive rules: archive=true forces isNew=false; unarchive=false forces isNew=true
+      const newState = await this.userItemStateService.setState(
+        userId, 'homework', homeworkId,
+        isArchived ? false : true,
+        isArchived,
+      );
+      return this.mapHomeworkItem(item, newState.isNew, newState.isArchived);
+    }
 
-    return this.mapBehaviorItem(updated);
+    return this.mapHomeworkItem(item, !isArchived, isArchived);
   }
 
-  async setBehaviorManyIsNew(studentGuid: string, behaviorIds: string[], isNew: boolean) {
+  async setHomeworkManyArchived(studentGuid: string, homeworkIds: string[], isArchived: boolean, userId?: string) {
     await this.requireStudent(studentGuid);
-    if (behaviorIds.length === 0) return { updated: 0 };
+    if (homeworkIds.length === 0) return { updated: 0 };
 
-    const updated = await this.prisma.behaviorItem.updateMany({
-      where: {
-        studentGuid,
-        id: { in: behaviorIds },
-        isArchived: false,
-        isNew: { not: isNew },
-      },
-      data: { isNew },
-    });
+    if (userId) {
+      const count = await this.userItemStateService.setStateBatch(
+        userId, 'homework', homeworkIds,
+        isArchived ? false : true,
+        isArchived,
+      );
+      return { updated: count };
+    }
 
-    return { updated: updated.count };
+    return { updated: homeworkIds.length };
   }
 
-  async setBehaviorArchived(studentGuid: string, behaviorId: string, isArchived: boolean) {
+  async setBehaviorIsNew(studentGuid: string, behaviorId: string, isNew: boolean, userId?: string) {
     await this.requireStudent(studentGuid);
 
     const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
@@ -475,35 +466,64 @@ export class ChildrenService {
       throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
     }
 
-    // Archive rules: archive=true forces isNew=false; unarchive=false forces isNew=true
-    const updated = await this.prisma.behaviorItem.update({
-      where: { id: behaviorId },
-      data: {
-        isArchived,
-        isNew: isArchived ? false : true,
-      },
-    });
+    if (userId) {
+      const currentState = await this.userItemStateService.getState(userId, 'behavior', behaviorId);
+      if (currentState.isArchived) {
+        return this.mapBehaviorItem(item, currentState.isNew, currentState.isArchived);
+      }
+      const newState = await this.userItemStateService.setState(userId, 'behavior', behaviorId, isNew, undefined);
+      return this.mapBehaviorItem(item, newState.isNew, newState.isArchived);
+    }
 
-    return this.mapBehaviorItem(updated);
+    return this.mapBehaviorItem(item, isNew, false);
   }
 
-  async setBehaviorManyArchived(studentGuid: string, behaviorIds: string[], isArchived: boolean) {
+  async setBehaviorManyIsNew(studentGuid: string, behaviorIds: string[], isNew: boolean, userId?: string) {
     await this.requireStudent(studentGuid);
     if (behaviorIds.length === 0) return { updated: 0 };
 
-    const updated = await this.prisma.behaviorItem.updateMany({
-      where: {
-        studentGuid,
-        id: { in: behaviorIds },
-        isArchived: { not: isArchived },
-      },
-      data: {
-        isArchived,
-        isNew: !isArchived,
-      },
-    });
+    if (userId) {
+      const count = await this.userItemStateService.setStateBatch(userId, 'behavior', behaviorIds, isNew, undefined);
+      return { updated: count };
+    }
 
-    return { updated: updated.count };
+    return { updated: behaviorIds.length };
+  }
+
+  async setBehaviorArchived(studentGuid: string, behaviorId: string, isArchived: boolean, userId?: string) {
+    await this.requireStudent(studentGuid);
+
+    const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
+    if (!item || item.studentGuid !== studentGuid) {
+      throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
+    }
+
+    if (userId) {
+      const newState = await this.userItemStateService.setState(
+        userId, 'behavior', behaviorId,
+        isArchived ? false : true,
+        isArchived,
+      );
+      return this.mapBehaviorItem(item, newState.isNew, newState.isArchived);
+    }
+
+    return this.mapBehaviorItem(item, !isArchived, isArchived);
+  }
+
+  async setBehaviorManyArchived(studentGuid: string, behaviorIds: string[], isArchived: boolean, userId?: string) {
+    await this.requireStudent(studentGuid);
+    if (behaviorIds.length === 0) return { updated: 0 };
+
+    if (userId) {
+      const count = await this.userItemStateService.setStateBatch(
+        userId, 'behavior', behaviorIds,
+        isArchived ? false : true,
+        isArchived,
+      );
+      return { updated: count };
+    }
+
+    return { updated: behaviorIds.length };
   }
 
   async getTimetable(studentGuid: string) {
@@ -580,21 +600,23 @@ export class ChildrenService {
     };
   }
 
-  private mapHomeworkItem(item: {
-    id: string;
-    studentGuid: string;
-    lessonId: number;
-    groupId: number;
-    lessonDate: Date;
-    lesson: number;
-    subjectName: string;
-    homeworkText: string;
-    remark: string | null;
-    files: unknown;
-    isNew: boolean;
-    isArchived: boolean;
-    updatedAt: Date;
-  }) {
+  private mapHomeworkItem(
+    item: {
+      id: string;
+      studentGuid: string;
+      lessonId: number;
+      groupId: number;
+      lessonDate: Date;
+      lesson: number;
+      subjectName: string;
+      homeworkText: string;
+      remark: string | null;
+      files: unknown;
+      updatedAt: Date;
+    },
+    isNew = true,
+    isArchived = false,
+  ) {
     return {
       id: item.id,
       studentGuid: item.studentGuid,
@@ -606,34 +628,36 @@ export class ChildrenService {
       homeworkText: item.homeworkText,
       remark: item.remark,
       files: this.asArray(item.files),
-      isNew: item.isNew,
-      isArchived: item.isArchived,
+      isNew,
+      isArchived,
       updatedAt: item.updatedAt.toISOString(),
     };
   }
 
-  private mapBehaviorItem(item: {
-    id: string;
-    studentGuid: string;
-    lessonId: number;
-    groupId: number;
-    eventCode: number;
-    achvaCode: number;
-    achvaName: string;
-    classification: string;
-    justifiable: boolean;
-    lessonDate: Date;
-    lesson: number | null;
-    subject: string;
-    reporter: string;
-    remark: string | null;
-    justification: string | null;
-    eventAt: Date;
-    isNew: boolean;
-    isArchived: boolean;
-    updatedAt: Date;
-    rawPayload?: unknown;
-  }) {
+  private mapBehaviorItem(
+    item: {
+      id: string;
+      studentGuid: string;
+      lessonId: number;
+      groupId: number;
+      eventCode: number;
+      achvaCode: number;
+      achvaName: string;
+      classification: string;
+      justifiable: boolean;
+      lessonDate: Date;
+      lesson: number | null;
+      subject: string;
+      reporter: string;
+      remark: string | null;
+      justification: string | null;
+      eventAt: Date;
+      updatedAt: Date;
+      rawPayload?: unknown;
+    },
+    isNew = true,
+    isArchived = false,
+  ) {
     const mappedBucket = this.mapBehaviorBucket(item.classification);
     const priority = BEHAVIOR_PRIORITY_MAP[item.eventCode]
       ?? (mappedBucket === 'attention' ? 'medium' : 'low');
@@ -661,8 +685,8 @@ export class ChildrenService {
         fileName: file.fileName,
       })),
       eventAt: item.eventAt.toISOString(),
-      isNew: item.isNew,
-      isArchived: item.isArchived,
+      isNew,
+      isArchived,
       updatedAt: item.updatedAt.toISOString(),
     };
   }

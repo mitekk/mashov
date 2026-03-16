@@ -21,19 +21,38 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   backend:
     image: mashov-backend:latest
     build: ./backend
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/mashov}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       MASHOV_SEMEL: ${MASHOV_SEMEL}
       MASHOV_YEAR: ${MASHOV_YEAR}
       MASHOV_USERNAME: ${MASHOV_USERNAME}
       MASHOV_PASSWORD: ${MASHOV_PASSWORD}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      SESSION_LIFETIME_DAYS: ${SESSION_LIFETIME_DAYS:-30}
+      SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
       FEATURE_DAILY_BEHAVE: ${FEATURE_DAILY_BEHAVE:-false}
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
     ports:

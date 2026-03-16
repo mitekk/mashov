@@ -3,6 +3,7 @@ import { NotificationsTask } from './notifications.task';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import { SyncRun } from '@prisma/client';
 
 // Helper to compute the expected fingerprint for an ID-less notification
@@ -14,8 +15,9 @@ function computeFingerprint(userId: string, eventType: number, eventTime: string
 describe('NotificationsTask — deduplication fingerprint', () => {
   let task: NotificationsTask;
   let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'get'>>;
-  let mockPrisma: jest.Mocked<Pick<PrismaService, 'notificationEvent'>>;
+  let mockPrisma: jest.Mocked<Pick<PrismaService, 'notificationEvent' | 'householdConnection'>>;
   let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun'>>;
+  let mockEncryptionService: jest.Mocked<Pick<EncryptionService, 'decrypt'>>;
 
   const fakeSyncRun: SyncRun = {
     id: 'run-1',
@@ -40,16 +42,23 @@ describe('NotificationsTask — deduplication fingerprint', () => {
         create: jest.fn(),
         update: jest.fn(),
       } as unknown as jest.Mocked<PrismaService['notificationEvent']>,
+      householdConnection: {
+        findFirst: jest.fn().mockResolvedValue(null),
+      } as unknown as jest.Mocked<PrismaService['householdConnection']>,
     };
     mockSyncRunService = {
       openRun: jest.fn().mockResolvedValue(fakeSyncRun),
       closeRun: jest.fn().mockResolvedValue(fakeSyncRun),
+    };
+    mockEncryptionService = {
+      decrypt: jest.fn().mockReturnValue('decrypted-password'),
     };
 
     task = new NotificationsTask(
       mockMashovClient as unknown as MashovHttpClient,
       mockPrisma as unknown as PrismaService,
       mockSyncRunService as unknown as SyncRunService,
+      mockEncryptionService as unknown as EncryptionService,
     );
   });
 

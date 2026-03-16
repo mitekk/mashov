@@ -1,8 +1,8 @@
-import { Controller, Get, Put, Param, Query, Body, Res, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Put, Param, Query, Body, Res, Req, StreamableFile } from '@nestjs/common';
 import { IsInt, IsOptional, IsIn, IsBoolean, Min, Max, IsArray, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ChildrenService } from './children.service';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 class PaginationQueryDto {
   @IsOptional()
@@ -99,19 +99,21 @@ export class ChildrenController {
   async getHomework(
     @Param('studentGuid') studentGuid: string,
     @Query() query: HomeworkQueryDto,
+    @Req() req: Request,
   ) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
     const status = query.status ?? 'new';
-    return this.childrenService.getHomework(studentGuid, page, limit, status);
+    return this.childrenService.getHomework(studentGuid, page, limit, status, req.user?.userId);
   }
 
   @Get(':studentGuid/homework/:homeworkId')
   async getHomeworkDetail(
     @Param('studentGuid') studentGuid: string,
     @Param('homeworkId') homeworkId: string,
+    @Req() req: Request,
   ) {
-    return this.childrenService.getHomeworkDetail(studentGuid, homeworkId);
+    return this.childrenService.getHomeworkDetail(studentGuid, homeworkId, req.user?.userId);
   }
 
   @Get(':studentGuid/homework/:homeworkId/files/:fileId')
@@ -145,19 +147,22 @@ export class ChildrenController {
     @Param('studentGuid') studentGuid: string,
     @Param('homeworkId') homeworkId: string,
     @Body() body: SetIsNewDto,
+    @Req() req: Request,
   ) {
-    return this.childrenService.setHomeworkIsNew(studentGuid, homeworkId, body.isNew);
+    return this.childrenService.setHomeworkIsNew(studentGuid, homeworkId, body.isNew, req.user?.userId);
   }
 
   @Put(':studentGuid/homework/is-new')
   async setHomeworkManyIsNew(
     @Param('studentGuid') studentGuid: string,
     @Body() body: BulkHomeworkIsNewDto,
+    @Req() req: Request,
   ) {
     return this.childrenService.setHomeworkManyIsNew(
       studentGuid,
       body.homeworkIds,
       body.isNew,
+      req.user?.userId,
     );
   }
 
@@ -166,19 +171,22 @@ export class ChildrenController {
     @Param('studentGuid') studentGuid: string,
     @Param('homeworkId') homeworkId: string,
     @Body() body: SetArchivedDto,
+    @Req() req: Request,
   ) {
-    return this.childrenService.setHomeworkArchived(studentGuid, homeworkId, body.isArchived);
+    return this.childrenService.setHomeworkArchived(studentGuid, homeworkId, body.isArchived, req.user?.userId);
   }
 
   @Put(':studentGuid/homework/archive')
   async setHomeworkManyArchived(
     @Param('studentGuid') studentGuid: string,
     @Body() body: BulkHomeworkArchiveDto,
+    @Req() req: Request,
   ) {
     return this.childrenService.setHomeworkManyArchived(
       studentGuid,
       body.homeworkIds,
       body.isArchived,
+      req.user?.userId,
     );
   }
 
@@ -186,20 +194,22 @@ export class ChildrenController {
   async getBehavior(
     @Param('studentGuid') studentGuid: string,
     @Query() query: BehaviorQueryDto,
+    @Req() req: Request,
   ) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 50;
     const bucket = query.bucket ?? 'all';
     const status = query.status ?? 'new';
-    return this.childrenService.getBehavior(studentGuid, page, limit, bucket, status);
+    return this.childrenService.getBehavior(studentGuid, page, limit, bucket, status, req.user?.userId);
   }
 
   @Get(':studentGuid/behavior/:behaviorId')
   async getBehaviorDetail(
     @Param('studentGuid') studentGuid: string,
     @Param('behaviorId') behaviorId: string,
+    @Req() req: Request,
   ) {
-    return this.childrenService.getBehaviorDetail(studentGuid, behaviorId);
+    return this.childrenService.getBehaviorDetail(studentGuid, behaviorId, req.user?.userId);
   }
 
   @Get(':studentGuid/behavior/:behaviorId/files/:fileId')
@@ -233,19 +243,22 @@ export class ChildrenController {
     @Param('studentGuid') studentGuid: string,
     @Param('behaviorId') behaviorId: string,
     @Body() body: SetIsNewDto,
+    @Req() req: Request,
   ) {
-    return this.childrenService.setBehaviorIsNew(studentGuid, behaviorId, body.isNew);
+    return this.childrenService.setBehaviorIsNew(studentGuid, behaviorId, body.isNew, req.user?.userId);
   }
 
   @Put(':studentGuid/behavior/is-new')
   async setBehaviorManyIsNew(
     @Param('studentGuid') studentGuid: string,
     @Body() body: BulkBehaviorIsNewDto,
+    @Req() req: Request,
   ) {
     return this.childrenService.setBehaviorManyIsNew(
       studentGuid,
       body.behaviorIds,
       body.isNew,
+      req.user?.userId,
     );
   }
 
@@ -254,19 +267,22 @@ export class ChildrenController {
     @Param('studentGuid') studentGuid: string,
     @Param('behaviorId') behaviorId: string,
     @Body() body: SetArchivedDto,
+    @Req() req: Request,
   ) {
-    return this.childrenService.setBehaviorArchived(studentGuid, behaviorId, body.isArchived);
+    return this.childrenService.setBehaviorArchived(studentGuid, behaviorId, body.isArchived, req.user?.userId);
   }
 
   @Put(':studentGuid/behavior/archive')
   async setBehaviorManyArchived(
     @Param('studentGuid') studentGuid: string,
     @Body() body: BulkBehaviorArchiveDto,
+    @Req() req: Request,
   ) {
     return this.childrenService.setBehaviorManyArchived(
       studentGuid,
       body.behaviorIds,
       body.isArchived,
+      req.user?.userId,
     );
   }
 

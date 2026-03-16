@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovLessonsCount {
@@ -21,6 +22,7 @@ export class LessonsCountTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('0 6 * * *')
@@ -29,6 +31,10 @@ export class LessonsCountTask {
   }
 
   async execute(): Promise<SyncTaskRunResult> {
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId: { not: null }, active: true },
+    });
+    const useSharedSession = connections.length === 0;
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
     let totalUpdatedCount = 0;
@@ -42,14 +48,27 @@ export class LessonsCountTask {
       let updatedCount = 0;
 
       try {
-        const items = await this.mashovClient.get<MashovLessonsCount[]>(
-          `/api/students/${student.studentGuid}/lessonsCount`,
-          {
-            headers: {
-              'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behaveCounter`,
-            },
-          },
-        );
+        let items: MashovLessonsCount[];
+        const referer = `https://web.mashov.info/students/main/students/${student.studentGuid}/behaveCounter`;
+        if (useSharedSession) {
+          items = await this.mashovClient.get<MashovLessonsCount[]>(
+            `/api/students/${student.studentGuid}/lessonsCount`,
+            { headers: { 'Referer': referer } },
+          );
+        } else {
+          items = [];
+          for (const conn of connections) {
+            try {
+              const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              items = await this.mashovClient.getForConnection<MashovLessonsCount[]>(
+                `/api/students/${student.studentGuid}/lessonsCount`,
+                conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
+                { headers: { 'Referer': referer } },
+              );
+              break;
+            } catch { /* try next connection */ }
+          }
+        }
 
         fetchedCount = items.length;
         totalFetchedCount += fetchedCount;

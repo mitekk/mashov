@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovAchva {
@@ -31,6 +32,7 @@ export class AchvasTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   @Cron('0 6 * * *')
@@ -39,6 +41,11 @@ export class AchvasTask {
   }
 
   async execute(): Promise<SyncTaskRunResult> {
+    // Achvas are global reference data — fetch once using first available connection
+    const conn = await this.prisma.householdConnection.findFirst({
+      where: { userId: { not: null }, active: true },
+    });
+
     const syncRun = await this.syncRunService.openRun(AchvasTask.SOURCE);
     let fetchedCount = 0;
     let upsertCount = 0;
@@ -46,7 +53,16 @@ export class AchvasTask {
     const errorMessages: string[] = [];
 
     try {
-      const achvas = await this.mashovClient.get<MashovAchva[]>('/api/achvas');
+      const achvas = conn
+        ? await this.mashovClient.getForConnection<MashovAchva[]>(
+            '/api/achvas',
+            conn.id,
+            conn.schoolCode,
+            conn.schoolYear,
+            conn.username,
+            this.encryptionService.decrypt(conn.encryptedPassword),
+          )
+        : await this.mashovClient.get<MashovAchva[]>('/api/achvas');
 
       fetchedCount = achvas.length;
 

@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
+import { EncryptionService } from '../../session/encryption.service';
 import type { SyncTaskRunResult } from '../sync.types';
 
 interface MashovTeacher {
@@ -36,6 +37,7 @@ export class TimetableTask {
     private readonly mashovClient: MashovHttpClient,
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
+    private readonly encryptionService: EncryptionService,
   ) {}
 
   // Weekly on Sunday at 3 AM — timetable rarely changes
@@ -45,6 +47,10 @@ export class TimetableTask {
   }
 
   async execute(): Promise<SyncTaskRunResult> {
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId: { not: null }, active: true },
+    });
+    const useSharedSession = connections.length === 0;
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -58,14 +64,27 @@ export class TimetableTask {
       let upsertCount = 0;
 
       try {
-        const items = await this.mashovClient.get<MashovTimetableItem[]>(
-          `/api/students/${student.studentGuid}/timetable`,
-          {
-            headers: {
-              'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/timetable`,
-            },
-          },
-        );
+        let items: MashovTimetableItem[];
+        const referer = `https://web.mashov.info/students/main/students/${student.studentGuid}/timetable`;
+        if (useSharedSession) {
+          items = await this.mashovClient.get<MashovTimetableItem[]>(
+            `/api/students/${student.studentGuid}/timetable`,
+            { headers: { 'Referer': referer } },
+          );
+        } else {
+          items = [];
+          for (const conn of connections) {
+            try {
+              const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              items = await this.mashovClient.getForConnection<MashovTimetableItem[]>(
+                `/api/students/${student.studentGuid}/timetable`,
+                conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
+                { headers: { 'Referer': referer } },
+              );
+              break;
+            } catch { /* try next connection */ }
+          }
+        }
 
         fetchedCount = items.length;
         totalFetchedCount += fetchedCount;
