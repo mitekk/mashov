@@ -300,7 +300,7 @@ describe('API Integration Tests (isNew refactor contract)', () => {
       expect(res.body.data[0].isArchived).toBe(true);
     });
 
-    it('GET homework with ?status=all returns archived and non-archived items', async () => {
+    it('GET homework with ?status=all excludes archived items', async () => {
       await seedStudent(prisma);
 
       await prisma.homeworkItem.createMany({
@@ -336,7 +336,58 @@ describe('API Integration Tests (isNew refactor contract)', () => {
         `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=all`,
       );
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(2);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].isArchived).toBe(false);
+    });
+
+    it('GET behavior with ?status=all excludes archived items', async () => {
+      await seedStudent(prisma);
+
+      await prisma.behaviorItem.createMany({
+        data: [
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 11,
+            groupId: 1,
+            eventCode: 2,
+            achvaCode: 2,
+            achvaName: 'Absence',
+            classification: 'attention',
+            lessonDate: new Date('2026-03-10T00:00:00Z'),
+            lesson: 2,
+            subject: 'Math',
+            reporter: 'Teacher',
+            eventAt: new Date('2026-03-10T10:00:00Z'),
+            isNew: true,
+            isArchived: false,
+            rawPayload: {},
+          },
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 12,
+            groupId: 1,
+            eventCode: 2,
+            achvaCode: 2,
+            achvaName: 'Absence archived',
+            classification: 'attention',
+            lessonDate: new Date('2026-03-09T00:00:00Z'),
+            lesson: 1,
+            subject: 'Science',
+            reporter: 'Teacher',
+            eventAt: new Date('2026-03-09T10:00:00Z'),
+            isNew: false,
+            isArchived: true,
+            rawPayload: {},
+          },
+        ],
+      });
+
+      const res = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/behavior?status=all`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveLength(1);
+      expect(res.body.data[0].isArchived).toBe(false);
     });
 
     it('PUT /api/v1/children/:guid/homework/:id/is-new updates isNew flag', async () => {

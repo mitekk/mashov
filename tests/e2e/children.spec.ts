@@ -925,7 +925,6 @@ test.describe('Child workspace page', () => {
     let markReadBody: unknown = null;
     let markUnreadBody: unknown = null;
     let archiveBody: unknown = null;
-    let unarchiveBody: unknown = null;
 
     await stubWorkspaceRoutes(page);
 
@@ -953,8 +952,6 @@ test.describe('Child workspace page', () => {
         const payload = req.postDataJSON() as { isArchived?: boolean };
         if (payload?.isArchived) {
           archiveBody = payload;
-        } else {
-          unarchiveBody = payload;
         }
         await route.fulfill({
           status: 200,
@@ -972,9 +969,8 @@ test.describe('Child workspace page', () => {
             data: [
               makeBehaviorItem({ id: 'beh-all-new', isNew: true, isArchived: false }),
               makeBehaviorItem({ id: 'beh-all-read', isNew: false, isArchived: false }),
-              makeBehaviorItem({ id: 'beh-all-archived', isNew: false, isArchived: true }),
             ],
-            pagination: { page: 1, limit: 50, total: 3, totalPages: 1 },
+            pagination: { page: 1, limit: 50, total: 2, totalPages: 1 },
           }),
         });
         return;
@@ -996,12 +992,11 @@ test.describe('Child workspace page', () => {
     await page.getByTestId('behavior-status-all').click();
     await page.getByTestId('behavior-select-beh-all-new').check();
     await page.getByTestId('behavior-select-beh-all-read').check();
-    await page.getByTestId('behavior-select-beh-all-archived').check();
 
     await expect(page.getByTestId('behavior-bulk-mark-read')).toBeVisible();
     await expect(page.getByTestId('behavior-bulk-mark-unread')).toBeVisible();
     await expect(page.getByTestId('behavior-bulk-archive')).toBeVisible();
-    await expect(page.getByTestId('behavior-bulk-unarchive')).toBeVisible();
+    await expect(page.getByTestId('behavior-bulk-unarchive')).toHaveCount(0);
 
     await page.getByTestId('behavior-bulk-mark-read').click();
     await expect.poll(() => markReadBody).not.toBeNull();
@@ -1009,24 +1004,15 @@ test.describe('Child workspace page', () => {
 
     await page.getByTestId('behavior-select-beh-all-new').check();
     await page.getByTestId('behavior-select-beh-all-read').check();
-    await page.getByTestId('behavior-select-beh-all-archived').check();
     await page.getByTestId('behavior-bulk-mark-unread').click();
     await expect.poll(() => markUnreadBody).not.toBeNull();
     expect(markUnreadBody).toEqual({ behaviorIds: ['beh-all-read'], isNew: true });
 
     await page.getByTestId('behavior-select-beh-all-new').check();
     await page.getByTestId('behavior-select-beh-all-read').check();
-    await page.getByTestId('behavior-select-beh-all-archived').check();
     await page.getByTestId('behavior-bulk-archive').click();
     await expect.poll(() => archiveBody).not.toBeNull();
     expect(archiveBody).toEqual({ behaviorIds: ['beh-all-new', 'beh-all-read'], isArchived: true });
-
-    await page.getByTestId('behavior-select-beh-all-new').check();
-    await page.getByTestId('behavior-select-beh-all-read').check();
-    await page.getByTestId('behavior-select-beh-all-archived').check();
-    await page.getByTestId('behavior-bulk-unarchive').click();
-    await expect.poll(() => unarchiveBody).not.toBeNull();
-    expect(unarchiveBody).toEqual({ behaviorIds: ['beh-all-archived'], isArchived: false });
   });
 
   test('toggle isNew on behavior detail page calls is-new endpoint', async ({ page }) => {

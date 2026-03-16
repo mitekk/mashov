@@ -12,6 +12,7 @@ The child workspace displays homework and behavior events with per-item action b
 
 - **Parity with inbox UX** — The inbox bulk actions bar is the established interaction contract for this app. Diverging would create two incompatible mental models for what is functionally the same user gesture.
 - **Filter-aware action set** — Showing an "archive" button when the filter is already `'archived'` is a semantic error. The button set must respond to the active filter so that every offered action is always applicable to the selected items.
+- **`all` tab semantics** — In child homework/behavior sections, `status='all'` is an "active items" view (non-archived only). Archived rows are opt-in via the dedicated `'archived'` tab.
 - **Minimizing round-trips** — Calling a per-item endpoint in a loop for N selected items produces N HTTP requests and N optimistic-update cycles. A bulk endpoint collapses that to one request regardless of selection size.
 - **Section independence** — Homework and behavior sections have no shared state. Selection in one section has no meaning for the other; coupling them through a parent component would add coordination overhead for zero user benefit.
 - **Component complexity budget** — With exactly two use sites (HomeworkSection, BehaviorSection) and divergent filter logic, extracting a shared component adds abstraction cost that outpaces its value.
@@ -35,6 +36,7 @@ The child workspace displays homework and behavior events with per-item action b
 **Positive Consequences**:
 - Each section manages its own selection lifecycle; clearing or navigating away resets state without any parent-level coordination.
 - Filter-aware button visibility prevents semantically invalid actions (e.g., "archive" when viewing archived items) without any runtime guard logic — the active filter already determines which buttons render.
+- Keeping archived rows out of `status='all'` prevents mixed-state action ambiguity and preserves one clear restore surface (`'archived'` tab).
 - Bulk endpoints reduce N round-trips to 1 regardless of selection size, and Prisma's `updateMany` executes the batch as a single SQL statement.
 - The pattern is immediately recognisable to any developer who has read the inbox implementation; no new conventions are introduced.
 

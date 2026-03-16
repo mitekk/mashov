@@ -244,6 +244,29 @@ describe('ChildrenService', () => {
       expect(result.data[0].isArchived).toBe(true);
     });
 
+    it('status=all still excludes archived homework items', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindMany: mockFindMany,
+          homeworkCount: jest.fn().mockResolvedValue(0),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      await service.getHomework(TEST_GUID, 1, 20, 'all');
+
+      const findManyArgs = mockFindMany.mock.calls[0]?.[0];
+      expect(findManyArgs.where).toEqual(
+        expect.objectContaining({
+          studentGuid: TEST_GUID,
+          isArchived: false,
+        }),
+      );
+      expect(findManyArgs.where).not.toHaveProperty('isNew');
+    });
+
     it('does not include isHandled field on homework items', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
@@ -590,6 +613,30 @@ describe('ChildrenService', () => {
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'all');
       expect(result.data[0]).not.toHaveProperty('isHandled');
+    });
+
+    it('status=all still excludes archived behavior items', async () => {
+      const mockFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindMany: mockFindMany,
+          behaviorCount: jest.fn().mockResolvedValue(0),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+      );
+
+      await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'all');
+
+      const findManyArgs = mockFindMany.mock.calls[0]?.[0];
+      expect(findManyArgs.where).toEqual(
+        expect.objectContaining({
+          studentGuid: TEST_GUID,
+          classification: 'attention',
+          isArchived: false,
+        }),
+      );
+      expect(findManyArgs.where).not.toHaveProperty('isNew');
     });
   });
 

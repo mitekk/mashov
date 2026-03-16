@@ -46,12 +46,12 @@
 | GET | `/api/v1/feed` | No | `?page=1&limit=20` | See [Feed Response](#get-apiv1feed) | 200 | implemented |
 | GET | `/api/v1/children` | No | — | See [Children List Response](#get-apiv1children) | 200 | implemented |
 | GET | `/api/v1/children/:studentGuid` | No | — | See [Child Workspace Response](#get-apiv1childrenstudentguid) | 200, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50&status=all\|new\|archived` | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50&status=all\|new\|archived` (`all` excludes archived) | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/is-new` | No | `{ isNew: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/archive` | No | `{ isArchived: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/homework/is-new` | No | `{ homeworkIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/homework/archive` | No | `{ homeworkIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral&status=all\|new\|archived` | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral&status=all\|new\|archived` (`all` excludes archived) | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/is-new` | No | `{ isNew: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/archive` | No | `{ isArchived: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
 | PUT | `/api/v1/children/:studentGuid/behavior/is-new` | No | `{ behaviorIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 404 | implemented |
@@ -213,6 +213,11 @@
 
 ### GET /api/v1/children/:studentGuid/homework
 
+Query param semantics for `status`:
+- `new` → `isNew=true` and `isArchived=false`
+- `all` → all non-archived items (`isArchived=false`), regardless of `isNew`
+- `archived` → archived items only (`isArchived=true`)
+
 ```typescript
 {
   data: Array<{
@@ -295,6 +300,11 @@ Used in both list and mutation responses:
 ```
 
 ### GET /api/v1/children/:studentGuid/behavior
+
+Query param semantics for `status`:
+- `new` → `isNew=true` and `isArchived=false`
+- `all` → all non-archived items (`isArchived=false`), regardless of `isNew`
+- `archived` → archived items only (`isArchived=true`)
 
 ```typescript
 {

@@ -198,8 +198,8 @@ export class ChildrenService {
 
     const where = {
       studentGuid,
-      ...(status === 'new' ? { isArchived: false, isNew: true } : {}),
-      ...(status === 'archived' ? { isArchived: true } : {}),
+      ...(status === 'archived' ? { isArchived: true } : { isArchived: false }),
+      ...(status === 'new' ? { isNew: true } : {}),
     };
 
     const [items, total] = await Promise.all([
@@ -247,8 +247,8 @@ export class ChildrenService {
 
     const where = {
       studentGuid,
-      ...(status === 'new' ? { isArchived: false, isNew: true } : {}),
-      ...(status === 'archived' ? { isArchived: true } : {}),
+      ...(status === 'archived' ? { isArchived: true } : { isArchived: false }),
+      ...(status === 'new' ? { isNew: true } : {}),
       ...(bucket !== 'all' ? { classification: bucket } : {}),
     };
 
