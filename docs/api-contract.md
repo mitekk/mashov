@@ -46,18 +46,24 @@
 | GET | `/api/v1/feed` | No | `?page=1&limit=20` | See [Feed Response](#get-apiv1feed) | 200 | implemented |
 | GET | `/api/v1/children` | No | — | See [Children List Response](#get-apiv1children) | 200 | implemented |
 | GET | `/api/v1/children/:studentGuid` | No | — | See [Child Workspace Response](#get-apiv1childrenstudentguid) | 200, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50` | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | implemented |
-| GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral` | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/homework` | No | `?page=1&limit=50&status=all\|new\|archived` | See [Homework Response](#get-apiv1childrenstudentguidhomework) | 200, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/is-new` | No | `{ isNew: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/homework/:homeworkId/archive` | No | `{ isArchived: boolean }` | See [Homework Item](#homework-item-shape) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/behavior` | No | `?page=1&limit=50&bucket=all\|attention\|positive\|neutral&status=all\|new\|archived` | See [Behavior Response](#get-apiv1childrenstudentguidbehavior) | 200, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/is-new` | No | `{ isNew: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
+| PUT | `/api/v1/children/:studentGuid/behavior/:behaviorId/archive` | No | `{ isArchived: boolean }` | See [Behavior Item](#behavior-item-shape) | 200, 404 | implemented |
 | GET | `/api/v1/children/:studentGuid/subjects` | No | — | See [Subjects Response](#get-apiv1childrenstudentguidsubjects) | 200, 404 | implemented |
 | GET | `/api/v1/children/:studentGuid/notices` | No | — | See [Notices Response](#get-apiv1childrenstudentguidnotices) | 200, 404 | implemented |
+| GET | `/api/v1/children/:studentGuid/timetable` | No | — | See [Timetable Response](#get-apiv1childrenstudentguidtimetable) | 200, 404 | implemented |
 | GET | `/api/v1/mail/summary` | No | — | See [Mail Summary Response](#get-apiv1mailsummary) | 200 | implemented |
-| GET | `/api/v1/mail/conversations` | No | `?page=1&limit=20&unreadOnly=false` | See [Conversations List Response](#get-apiv1mailconversations) | 200 | implemented |
+| GET | `/api/v1/mail/conversations` | No | `?page=1&limit=20&filter=all\|new\|archived` | See [Conversations List Response](#get-apiv1mailconversations) | 200 | implemented |
 | GET | `/api/v1/mail/conversations/:id` | No | — | See [Conversation Detail Response](#get-apiv1mailconversationsid) | 200, 404 | implemented |
+| PUT | `/api/v1/mail/conversations/mark-read` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
 | PUT | `/api/v1/mail/conversations/mark-unread` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
 | PUT | `/api/v1/mail/conversations/archive` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
+| PUT | `/api/v1/mail/conversations/unarchive` | No | `{ conversationIds: string[] }` | `{ updated: number }` | 200, 400 | implemented |
 | GET | `/api/v1/settings/source-health` | No | — | See [Source Health Response](#get-apiv1settingssource-health) | 200 | implemented |
 | GET | `/api/v1/settings/profile` | No | — | See [Profile Response](#get-apiv1settingsprofile) | 200 | implemented |
-| POST | `/api/v1/read-state` | No | See [Read State Request](#post-apiv1read-state) | `{ id: string, itemType: string, itemId: string, isRead: boolean, isHandled: boolean, updatedAt: string }` | 200, 400 | implemented |
 | POST | `/api/v1/sync/refresh` | No | — | `{ started: true, message: string }` | 202 | implemented |
 
 ---
@@ -219,7 +225,8 @@
       fileId: string;
       fileName: string;
     }>;
-    isHandled: boolean;                  // from read_state
+    isNew: boolean;                      // true until explicitly dismissed
+    isArchived: boolean;                 // soft-archived by the parent
     updatedAt: string;                   // ISO 8601
   }>;
   pagination: {
@@ -228,6 +235,28 @@
     total: number;
     totalPages: number;
   };
+}
+```
+
+#### Homework Item Shape
+
+Used in both list and mutation responses:
+
+```typescript
+{
+  id: string;
+  studentGuid: string;
+  lessonId: number;
+  groupId: number;
+  lessonDate: string;
+  lesson: number;
+  subjectName: string;
+  homeworkText: string;
+  remark: string | null;
+  files: Array<{ fileId: string; fileName: string; }>;
+  isNew: boolean;
+  isArchived: boolean;
+  updatedAt: string;
 }
 ```
 
@@ -253,7 +282,8 @@
     remark: string | null;               // null if "ללא הערות" or empty
     justification: string | null;        // null if "ללא הערות" or empty
     eventAt: string;                     // ISO 8601
-    isHandled: boolean;                  // from read_state
+    isNew: boolean;                      // true until explicitly dismissed
+    isArchived: boolean;                 // soft-archived by the parent
     updatedAt: string;                   // ISO 8601
   }>;
   pagination: {
@@ -262,6 +292,35 @@
     total: number;
     totalPages: number;
   };
+}
+```
+
+#### Behavior Item Shape
+
+Used in both list and mutation responses:
+
+```typescript
+{
+  id: string;
+  studentGuid: string;
+  lessonId: number;
+  groupId: number;
+  eventCode: number;
+  achvaCode: number;
+  achvaName: string;
+  bucket: "attention" | "positive" | "neutral";
+  priority: "high" | "medium" | "low";
+  justifiable: boolean;
+  lessonDate: string;
+  lesson: number | null;
+  subject: string;
+  reporter: string;
+  remark: string | null;
+  justification: string | null;
+  eventAt: string;
+  isNew: boolean;
+  isArchived: boolean;
+  updatedAt: string;
 }
 ```
 
@@ -306,17 +365,42 @@
 }
 ```
 
+### GET /api/v1/children/:studentGuid/timetable
+
+Returns the student's weekly timetable. Synced weekly (Sunday 03:00). Returns an empty array when no data has been synced yet.
+
+```typescript
+{
+  data: Array<{
+    id: string;
+    studentGuid: string;
+    groupId: number;
+    day: number;                         // 1=Sunday … 6=Friday (Israeli school week)
+    lesson: number;                      // period number within the day
+    roomNum: string;                     // empty string if not set
+    weeks: number;                       // -1 = all weeks; positive = specific week mask
+    groupName: string;                   // e.g. "מתמטיקה ג3"
+    subjectName: string;                 // Hebrew subject name
+    teachers: Array<{
+      teacherGuid: string;
+      teacherName: string;
+    }>;
+    updatedAt: string;                   // ISO 8601
+  }>;
+}
+```
+
 ### GET /api/v1/mail/summary
 
 ```typescript
 {
-  unreadConversations: number;           // authoritative from mail_conversation.isUnread count
-  recentConversations: Array<{           // top 3 most recent unread, for home screen preview
+  newCount: number;                      // authoritative from mail_conversation.isNew count
+  recentConversations: Array<{           // top 3 most recent new/unread, for home screen preview
     conversationId: string;
     subject: string;
     senderNamePreview: string;
     sendTime: string;                    // ISO 8601
-    isUnread: boolean;
+    isNew: boolean;
     hasAttachments: boolean;
     preventReply: boolean;
   }>;
@@ -326,7 +410,7 @@
 
 ### GET /api/v1/mail/conversations
 
-Query params: `page=1`, `limit=20`, `unreadOnly=false`
+Query params: `page=1`, `limit=20`, `filter=all|new|archived`
 
 ```typescript
 {
@@ -335,11 +419,11 @@ Query params: `page=1`, `limit=20`, `unreadOnly=false`
     subject: string;
     senderNamePreview: string;           // from messages[0].senderName
     sendTime: string;                    // ISO 8601
-    isUnread: boolean;
+    isNew: boolean;                      // matches upstream isNew / unread state
+    hasDrafts: boolean;
     hasAttachments: boolean;
     preventReply: boolean;
     labels: string[];
-    isHandled: boolean;                  // from read_state
     lastFetchedAt: string;               // ISO 8601
   }>;
   pagination: {
@@ -360,12 +444,11 @@ Note: If `bodyHtmlSanitized` is null in DB (not yet fetched), backend lazily fet
   conversationId: string;
   subject: string;
   sendTime: string;                      // ISO 8601
-  isUnread: boolean;
+  isNew: boolean;                        // matches upstream isNew / unread state
   hasDrafts: boolean;
   hasAttachments: boolean;
   preventReply: boolean;
   labels: string[];
-  isHandled: boolean;                    // from read_state
   messages: Array<{
     messageId: string;
     conversationId: string;
@@ -375,7 +458,7 @@ Note: If `bodyHtmlSanitized` is null in DB (not yet fetched), backend lazily fet
     bodyHtmlSanitized: string;           // DOMPurify-sanitized HTML
     bodyTextPreview: string;             // first 200 chars of stripped HTML
     sendTime: string;                    // ISO 8601
-    isUnread: boolean;
+    isNew: boolean;
     recipients: Array<{
       displayOrder: number;
       displayName: string;               // Hebrew label, e.g. "שכבה/ו/כל הורי השכבה"
@@ -425,30 +508,6 @@ Note: If `bodyHtmlSanitized` is null in DB (not yet fetched), backend lazily fet
 }
 ```
 
-### POST /api/v1/read-state
-
-Request body:
-```typescript
-{
-  itemType: "homework" | "behavior" | "mail_conversation" | "feed_item";
-  itemId: string;                        // UUID or composite key string
-  isRead: boolean;
-  isHandled: boolean;
-}
-```
-
-Response:
-```typescript
-{
-  id: string;
-  itemType: string;
-  itemId: string;
-  isRead: boolean;
-  isHandled: boolean;
-  updatedAt: string;                     // ISO 8601
-}
-```
-
 ---
 
 ## Upstream Mashov API Reference (Backend Internal Use Only)
@@ -480,9 +539,11 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 
 ## Notes
 
-1. **`PUT /api/v1/mail/conversations/mark-unread` and `PUT archive`** — these are proxy actions that call the upstream Mashov API directly and also update local `mail_conversation.isUnread` state in DB.
+1. **`PUT /api/v1/mail/conversations/mark-unread` and `PUT archive`** — these are proxy actions that call the upstream Mashov API directly and also update local `mail_conversation.isNew` state in DB. `mark-read`, `unarchive` are local-only operations.
 2. **`GET /api/v1/mail/conversations/:id`** — the response includes sanitized HTML body. The first call for a conversation that has not been detail-fetched will be slightly slower (upstream proxy + sanitize + store). Subsequent calls return from DB.
 3. **Notices** — only non-expired items are returned. `expirationDate` comparison is done server-side.
 4. **Behavior `remark` and `justification` fields** — the backend suppresses the upstream default value `"ללא הערות"` and returns `null` instead. Frontend should treat `null` as "no comment".
 5. **`POST /api/v1/sync/refresh`** — returns `202 Accepted` immediately. Sync runs asynchronously. Frontend should poll `GET /api/v1/settings/source-health` to observe progress.
-6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects` and `/children/notices` return full lists (no pagination needed at current data scale).
+6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects`, `/children/notices`, and `/children/timetable` return full lists (no pagination needed at current data scale).
+7. **Read/handled state** — implemented directly on items (`isNew`, `isArchived` fields on `homework_item` and `behavior_item`; `isNew` on `mail_conversation`). There is no separate `read_state` table in Phase 1. State is household-global.
+8. **Timetable** — synced weekly (Sunday 03:00). The `day` field uses Israeli school week: 1=Sunday, 2=Monday, …, 6=Friday. Frontend should handle the case where `data` is empty (sync not yet run or source returned no data).

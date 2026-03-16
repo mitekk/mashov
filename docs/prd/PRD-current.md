@@ -1,413 +1,275 @@
-# PRD: School Parent Command Center (Mashov) — v1
+# PRD: Mashov School Parent Command Center — v2 (Phase 2: Authentication & Multi-Household)
 
-**Date:** 2026-03-11
+**Date:** 2026-03-16
 **Status:** Active
-**Supersedes:** v0 placeholder
+**Supersedes:** v1 (Phase 1 baseline)
+**Phase scope:** Phase 2 only — Auth, per-user data scoping, multi-household
 
 ---
 
 ## Overview
 
-A modern, mobile-first household command center built on top of the Mashov school API (`web.mashov.info`). It gives a busy Israeli parent one clear, calming briefing screen: what changed across all their children, which child needs attention, and what school messages are waiting. The app is a **summary-and-triage layer**, not a rebuild of the school portal. Value is created through cross-child aggregation, strong prioritization, and low-friction reading. Phase 1 is a private household deployment with no app-level authentication. Phase 2 adds proper parent sign-in and multi-household support.
+Phase 2 adds proper parent authentication to the Mashov household command center built in Phase 1. It converts the app from a single-household private deployment into a secure, multi-tenant system where multiple parents can independently sign in, connect their own school accounts, and view only their own children's data. Authentication uses an email magic-link flow (passwordless). Local read/handled state that was household-global in Phase 1 becomes user-scoped. The sync engine runs independently per household. Everything else — the dashboard, child workspace, inbox, timetable, behavior classification — carries forward from Phase 1 unchanged in UX.
 
 ---
 
 ## Problem Statement
 
-Parents with children in Israeli schools using the Mashov system must repeatedly log in to a complex legacy web portal, navigate between sections, switch child context manually, and mentally assemble "what changed" from multiple separate screens. The cognitive cost of staying informed is disproportionately high for what is usually a 30-second check. This app removes that burden.
+Phase 1 works for a single household with no app-level login. It is unsuitable for shared deployments and lacks privacy isolation between users. A family member logging in sees another member's handled/read state. There is no way to add a second parent or school account without redeploying. Phase 2 fixes these limitations so the app can be safely shared within a household or deployed for multiple families.
 
 ---
 
 ## Users & Roles
 
-### Phase 1
-
-- **Household user (implicit):** Single server-configured credential set. No login UI. The backend holds the upstream school credentials and syncs data into PostgreSQL. All read/handled state is household-global.
-- Deployment is private/internal only. Not for public access.
-
 ### Phase 2
 
-- **Parent (authenticated):** Signs in via email magic-link, connects their school account, views their own children's data. State is user-scoped.
-- Multiple households can safely coexist in the same deployment.
+| Role | Description | Capabilities |
+|------|-------------|--------------|
+| **Parent (authenticated)** | Signed-in user with a connected school account | Full access to their own children's data; manage their own school connection; sign out |
+| **Unauthenticated visitor** | Any request without a valid session cookie | Can reach sign-in page only; all `/api/v1/*` and app pages except `/auth/*` redirect to sign-in |
+
+No admin role in Phase 2. Multi-household is supported by having multiple parent accounts; there is no super-admin or household manager role.
+
+### Phase 1 compatibility
+
+Phase 1 had no auth. Phase 2 is a breaking change — all API endpoints become protected. The existing household data in the DB is migrated to the first user created, preserving Phase 1 data.
 
 ---
 
 ## Functional Requirements
 
-### Authentication & Bootstrap
+### Authentication — Magic-Link Flow
 
-- FR-1: Backend authenticates against `POST /api/login` using server-configured credentials (`semel`, `year`, `username`, `password`).
-- FR-2: CSRF token is acquired by making an initial GET request to the Mashov web app (e.g. the login page). The `X-Csrf-Token` value is returned in the response headers of that request. This token is then included in the `X-Csrf-Token` header of `POST /api/login`.
-- FR-3: After successful login, the upstream server sets three cookies: `Csrf-Token`, `MashovAuthToken`, `uniquId`. All subsequent authenticated requests must include the `X-Csrf-Token` header (using the session token) and carry these cookies.
-- FR-4: Backend maintains session cookies and re-authenticates on session expiry, repeating the CSRF bootstrap flow.
-- FR-5: Children are discovered from `accessToken.children[]` in the login response and persisted. Each child record includes `childGuid`, `familyName`, `privateName`, `classCode`, `classNum`, `gender`, `groups[]`, `isActive`.
-- FR-6: School name, year, and settings are stored from `accessToken.schoolSettings` in the login response.
-- FR-7: Backend **never** exposes upstream tokens, cookies, or credentials to the frontend or to logs.
+- **FR-1:** A parent navigates to `/auth/sign-in` and enters their email address.
+- **FR-2:** Backend sends a magic-link email with a time-limited single-use token (expiry: 15 minutes). The token is stored hashed in the DB.
+- **FR-3:** Parent clicks the link → backend verifies token → creates or resumes session → issues httpOnly, Secure, SameSite=Strict session cookie. Token is marked used.
+- **FR-4:** Session cookie lifetime: 30 days, rolling (refresh on each authenticated request). Configurable via `SESSION_LIFETIME_DAYS` env var.
+- **FR-5:** A parent can sign out. Session cookie is cleared; session record is invalidated in DB.
+- **FR-6:** Expired or used magic-link tokens return a clear error page with a "Request a new link" action.
+- **FR-7:** Rate limit: maximum 3 magic-link requests per email per 15 minutes. Returns a generic "check your inbox" message regardless of whether the email exists (don't reveal existence).
+- **FR-8:** Magic-link email is sent via configurable transport: SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`) or Resend API (`RESEND_API_KEY`). Exactly one must be configured.
+- **FR-9:** All existing `/api/v1/*` endpoints and all app pages except `/auth/*` require a valid session. Unauthenticated requests to API endpoints return `401`. Unauthenticated browser requests redirect to `/auth/sign-in?next=<original-path>`.
 
-### Sync Engine
+### School Account Connection — Onboarding
 
-- FR-8: Backend syncs data on a scheduled cadence and serves cached data immediately to the frontend. Sync order and cadence:
+- **FR-10:** After first sign-in (no school account connected), the parent is redirected to `/auth/connect-school`.
+- **FR-11:** The connect-school form collects: school code (`semel`), school year (`year`), username, password. All fields required.
+- **FR-12:** Backend submits credentials to Mashov upstream API (`POST /api/login` flow) to validate. If upstream login fails, return a clear field-level error — do not store the credentials.
+- **FR-13:** On success: encrypt credentials (AES-256-GCM, key from `CREDENTIAL_ENCRYPTION_KEY` env var) and store in `household_connection` record linked to the user. Parse and persist children from `accessToken.children[]` and school settings. Start initial sync.
+- **FR-14:** Parent is shown a sync progress screen (`/auth/syncing`) while initial sync runs. The screen polls `GET /api/v1/sync/status` every 3 seconds. Once the first successful sync cycle completes, redirect to Home.
+- **FR-15:** A connected parent who navigates to `/auth/connect-school` is redirected to Settings instead (account already connected).
 
-| Source | Endpoint | Cadence |
-|--------|----------|---------|
-| Notifications | `GET /api/user/notifications?skip=0&take=50` | Every 5 min |
-| Unread mail count | `GET /api/mail/counts?$select=unreadConversations` | Every 5 min |
-| Inbox list | `GET /api/mail/inbox/conversations?skip=0&take=50` | Every 5–10 min |
-| Per-child homework | `GET /api/students/{childGuid}/homework` | Every 10–15 min |
-| Per-child behavior | `GET /api/students/{childGuid}/behave` | Every 10–15 min |
-| Per-child groups | `GET /api/students/{studentId}/groups` | Daily |
-| Per-child lessons count | `GET /api/students/{studentGuid}/lessonsCount` | Daily |
-| Per-child message board | `GET /api/students/{childGuid}/messageBoard` | Daily |
-| Achvas reference | `GET /api/achvas` | Daily |
-| User details | `GET /api/user/details` | Daily |
-| Mail recipients (optional) | `GET /api/mail/recipients` | Daily |
-| Daily behavior (feature-flagged) | `GET /api/students/{childGuid}/dailyBehave` | Low-frequency |
-| Out-of-school behavior (feature-flagged) | `GET /api/students/{studentId}/outBehave` | Low-frequency |
+### School Account Management — Settings
 
-- FR-9: Homework and behavior endpoints return full history on every call — no pagination needed. Store with upsert semantics.
-- FR-10: One source failing must not break the rest of the dashboard. Partial failures are tracked per source.
-- FR-11: Manual refresh is available globally and triggers a full sync cycle.
-- FR-12: Each sync attempt is logged in a `sync_run` table: `source`, `status`, `startedAt`, `endedAt`, `fetchedCount`, `errorMessage`.
+- **FR-16:** In More/Settings, an authenticated parent can view their connected school account details (school name, year, username — never the raw password).
+- **FR-17:** Parent can update their school credentials (re-enter username and/or password). Backend re-validates with upstream before saving. On failure, keep old credentials.
+- **FR-18:** Parent can disconnect their school account. This removes the `household_connection` record and all associated data (students, homework, behavior, mail, sync runs, timetable) after a confirmation prompt. Session remains active; parent is redirected to `/auth/connect-school`.
+- **FR-19:** Credential encryption key rotation: when `CREDENTIAL_ENCRYPTION_KEY` is rotated, an admin CLI command (`npm run credentials:rotate`) re-encrypts all stored credentials. This is an ops concern, not a UI feature.
 
-### Freshness Model
+### Per-User Data Scoping
 
-- FR-13: Freshness thresholds:
-  - Primary sources (notifications, mail count, inbox): stale after 15 minutes
-  - Child history (homework, behavior): stale after 24 hours
-  - Reference data (achvas, groups, lessonsCount, user details): stale after 7 days
-- FR-14: When stale, the app still renders cached data. The UI shows a calm, non-alarming freshness indicator.
-- FR-15: App shell always shows one of four states: `fresh` / `syncing` / `stale` / `degraded`.
+- **FR-20:** All student, homework, behavior, mail, timetable, and sync data is associated with a `userId` (via `householdConnectionId`). Queries in all controllers include a user-scope filter derived from the session.
+- **FR-21:** `isNew`/`isArchived` state on `homework_item` and `behavior_item`, and `isNew` on `mail_conversation`, is migrated from item-level columns to a `user_item_state` table keyed by `(userId, itemType, itemId)`. Items themselves are neutral; user state is overlaid at query time.
+- **FR-22:** A parent's read/handled state changes do not affect any other parent's view of the same items (if two users ever share a school connection — which Phase 2 does not support in the UI, but the data model must not corrupt cross-user).
+- **FR-23:** The `POST /api/v1/sync/refresh` endpoint triggers sync only for the authenticated user's household connection.
 
-### Notifications & Feed Normalization
+### Multi-Household Sync Isolation
 
-- FR-16: All sources are normalized into a canonical internal update model with fields:
-  - `id`, `sourceType`, `sourceId`, `studentGuid` (nullable), `studentName` (nullable), `title`, `summary`, `bodyHtml` (nullable), `category`, `subcategory`, `priority`, `isPositive`, `isUnread`, `isHandledLocally`, `eventAt`, `syncedAt`, `rawPayload`
-- FR-17: Notification `eventData` field (JSON string) is parsed and stored as structured data.
-- FR-18: Deduplication rules:
-  - **Homework:** `studentGuid + lessonId` as primary key; fallback `studentGuid + groupId + lessonDate + lesson + homework hash`
-  - **Behavior:** `studentGuid + lessonId + eventCode` as primary key; fallback `studentGuid + lessonDate + lesson + subject + eventCode`
-  - **Mail summary (eventType 16):** Treat as metadata signal, not a repeating feed item. Source of truth for unread count is `mail/counts`.
-  - **Conversations:** Deduplicate by `conversationId`; messages by `messageId`
-- FR-19: Notifications without a stable numeric `id` (e.g. eventType 16) use a composite fingerprint for deduplication.
-- FR-20: All timestamps are normalized to a single timezone-aware representation. Naive/local timestamps (confirmed to be consistent) are treated using the school/user timezone. Timezone-offset timestamps (`+02:00`) are stored as UTC.
+- **FR-24:** The sync engine associates each `sync_run` record with a `householdConnectionId`. Cron tasks iterate over all active household connections and sync each independently.
+- **FR-25:** A failure in one household's sync does not affect other households' cron runs.
+- **FR-26:** Freshness state (`GET /api/v1/settings/source-health`) returns health for the authenticated user's connection only.
 
-### Home Screen
+### Session Management
 
-- FR-21: Home is the first screen. It answers "anything important?" without switching tabs or choosing a child first.
-- FR-22: **Header strip** — shows: household/product title, current date, last successful sync time, refresh action, subtle freshness status indicator.
-- FR-23: **Summary strip** — compact chips showing:
-  - Unread conversations count (source: `mail/counts` — authoritative)
-  - Recent homework count (last 7 days)
-  - Recent behavior/attendance count (last 7 days)
-  - Number of children in the household
-- FR-24: **Needs-attention section** — max 3–5 cards before "See all", prioritized:
-  1. Unread school conversations
-  2. Recent negative behavior/attendance events (last 7 days)
-  3. Recent homework not locally handled (last 7 days)
-  4. Sync degradation (only when it affects trust in freshness)
+- **FR-27:** The DB stores all active sessions. `GET /api/v1/auth/me` returns the current user's profile (email, connected school name/year if any).
+- **FR-28:** Backend middleware validates the session cookie on every request: checks existence, expiry, and that the session is not revoked. Revoked sessions return `401`.
+- **FR-29:** When `SESSION_LIFETIME_DAYS` elapses since last activity, the session expires. The parent is redirected to sign-in with a `?reason=expired` param.
 
-  Each card shows: title, child name (when applicable), timestamp, one clear tap target. Positive updates must not crowd out urgent items.
-- FR-25: **Latest-updates feed** — reverse-chronological mixed feed across all children:
-  - Homework notifications (eventType 102)
-  - Behavior notifications (eventType 101)
-  - Unread conversation activity
-  - Positive reinforcement events
-  - Optional sync/degradation events when relevant
+### Data Migration — Phase 1 → Phase 2
 
-  Each item shows: type badge, short title, one-line summary, child name (if applicable), timestamp, visual state (new / handled / neutral), optional quick action (open, mark handled).
-- FR-26: **Child quick cards** — one card per child showing: name, class code + class number, latest update time, recent update count, concise one-line status, one-tap link to child workspace.
-- FR-27: On a common phone viewport, the parent sees the header, summary strip, and first needs-attention items without scrolling.
-- FR-28: No horizontal carousels for critical information. No tab switching required before seeing status.
-
-### Children Screen
-
-- FR-29: Lists all children. Each card shows: name, class code/number, latest update time, recent homework count, recent behavior count, optional subject count, one-tap to child workspace.
-- FR-30: Cards are easy to compare; urgency lives on Home, not here.
-
-### Child Workspace
-
-- FR-31: Opens in one tap from Home or Children.
-- FR-32: **Child header** — name, class code/number, last sync time for this child's data, compact activity summary chips.
-- FR-33: **Overview chips** — recent homework count, recent behavior count, subject count, total weekly hours (from `lessonsCount`).
-- FR-34: **Child latest timeline** — mixed child-scoped reverse-chronological feed: homework events, behavior events, positive reinforcement. Mail references shown only if a safe child link can be confirmed.
-- FR-35: **Recent homework section** — per item: lesson date, subject, homework text, remark/topic (if present), attachment file names (indicator only — no download). Local handled toggle per item.
-  - Labels: "Recent homework" or "Latest homework". Never due-date language.
-- FR-36: **Behavior and attendance section** — per item: event label (`achvaName`), attention/positive/neutral bucket, lesson date, lesson number (if available), subject, teacher/reporter name, justification text (if meaningful — suppress "ללא הערות" default), optional teacher remark.
-  - UI grouping tabs/chips: All / Attention / Positive / Other
-  - Show a subtle "Justifiable" badge when `achvas.justifiable = true`
-  - Unknown event codes must render safely with original Hebrew label
-- FR-37: **Subjects and teachers section** — derived from `groups` (source of truth for subject list) joined with `lessonsCount` by `groupId`. Per row: subject name, group name (if useful), active teacher name(s), weekly hours, lessons held so far. Must not imply a timetable, next lesson, grade, or attendance percentage.
-- FR-38: **School notices section** — from `GET /api/students/{childGuid}/messageBoard`. Renders non-expired announcements as read-only HTML cards (sanitized). Fetched per childGuid. Expired announcements (past `expirationDate`) are not shown.
-- FR-39: Interaction model: anchored scroll sections or compact segmented control. No deep nested tabs, no sub-pages that hide the overview.
-- FR-40: Local mark-handled state is available per homework and behavior item.
-
-### Inbox
-
-- FR-41: Unread count displayed prominently (source: `mail/counts`).
-- FR-42: Conversation list sorted by `sendTime` descending. Per item: sender name, subject, time (relative + exact), unread styling, attachment indicator (`hasAttachments`), reply-disabled indicator (`preventReply`).
-- FR-43: Load-more pagination using `skip`/`take` against `GET /api/mail/inbox/conversations`.
-- FR-44: Optional filter: unread only.
-- FR-45: Mailbox scope defaults to **household/school messages** — no faked child mapping.
-- FR-46: Parent can **mark a conversation as unread** via `PUT /api/mail/conversations/markAsUnread` (array of conversation UUIDs).
-- FR-47: Parent can **archive a conversation** via `PUT /api/mail/conversations/move/archive` (array of conversation UUIDs).
-
-### Conversation Detail
-
-- FR-48: Opens in one tap from Home or Inbox.
-- FR-49: Full conversation body fetched **lazily on open** — not pre-fetched during dashboard load.
-- FR-50: Message HTML body (`messages[].body`) is sanitized (DOMPurify or equivalent) before rendering.
-- FR-51: Shows: sender name, sent time, recipients summary (from `messages[].recipients[].displayName`), attachment presence indicator.
-- FR-52: Shows reply-disabled state if `preventReply = true`.
-- FR-53: Local handled/read state per conversation.
-
-### Behavior Classification
-
-- FR-54: `achvas` reference is ingested daily and used to classify all behavior events into buckets.
-- FR-55: Default classification mapping (configurable in code, not hardcoded in UI):
-
-| Event code | Hebrew label | Default bucket | Default priority |
-|---|---|---|---|
-| 1 | איחור | Attention | Medium |
-| 2 | חיסור | Attention | High |
-| 4 | חיזוק חיובי | Positive | Low |
-| 5 | אי הכנת ש.ב. | Attention | High |
-| 6 | אי הבאת ציוד | Attention | Medium |
-| 10 | לא השלים משימה בכיתה | Attention | Medium |
-| 11 | חיסור בשל פעילות בית-ספרית | Neutral | Low |
-| unknown | original label | Neutral | Low |
-
-- FR-56: `dailyBehave` schema confirmed to mirror `/behave` response shape. Ingestion path must be designed so these sources can be added later without redesign (feature-flagged).
-
-### Local Read/Handled State
-
-- FR-57: Upstream mail `isNew` / unread count drives the badge — stored and respected separately from local state.
-- FR-58: Feed handled, homework handled, behavior handled are all local to this app (stored in `read_state` table).
-- FR-59: Handled items are visually quieter, not hidden. New items stand out clearly.
-- FR-60: "Clear all local handled/read state" action available in More/Settings.
-- FR-61: Phase 1: state is household-global. Phase 2: state is user-scoped.
-
-### More / Settings Screen
-
-- FR-62: Shows last successful sync time by source (or global summary).
-- FR-63: Shows current freshness/degraded status.
-- FR-64: Shows school name and current year (from `schoolSettings`).
-- FR-65: Shows parent contact info from `GET /api/user/details` in read-only form (email, cellphone).
-- FR-66: Shows app version/build info.
-- FR-67: Clear local handled/read state action.
-- FR-68: Optional lightweight diagnostics area for internal/private use (sync run history, source health).
-
-### Phase 2 — App Authentication
-
-- FR-69: Parent signs in via email magic-link or equivalent passwordless flow. Session stored in httpOnly, Secure, SameSite=Strict cookie.
-- FR-70: Connect-school-account onboarding: parent enters `semel`, `year`, `username`, `password` → backend validates upstream login → stores encrypted credentials.
-- FR-71: Data and local state are scoped per authenticated user.
-- FR-72: Session management and revocation.
-- FR-73: Multiple households safely coexist in the same deployment.
-- FR-74: Phase 2 onboarding screens: sign-in → magic-link confirmation → connect-school-account → initial sync progress → dashboard.
+- **FR-30:** A migration script (`npm run migrate:phase2`) runs once during upgrade. It:
+  1. Creates the first `app_user` record (email from `BOOTSTRAP_ADMIN_EMAIL` env var).
+  2. Reassigns all `household_connection`, `student`, `sync_run` records to that user.
+  3. Migrates `homework_item.isNew`, `homework_item.isArchived`, `behavior_item.isNew`, `behavior_item.isArchived`, and `mail_conversation.isNew` to `user_item_state` rows for that user.
+  4. Removes the now-redundant columns from the item tables.
+- **FR-31:** After migration, the app behaves as if the first user had always been authenticated. No data loss.
 
 ---
 
 ## Non-Functional Requirements
 
-- **Performance:** Warm dashboard load from cached DB data in < 2 seconds. Refresh must not blank or block existing content. Inbox list stays fast with lazy conversation detail loading.
-- **Reliability:** One upstream source failing does not break the app. Last known good data is always shown. Partial failure is visible but calm. Retry logic for transient upstream failures.
-- **RTL:** Layouts work naturally in RTL. Hebrew and mixed Hebrew/English text renders correctly everywhere, including long message bodies.
-- **Accessibility:** Strong contrast, focus states, keyboard navigation on desktop, screen-reader labels for primary actions, status not conveyed by color alone, touch targets sized for mobile.
-- **Observability:** Structured logs, sync history per source in DB, visible last sync timestamps, error monitoring hooks. No secrets or tokens in logs.
-- **Privacy:** No secrets in client storage. No upstream credentials in analytics or logs. Minimal PII in logs.
-- **Security (Phase 1 baseline):**
-  - Upstream credentials stored server-side only, encrypted at rest
-  - No credentials or tokens in frontend bundles, localStorage, or logs
-  - HTTPS in deployed environments
-  - Optional host-layer protection (basic auth or IP allowlist) for private deployment
-  - Phase 1 is acceptable for local/household/prototype use — NOT for open public deployment
+- **Auth latency:** Magic-link email delivered within 30 seconds in 95th percentile. Sign-in → dashboard in < 3 seconds (includes session validation + DB round trip, not email wait).
+- **Session security:** Sessions stored server-side in DB. Cookie: `HttpOnly; Secure; SameSite=Strict; Path=/`. No JWT in cookies (server-side session only).
+- **Credential security:** School passwords never logged, never returned in any API response, never stored in plaintext. AES-256-GCM with random IV per encryption. Key loaded from `CREDENTIAL_ENCRYPTION_KEY` env var only.
+- **Rate limiting:** Magic-link request: 3/email/15min. Sign-in page: 10 requests/IP/minute. API endpoints: 100 requests/session/minute (existing behavior, now per-session).
+- **Multi-user isolation:** No query anywhere returns data from a different user's household connection. Enforced at service layer, not just controller.
+- **HTTPS:** Enforced in production. `SESSION_SECURE_COOKIE=false` allowed only in local development (`NODE_ENV=development`).
+- **Performance:** Adding auth middleware must not add more than 5ms to p95 API response time (session lookup by indexed session token).
+- **Data retention:** Revoked sessions purged after 7 days. Expired magic-link tokens purged after 24 hours. Batch cleanup cron: daily at 02:00.
 
 ---
 
 ## Tech Constraints
 
-- **Frontend:** React + Next.js + TypeScript + Tailwind CSS + TanStack Query
-- **Backend:** NestJS or Fastify-based TypeScript service
-- **Database:** PostgreSQL with Prisma ORM
-- **Background jobs:** Cron or queue worker for sync cadence
-- **Infrastructure:** Docker Compose (dev + production)
-- **HTML sanitization:** DOMPurify or equivalent — required before rendering any upstream HTML content (mail bodies, message board)
-- **Auth (Phase 2):** Email magic-link or passkey; httpOnly session cookies; never localStorage
-- **Upstream API base:** `https://web.mashov.info/api`
-- **Frontend must never call upstream APIs directly** — all data fetched through internal backend API
-- **Identifier normalization:** Some endpoints use `studentId`, some `studentGuid` — adapter layer must normalize. Field values are GUIDs in both cases.
-
-### Internal API shape (backend → frontend)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/dashboard` | Home screen data: summary, needs-attention, feed, child cards, freshness |
-| GET | `/api/feed` | Full latest-updates feed with pagination |
-| GET | `/api/children` | All children |
-| GET | `/api/children/:studentGuid` | Single child workspace data |
-| GET | `/api/children/:studentGuid/homework` | Child homework history |
-| GET | `/api/children/:studentGuid/behavior` | Child behavior history |
-| GET | `/api/children/:studentGuid/subjects` | Child subjects + teachers |
-| GET | `/api/children/:studentGuid/notices` | Child message board notices |
-| GET | `/api/mail/summary` | Unread count + inbox preview |
-| GET | `/api/mail/conversations` | Paginated inbox list |
-| GET | `/api/mail/conversations/:id` | Conversation detail (lazy) |
-| PUT | `/api/mail/conversations/mark-unread` | Mark conversations unread |
-| PUT | `/api/mail/conversations/archive` | Archive conversations |
-| GET | `/api/settings/source-health` | Per-source sync health |
-| POST | `/api/read-state` | Update local handled/read state |
-| POST | `/api/sync/refresh` | Trigger manual sync |
-| GET | `/api/settings/profile` | Parent contact info |
+- **Backend:** NestJS (existing). Add `AuthModule`, `MagicLinkModule`, `SessionModule` (rename existing session → `MashovSessionModule` to avoid naming conflict).
+- **Frontend:** Next.js 15 App Router (existing). Add `/auth/sign-in`, `/auth/verify`, `/auth/connect-school`, `/auth/syncing` pages. Add Next.js middleware for session-based route protection.
+- **Database:** PostgreSQL + Prisma (existing). New tables: `app_user`, `magic_link_token`, `app_session`, `user_item_state`. Modified tables: `homework_item` (drop `isNew`, `isArchived`), `behavior_item` (drop `isNew`, `isArchived`), `mail_conversation` (drop `isNew`), `household_connection` (add `userId` FK).
+- **Email:** Nodemailer for SMTP; `resend` npm package for Resend API. Exactly one transport configured via env vars. Template: minimal HTML with magic-link button + plain-text fallback.
+- **Crypto:** Node.js built-in `crypto` module for AES-256-GCM. No external encryption library required.
+- **Session:** Custom implementation using a `app_session` DB table + httpOnly cookie. No Passport.js, no NextAuth in Phase 2. Keep it simple.
+- **Auth middleware (Next.js):** `middleware.ts` at project root reads the session cookie, calls a lightweight session-check endpoint or reads directly from the shared DB (via an API call to backend), and redirects unauthenticated requests.
 
 ---
 
-## Database Schema (Core Tables)
+## Existing Codebase
 
-### `household_connection`
-Phase 1 single household. Fields: `id`, `schoolCode`, `schoolYear`, `username`, `encryptedPassword`, `schoolName`, `upstreamUserId`, `lastLoginAt`, `active`, `createdAt`, `updatedAt`
+**Phase 1 is the baseline.** All of the following must be preserved and extended:
 
-### `parent_profile`
-Fields: `id`, `upstreamUserId`, `displayName`, `email`, `cellphone`, `detailsState`, `rawPayload`, `updatedAt`
+| Layer | Current state |
+|-------|--------------|
+| NestJS backend | 9 modules: Session (Mashov), Sync, Dashboard, Children, Mail, Feed, Settings, Health, Prisma |
+| Next.js frontend | 6 routes: Home, Children, Child Workspace, Inbox, Conversation Detail, More |
+| Prisma schema | 16 tables including `timetable_entry` added in Phase 1 extension |
+| Item-level state | `homework_item.isNew/isArchived`, `behavior_item.isNew/isArchived`, `mail_conversation.isNew` — must migrate to `user_item_state` |
+| Sync engine | 13 cron tasks including timetable. Must become multi-household aware. |
+| API contract | All `/api/v1/*` endpoints currently unauthenticated — all must be guarded in Phase 2 |
 
-### `student`
-Fields: `id`, `studentGuid` (unique), `privateName`, `familyName`, `fullName`, `classCode`, `classNum`, `gender`, `groupsRaw` (jsonb), `isActive`, `rawPayload`, `updatedAt`
-
-### `notification_event`
-Fields: `id`, `upstreamNotificationId` (nullable), `fingerprint` (for ID-less events), `eventType`, `eventText`, `eventKey`, `eventKey2`, `studentGuid` (nullable), `eventAt`, `addTime`, `readTime`, `parsedEventData` (jsonb), `rawPayload`, `updatedAt`
-
-### `mail_conversation`
-Fields: `id`, `conversationId` (unique), `subject`, `senderNamePreview`, `sendTime`, `isUnread`, `hasAttachments`, `preventReply`, `labels` (jsonb), `rawPayload`, `lastFetchedAt`
-
-### `mail_message`
-Fields: `id`, `messageId` (unique), `conversationId`, `senderId`, `senderName`, `subject`, `bodyHtmlSanitized`, `bodyTextPreview`, `sendTime`, `isUnread`, `recipients` (jsonb), `rawPayload`
-
-### `homework_item`
-Fields: `id`, `studentGuid`, `lessonId`, `groupId`, `lessonDate`, `lesson`, `subjectName`, `homeworkText`, `remark`, `files` (jsonb), `rawPayload`, `updatedAt`
-Unique constraint: `(studentGuid, lessonId)`
-
-### `behavior_item`
-Fields: `id`, `studentGuid`, `lessonId`, `groupId`, `eventCode`, `achvaCode`, `achvaName`, `classification`, `justifiable`, `lessonDate`, `lesson`, `subject`, `reporter`, `remark`, `justification`, `eventAt`, `rawPayload`, `updatedAt`
-Unique constraint: `(studentGuid, lessonId, eventCode)`
-
-### `subject_enrollment`
-Fields: `id`, `studentGuid`, `groupId`, `groupName`, `subjectName`, `teachers` (jsonb), `inactiveTeachers` (jsonb), `weeklyHours`, `lessonsCount`, `rawPayload`, `updatedAt`
-Unique constraint: `(studentGuid, groupId)`
-
-### `behavior_type_reference`
-Fields: `id`, `code` (unique), `name`, `displayOrder`, `justifiable`, `hidden`, `showInBehave`, `hideFromStudents`, `rawPayload`, `updatedAt`
-
-### `message_board_item`
-Fields: `id`, `studentGuid`, `eventId`, `eventText` (sanitized HTML), `expirationDate`, `inSite`, `rawPayload`, `updatedAt`
-Unique constraint: `(studentGuid, eventId)`
-
-### `read_state`
-Fields: `id`, `itemType`, `itemId`, `scopeType`, `scopeId`, `isRead`, `isHandled`, `updatedAt`
-
-### `sync_run`
-Fields: `id`, `source`, `status`, `startedAt`, `endedAt`, `fetchedCount`, `createdCount`, `updatedCount`, `errorMessage`
-
-### `recipient_directory` (optional Phase 1)
-Fields: `id`, `value`, `valueType`, `targetType`, `displayName`, `comment`, `rawPayload`, `updatedAt`
+**Breaking changes from Phase 1 → Phase 2:**
+1. All API endpoints require auth cookie.
+2. `isNew`/`isArchived` mutation endpoints now write to `user_item_state`.
+3. `household_connection` gets a `userId` FK.
+4. Sync cron tasks loop over all active connections, not just the one.
 
 ---
 
-## UX & Design Requirements
+## New API Endpoints (Phase 2)
 
-### Design system
-- 8px spacing rhythm, card-based surfaces, rounded corners, soft elevation
-- Strong typography hierarchy, chip/badge system
-- Reusable empty / loading / error / stale states
-- Compact list items optimized for mobile scan speed
-- One accent color + restrained status colors (not color-only for status)
+All new auth endpoints are under `/api/v1/auth/`:
 
-### Visual tone
-Minimalistic, modern, calm, reliable, parent-friendly. Not childish. Not institutional.
-
-### Navigation (mobile-first)
-- **Home** — answers the parent's main question
-- **Children** — child-specific drill-down
-- **Inbox** — school communications
-- **More** — low-frequency items, settings, diagnostics
-
-Desktop: same IA; side rail or top nav acceptable.
-
-### RTL & localization
-- RTL layouts from day one
-- Hebrew, mixed Hebrew/English rendering
-- Natural date/time formatting (relative + exact)
-- Safe rendering of long Hebrew HTML bodies
-- Original Hebrew labels preserved in detail views; parent-friendly labels in summaries
-
-### Anti-patterns (explicitly banned)
-- Homepage that is mostly navigation chrome
-- Requiring tab switches before showing meaningful updates
-- Dense mobile tables as primary information pattern
-- Horizontal carousels for critical information
-- Requiring child selection before seeing anything useful
-- Duplicate updates across modules without dedupe
-- Disabled placeholder features for unsupported capabilities
-- Alarming red-banner UX for routine sync lag
+| Method | Path | Request | Response | Notes |
+|--------|------|---------|----------|-------|
+| POST | `/api/v1/auth/magic-link` | `{ email: string }` | `{ message: string }` | Rate-limited. Always returns 200 with generic message. |
+| GET | `/api/v1/auth/verify` | `?token=<token>` | Redirect to `/` or `/auth/connect-school` | Sets session cookie on success |
+| DELETE | `/api/v1/auth/session` | — | `{ ok: true }` | Sign out — clears cookie, revokes session |
+| GET | `/api/v1/auth/me` | — | `{ email, connectedSchool: { schoolName, schoolYear } \| null }` | Requires auth |
+| POST | `/api/v1/connection` | `{ semel, year, username, password }` | `{ schoolName, schoolYear, childrenCount }` | Connect school account |
+| PUT | `/api/v1/connection` | `{ username?, password? }` | `{ ok: true }` | Update credentials |
+| DELETE | `/api/v1/connection` | — | `{ ok: true }` | Disconnect + delete all associated data |
+| GET | `/api/v1/sync/status` | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number }` | Used by sync progress screen |
 
 ---
 
-## Out of Scope (Phase 1)
+## New Database Schema
 
-- App sign-up or sign-in (Phase 2)
-- Grades, averages, report cards, performance analytics
-- Timetable / live daily schedule (Phase 2 — API is proven but feature deferred)
-- Outbound messaging (compose, reply, forward) — no send endpoint exists
-- Attachment downloading/opening — no retrieval endpoint exists
-- Justification submission — no submit endpoint exists
-- Push notifications
-- Role management
-- Multi-household public SaaS deployment
+### `app_user`
+Fields: `id` (UUID PK), `email` (unique), `createdAt`, `updatedAt`
+
+### `magic_link_token`
+Fields: `id`, `email`, `tokenHash` (SHA-256 of raw token), `expiresAt`, `usedAt` (nullable), `createdAt`
+Index: `(email, usedAt, expiresAt)` for rate-limit queries
+
+### `app_session`
+Fields: `id`, `userId` (FK → app_user), `sessionToken` (unique, random 32-byte hex), `expiresAt`, `lastActivityAt`, `revokedAt` (nullable), `createdAt`
+Index: `sessionToken` (unique, for fast lookup on every request)
+
+### `user_item_state`
+Fields: `id`, `userId` (FK → app_user), `itemType` (`homework | behavior | mail_conversation`), `itemId` (string — item UUID), `isNew`, `isArchived`, `updatedAt`
+Unique constraint: `(userId, itemType, itemId)`
+
+### Modified: `household_connection`
+Add: `userId` (FK → app_user, nullable during migration, required after)
+
+### Removed columns (via migration):
+- `homework_item.isNew`, `homework_item.isArchived`
+- `behavior_item.isNew`, `behavior_item.isArchived`
+- `mail_conversation.isNew`
 
 ---
 
-## Open Questions (Resolved)
+## New UI Pages / Flows
 
-| # | Question | Resolution |
-|---|----------|------------|
-| 1 | How is X-Csrf-Token acquired? | GET initial page → token in response headers → use in POST /login |
-| 2 | What cookies are set after login? | `Csrf-Token`, `MashovAuthToken`, `uniquId` — must be maintained per session |
-| 3 | Rate limits? | Not known; use standard respectful cadence |
-| 4 | Homework/behavior pagination? | Full history returned every call — upsert on sync |
-| 5 | Child mapping for mail? | Not possible — default to household scope |
-| 6 | dailyBehave schema? | Confirmed mirrors `/behave` shape |
-| 7 | Timestamps consistent timezone? | Yes — all naive timestamps are in the same local timezone |
-| 8 | Folder numeric values stable? | Treat as non-authoritative; do not rely on magic constants |
-| 9 | Timetable — static or rolling? | Unknown; deferred to Phase 2 |
-| 10 | messageBoard per child or school-wide? | Per childGuid — fetched using `childGuid` from login response |
+### `/auth/sign-in`
+- Email input field + submit button
+- On submit: `POST /api/v1/auth/magic-link`
+- Show "Check your inbox" confirmation state after submit
+- Link back to re-enter email if needed
+- No password field. No OAuth buttons.
+
+### `/auth/verify` (magic-link landing)
+- No UI — just shows a loading spinner while `GET /api/v1/auth/verify?token=...` resolves
+- On success: redirect to Home (or connect-school if no connection)
+- On error: show error page with "Request new link" action
+
+### `/auth/connect-school`
+- Form: school code, school year, username, password
+- Submit calls `POST /api/v1/connection`
+- On success: redirect to `/auth/syncing`
+- Show upstream error inline (e.g., "Invalid credentials — check your Mashov username and password")
+
+### `/auth/syncing`
+- Progress screen: "Setting up your account…" with animated indicator
+- Polls `GET /api/v1/sync/status` every 3 seconds
+- Shows progress: "Syncing notifications… 3 / 10 sources complete"
+- On done: redirect to Home
+- Skip button (for manual re-sync): goes to Home immediately
+
+### Settings page additions
+- Show connected school name + year (read-only)
+- "Update credentials" button → inline form with username/password fields
+- "Disconnect account" button → confirmation modal → `DELETE /api/v1/connection`
+- Sign out button → `DELETE /api/v1/auth/session` → redirect to `/auth/sign-in`
+
+### App shell additions
+- Show current user's email or initials in header (tap → sign-out confirmation or settings link)
+- Session expiry: show a toast "Session expired — sign in again" when API returns `401`
+
+---
+
+## Out of Scope (Phase 2)
+
+- Multiple school connections per user (one user = one school account in Phase 2)
+- OAuth / social sign-in
+- Password-based sign-in (magic-link only)
+- Admin user management UI
+- Account deletion (supported only via `DELETE /api/v1/connection` which removes data; user record persists)
+- Grade reports, performance analytics
+- Outbound messaging (compose, reply)
+- Attachment download
+- Justification submission
+- Push/email notifications for school events
+- Timetable live/rolling schedule (static weekly timetable already in Phase 1)
+- Grades or report cards
+
+---
+
+## Open Questions
+
+| # | Question | Impact | Default if unresolved |
+|---|----------|--------|----------------------|
+| 1 | Should magic-link tokens be invalidated after use, or support one-time-per-device click with multi-tab grace? | UX edge case | Invalidated after first use; 30-day session handles re-access |
+| 2 | Should `DELETE /api/v1/connection` also delete the `app_user` record, or just disconnect? | Data retention | Keep user record, delete all school data |
+| 3 | What happens if two parents share the same school credentials (same Mashov account)? | Multi-user isolation | Not a Phase 2 supported scenario; each user creates their own connection |
+| 4 | Should the sync progress screen block or allow skip? | Onboarding UX | Allow skip after 10 seconds |
+| 5 | Email transport: should both SMTP and Resend be supported simultaneously or exactly one? | Ops flexibility | Exactly one; determined by which env vars are present |
 
 ---
 
 ## Definition of Done
 
-### Phase 1
-
-1. Backend authenticates against Mashov, solves CSRF bootstrap, and maintains session with cookie management.
-2. All primary sync sources are working: notifications, mail count, inbox conversations, per-child homework, behavior, groups, lessons count, achvas, user details, message board.
-3. Feature-flagged ingestion path exists for `dailyBehave` and `outBehave`.
-4. Home screen shows: summary strip, needs-attention cards, latest-updates feed, child quick cards, last sync time, freshness status.
-5. Parent can open child workspace in one tap and see: homework history, classified behavior history (using achvas), subjects/teachers, and school notices.
-6. Parent can read full inbox and open a sanitized conversation detail (lazy-loaded).
-7. Parent can mark conversations as unread and archive them.
-8. Local handled/read state works and persists across page reloads.
-9. Cached data is visible during refresh; partial source failure does not blank the screen.
-10. `docker compose up --build` succeeds and stack is healthy.
-11. All unit and integration tests pass (≥80% coverage).
-12. E2E suite passes against Dockerized stack.
-13. UI is clearly simpler and more modern than the upstream Mashov portal.
-14. No unsupported capabilities (grades, timetable, compose, attachments) are implied in the UI.
-15. No credentials, tokens, or sensitive data in frontend bundles, localStorage, or logs.
-16. `.env.example` provided; no `.env` committed.
-17. README has setup steps, env vars, and how to run tests.
-
 ### Phase 2
 
-1. Parent can sign in to the app securely via magic-link or passkey.
-2. Parent can connect and manage their school account.
-3. Data and local state are scoped to the authenticated user.
-4. Sessions are secure and revocable.
-5. Multiple households coexist safely in the same deployment.
-6. Timetable static weekly view available per child.
+1. An unauthenticated request to any `/api/v1/*` endpoint returns `401`.
+2. An unauthenticated browser request to any app page (except `/auth/*`) redirects to `/auth/sign-in`.
+3. A parent can complete the full sign-in → connect-school → sync progress → Home flow end-to-end.
+4. A parent can update their school credentials and see the change reflected immediately.
+5. A parent can disconnect their school account; all their data is removed; they are redirected to connect-school.
+6. Two parent accounts with different school connections cannot see each other's data (verified by integration test).
+7. `isNew`/`isArchived` mutations on homework and behavior items persist per-user (two users toggling the same item see independent state).
+8. Magic-link email is sent and contains a working link in test/staging environments.
+9. Session cookie has `HttpOnly; Secure; SameSite=Strict` flags (verified by browser devtools or integration test header inspection).
+10. Credentials are never returned in any API response (automated test: grep for password-like fields in all API fixtures).
+11. All unit and integration tests pass. Coverage ≥ 80%.
+12. `docker compose up --build` succeeds. Auth flow demonstrable against the Dockerized stack.
+13. E2E suite passes for: sign-in flow, connect-school flow, sign-out, session-protected route redirect.
+14. Phase 1 data migration script runs successfully and preserves all existing data.
+15. README updated with Phase 2 env vars (`CREDENTIAL_ENCRYPTION_KEY`, `SESSION_LIFETIME_DAYS`, `BOOTSTRAP_ADMIN_EMAIL`, email transport vars).

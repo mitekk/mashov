@@ -26,12 +26,13 @@ Build a mobile-first household command center that syncs data from the Mashov sc
 ### Out of scope (Phase 1)
 - App authentication / login UI (Phase 2)
 - Grades, report cards, performance analytics
-- Live timetable / daily schedule
 - Outbound messaging (compose, reply)
 - Attachment download
 - Justification submission
 - Push notifications
 - Multi-household support
+
+> **Note:** Static weekly timetable (`GET /api/students/{guid}/timetable`) was originally out of scope but was implemented in Phase 1 as an extension — see ADR-0012. It is read-only, non-live, and does not imply scheduling or next-lesson logic.
 
 ---
 
@@ -73,11 +74,12 @@ Build a mobile-first household command center that syncs data from the Mashov sc
                           │
 ┌─────────────────────────▼────────────────────────────────────────┐
 │                   PostgreSQL 16                                   │
-│   15 tables: household_connection, parent_profile, student,      │
+│   16 tables: household_connection, parent_profile, student,      │
 │   notification_event, mail_conversation, mail_message,           │
 │   homework_item, behavior_item, subject_enrollment,              │
 │   behavior_type_reference, message_board_item,                   │
-│   read_state, sync_run, recipient_directory                      │
+│   timetable_entry, sync_run, recipient_directory                 │
+│   (Note: read_state replaced by isNew/isArchived on item tables) │
 └──────────────────────────────────────────────────────────────────┘
                           ▲
                 (upstream proxy only — no direct client access)
@@ -154,6 +156,7 @@ Build a mobile-first household command center that syncs data from the Mashov sc
 | Achvas reference | `0 6 * * *` | Daily at 06:00 |
 | User details | `0 6 * * *` | Daily at 06:00 |
 | Mail recipients | `0 7 * * *` | Daily at 07:00 |
+| Per-child timetable | `0 3 * * 0` | Weekly on Sunday at 03:00 |
 
 ### Partial Failure Resilience
 
@@ -184,6 +187,7 @@ Freshness is computed from the latest successful `sync_run.endedAt` per source. 
 | mail_conversation | `conversationId` | — |
 | mail_message | `messageId` | — |
 | message_board_item | `(studentGuid, eventId)` | — |
+| timetable_entry | `(studentGuid, day, lesson)` | — |
 
 ---
 
@@ -289,8 +293,9 @@ Tasks are ordered by dependency. Each task is scoped for a single agent session.
 33. **[MVP]** Create `SettingsController`:
     - `GET /api/v1/settings/source-health`
     - `GET /api/v1/settings/profile`
-34. **[MVP]** Create `ReadStateController`: `POST /api/v1/read-state` — upsert `read_state` record
+34. ~~**[MVP]** Create `ReadStateController`: `POST /api/v1/read-state`~~ — **Superseded:** Read/handled state is managed via `isNew`/`isArchived` mutation endpoints directly on homework and behavior items. No separate read_state table.
 35. **[MVP]** Create `SyncController`: `POST /api/v1/sync/refresh` — trigger manual sync
+36. **[MVP]** Create `TimetableTask` (cron `0 3 * * 0`): for each active student, fetch `GET /api/students/{studentGuid}/timetable`; upsert `timetable_entry` with `(studentGuid, day, lesson)` key — **Implemented (Phase 1 extension)**
 
 ### Backend — Services and Query Logic
 

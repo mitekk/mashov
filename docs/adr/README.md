@@ -20,3 +20,7 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0010](0010-ui-interaction-patterns.md) | UI Interaction Patterns — Bulk Actions, Feed Filtering, Selection Highlight, and Post-Action Navigation | Accepted | Frontend agent | 2026-03-15 |
 | [ADR-0011](0011-child-card-badge-unread-count.md) | Child Card Badge Counts — Unread + Non-Archived Only, No Date Window | Proposed | Frontend + backend agent | 2026-03-15 |
 | [ADR-0012](0012-timetable-data-persistence.md) | Timetable Data Persistence — Sync-and-Store over Live Proxy | Accepted | Backend agent, Planner | 2026-03-16 |
+| [ADR-0013](0013-bulk-actions-homework-behavior.md) | Bulk Actions for Homework and Behavior Sections — Inline Bar, Filter-Aware Visibility, Dedicated Backend Endpoints | Accepted | Frontend agent, Backend agent | 2026-03-16 |
+| [ADR-0014](0014-magic-link-authentication.md) | Authentication Strategy — Custom Magic-Link with DB Sessions | Accepted | Planner, Backend agent | 2026-03-16 |
+| [ADR-0015](0015-server-side-db-sessions.md) | Session Token Strategy — Server-Side DB Sessions over JWT Cookies | Accepted | Planner, Backend agent | 2026-03-16 |
+| [ADR-0016](0016-per-user-item-state.md) | Per-User Read/Archive State — Normalized user_item_state Table over Item-Level Columns | Accepted | Planner, Backend agent | 2026-03-16 |

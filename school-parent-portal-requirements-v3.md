@@ -174,6 +174,7 @@ The PRD must use the API bundle below as the source of truth for what the produc
 | `GET /api/students/{studentGuid}/outBehave` | Exploratory | Out-of-school incident source exists but sample was empty; schema not proven | Future or feature-flagged enrichment only |
 | `GET /api/students/{studentId}/groups` | Proven | Each child has subject groups and active/inactive teachers | Subjects + teachers section in child workspace |
 | `GET /api/students/{studentGuid}/lessonsCount` | Proven | Weekly hours and cumulative lessons count per group exist | Subject load/weekly hours enrichment |
+| `GET /api/students/{studentGuid}/timetable` | **Proven (Phase 1 extension)** | Static weekly timetable exists: day/lesson slots with subject, group name, teachers, room number | Read-only weekly timetable section in child workspace |
 
 ### 6.5 Reference and metadata sources
 
@@ -245,8 +246,7 @@ The PRD must preserve these constraints exactly.
 2. **No grades support is proven.**  
    Do not include grades, averages, report cards, grade trends, or performance analytics in MVP.
 
-3. **No timetable/calendar support is proven.**  
-   `groups` and `lessonsCount` are not a daily schedule. Do not promise today's timetable.
+3. ~~**No timetable/calendar support is proven.**~~ **UPDATE (Phase 1 extension):** `GET /api/students/{guid}/timetable` is proven — it returns a static weekly timetable (day × lesson slots with subject, group, teachers, room). This endpoint was implemented in Phase 1 as a read-only static timetable section in the child workspace. It does **not** represent a live/rolling schedule, next lesson, or attendance. The UI must not imply dynamic scheduling. See ADR-0012.
 
 4. **Homework has no proven due date field.**  
    The UI may show "latest homework" or "recent homework" but must not promise overdue or due-soon logic.
@@ -381,7 +381,7 @@ The backend holds the upstream school credentials and syncs data into PostgreSQL
 
 1. App sign-up or app login
 2. Grades
-3. Timetable/calendar
+3. ~~Timetable/calendar~~ — Static weekly timetable **is** included as a Phase 1 extension (read-only, non-live). Live/rolling schedule, next-lesson logic, and calendar views remain out of scope.
 4. Outbound messaging
 5. Attachment opening/downloading
 6. Justification submission
