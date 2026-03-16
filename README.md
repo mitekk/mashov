@@ -32,6 +32,9 @@ docker compose up --build
 | `MASHOV_USERNAME` | Parent ID number (username) | `your_id_number` |
 | `MASHOV_PASSWORD` | Parent password | `your_password` |
 | `ENCRYPTION_KEY` | 64-char hex key for encrypting stored credentials | `your_64_hex_chars_here` |
+| `REDIS_URL` | Redis connection string | `redis://redis:6379` |
+| `SESSION_LIFETIME_DAYS` | Session cookie lifetime in days (rolling) | `30` |
+| `SESSION_SECURE_COOKIE` | Set `false` for local dev (no HTTPS) | `false` |
 | `CORS_ORIGIN` | Allowed CORS origin(s), comma-separated | `http://localhost:3001` |
 | `FEATURE_DAILY_BEHAVE` | Enable daily behaviour sync | `false` |
 | `FEATURE_OUT_BEHAVE` | Enable out-of-school behaviour sync | `false` |
