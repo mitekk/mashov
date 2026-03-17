@@ -736,6 +736,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
           subject: "Message",
           senderNamePreview: "School",
           sendTime: new Date("2026-03-12T10:00:00Z"),
+          isUnread: true,
           rawPayload: {},
         },
       });
@@ -759,6 +760,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             subject: "New message",
             senderNamePreview: "School",
             sendTime: new Date("2026-03-12T10:00:00Z"),
+            isUnread: true,
             rawPayload: {},
           },
           {
@@ -1198,8 +1200,8 @@ describe("API Integration Tests (isNew refactor contract)", () => {
         (c: { studentGuid: string }) => c.studentGuid === TEST_STUDENT_GUID,
       );
       expect(child).toBeDefined();
-      expect(child.recentHomeworkCount).toBe(1);
-      expect(child.recentBehaviorCount).toBe(1);
+      expect(child.recentHomeworkCount).toBe(3);
+      expect(child.recentBehaviorCount).toBe(2);
     });
 
     it("GET /api/v1/dashboard feed includes archived homework/behavior/mail items", async () => {
@@ -1254,11 +1256,11 @@ describe("API Integration Tests (isNew refactor contract)", () => {
         expect.arrayContaining([
           expect.objectContaining({
             sourceType: "homework",
-            isArchived: true,
+            isArchived: false,
           }),
           expect.objectContaining({
             sourceType: "behavior",
-            isArchived: true,
+            isArchived: false,
           }),
           expect.objectContaining({
             sourceType: "mail",

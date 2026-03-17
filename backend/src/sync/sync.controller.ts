@@ -14,36 +14,10 @@ export class SyncController {
   ) {}
 
   @Post('refresh')
-  @HttpCode(HttpStatus.ACCEPTED)
+  @HttpCode(HttpStatus.OK)
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
-  async refresh(@Req() req: Request) {
-    const userId = req.user?.userId;
-    if (!userId) {
-      throw new UnauthorizedException({
-        error: { code: 'UNAUTHORIZED', message: 'Not authenticated', details: [] },
-      });
-    }
-
-    // Find the user's household connection
-    const connection = await this.prisma.householdConnection.findFirst({
-      where: { userId, active: true },
-      orderBy: { lastLoginAt: 'desc' },
-    });
-
-    if (!connection) {
-      return {
-        started: false,
-        message: 'No active connection found for user',
-      };
-    }
-
-    // Fire and forget - run sync in background
-    void this.syncService.refreshAll();
-
-    return {
-      started: true,
-      message: 'Sync started',
-    };
+  async refresh() {
+    return this.syncService.refreshAll();
   }
 
   @Get('status')

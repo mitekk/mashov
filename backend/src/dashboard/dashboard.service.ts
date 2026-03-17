@@ -26,7 +26,7 @@ export interface FeedItem {
   priority: 'high' | 'medium' | 'low';
   isPositive: boolean;
   isUnread: boolean;
-  isHandled: boolean;
+  isArchived: boolean;
   hasAttachments: boolean;
   eventAt: string;
   syncedAt: string;
@@ -103,10 +103,10 @@ export class DashboardService {
       }),
     ]);
 
-    const unreadConversations = household?.cachedNewCount ?? newFallback;
+    const newConversations = household?.cachedNewCount ?? newFallback;
 
     return {
-      unreadConversations,
+      newConversations,
       recentHomeworkCount: recentHomework,
       recentBehaviorCount: recentBehavior,
       childrenCount: students,
@@ -251,7 +251,7 @@ export class DashboardService {
         priority: 'medium',
         isPositive: false,
         isUnread: false,
-        isHandled: false,
+        isArchived: false,
         hasAttachments: Array.isArray(hw.files) && hw.files.length > 0,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
@@ -273,7 +273,7 @@ export class DashboardService {
         priority: isPositive ? 'low' : 'high',
         isPositive,
         isUnread: false,
-        isHandled: false,
+        isArchived: false,
         hasAttachments: this.extractFilesFromRawPayload(b.rawPayload).length > 0,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
@@ -294,7 +294,7 @@ export class DashboardService {
         priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
         isUnread: conv.isUnread,
-        isHandled: Array.isArray(conv.labels) && conv.labels.includes('archived'),
+        isArchived: Array.isArray(conv.labels) && conv.labels.includes('archived'),
         hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),
         syncedAt: conv.lastFetchedAt.toISOString(),

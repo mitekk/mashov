@@ -105,10 +105,10 @@ export class MailService {
       }),
     ]);
 
-    const newCount = household?.cachedNewCount ?? newFallback;
+    const newConversations = household?.cachedNewCount ?? newFallback;
 
     return {
-      newCount,
+      newConversations,
       recentConversations: recentConversations.map((c) => ({
         conversationId: c.conversationId,
         subject: c.subject,

@@ -13,3 +13,4 @@ frontend/tsconfig.tsbuildinfo
 
 .worktrees/
 tests/e2e/.auth/
+.playwright-mcp
