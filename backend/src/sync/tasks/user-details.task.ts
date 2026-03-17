@@ -4,7 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import type { SyncTaskRunResult } from '../sync.types';
+import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 interface MashovUserDetails {
   semel: number;
@@ -37,16 +37,22 @@ export class UserDetailsTask {
     await this.execute();
   }
 
-  async execute(): Promise<SyncTaskRunResult> {
-    const syncRun = await this.syncRunService.openRun(UserDetailsTask.SOURCE);
+  async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
+    const conn = context.connectionId
+      ? await this.prisma.householdConnection.findFirst({
+          where: { id: context.connectionId, userId: { not: null }, active: true },
+        })
+      : await this.prisma.householdConnection.findFirst({
+          where: { userId: { not: null }, active: true },
+        });
+    const syncRun = await this.syncRunService.openRun(
+      UserDetailsTask.SOURCE,
+      conn?.id ?? context.connectionId,
+    );
     let createdCount = 0;
     let updatedCount = 0;
 
     try {
-      const conn = await this.prisma.householdConnection.findFirst({
-        where: { userId: { not: null }, active: true },
-      });
-
       const details = conn
         ? await this.mashovClient.getForConnection<MashovUserDetails>(
             '/api/user/details',

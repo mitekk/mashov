@@ -4,7 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import type { SyncTaskRunResult } from '../sync.types';
+import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 interface MailCountsResponse {
   unreadConversations: number;
@@ -27,11 +27,15 @@ export class MailCountsTask {
     await this.execute();
   }
 
-  async execute(): Promise<SyncTaskRunResult> {
+  async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({
-      where: { userId: { not: null }, active: true },
+      where: {
+        userId: { not: null },
+        active: true,
+        ...(context.connectionId ? { id: context.connectionId } : {}),
+      },
     });
-    const useSharedSession = connections.length === 0;
+    const useSharedSession = !context.connectionId && connections.length === 0;
     const connectionList = useSharedSession ? [null] : connections;
 
     let totalUpdatedCount = 0;
@@ -40,7 +44,7 @@ export class MailCountsTask {
 
     for (const conn of connectionList) {
       const source = conn ? `${MailCountsTask.SOURCE}:${conn.id}` : MailCountsTask.SOURCE;
-      const syncRun = await this.syncRunService.openRun(source);
+      const syncRun = await this.syncRunService.openRun(source, conn?.id ?? context.connectionId);
       let updatedCount = 0;
 
       try {

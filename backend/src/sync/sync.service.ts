@@ -12,12 +12,17 @@ import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
 import { TimetableTask } from './tasks/timetable.task';
-import type { ManualSyncRefreshResponse, ManualSyncTaskResult, SyncTaskRunResult } from './sync.types';
+import type {
+  ManualSyncRefreshResponse,
+  ManualSyncTaskResult,
+  SyncExecutionContext,
+  SyncTaskRunResult,
+} from './sync.types';
 
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
-  private inFlightManualRefresh: Promise<ManualSyncRefreshResponse> | null = null;
+  private inFlightManualRefreshByConnection = new Map<string, Promise<ManualSyncRefreshResponse>>();
 
   constructor(
     private readonly notificationsTask: NotificationsTask,
@@ -35,36 +40,41 @@ export class SyncService {
     private readonly timetableTask: TimetableTask,
   ) {}
 
-  async refreshAll(): Promise<ManualSyncRefreshResponse> {
-    if (this.inFlightManualRefresh) {
-      this.logger.debug('Manual refresh already running, joining existing request');
-      return this.inFlightManualRefresh;
+  async refreshAll(context: SyncExecutionContext = {}): Promise<ManualSyncRefreshResponse> {
+    const dedupeKey = context.connectionId ?? '__global__';
+    const existing = this.inFlightManualRefreshByConnection.get(dedupeKey);
+    if (existing) {
+      this.logger.debug(`Manual refresh already running for key=${dedupeKey}, joining existing request`);
+      return existing;
     }
 
-    this.inFlightManualRefresh = this.runManualRefresh().finally(() => {
-      this.inFlightManualRefresh = null;
+    const inFlight = this.runManualRefresh(context).finally(() => {
+      this.inFlightManualRefreshByConnection.delete(dedupeKey);
     });
-    return this.inFlightManualRefresh;
+    this.inFlightManualRefreshByConnection.set(dedupeKey, inFlight);
+    return inFlight;
   }
 
-  private async runManualRefresh(): Promise<ManualSyncRefreshResponse> {
-    this.logger.log('Manual refresh triggered — running all sync tasks');
+  private async runManualRefresh(context: SyncExecutionContext): Promise<ManualSyncRefreshResponse> {
+    this.logger.log(
+      `Manual refresh triggered — running all sync tasks (connectionId=${context.connectionId ?? 'global'})`,
+    );
 
     const refreshStartedAt = new Date();
     const tasks: Array<{ name: string; fn: () => Promise<SyncTaskRunResult> }> = [
-      { name: 'notifications', fn: () => this.notificationsTask.execute() },
-      { name: 'mailCounts', fn: () => this.mailCountsTask.execute() },
-      { name: 'mailInbox', fn: () => this.mailInboxTask.execute() },
-      { name: 'homework', fn: () => this.homeworkTask.execute() },
-      { name: 'behavior', fn: () => this.behaviorTask.execute() },
-      { name: 'achvas', fn: () => this.achvasTask.execute() },
-      { name: 'groups', fn: () => this.groupsTask.execute() },
-      { name: 'lessonsCount', fn: () => this.lessonsCountTask.execute() },
-      { name: 'messageBoard', fn: () => this.messageBoardTask.execute() },
-      { name: 'userDetails', fn: () => this.userDetailsTask.execute() },
-      { name: 'dailyBehave', fn: () => this.dailyBehaveTask.execute() },
-      { name: 'outBehave', fn: () => this.outBehaveTask.execute() },
-      { name: 'timetable', fn: () => this.timetableTask.execute() },
+      { name: 'notifications', fn: () => this.notificationsTask.execute(context) },
+      { name: 'mailCounts', fn: () => this.mailCountsTask.execute(context) },
+      { name: 'mailInbox', fn: () => this.mailInboxTask.execute(context) },
+      { name: 'homework', fn: () => this.homeworkTask.execute(context) },
+      { name: 'behavior', fn: () => this.behaviorTask.execute(context) },
+      { name: 'achvas', fn: () => this.achvasTask.execute(context) },
+      { name: 'groups', fn: () => this.groupsTask.execute(context) },
+      { name: 'lessonsCount', fn: () => this.lessonsCountTask.execute(context) },
+      { name: 'messageBoard', fn: () => this.messageBoardTask.execute(context) },
+      { name: 'userDetails', fn: () => this.userDetailsTask.execute(context) },
+      { name: 'dailyBehave', fn: () => this.dailyBehaveTask.execute(context) },
+      { name: 'outBehave', fn: () => this.outBehaveTask.execute(context) },
+      { name: 'timetable', fn: () => this.timetableTask.execute(context) },
     ];
 
     const taskResults = await Promise.all(tasks.map((task) => this.executeTask(task.name, task.fn)));

@@ -1329,16 +1329,11 @@ describe("API Integration Tests (isNew refactor contract)", () => {
   });
 
   describe("Sync API", () => {
-    it("POST /api/v1/sync/refresh returns completion payload", async () => {
+    it("POST /api/v1/sync/refresh returns 401 without authenticated user context", async () => {
       const res = await request(app.getHttpServer()).post(
         "/api/v1/sync/refresh",
       );
-      expect(res.status).toBe(200);
-      expect(["success", "partial"]).toContain(res.body.status);
-      expect(typeof res.body.startedAt).toBe("string");
-      expect(typeof res.body.endedAt).toBe("string");
-      expect(typeof res.body.durationMs).toBe("number");
-      expect(Array.isArray(res.body.tasks)).toBe(true);
+      expect(res.status).toBe(401);
     });
   });
 });

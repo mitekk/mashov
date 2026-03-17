@@ -13,6 +13,7 @@ function makeSyncRun(overrides?: Partial<SyncRun>): SyncRun {
     createdCount: null,
     updatedCount: null,
     errorMessage: null,
+    householdConnectionId: null,
     ...overrides,
   } as SyncRun;
 }
@@ -61,6 +62,23 @@ describe('SyncRunService', () => {
       const result = await service.openRun('notifications');
       expect(result.id).toBe('run-abc');
       expect(result.status).toBe('running');
+    });
+
+    it('persists householdConnectionId when provided', async () => {
+      const mockCreate = jest.fn().mockResolvedValue(
+        makeSyncRun({ householdConnectionId: 'conn-123' }),
+      );
+      const service = new SyncRunService(makeMockPrisma({ syncRunCreate: mockCreate }));
+
+      await service.openRun('notifications', 'conn-123');
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            householdConnectionId: 'conn-123',
+          }),
+        }),
+      );
     });
   });
 

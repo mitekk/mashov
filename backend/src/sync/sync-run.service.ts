@@ -6,12 +6,13 @@ import { SyncRun } from '@prisma/client';
 export class SyncRunService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async openRun(source: string): Promise<SyncRun> {
+  async openRun(source: string, householdConnectionId?: string): Promise<SyncRun> {
     return this.prisma.syncRun.create({
       data: {
         source,
         status: 'running',
         startedAt: new Date(),
+        householdConnectionId: householdConnectionId ?? null,
       },
     });
   }

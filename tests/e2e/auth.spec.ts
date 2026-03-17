@@ -33,6 +33,13 @@ const MOCK_LOGIN_FAIL = {
 
 const MOCK_SYNC_IN_PROGRESS = { done: false, sourcesCompleted: 3, sourcesTotal: 13 };
 const MOCK_SYNC_DONE = { done: true, sourcesCompleted: 13, sourcesTotal: 13 };
+const MOCK_SYNC_REFRESH_SUCCESS = {
+  status: 'success',
+  startedAt: '2026-03-17T00:00:00.000Z',
+  endedAt: '2026-03-17T00:00:01.000Z',
+  durationMs: 1000,
+  tasks: [],
+};
 
 const MOCK_ME = {
   mashovUserId: 'mock-user-001',
@@ -189,6 +196,9 @@ test.describe('Auth — sign-in flow', () => {
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
     });
+    await page.route('**/api/v1/sync/refresh', async (route) => {
+      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
+    });
 
     const authPage = new AuthPage(page);
     await authPage.navigate();
@@ -203,6 +213,8 @@ test.describe('Auth — sign-in flow', () => {
   });
 
   test('first login: submit → land on /auth/syncing → skip → land on /home', async ({ page }) => {
+    let syncRefreshCalls = 0;
+
     await page.route('**/api/v1/auth/schools', async (route) => {
       await route.fulfill({ json: MOCK_SCHOOLS });
     });
@@ -213,6 +225,10 @@ test.describe('Auth — sign-in flow', () => {
 
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
+    });
+    await page.route('**/api/v1/sync/refresh', async (route) => {
+      syncRefreshCalls++;
+      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
     });
 
     await mockAuthenticatedSession(page);
@@ -227,6 +243,7 @@ test.describe('Auth — sign-in flow', () => {
     // Should navigate to /auth/syncing
     const syncingPage = new SyncingPage(page);
     await syncingPage.waitForVisible();
+    await expect.poll(() => syncRefreshCalls).toBe(1);
 
     // Progress text must show sync progress content
     const progressContent = await syncingPage.progressText.textContent();
@@ -258,6 +275,9 @@ test.describe('Auth — sign-in flow', () => {
 
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({ json: { done: false, sourcesCompleted: 5, sourcesTotal: 13 } });
+    });
+    await page.route('**/api/v1/sync/refresh', async (route) => {
+      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
     });
 
     await mockAuthenticatedSession(page);
@@ -297,6 +317,9 @@ test.describe('Auth — sign-in flow', () => {
       } else {
         await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
       }
+    });
+    await page.route('**/api/v1/sync/refresh', async (route) => {
+      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
     });
 
     await mockAuthenticatedSession(page);

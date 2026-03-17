@@ -29,6 +29,7 @@ describe('NotificationsTask — deduplication fingerprint', () => {
     createdCount: null,
     updatedCount: null,
     errorMessage: null,
+    householdConnectionId: null,
   } as unknown as SyncRun;
 
   beforeEach(() => {

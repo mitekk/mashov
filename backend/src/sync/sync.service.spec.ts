@@ -110,7 +110,7 @@ describe('SyncService', () => {
     expect(result.tasks.find((task) => task.task === 'mailInbox')?.status).toBe('failed');
   });
 
-  it('joins in-flight manual refresh requests', async () => {
+  it('joins in-flight manual refresh requests for the same connection', async () => {
     let resolveNotifications!: () => void;
     const notificationsPromise = new Promise<SyncTaskRunResult>((resolve) => {
       resolveNotifications = () => resolve(makeResult());
@@ -119,8 +119,8 @@ describe('SyncService', () => {
     const notifications = { execute: jest.fn().mockReturnValue(notificationsPromise) };
     const { service, tasks } = createService({ notifications });
 
-    const first = service.refreshAll();
-    const second = service.refreshAll();
+    const first = service.refreshAll({ connectionId: 'conn-1' });
+    const second = service.refreshAll({ connectionId: 'conn-1' });
 
     expect(tasks.notifications.execute).toHaveBeenCalledTimes(1);
 
@@ -129,5 +129,19 @@ describe('SyncService', () => {
 
     expect(firstResult).toEqual(secondResult);
     expect(tasks.notifications.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not join in-flight manual refresh requests across different connections', async () => {
+    const notifications = { execute: jest.fn().mockResolvedValue(makeResult()) };
+    const { service, tasks } = createService({ notifications });
+
+    await Promise.all([
+      service.refreshAll({ connectionId: 'conn-1' }),
+      service.refreshAll({ connectionId: 'conn-2' }),
+    ]);
+
+    expect(tasks.notifications.execute).toHaveBeenCalledTimes(2);
+    expect(tasks.notifications.execute).toHaveBeenNthCalledWith(1, { connectionId: 'conn-1' });
+    expect(tasks.notifications.execute).toHaveBeenNthCalledWith(2, { connectionId: 'conn-2' });
   });
 });

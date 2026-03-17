@@ -4,7 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import type { SyncTaskRunResult } from '../sync.types';
+import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 interface MashovGroup {
   groupId: number;
@@ -31,11 +31,15 @@ export class GroupsTask {
     await this.execute();
   }
 
-  async execute(): Promise<SyncTaskRunResult> {
+  async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({
-      where: { userId: { not: null }, active: true },
+      where: {
+        userId: { not: null },
+        active: true,
+        ...(context.connectionId ? { id: context.connectionId } : {}),
+      },
     });
-    const useSharedSession = connections.length === 0;
+    const useSharedSession = !context.connectionId && connections.length === 0;
 
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
@@ -45,7 +49,7 @@ export class GroupsTask {
 
     for (const student of students) {
       const source = `${GroupsTask.SOURCE}:${student.studentGuid}`;
-      const syncRun = await this.syncRunService.openRun(source);
+      const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
       let upsertCount = 0;
 

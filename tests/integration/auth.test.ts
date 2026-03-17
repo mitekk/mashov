@@ -809,6 +809,116 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
       const res = await request(app.getHttpServer()).get('/api/v1/sync/status');
       expect(res.status).toBe(401);
     });
+
+    it('scopes sync status to the authenticated user connection', async () => {
+      const loginA = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'syncscope-a', password: 'pass' });
+      const cookieA = extractSessionCookie(loginA);
+
+      const loginB = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 888888, username: 'syncscope-b', password: 'pass' });
+      const cookieB = extractSessionCookie(loginB);
+
+      const userA = await prisma.appUser.findFirst({ where: { username: 'syncscope-a' } });
+      const userB = await prisma.appUser.findFirst({ where: { username: 'syncscope-b' } });
+      const connA = await prisma.householdConnection.findFirst({ where: { userId: userA!.id, active: true } });
+      const connB = await prisma.householdConnection.findFirst({ where: { userId: userB!.id, active: true } });
+      expect(connA).not.toBeNull();
+      expect(connB).not.toBeNull();
+
+      const now = new Date();
+      const old = new Date(Date.now() - 31 * 60 * 1000);
+
+      await prisma.syncRun.createMany({
+        data: [
+          {
+            source: 'notifications',
+            status: 'success',
+            startedAt: now,
+            endedAt: now,
+            householdConnectionId: connA!.id,
+          },
+          {
+            source: 'mail_counts',
+            status: 'success',
+            startedAt: now,
+            endedAt: now,
+            householdConnectionId: connA!.id,
+          },
+          {
+            source: 'old_source',
+            status: 'success',
+            startedAt: old,
+            endedAt: old,
+            householdConnectionId: connA!.id,
+          },
+          {
+            source: 'notifications',
+            status: 'success',
+            startedAt: now,
+            endedAt: now,
+            householdConnectionId: connB!.id,
+          },
+        ],
+      });
+
+      const resA = await request(app.getHttpServer())
+        .get('/api/v1/sync/status')
+        .set('Cookie', `mashov_session=${cookieA}`);
+      expect(resA.status).toBe(200);
+      expect(resA.body.sourcesCompleted).toBe(2);
+      expect(resA.body.done).toBe(false);
+
+      const resB = await request(app.getHttpServer())
+        .get('/api/v1/sync/status')
+        .set('Cookie', `mashov_session=${cookieB}`);
+      expect(resB.status).toBe(200);
+      expect(resB.body.sourcesCompleted).toBe(1);
+      expect(resB.body.done).toBe(false);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // POST /api/v1/sync/refresh
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('POST /api/v1/sync/refresh', () => {
+    it('creates sync runs attributed only to the authenticated user connection', async () => {
+      const loginA = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'refreshscope-a', password: 'pass' });
+      const cookieA = extractSessionCookie(loginA);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 999999, username: 'refreshscope-b', password: 'pass' });
+
+      const userA = await prisma.appUser.findFirst({ where: { username: 'refreshscope-a' } });
+      const userB = await prisma.appUser.findFirst({ where: { username: 'refreshscope-b' } });
+      const connA = await prisma.householdConnection.findFirst({ where: { userId: userA!.id, active: true } });
+      const connB = await prisma.householdConnection.findFirst({ where: { userId: userB!.id, active: true } });
+      expect(connA).not.toBeNull();
+      expect(connB).not.toBeNull();
+
+      const refreshRes = await request(app.getHttpServer())
+        .post('/api/v1/sync/refresh')
+        .set('Cookie', `mashov_session=${cookieA}`);
+
+      expect(refreshRes.status).toBe(200);
+      expect(['success', 'partial']).toContain(refreshRes.body.status);
+
+      const runs = await prisma.syncRun.findMany();
+      expect(runs.length).toBeGreaterThan(0);
+      expect(runs.every((run) => run.householdConnectionId === connA!.id)).toBe(true);
+      expect(runs.some((run) => run.householdConnectionId === connB!.id)).toBe(false);
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      const res = await request(app.getHttpServer()).post('/api/v1/sync/refresh');
+      expect(res.status).toBe(401);
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────────────

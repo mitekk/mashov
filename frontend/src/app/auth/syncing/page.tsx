@@ -1,13 +1,14 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { getSyncStatus } from '@/api/sync';
+import { getSyncStatus, triggerSyncRefresh } from '@/api/sync';
 
 export default function SyncingPage() {
   const router = useRouter();
   const [showSkip, setShowSkip] = useState(false);
+  const refreshTriggeredRef = useRef(false);
 
   const { data } = useQuery({
     queryKey: ['sync-status'],
@@ -18,6 +19,14 @@ export default function SyncingPage() {
       return 3_000;
     },
   });
+
+  useEffect(() => {
+    if (refreshTriggeredRef.current) return;
+    refreshTriggeredRef.current = true;
+    triggerSyncRefresh().catch(() => {
+      // Best-effort trigger: status polling + skip path still work if this fails.
+    });
+  }, []);
 
   useEffect(() => {
     if (data?.done) {

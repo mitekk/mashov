@@ -1,6 +1,10 @@
 export type SyncTaskStatus = 'success' | 'failed';
 export type ManualSyncStatus = 'success' | 'partial';
 
+export interface SyncExecutionContext {
+  connectionId?: string;
+}
+
 export interface SyncTaskSummary {
   fetchedCount: number;
   createdCount: number;

@@ -113,8 +113,8 @@ describe('TimetableTask', () => {
       },
       errorMessages: [],
     });
-    expect(mockSyncRunService.openRun).toHaveBeenNthCalledWith(1, 'timetable:stu-1');
-    expect(mockSyncRunService.openRun).toHaveBeenNthCalledWith(2, 'timetable:stu-2');
+    expect(mockSyncRunService.openRun).toHaveBeenNthCalledWith(1, 'timetable:stu-1', undefined);
+    expect(mockSyncRunService.openRun).toHaveBeenNthCalledWith(2, 'timetable:stu-2', undefined);
     expect(mockMashovClient.get).toHaveBeenNthCalledWith(
       1,
       '/api/students/stu-1/timetable',

@@ -4,7 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import type { SyncTaskRunResult } from '../sync.types';
+import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import * as crypto from 'crypto';
 
 interface MashovNotification {
@@ -39,8 +39,16 @@ export class NotificationsTask {
     await this.execute();
   }
 
-  async execute(): Promise<SyncTaskRunResult> {
-    const syncRun = await this.syncRunService.openRun(NotificationsTask.SOURCE);
+  async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
+    const conn = context.connectionId
+      ? await this.prisma.householdConnection.findFirst({
+          where: { id: context.connectionId, userId: { not: null }, active: true },
+        })
+      : await this.prisma.householdConnection.findFirst({
+          where: { userId: { not: null }, active: true },
+        });
+
+    const syncRun = await this.syncRunService.openRun(NotificationsTask.SOURCE, conn?.id ?? context.connectionId);
     let fetchedCount = 0;
     let createdCount = 0;
     let updatedCount = 0;
@@ -48,9 +56,6 @@ export class NotificationsTask {
     const errorMessages: string[] = [];
 
     try {
-      const conn = await this.prisma.householdConnection.findFirst({
-        where: { userId: { not: null }, active: true },
-      });
       const refererHeaders = { 'Referer': 'https://web.mashov.info/students/main/home' };
       const notifications = conn
         ? await this.mashovClient.getForConnection<MashovNotification[]>(

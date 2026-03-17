@@ -4,7 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import type { SyncTaskRunResult } from '../sync.types';
+import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 interface MashovAchva {
   code: number;
@@ -40,13 +40,17 @@ export class AchvasTask {
     await this.execute();
   }
 
-  async execute(): Promise<SyncTaskRunResult> {
+  async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     // Achvas are global reference data — fetch once using first available connection
-    const conn = await this.prisma.householdConnection.findFirst({
-      where: { userId: { not: null }, active: true },
-    });
+    const conn = context.connectionId
+      ? await this.prisma.householdConnection.findFirst({
+          where: { id: context.connectionId, userId: { not: null }, active: true },
+        })
+      : await this.prisma.householdConnection.findFirst({
+          where: { userId: { not: null }, active: true },
+        });
 
-    const syncRun = await this.syncRunService.openRun(AchvasTask.SOURCE);
+    const syncRun = await this.syncRunService.openRun(AchvasTask.SOURCE, conn?.id ?? context.connectionId);
     let fetchedCount = 0;
     let upsertCount = 0;
     let failedCount = 0;
