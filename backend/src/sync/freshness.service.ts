@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { SyncRun } from '@prisma/client';
 import { SyncRunService } from './sync-run.service';
 
 export type FreshnessState = 'fresh' | 'syncing' | 'stale' | 'degraded';
@@ -73,6 +74,11 @@ export class FreshnessService {
 
         hasAnyRun = true;
 
+        // Use the most recent successful run across all matching keys (best-wins).
+        // A source is only stale if even its freshest run exceeded the threshold.
+        // This prevents old shared-session or superseded-connection entries from
+        // keeping a source permanently stale after a successful per-connection sync.
+        let mostRecentEndedAt: Date | null = null;
         for (const key of matchingKeys) {
           const run = successRuns.get(key);
           if (!run?.endedAt) continue;
@@ -81,17 +87,20 @@ export class FreshnessService {
           if (latestSyncAt === null || endedAt > latestSyncAt) {
             latestSyncAt = endedAt;
           }
-
-          const ageMinutes = (now.getTime() - endedAt.getTime()) / 60000;
-          if (ageMinutes > threshold.staleThresholdMinutes) {
-            if (!staleSources.includes(baseSource)) {
-              staleSources.push(baseSource);
-            }
+          if (mostRecentEndedAt === null || endedAt > mostRecentEndedAt) {
+            mostRecentEndedAt = endedAt;
           }
 
           const failedRun = allRuns.get(key);
           if (failedRun?.status === 'failed') {
             hasFailure = true;
+          }
+        }
+
+        if (mostRecentEndedAt !== null) {
+          const ageMinutes = (now.getTime() - mostRecentEndedAt.getTime()) / 60000;
+          if (ageMinutes > threshold.staleThresholdMinutes) {
+            staleSources.push(baseSource);
           }
         }
       }
@@ -135,7 +144,19 @@ export class FreshnessService {
 
         for (const source of sources) {
           const latestRun = allRuns.get(source);
-          const latestSuccess = successRuns.get(source);
+
+          // Look for the most recent success across the exact key AND any variant keys
+          // (e.g. mail_counts:{conn.id}) so per-connection entries are not missed.
+          const variantSuccessKeys = Array.from(successRuns.keys()).filter(
+            (k) => k === source || k.startsWith(`${source}:`),
+          );
+          let latestSuccess: SyncRun | undefined;
+          for (const k of variantSuccessKeys) {
+            const r = successRuns.get(k);
+            if (r?.endedAt && (!latestSuccess?.endedAt || r.endedAt > latestSuccess.endedAt)) {
+              latestSuccess = r;
+            }
+          }
 
           let status: SourceHealth['status'] = 'never_synced';
 

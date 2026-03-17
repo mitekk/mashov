@@ -203,6 +203,37 @@ describe('FreshnessService', () => {
         expect(result.state).toBe('degraded');
       });
 
+      it('uses best-wins: fresh when a fresh per-connection key exists alongside a stale bare key', async () => {
+        // Regression: shared-session run (bare key, 3h ago) + per-connection run (1min ago)
+        // should resolve to fresh, not stale.
+        const successRuns = new Map<string, SyncRun>([
+          ['mail_counts', makeSyncRun('mail_counts', 'success', 3 * 60)],         // stale bare key
+          ['mail_counts:conn-abc', makeSyncRun('mail_counts:conn-abc', 'success', 1)], // fresh connection key
+          ['mail_inbox', makeSyncRun('mail_inbox', 'success', 3 * 60)],            // stale bare key
+          ['mail_inbox:conn-abc', makeSyncRun('mail_inbox:conn-abc', 'success', 1)],   // fresh connection key
+          ['notifications', makeSyncRun('notifications', 'success', 1)],
+        ]);
+        mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+        mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+        const result = await service.computeFreshness();
+        expect(result.staleSources).not.toContain('mail_counts');
+        expect(result.staleSources).not.toContain('mail_inbox');
+        expect(result.state).toBe('fresh');
+      });
+
+      it('uses best-wins: still stale when all per-connection keys are also stale', async () => {
+        const successRuns = new Map<string, SyncRun>([
+          ['mail_counts', makeSyncRun('mail_counts', 'success', 3 * 60)],
+          ['mail_counts:conn-abc', makeSyncRun('mail_counts:conn-abc', 'success', 2 * 60)],
+        ]);
+        mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+        mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+        const result = await service.computeFreshness();
+        expect(result.staleSources).toContain('mail_counts');
+      });
+
       it('includes lastSyncAt from the most recent successful run', async () => {
         const recentRun = makeSyncRun('notifications', 'success', 5);
         const olderRun = makeSyncRun('mail_inbox', 'success', 10);
@@ -264,6 +295,34 @@ describe('FreshnessService', () => {
       const health = results.find((r) => r.source === 'notifications');
       expect(health?.status).toBe('failed');
       expect(health?.lastErrorMessage).toBe('network error');
+    });
+
+    it('resolves fresh when only a per-connection variant key exists (no bare key)', async () => {
+      // Regression: mail tasks write mail_counts:{conn.id}; bare mail_counts may not exist.
+      const freshConnRun = makeSyncRun('mail_counts:conn-abc', 'success', 5);
+      const successRuns = new Map([['mail_counts:conn-abc', freshConnRun]]);
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+      const results = await service.getAllSourceHealth([]);
+      const health = results.find((r) => r.source === 'mail_counts');
+      expect(health?.status).toBe('fresh');
+      expect(health?.lastSuccessAt).toBe(freshConnRun.endedAt!.toISOString());
+    });
+
+    it('resolves stale bare key to fresh when a fresher per-connection key exists', async () => {
+      const staleBarRun = makeSyncRun('mail_counts', 'success', 3 * 60);
+      const freshConnRun = makeSyncRun('mail_counts:conn-abc', 'success', 5);
+      const successRuns = new Map<string, SyncRun>([
+        ['mail_counts', staleBarRun],
+        ['mail_counts:conn-abc', freshConnRun],
+      ]);
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+      const results = await service.getAllSourceHealth([]);
+      const health = results.find((r) => r.source === 'mail_counts');
+      expect(health?.status).toBe('fresh');
     });
 
     it('includes per-student sources when studentGuids are provided', async () => {
