@@ -27,3 +27,6 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0017](0017-caching-strategy-conditional-redis.md) | Caching Strategy — Conditional Redis | Accepted | Planner | 2026-03-16 |
 | [ADR-0018](0018-direct-mashov-credential-login.md) | Authentication — Direct Mashov Credential Login | Accepted | Planner, Backend agent | 2026-03-16 |
 | [ADR-0019](0019-session-strategy-db-with-redis-cache.md) | Session Strategy — DB Sessions with Redis Cache | Accepted | Planner, Backend agent | 2026-03-16 |
+| [ADR-0020](0020-auth-controller-passthrough-response.md) | Auth Controller — NestJS Passthrough Mode with Exception-Based Error Paths | Accepted | Backend agent, Smoke test verifier | 2026-03-17 |
+| [ADR-0021](0021-api-contract-field-name-alignment.md) | API Response Field Names — Explicit Mapping Layer over Prisma Model Passthrough | Accepted | Backend agent, Smoke test verifier | 2026-03-17 |
+| [ADR-0022](0022-middleware-cookie-name-alignment.md) | Next.js Middleware Auth Check — Read `mashov_session` Cookie, Not `session` | Accepted | Frontend agent, Smoke test verifier | 2026-03-17 |
