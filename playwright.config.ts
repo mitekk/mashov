@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import * as path from 'path';
 
 /**
  * Playwright configuration for the Mashov E2E test suite.
@@ -10,6 +11,7 @@ import { defineConfig, devices } from '@playwright/test';
  * Backend:  http://localhost:3001 (NestJS)
  */
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
+const authFile = path.join(__dirname, 'tests/e2e/.auth/session.json');
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -47,9 +49,28 @@ export default defineConfig({
   },
 
   projects: [
+    // --- Setup: write auth storage state once ---
+    {
+      name: 'setup',
+      testMatch: '**/auth.setup.ts',
+    },
+
+    // --- Auth spec: tests unauthenticated flows (no session cookie) ---
+    {
+      name: 'chromium-auth',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: '**/auth.spec.ts',
+    },
+
+    // --- All other specs: run with session cookie pre-set ---
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: authFile,
+      },
+      testIgnore: '**/auth.spec.ts',
+      dependencies: ['setup'],
     },
   ],
 
