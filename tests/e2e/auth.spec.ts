@@ -51,6 +51,7 @@ const MOCK_EMPTY_DASHBOARD = {
 };
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
+const LAST_SCHOOL_STORAGE_KEY = 'mashov.lastSchoolSemel';
 
 // ---------------------------------------------------------------------------
 // Helper: wire standard auth-related API mocks for a logged-in session
@@ -107,6 +108,19 @@ async function seedAuthenticatedCookie(page: Page): Promise<void> {
   ]);
 }
 
+async function seedLastSchoolSemel(page: Page, semel: number): Promise<void> {
+  await page.addInitScript(
+    ({ key, value }) => {
+      window.localStorage.setItem(key, String(value));
+    },
+    { key: LAST_SCHOOL_STORAGE_KEY, value: semel },
+  );
+}
+
+async function readLastSchoolSemel(page: Page): Promise<string | null> {
+  return page.evaluate((key) => window.localStorage.getItem(key), LAST_SCHOOL_STORAGE_KEY);
+}
+
 async function selectDefaultSchool(authPage: AuthPage): Promise<void> {
   await authPage.fillSchool(MOCK_SCHOOLS[0].name);
   await authPage.selectSchoolOption(MOCK_SCHOOLS[0].semel);
@@ -135,6 +149,57 @@ test.describe('Auth — sign-in flow', () => {
     });
     expect(Array.isArray(schoolsResponse)).toBe(true);
     expect((schoolsResponse as typeof MOCK_SCHOOLS).length).toBeGreaterThan(0);
+  });
+
+  test('restores saved school from localStorage when semel exists', async ({ page }) => {
+    await page.route('**/api/v1/auth/schools', async (route) => {
+      await route.fulfill({ json: MOCK_SCHOOLS });
+    });
+
+    await seedLastSchoolSemel(page, MOCK_SCHOOLS[1].semel);
+
+    const authPage = new AuthPage(page);
+    await authPage.navigate();
+
+    await expect(authPage.schoolSelector).toHaveValue(MOCK_SCHOOLS[1].name);
+  });
+
+  test('ignores stale semel from localStorage when school is not found', async ({ page }) => {
+    await page.route('**/api/v1/auth/schools', async (route) => {
+      await route.fulfill({ json: MOCK_SCHOOLS });
+    });
+
+    await seedLastSchoolSemel(page, 999999);
+
+    const authPage = new AuthPage(page);
+    await authPage.navigate();
+
+    await expect(authPage.schoolSelector).toHaveValue('');
+  });
+
+  test('successful login persists selected school semel to localStorage', async ({ page }) => {
+    await page.route('**/api/v1/auth/schools', async (route) => {
+      await route.fulfill({ json: MOCK_SCHOOLS });
+    });
+
+    await page.route('**/api/v1/auth/login', async (route) => {
+      await route.fulfill({ json: MOCK_LOGIN_SUCCESS });
+    });
+
+    await page.route('**/api/v1/sync/status', async (route) => {
+      await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
+    });
+
+    const authPage = new AuthPage(page);
+    await authPage.navigate();
+
+    await authPage.fillSchool(MOCK_SCHOOLS[1].name);
+    await authPage.selectSchoolOption(MOCK_SCHOOLS[1].semel);
+    await authPage.fillCredentials('testparent', 'testpass');
+    await authPage.submit();
+
+    await page.waitForURL('**/auth/syncing**', { timeout: 10_000 });
+    await expect.poll(() => readLastSchoolSemel(page)).toBe(String(MOCK_SCHOOLS[1].semel));
   });
 
   test('first login: submit → land on /auth/syncing → skip → land on /home', async ({ page }) => {
@@ -276,6 +341,28 @@ test.describe('Auth — sign-in error', () => {
 
     // Error text should match the server message
     expect(errorText).toMatch(/Invalid credentials|שגוי|credentials/i);
+  });
+
+  test('failed login does not overwrite previously stored school semel', async ({ page }) => {
+    await page.route('**/api/v1/auth/schools', async (route) => {
+      await route.fulfill({ json: MOCK_SCHOOLS });
+    });
+
+    await page.route('**/api/v1/auth/login', async (route) => {
+      await route.fulfill({ status: 429, json: MOCK_LOGIN_FAIL });
+    });
+
+    await seedLastSchoolSemel(page, MOCK_SCHOOLS[0].semel);
+
+    const authPage = new AuthPage(page);
+    await authPage.navigate();
+    await authPage.fillSchool(MOCK_SCHOOLS[1].name);
+    await authPage.selectSchoolOption(MOCK_SCHOOLS[1].semel);
+    await authPage.fillCredentials('baduser', 'wrongpass');
+    await authPage.submit();
+
+    await expect(authPage.errorMessage).toBeVisible();
+    await expect.poll(() => readLastSchoolSemel(page)).toBe(String(MOCK_SCHOOLS[0].semel));
   });
 
   test('error message disappears when user starts typing again', async ({ page }) => {

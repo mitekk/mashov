@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, Suspense } from 'react';
+import React, { useState, useMemo, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { getSchools, login } from '@/api/auth';
@@ -37,9 +37,30 @@ function SignInForm() {
       .slice(0, 50);
   }, [schools, schoolSearch]);
 
+  useEffect(() => {
+    if (schools.length === 0 || selectedSchool) return;
+    try {
+      const saved = localStorage.getItem('mashov.lastSchoolSemel');
+      if (!saved) return;
+      const semel = Number(saved);
+      const match = schools.find((s) => s.semel === semel);
+      if (match) handleSelectSchool(match);
+    } catch {
+      // localStorage unavailable - ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schools]);
+
   const loginMutation = useMutation({
     mutationFn: login,
     onSuccess: (data) => {
+      try {
+        if (selectedSchool) {
+          localStorage.setItem('mashov.lastSchoolSemel', String(selectedSchool.semel));
+        }
+      } catch {
+        // localStorage unavailable - ignore
+      }
       if (data.isFirstLogin) {
         router.push('/auth/syncing');
       } else {
