@@ -105,10 +105,10 @@ export class MailService {
       }),
     ]);
 
-    const newConversations = household?.cachedNewCount ?? newFallback;
+    const newCount = household?.cachedNewCount ?? newFallback;
 
     return {
-      newConversations,
+      newCount,
       recentConversations: recentConversations.map((c) => ({
         conversationId: c.conversationId,
         subject: c.subject,
@@ -141,6 +141,7 @@ export class MailService {
         senderNamePreview: item.senderNamePreview ?? '',
         sendTime: item.sendTime.toISOString(),
         isNew: item.isUnread,
+        hasDrafts: item.hasDrafts,
         hasAttachments: item.hasAttachments,
         preventReply: item.preventReply,
         labels: this.asStringArray(item.labels),

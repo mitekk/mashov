@@ -14,7 +14,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const sessionCookie = request.cookies.get('session');
+  const sessionCookie = request.cookies.get('mashov_session');
 
   if (!sessionCookie) {
     const signInUrl = new URL('/auth/sign-in', request.url);

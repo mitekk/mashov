@@ -44,12 +44,24 @@ export class HttpExceptionFilter implements ExceptionFilter {
         code = this.statusToCode(status);
       } else if (typeof exceptionResponse === 'object' && exceptionResponse !== null) {
         const resp = exceptionResponse as Record<string, unknown>;
-        message = (resp['message'] as string) || message;
-        code = (resp['code'] as string) || this.statusToCode(status);
-        if (Array.isArray(resp['message'])) {
-          details = (resp['message'] as string[]).map((m) => ({ message: m }));
-          message = 'Validation failed';
-          code = 'VALIDATION_ERROR';
+        // Handle structured envelope: { error: { code, message, details } }
+        const nested = resp['error'];
+        if (nested && typeof nested === 'object') {
+          const err = nested as Record<string, unknown>;
+          if (typeof err['code'] === 'string') code = err['code'];
+          if (typeof err['message'] === 'string') message = err['message'];
+          if (Array.isArray(err['details'])) details = err['details'] as ErrorDetail[];
+        } else {
+          // Fallback: flat shape { code, message } or NestJS default { message, statusCode }
+          if (typeof resp['code'] === 'string') code = resp['code'];
+          if (typeof resp['message'] === 'string') {
+            message = resp['message'];
+          } else if (Array.isArray(resp['message'])) {
+            details = (resp['message'] as string[]).map((m) => ({ message: m }));
+            message = 'Validation failed';
+            code = 'VALIDATION_ERROR';
+          }
+          if (code === 'INTERNAL_SERVER_ERROR') code = this.statusToCode(status);
         }
       }
     } else if (exception instanceof Error) {

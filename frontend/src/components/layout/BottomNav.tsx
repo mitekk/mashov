@@ -3,7 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Mail, MoreHorizontal } from 'lucide-react';
+import { Home, Mail, MoreHorizontal, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useDashboard } from '@/hooks/useDashboard';
 
@@ -27,6 +27,12 @@ export function BottomNav() {
       label: 'בית',
       testId: 'nav-home',
       icon: <Home className="w-5 h-5" />,
+    },
+    {
+      href: '/children',
+      label: 'ילדים',
+      testId: 'nav-children',
+      icon: <Users className="w-5 h-5" />,
     },
     {
       href: '/inbox',

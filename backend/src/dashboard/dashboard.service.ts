@@ -25,8 +25,8 @@ export interface FeedItem {
   category: string;
   priority: 'high' | 'medium' | 'low';
   isPositive: boolean;
-  isNew: boolean;
-  isArchived: boolean;
+  isUnread: boolean;
+  isHandled: boolean;
   hasAttachments: boolean;
   eventAt: string;
   syncedAt: string;
@@ -103,10 +103,10 @@ export class DashboardService {
       }),
     ]);
 
-    const newConversations = household?.cachedNewCount ?? newFallback;
+    const unreadConversations = household?.cachedNewCount ?? newFallback;
 
     return {
-      newConversations,
+      unreadConversations,
       recentHomeworkCount: recentHomework,
       recentBehaviorCount: recentBehavior,
       childrenCount: students,
@@ -250,8 +250,8 @@ export class DashboardService {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isNew: true,
-        isArchived: false,
+        isUnread: false,
+        isHandled: false,
         hasAttachments: Array.isArray(hw.files) && hw.files.length > 0,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
@@ -272,8 +272,8 @@ export class DashboardService {
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
-        isNew: true,
-        isArchived: false,
+        isUnread: false,
+        isHandled: false,
         hasAttachments: this.extractFilesFromRawPayload(b.rawPayload).length > 0,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
@@ -293,8 +293,8 @@ export class DashboardService {
         category: 'mail',
         priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
-        isNew: conv.isUnread,
-        isArchived: Array.isArray(conv.labels) && conv.labels.includes('archived'),
+        isUnread: conv.isUnread,
+        isHandled: Array.isArray(conv.labels) && conv.labels.includes('archived'),
         hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),
         syncedAt: conv.lastFetchedAt.toISOString(),
@@ -368,7 +368,7 @@ export class DashboardService {
         if (recentHw > 0) statusParts.push(`${recentHw} homework`);
         if (recentBehavior > 0) statusParts.push(`${recentBehavior} behavior`);
         const oneLineStatus =
-          statusParts.length > 0 ? statusParts.join(', ') : 'No recent activity';
+          statusParts.length > 0 ? statusParts.join(', ') : 'אין פעילות אחרונה';
 
         return {
           studentGuid: student.studentGuid,

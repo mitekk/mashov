@@ -50,13 +50,16 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     if (!body.semel || !body.username || !body.password) {
-      return res.status(HttpStatus.BAD_REQUEST).json({
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'semel, username and password are required',
-          details: [],
+      throw new HttpException(
+        {
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'semel, username and password are required',
+            details: [],
+          },
         },
-      });
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
     const ip =
@@ -89,7 +92,7 @@ export class AuthController {
       return { ok: true, isFirstLogin };
     } catch (err) {
       if (err instanceof UnauthorizedException) {
-        return res.status(HttpStatus.UNAUTHORIZED).json(err.getResponse());
+        throw err;
       }
       if (
         err instanceof Error &&

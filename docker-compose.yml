@@ -55,6 +55,7 @@ services:
       SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
       FEATURE_DAILY_BEHAVE: ${FEATURE_DAILY_BEHAVE:-false}
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
+    restart: unless-stopped
     ports:
       - "3001:3000"
     healthcheck:

@@ -80,7 +80,7 @@ describe('MailService', () => {
       );
 
       const result = await service.getSummary();
-      expect(result.newConversations).toBe(68);
+      expect(result.newCount).toBe(68);
       expect(result.recentConversations[0].conversationId).toBe('conv-upstream-1');
       expect(result.lastSyncAt).toBe(NOW.toISOString());
     });
@@ -95,7 +95,7 @@ describe('MailService', () => {
       );
 
       const result = await service.getSummary();
-      expect(result.newConversations).toBe(4);
+      expect(result.newCount).toBe(4);
     });
 
     it('does not include unreadConversations field in summary', async () => {

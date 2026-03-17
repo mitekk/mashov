@@ -14,6 +14,7 @@ RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
 USER app
 EXPOSE 3000
 CMD ["sh", "-c", "npx prisma db push --accept-data-loss --skip-generate && node dist/src/main.js"]

@@ -25,15 +25,13 @@ describe('FeedService', () => {
       expect(result.pagination).toEqual({ page: 1, limit: 20, total: 0, totalPages: 0 });
     });
 
-    it('maps homework items to contract-compliant feed items with isNew and isArchived', async () => {
+    it('maps homework items to contract-compliant feed items with isUnread and isHandled', async () => {
       const hw = {
         id: 'hw-1',
         studentGuid: 'student-abc',
         subjectName: 'Math',
         homeworkText: 'Solve exercises 1-10',
         lessonDate: new Date('2026-03-11T00:00:00Z'),
-        isNew: true,
-        isArchived: false,
         updatedAt: new Date('2026-03-11T05:00:00Z'),
       };
 
@@ -52,21 +50,19 @@ describe('FeedService', () => {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isNew: true,
-        isArchived: false,
+        isUnread: false,
+        isHandled: false,
         linkPath: '/children/student-abc',
       });
     });
 
-    it('does not include isUnread or isHandled fields on homework feed items', async () => {
+    it('does not include isNew or isArchived fields on homework feed items', async () => {
       const hw = {
         id: 'hw-1',
         studentGuid: 'student-abc',
         subjectName: 'Math',
         homeworkText: 'Solve exercises 1-10',
         lessonDate: new Date('2026-03-11T00:00:00Z'),
-        isNew: true,
-        isArchived: false,
         updatedAt: new Date('2026-03-11T05:00:00Z'),
       };
 
@@ -75,8 +71,8 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0]).not.toHaveProperty('isUnread');
-      expect(result.data[0]).not.toHaveProperty('isHandled');
+      expect(result.data[0]).not.toHaveProperty('isNew');
+      expect(result.data[0]).not.toHaveProperty('isArchived');
     });
 
     it('queries homework items ordered by lessonDate desc (no isArchived filter — field lives in UserItemState)', async () => {
@@ -107,7 +103,7 @@ describe('FeedService', () => {
       );
     });
 
-    it('maps positive behavior items to sourceType=positive with isNew defaulted to true and isArchived=false', async () => {
+    it('maps positive behavior items to sourceType=positive with isUnread=false and isHandled=false', async () => {
       const behavior = {
         id: 'beh-1',
         studentGuid: 'student-abc',
@@ -127,8 +123,8 @@ describe('FeedService', () => {
         sourceType: 'positive',
         priority: 'low',
         isPositive: true,
-        isNew: true,
-        isArchived: false,
+        isUnread: false,
+        isHandled: false,
         linkPath: '/children/student-abc',
       });
     });
@@ -141,8 +137,6 @@ describe('FeedService', () => {
         remark: 'Was 10 minutes late',
         classification: 'attention',
         eventAt: new Date('2026-03-11T09:00:00Z'),
-        isNew: true,
-        isArchived: false,
         updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
@@ -155,12 +149,12 @@ describe('FeedService', () => {
         sourceType: 'behavior',
         priority: 'high',
         isPositive: false,
-        isNew: true,
+        isUnread: false,
         summary: 'Was 10 minutes late',
       });
     });
 
-    it('maps mail conversations to route-aware feed items with isNew from isUnread field', async () => {
+    it('maps mail conversations to route-aware feed items with isUnread from isUnread field', async () => {
       const conv = {
         id: 'conv-db-1',
         conversationId: 'conv-public-1',
@@ -168,6 +162,7 @@ describe('FeedService', () => {
         senderNamePreview: 'Principal',
         sendTime: new Date('2026-03-11T10:00:00Z'),
         isUnread: true,
+        labels: [],
         lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
@@ -183,12 +178,12 @@ describe('FeedService', () => {
         studentGuid: null,
         studentName: null,
         priority: 'high',
-        isNew: true,
+        isUnread: true,
         linkPath: '/inbox/conv-public-1',
       });
     });
 
-    it('does not include isUnread or isHandled on mail feed items', async () => {
+    it('does not include isNew or isArchived on mail feed items', async () => {
       const conv = {
         id: 'conv-db-1',
         conversationId: 'conv-public-1',
@@ -196,6 +191,7 @@ describe('FeedService', () => {
         senderNamePreview: 'Principal',
         sendTime: new Date('2026-03-11T10:00:00Z'),
         isUnread: true,
+        labels: [],
         lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
@@ -204,8 +200,8 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0]).not.toHaveProperty('isUnread');
-      expect(result.data[0]).not.toHaveProperty('isHandled');
+      expect(result.data[0]).not.toHaveProperty('isNew');
+      expect(result.data[0]).not.toHaveProperty('isArchived');
     });
 
     it('requests mail conversations without archived label', async () => {
@@ -281,15 +277,13 @@ describe('FeedService', () => {
       expect(result.data[1].id).toBe('hw-old');
     });
 
-    it('applies isNew directly from homework source table', async () => {
+    it('sets isUnread=false for homework items (per-item state not available at feed level)', async () => {
       const hw = {
         id: 'hw-new-flag',
         studentGuid: 'student-1',
         subjectName: 'Math',
         homeworkText: 'Done',
         lessonDate: new Date('2026-03-11T08:00:00Z'),
-        isNew: true,
-        isArchived: false,
         updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
@@ -300,10 +294,10 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].isNew).toBe(true);
+      expect(result.data[0].isUnread).toBe(false);
     });
 
-    it('defaults isNew=true for homework items (per-user state not available without userId)', async () => {
+    it('sets isHandled=false for homework items (per-item state not available at feed level)', async () => {
       const hw = {
         id: 'hw-old-flag',
         studentGuid: 'student-1',
@@ -320,7 +314,7 @@ describe('FeedService', () => {
       );
 
       const result = await service.getFeed(1, 20);
-      expect(result.data[0].isNew).toBe(true);
+      expect(result.data[0].isHandled).toBe(false);
     });
 
     it('applies pagination correctly', async () => {

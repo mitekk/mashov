@@ -12,8 +12,8 @@ export interface FeedItem {
   category: string;
   priority: 'high' | 'medium' | 'low';
   isPositive: boolean;
-  isNew: boolean;
-  isArchived: boolean;
+  isUnread: boolean;
+  isHandled: boolean;
   hasAttachments: boolean;
   eventAt: string;
   syncedAt: string;
@@ -60,8 +60,8 @@ export class FeedService {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isNew: true,
-        isArchived: false,
+        isUnread: false,
+        isHandled: false,
         hasAttachments: Array.isArray(hw.files) && hw.files.length > 0,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
@@ -82,8 +82,8 @@ export class FeedService {
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
-        isNew: true,
-        isArchived: false,
+        isUnread: false,
+        isHandled: false,
         hasAttachments: this.extractFilesFromRawPayload(b.rawPayload).length > 0,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
@@ -103,8 +103,8 @@ export class FeedService {
         category: 'mail',
         priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
-        isNew: conv.isUnread,
-        isArchived: false,
+        isUnread: conv.isUnread,
+        isHandled: Array.isArray(conv.labels) && conv.labels.includes('archived'),
         hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),
         syncedAt: conv.lastFetchedAt.toISOString(),
