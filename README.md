@@ -15,9 +15,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-- Frontend: http://localhost:3001
-- Backend API: http://localhost:3000
-- Health check: http://localhost:3000/health
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:3001
+- Health check: http://localhost:3001/health
 
 ## Environment Variables
 
@@ -35,7 +35,7 @@ docker compose up --build
 | `REDIS_URL` | Redis connection string | `redis://redis:6379` |
 | `SESSION_LIFETIME_DAYS` | Session cookie lifetime in days (rolling) | `30` |
 | `SESSION_SECURE_COOKIE` | Set `false` for local dev (no HTTPS) | `false` |
-| `CORS_ORIGIN` | Allowed CORS origin(s), comma-separated | `http://localhost:3001` |
+| `CORS_ORIGIN` | Allowed CORS origin(s) for the backend | `http://localhost:3000` |
 | `FEATURE_DAILY_BEHAVE` | Enable daily behaviour sync | `false` |
 | `FEATURE_OUT_BEHAVE` | Enable out-of-school behaviour sync | `false` |
 
@@ -67,8 +67,8 @@ Service ports:
 
 | Service | Port |
 |---------|------|
-| Frontend (Next.js) | 3001 |
-| Backend (NestJS) | 3000 |
+| Frontend (Next.js) | 3000 |
+| Backend (NestJS) | 3001 |
 | PostgreSQL | 5432 |
 | Redis | 6379 |
 
