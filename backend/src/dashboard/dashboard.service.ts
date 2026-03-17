@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
+import { UserItemStateService } from '../common/user-item-state.service';
 
 export interface NeedsAttentionItem {
   id: string;
@@ -25,7 +26,7 @@ export interface FeedItem {
   category: string;
   priority: 'high' | 'medium' | 'low';
   isPositive: boolean;
-  isUnread: boolean;
+  isNew: boolean;
   isArchived: boolean;
   hasAttachments: boolean;
   eventAt: string;
@@ -52,15 +53,16 @@ export class DashboardService {
     private readonly prisma: PrismaService,
     private readonly freshnessService: FreshnessService,
     private readonly sessionService: MashovSessionService,
+    private readonly userItemStateService: UserItemStateService,
   ) {}
 
-  async getDashboard() {
+  async getDashboard(userId?: string) {
     await this.sessionService.ensureStudentsAvailable();
 
     const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(),
       this.getSummary(),
-      this.getFeed(),
+      this.getFeed(userId),
       this.getFreshness(),
       this.getSchoolInfo(),
     ]);
@@ -214,7 +216,7 @@ export class DashboardService {
     return items.slice(0, 5);
   }
 
-  private async getFeed(): Promise<FeedItem[]> {
+  private async getFeed(userId?: string): Promise<FeedItem[]> {
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
       select: { studentGuid: true, fullName: true },
@@ -236,9 +238,20 @@ export class DashboardService {
       }),
     ]);
 
+    const homeworkIds = homework.map((hw) => hw.id);
+    const behaviorIds = behaviors.map((b) => b.id);
+    const [hwStateMap, bStateMap] = userId
+      ? await Promise.all([
+          this.userItemStateService.getStateBatch(userId, 'homework', homeworkIds),
+          this.userItemStateService.getStateBatch(userId, 'behavior', behaviorIds),
+        ])
+      : [new Map(), new Map()];
+    const defaultState = { isNew: true, isArchived: false };
+
     const allItems: FeedItem[] = [];
 
     for (const hw of homework) {
+      const hwState = hwStateMap.get(hw.id) ?? defaultState;
       allItems.push({
         id: hw.id,
         sourceId: hw.id,
@@ -250,8 +263,8 @@ export class DashboardService {
         category: 'homework',
         priority: 'medium',
         isPositive: false,
-        isUnread: false,
-        isArchived: false,
+        isNew: hwState.isNew,
+        isArchived: hwState.isArchived,
         hasAttachments: Array.isArray(hw.files) && hw.files.length > 0,
         eventAt: hw.lessonDate.toISOString(),
         syncedAt: hw.updatedAt.toISOString(),
@@ -261,6 +274,7 @@ export class DashboardService {
 
     for (const b of behaviors) {
       const isPositive = b.classification === 'positive';
+      const bState = bStateMap.get(b.id) ?? defaultState;
       allItems.push({
         id: b.id,
         sourceId: b.id,
@@ -272,8 +286,8 @@ export class DashboardService {
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
-        isUnread: false,
-        isArchived: false,
+        isNew: bState.isNew,
+        isArchived: bState.isArchived,
         hasAttachments: this.extractFilesFromRawPayload(b.rawPayload).length > 0,
         eventAt: b.eventAt.toISOString(),
         syncedAt: b.updatedAt.toISOString(),
@@ -293,7 +307,7 @@ export class DashboardService {
         category: 'mail',
         priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
-        isUnread: conv.isUnread,
+        isNew: conv.isUnread,
         isArchived: Array.isArray(conv.labels) && conv.labels.includes('archived'),
         hasAttachments: conv.hasAttachments,
         eventAt: conv.sendTime.toISOString(),

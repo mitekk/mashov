@@ -3,6 +3,7 @@ import { DashboardService } from '../../src/dashboard/dashboard.service';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { FreshnessService } from '../../src/sync/freshness.service';
 import { MashovSessionService } from '../../src/session/mashov-session.service';
+import { UserItemStateService } from '../../src/common/user-item-state.service';
 
 const mockPrisma = {
   mailConversation: {
@@ -36,6 +37,10 @@ const mockSession = {
   ensureStudentsAvailable: jest.fn(),
 };
 
+const mockUserItemState = {
+  getStateBatch: jest.fn().mockResolvedValue(new Map()),
+};
+
 describe('DashboardService', () => {
   let service: DashboardService;
 
@@ -48,6 +53,7 @@ describe('DashboardService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: FreshnessService, useValue: mockFreshness },
         { provide: MashovSessionService, useValue: mockSession },
+        { provide: UserItemStateService, useValue: mockUserItemState },
       ],
     }).compile();
 
