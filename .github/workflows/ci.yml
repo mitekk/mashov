@@ -105,9 +105,13 @@ jobs:
   # 4. E2E TESTS — full Dockerized stack with Playwright container
   # ────────────────────────────────────────────────────────────────────────────
   e2e:
-    name: E2E Tests
+    name: E2E Tests (Shard ${{ matrix.shard }}/2)
     needs: integration-test
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v5
 
@@ -158,6 +162,9 @@ jobs:
           EOF
 
       - name: Run Playwright E2E tests
+        env:
+          PLAYWRIGHT_WORKERS: "2"
+          PLAYWRIGHT_ARGS: --shard=${{ matrix.shard }}/2
         run: docker compose -f docker-compose.yml --profile test up --abort-on-container-exit --exit-code-from e2e e2e
 
       - name: Dump Docker health and logs on failure
@@ -170,7 +177,7 @@ jobs:
         uses: actions/upload-artifact@v6
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: playwright-report/
 
       - name: Stop Docker stack

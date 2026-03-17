@@ -12,6 +12,15 @@ function json(route: Route, body: unknown, status = 200) {
 }
 
 async function mockCoreRoutes(page: Page) {
+  await page.route('**/api/v1/auth/me', (route) =>
+    json(route, {
+      mashovUserId: 'theme-user-1',
+      username: 'theme-parent',
+      displayName: 'Theme Parent',
+      connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+    }),
+  );
+
   await page.route('**/api/v1/dashboard', (route) =>
     json(route, {
       freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
@@ -213,7 +222,6 @@ test.describe('Theme toggle', () => {
     ).toBe(expectedTheme);
 
     await page.reload();
-    await page.waitForLoadState('networkidle');
     await expect(page.getByTestId('theme-toggle')).toBeVisible();
     await expect.poll(() => isDarkMode(page)).toBe(!initialIsDark);
   });
@@ -241,7 +249,6 @@ test.describe('Theme toggle', () => {
 
     for (const route of majorRoutes) {
       await page.goto(route);
-      await page.waitForLoadState('networkidle');
       await expect(page.getByTestId('theme-toggle')).toBeVisible();
       await expect.poll(() => isDarkMode(page)).toBe(true);
     }

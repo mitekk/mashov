@@ -1,4 +1,4 @@
-import { Page, Locator } from '@playwright/test';
+import { Page, Locator, expect } from '@playwright/test';
 
 export class InboxPage {
   readonly page: Page;
@@ -21,7 +21,7 @@ export class InboxPage {
 
   async navigate(): Promise<void> {
     await this.page.goto('/inbox');
-    await this.page.waitForLoadState('networkidle');
+    await expect(this.inboxContainer).toBeVisible();
   }
 
   conversationItem(conversationId: string): Locator {
@@ -49,7 +49,9 @@ export class InboxPage {
 
   async clickConversation(conversationId: string): Promise<void> {
     await this.conversationItem(conversationId).click();
-    await this.page.waitForLoadState('networkidle');
+    await this.page.waitForURL(
+      (url) => url.pathname === `/inbox/${conversationId}`,
+    );
   }
 
   async toggleConversationSelection(conversationId: string): Promise<void> {

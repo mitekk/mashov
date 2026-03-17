@@ -19,7 +19,11 @@ export class ChildWorkspacePage {
       behavior,
     });
     await this.page.goto(`/children/${studentGuid}?${params.toString()}`);
-    await this.page.waitForLoadState('networkidle');
+    await this.page.waitForURL((url) =>
+      url.pathname === `/children/${studentGuid}` &&
+      url.searchParams.get('section') === section &&
+      url.searchParams.get('behavior') === behavior,
+    );
   }
 
   sectionTab(sectionId: 'homework' | 'behavior' | 'subjects' | 'notices'): Locator {
@@ -28,7 +32,6 @@ export class ChildWorkspacePage {
 
   async clickSection(sectionId: 'homework' | 'behavior' | 'subjects' | 'notices'): Promise<void> {
     await this.sectionTab(sectionId).click();
-    // Brief wait for section content to render
-    await this.page.waitForTimeout(300);
+    await this.page.waitForURL((url) => url.searchParams.get('section') === sectionId);
   }
 }

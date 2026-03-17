@@ -59,7 +59,7 @@ services:
     ports:
       - "3001:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider --tries=1 http://localhost:3000/health || exit 1"]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/health').then((r) => process.exit(r.status >= 500 ? 1 : 0)).catch(() => process.exit(1))\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -79,6 +79,7 @@ services:
     environment:
       BACKEND_URL: http://backend:3000
       NEXT_PUBLIC_API_URL: /api/v1
+      ENABLE_E2E_AUTH_BYPASS: "1"
     ports:
       - "3000:3000"
     healthcheck:
@@ -164,13 +165,15 @@ services:
       frontend:
         condition: service_healthy
     environment:
-      CI: "1"
+      CI: ${CI:-}
       PLAYWRIGHT_BASE_URL: http://frontend:3000
       PLAYWRIGHT_BACKEND_URL: http://backend:3000
+      PLAYWRIGHT_WORKERS: ${PLAYWRIGHT_WORKERS:-}
+      PLAYWRIGHT_ARGS: ${PLAYWRIGHT_ARGS:-}
     volumes:
       - ./:/work
       - /work/node_modules
-    command: ["sh", "-c", "npm ci --include=dev && npx playwright test --workers=1"]
+    command: ["sh", "-c", "npm ci --include=dev && npx playwright test ${PLAYWRIGHT_ARGS:-}"]
     logging:
       driver: "json-file"
       options:

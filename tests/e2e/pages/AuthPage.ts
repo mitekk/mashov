@@ -27,7 +27,7 @@ export class AuthPage {
   }
 
   async selectSchoolOption(semel: number): Promise<void> {
-    await this.page.getByTestId(`school-option-${semel}`).click();
+    await this.page.getByRole('option', { name: new RegExp(String(semel)) }).click();
   }
 
   async fillCredentials(username: string, password: string): Promise<void> {

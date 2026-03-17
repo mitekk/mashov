@@ -54,6 +54,22 @@ function makeEmptyDashboard(overrides: object = {}) {
   };
 }
 
+const MOCK_ME = {
+  mashovUserId: 'e2e-parent-1',
+  username: 'e2e-parent',
+  displayName: 'E2E Parent',
+  connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+};
+
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', async (route) => {
+    await route.fulfill({ json: MOCK_ME });
+  });
+  await page.route('**/api/v1/dashboard', async (route) => {
+    await route.fulfill({ json: makeEmptyDashboard() });
+  });
+});
+
 test.describe('Home page', () => {
   test('does not crash when a feed item is missing linkPath', async ({ page }) => {
     const hrefPropErrors: string[] = [];
@@ -492,7 +508,7 @@ test.describe('Home page', () => {
     await expect(homePage.homeHeader).toBeVisible();
 
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await expect(homePage.homeHeader).toBeVisible();
 
     await expect(homePage.homeHeader).toBeVisible();
     await expect(homePage.summaryStrip).toBeVisible();

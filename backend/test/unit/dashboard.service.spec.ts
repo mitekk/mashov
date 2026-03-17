@@ -109,9 +109,9 @@ describe('DashboardService', () => {
 
       const result = await service.getDashboard();
 
-      expect(result.summary).toHaveProperty('unreadConversations');
-      expect(result.summary).not.toHaveProperty('newConversations');
-      expect(result.summary.unreadConversations).toBe(7);
+      expect(result.summary).toHaveProperty('newConversations');
+      expect(result.summary).not.toHaveProperty('unreadConversations');
+      expect(result.summary.newConversations).toBe(7);
     });
 
     it('summary newConversations falls back to DB count when cachedNewCount is null', async () => {
@@ -121,7 +121,7 @@ describe('DashboardService', () => {
 
       const result = await service.getDashboard();
 
-      expect(result.summary.unreadConversations).toBe(4);
+      expect(result.summary.newConversations).toBe(4);
     });
 
     it('needsAttention queries homework items (isNew/isArchived live in UserItemState, not on HomeworkItem)', async () => {

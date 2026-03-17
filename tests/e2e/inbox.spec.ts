@@ -23,6 +23,93 @@ function makeConversation(overrides: object = {}) {
   };
 }
 
+const MOCK_ME = {
+  mashovUserId: 'e2e-parent-1',
+  username: 'e2e-parent',
+  displayName: 'E2E Parent',
+  connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+};
+
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', async (route) => {
+    await route.fulfill({ json: MOCK_ME });
+  });
+  await page.route('**/api/v1/dashboard', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
+        summary: {
+          newConversations: 0,
+          recentHomeworkCount: 0,
+          recentBehaviorCount: 0,
+          childrenCount: 0,
+        },
+        needsAttention: [],
+        feed: [],
+        children: [],
+        school: { schoolName: 'Test School', schoolYear: 2026 },
+      }),
+    });
+  });
+  await page.route('**/api/v1/mail/summary', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        newConversations: 0,
+        recentConversations: [],
+        lastSyncAt: null,
+      }),
+    });
+  });
+  await page.route('**/api/v1/mail/conversations**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const { pathname } = url;
+
+    if (request.method() !== 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ updated: 1 }),
+      });
+      return;
+    }
+
+    if (pathname.endsWith('/api/v1/mail/conversations')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [],
+          pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+        }),
+      });
+      return;
+    }
+
+    const conversationId = pathname.split('/').at(-1) ?? 'conv-default';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        conversationId,
+        subject: 'Default message',
+        sendTime: new Date('2026-03-12T10:00:00Z').toISOString(),
+        isNew: false,
+        hasDrafts: false,
+        hasAttachments: false,
+        preventReply: false,
+        labels: [],
+        lastFetchedAt: new Date().toISOString(),
+        messages: [],
+      }),
+    });
+  });
+});
+
 test.describe('Inbox page', () => {
   test('renders the inbox page container', async ({ page }) => {
     const inboxPage = new InboxPage(page);
@@ -73,11 +160,15 @@ test.describe('Inbox page', () => {
   });
 
   test('inbox route defaults to unread filter', async ({ page }) => {
-    let requestedFilter: string | null = null;
+    const listRequestPromise = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return (
+        request.method() === 'GET' &&
+        url.pathname.endsWith('/api/v1/mail/conversations')
+      );
+    });
 
     await page.route('**/api/v1/mail/conversations**', async (route) => {
-      const url = new URL(route.request().url());
-      requestedFilter = url.searchParams.get('filter');
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -91,7 +182,8 @@ test.describe('Inbox page', () => {
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
 
-    expect(requestedFilter).toBe('new');
+    const listRequest = await listRequestPromise;
+    expect(new URL(listRequest.url()).searchParams.get('filter')).toBe('new');
   });
 
   test('clicking filter-unread adds filter=new to the URL', async ({ page }) => {
@@ -106,7 +198,7 @@ test.describe('Inbox page', () => {
   test('clicking filter-all sets filter=all in the URL', async ({ page }) => {
     const inboxPage = new InboxPage(page);
     await page.goto('/inbox?filter=new');
-    await page.waitForLoadState('networkidle');
+    await expect(inboxPage.inboxContainer).toBeVisible();
 
     await inboxPage.clickFilterAll();
 
@@ -119,17 +211,18 @@ test.describe('Inbox page', () => {
     await expect(inboxPage.inboxContainer).toBeVisible();
 
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await expect(inboxPage.inboxContainer).toBeVisible();
 
     await expect(inboxPage.inboxContainer).toBeVisible();
   });
 
   test('new filter state persists in URL after reload', async ({ page }) => {
+    const inboxPage = new InboxPage(page);
     await page.goto('/inbox?filter=new');
-    await page.waitForLoadState('networkidle');
+    await expect(inboxPage.inboxContainer).toBeVisible();
 
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await expect(inboxPage.inboxContainer).toBeVisible();
 
     expect(page.url()).toContain('filter=new');
   });
@@ -997,7 +1090,7 @@ test.describe('Inbox page', () => {
     await expect.poll(() => markReadFired).toBe(true);
 
     await page.goBack();
-    await page.waitForLoadState('networkidle');
+    await expect(inboxPage.inboxContainer).toBeVisible();
 
     // After mark-read, list query should have been invalidated and refetched
     await expect.poll(
@@ -1051,7 +1144,7 @@ test.describe('Inbox page', () => {
     });
 
     await page.goto('/home');
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('home-header')).toBeVisible();
 
     const archiveBtn = page.getByTestId('feed-item-archive-feed-mail-1');
     await expect(archiveBtn).toBeVisible();

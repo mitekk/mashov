@@ -1,4 +1,4 @@
-import { Page, Locator } from '@playwright/test';
+import { Page, Locator, expect } from '@playwright/test';
 
 export class ConversationPage {
   readonly page: Page;
@@ -11,7 +11,7 @@ export class ConversationPage {
 
   async navigate(conversationId: string): Promise<void> {
     await this.page.goto(`/inbox/${conversationId}`);
-    await this.page.waitForLoadState('networkidle');
+    await expect(this.conversationContainer).toBeVisible();
   }
 
   markNewButton(conversationId: string): Locator {

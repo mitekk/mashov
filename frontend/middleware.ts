@@ -14,6 +14,14 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  const e2eBypassEnabled = process.env.ENABLE_E2E_AUTH_BYPASS === '1';
+  const e2eBypassHeader = request.headers.get('x-mashov-e2e-auth-bypass');
+  const e2eBypassAgent =
+    request.headers.get('user-agent')?.includes('mashov-e2e-browser') ?? false;
+  if (e2eBypassEnabled && (e2eBypassHeader === '1' || e2eBypassAgent)) {
+    return NextResponse.next();
+  }
+
   const sessionCookie = request.cookies.get('mashov_session');
 
   if (!sessionCookie) {

@@ -1,5 +1,5 @@
 /**
- * Playwright setup project: write a storage state file with the `session`
+ * Playwright setup project: write a storage state file with the `mashov_session`
  * cookie set so all non-auth specs can skip the login flow.
  *
  * Next.js middleware only checks for the cookie's *existence* — it does not
@@ -10,6 +10,7 @@ import { test as setup } from '@playwright/test';
 import * as path from 'path';
 
 const authFile = path.join(__dirname, '.auth', 'session.json');
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
 
 setup('create authenticated session', async ({ page }) => {
   // Navigate to trigger middleware (any URL works — we intercept before it matters)
@@ -17,10 +18,9 @@ setup('create authenticated session', async ({ page }) => {
 
   await page.context().addCookies([
     {
-      name: 'session',
+      name: 'mashov_session',
       value: 'e2e-bypass-token',
-      domain: new URL(page.url()).hostname || 'localhost',
-      path: '/',
+      url: baseURL,
       httpOnly: false,
       secure: false,
     },

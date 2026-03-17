@@ -1,17 +1,19 @@
-import { Page, Locator } from '@playwright/test';
+import { Page, Locator, expect } from '@playwright/test';
 
 export class ChildrenPage {
   readonly page: Page;
   readonly childrenPageContainer: Locator;
+  readonly pageHeading: Locator;
 
   constructor(page: Page) {
     this.page = page;
     this.childrenPageContainer = page.getByTestId('children-page');
+    this.pageHeading = page.getByRole('heading', { name: 'ילדים' });
   }
 
   async navigate(): Promise<void> {
     await this.page.goto('/children');
-    await this.page.waitForLoadState('networkidle');
+    await expect(this.pageHeading).toBeVisible();
   }
 
   childCard(studentGuid: string): Locator {
@@ -24,6 +26,8 @@ export class ChildrenPage {
 
   async clickChild(studentGuid: string): Promise<void> {
     await this.childCard(studentGuid).click();
-    await this.page.waitForLoadState('networkidle');
+    await this.page.waitForURL((url) =>
+      url.pathname.startsWith(`/children/${studentGuid}`),
+    );
   }
 }

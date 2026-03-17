@@ -13,6 +13,22 @@ import * as path from 'path';
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';
 const authFile = path.join(__dirname, 'tests/e2e/.auth/session.json');
 
+const configuredWorkers = process.env.PLAYWRIGHT_WORKERS;
+const parsedConfiguredWorkers = configuredWorkers
+  ? Number.parseInt(configuredWorkers, 10)
+  : undefined;
+
+if (
+  configuredWorkers &&
+  (!Number.isInteger(parsedConfiguredWorkers) || parsedConfiguredWorkers <= 0)
+) {
+  throw new Error(
+    `PLAYWRIGHT_WORKERS must be a positive integer. Got: "${configuredWorkers}"`,
+  );
+}
+
+const workerCount = parsedConfiguredWorkers ?? (process.env.CI ? 2 : undefined);
+
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: '**/*.spec.ts',
@@ -26,8 +42,8 @@ export default defineConfig({
   // Retry failing tests once in CI
   retries: process.env.CI ? 1 : 0,
 
-  // One worker in CI to avoid race conditions on shared DB
-  workers: process.env.CI ? 1 : undefined,
+  // Default to 2 workers in CI, keep Playwright default locally.
+  workers: workerCount,
 
   // Reporters: 'github' for CI annotations, 'html' for local review
   reporter: process.env.CI
@@ -68,6 +84,10 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         storageState: authFile,
+        userAgent: 'mashov-e2e-browser',
+        extraHTTPHeaders: {
+          'x-mashov-e2e-auth-bypass': '1',
+        },
       },
       testIgnore: '**/auth.spec.ts',
       dependencies: ['setup'],

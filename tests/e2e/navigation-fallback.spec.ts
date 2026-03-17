@@ -15,6 +15,15 @@ function childUrl(
 }
 
 async function mockBaseRoutes(page: Page) {
+  await page.route('**/api/v1/auth/me', (route) =>
+    json(route, {
+      mashovUserId: 'nav-user-1',
+      username: 'nav-parent',
+      displayName: 'Navigation Parent',
+      connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+    }),
+  );
+
   await page.route('**/api/v1/dashboard', (route) =>
     json(route, {
       freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
@@ -307,6 +316,8 @@ test.describe('Navigation and fallback hardening', () => {
   test('renders child workspace from legacy payload and keeps section/filter in query params', async ({
     page,
   }) => {
+    await mockBaseRoutes(page);
+
     await page.route(`**/api/v1/children/${STUDENT_GUID}`, (route) =>
       json(route, {
         student: {
@@ -492,17 +503,19 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page.getByTestId('child-workspace')).toHaveCount(0);
   });
 
-  test('does not render children tab in bottom nav', async ({ page }) => {
+  test('renders children tab in bottom nav', async ({ page }) => {
     await mockBaseRoutes(page);
 
     await page.goto('/inbox');
     await expect(page.getByTestId('inbox-page')).toBeVisible();
-    await expect(page.getByTestId('nav-children')).toHaveCount(0);
+    await expect(page.getByTestId('nav-children')).toBeVisible();
   });
 
   test('renders conversation detail from legacy nested payload with subject/body fallback', async ({
     page,
   }) => {
+    await mockBaseRoutes(page);
+
     await page.route('**/api/v1/mail/summary', (route) =>
       json(route, { unreadConversations: 1, recentConversations: [], lastSyncAt: null }),
     );
@@ -566,6 +579,8 @@ test.describe('Navigation and fallback hardening', () => {
   });
 
   test('disables unsupported out-of-phase links instead of navigating', async ({ page }) => {
+    await mockBaseRoutes(page);
+
     await page.route('**/api/v1/dashboard', (route) =>
       json(route, {
         freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },

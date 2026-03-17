@@ -56,6 +56,69 @@ function makeBehaviorItem(overrides: object = {}) {
   };
 }
 
+const MOCK_ME = {
+  mashovUserId: 'e2e-parent-1',
+  username: 'e2e-parent',
+  displayName: 'E2E Parent',
+  connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+};
+
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', async (route) => {
+    await route.fulfill({ json: MOCK_ME });
+  });
+  await page.route('**/api/v1/dashboard', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
+        summary: {
+          newConversations: 0,
+          recentHomeworkCount: 0,
+          recentBehaviorCount: 0,
+          childrenCount: 0,
+        },
+        needsAttention: [],
+        feed: [],
+        children: [],
+        school: { schoolName: 'Test School', schoolYear: 2026 },
+      }),
+    });
+  });
+  await page.route('**/api/v1/children', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [] }),
+    });
+  });
+  await page.route('**/api/v1/children/*/homework/*/is-new', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+  await page.route('**/api/v1/children/*/homework/*/archive', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+  await page.route('**/api/v1/children/*/behavior/*/is-new', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+  await page.route('**/api/v1/children/*/behavior/*/archive', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+  await page.route('**/api/v1/children/*/homework/is-new', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+  });
+  await page.route('**/api/v1/children/*/homework/archive', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+  });
+  await page.route('**/api/v1/children/*/behavior/is-new', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+  });
+  await page.route('**/api/v1/children/*/behavior/archive', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+  });
+});
+
 test.describe('Children page', () => {
   test('renders the children page with empty state when no students exist', async ({ page }) => {
     await page.route('**/api/v1/children', async (route) => {
@@ -82,7 +145,6 @@ test.describe('Children page', () => {
 
   test('children page shows page heading', async ({ page }) => {
     await page.goto('/children');
-    await page.waitForLoadState('networkidle');
 
     const heading = page.locator('h1');
     await expect(heading).toBeVisible();
@@ -105,7 +167,7 @@ test.describe('Children page', () => {
     const initialCount = await childrenPage.allChildCards().count();
 
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await expect(childrenPage.pageHeading).toBeVisible();
 
     const countAfterReload = await childrenPage.allChildCards().count();
     expect(countAfterReload).toBe(initialCount);
@@ -293,7 +355,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
 
     const attachmentLink = page.getByRole('link', { name: 'homework.pdf' });
     await expect(attachmentLink).toBeVisible();
@@ -583,7 +645,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
 
     const toggleButton = page.getByTestId('homework-detail-toggle-new-hw-1');
     await expect(toggleButton).toBeVisible();
@@ -619,7 +681,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
 
     const archiveButton = page.getByTestId('homework-detail-archive-hw-1');
     await expect(archiveButton).toBeVisible();
@@ -720,7 +782,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
     await expect.poll(() => isNewRequestBody).not.toBeNull();
     await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
   });
@@ -752,7 +814,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/homework/hw-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
 
     await expect(page.getByTestId('homework-detail-toggle-new-hw-1')).toHaveCount(0);
     const unarchiveButton = page.getByTestId('homework-detail-archive-hw-1');
@@ -837,7 +899,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('behavior-detail-beh-1')).toBeVisible();
 
     const attachmentLink = page.getByRole('link', { name: 'behavior.pdf' });
     await expect(attachmentLink).toBeVisible();
@@ -987,11 +1049,27 @@ test.describe('Child workspace page', () => {
     });
 
     const workspace = new ChildWorkspacePage(page);
-    await workspace.navigate(STUDENT_GUID, 'behavior', 'all');
+    const newSelectionCheckbox = page.getByTestId('behavior-select-beh-all-new');
+    const readSelectionCheckbox = page.getByTestId('behavior-select-beh-all-read');
 
-    await page.getByTestId('behavior-status-all').click();
-    await page.getByTestId('behavior-select-beh-all-new').check();
-    await page.getByTestId('behavior-select-beh-all-read').check();
+    const navigateToAllBehavior = async () => {
+      await workspace.navigate(STUDENT_GUID, 'behavior', 'all');
+      await page.getByTestId('behavior-status-all').click();
+      await expect(page.getByTestId('behavior-item-link-beh-all-new')).toBeVisible();
+      await expect(page.getByTestId('behavior-item-link-beh-all-read')).toBeVisible();
+    };
+
+    const selectAllBehaviorItems = async () => {
+      await expect(newSelectionCheckbox).toBeVisible();
+      await expect(readSelectionCheckbox).toBeVisible();
+      await newSelectionCheckbox.check();
+      await readSelectionCheckbox.check();
+      await expect(newSelectionCheckbox).toBeChecked();
+      await expect(readSelectionCheckbox).toBeChecked();
+    };
+
+    await navigateToAllBehavior();
+    await selectAllBehaviorItems();
 
     await expect(page.getByTestId('behavior-bulk-mark-read')).toBeVisible();
     await expect(page.getByTestId('behavior-bulk-mark-unread')).toBeVisible();
@@ -1002,14 +1080,14 @@ test.describe('Child workspace page', () => {
     await expect.poll(() => markReadBody).not.toBeNull();
     expect(markReadBody).toEqual({ behaviorIds: ['beh-all-new'], isNew: false });
 
-    await page.getByTestId('behavior-select-beh-all-new').check();
-    await page.getByTestId('behavior-select-beh-all-read').check();
+    await navigateToAllBehavior();
+    await selectAllBehaviorItems();
     await page.getByTestId('behavior-bulk-mark-unread').click();
     await expect.poll(() => markUnreadBody).not.toBeNull();
     expect(markUnreadBody).toEqual({ behaviorIds: ['beh-all-read'], isNew: true });
 
-    await page.getByTestId('behavior-select-beh-all-new').check();
-    await page.getByTestId('behavior-select-beh-all-read').check();
+    await navigateToAllBehavior();
+    await selectAllBehaviorItems();
     await page.getByTestId('behavior-bulk-archive').click();
     await expect.poll(() => archiveBody).not.toBeNull();
     expect(archiveBody).toEqual({ behaviorIds: ['beh-all-new', 'beh-all-read'], isArchived: true });
@@ -1042,7 +1120,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('behavior-detail-beh-1')).toBeVisible();
 
     const toggleButton = page.getByTestId('behavior-detail-toggle-new-beh-1');
     await expect(toggleButton).toBeVisible();
@@ -1078,7 +1156,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('behavior-detail-beh-1')).toBeVisible();
 
     const archiveButton = page.getByTestId('behavior-detail-archive-beh-1');
     await expect(archiveButton).toBeVisible();
@@ -1179,7 +1257,7 @@ test.describe('Child workspace page', () => {
     });
 
     await page.goto(`/children/${STUDENT_GUID}/behavior/beh-1`);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByTestId('behavior-detail-beh-1')).toBeVisible();
     await expect.poll(() => isNewRequestBody).not.toBeNull();
     await expect(page).toHaveURL(`/children/${STUDENT_GUID}/behavior/beh-1`);
   });
