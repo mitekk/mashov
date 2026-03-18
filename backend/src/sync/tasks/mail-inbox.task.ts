@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
+
+// Prisma's InputJsonValue is not re-exported from the @prisma/client default entrypoint in v5.
+// Defining a compatible local alias avoids the broken namespace resolution.
+type InputJsonValue = string | number | boolean | InputJsonValue[] | { [key: string]: InputJsonValue | null };
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
@@ -136,8 +140,8 @@ export class MailInboxTask {
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,
-                labels: (conv.labels ?? []) as import('@prisma/client').Prisma.InputJsonValue,
-                rawPayload: conv as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                labels: (conv.labels ?? []) as InputJsonValue,
+                rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
               },
               update: {
@@ -148,8 +152,8 @@ export class MailInboxTask {
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,
-                labels: (conv.labels ?? []) as import('@prisma/client').Prisma.InputJsonValue,
-                rawPayload: conv as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                labels: (conv.labels ?? []) as InputJsonValue,
+                rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
               },
             });
@@ -169,7 +173,7 @@ export class MailInboxTask {
                   preventReply: msg.preventReply,
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
-                  rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                  rawPayload: msg as unknown as InputJsonValue,
                 },
                 update: {
                   senderName: msg.senderName,
@@ -179,7 +183,7 @@ export class MailInboxTask {
                   preventReply: msg.preventReply,
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
-                  rawPayload: msg as unknown as import('@prisma/client').Prisma.InputJsonValue,
+                  rawPayload: msg as unknown as InputJsonValue,
                 },
               });
             }
@@ -194,6 +198,105 @@ export class MailInboxTask {
         }
 
         if (conversations.length < pageSize) break;
+      }
+
+      // Sync archive folder — Mashov returns archived conversations without labels,
+      // so we force labels: ['archived'] and isUnread: false (archived = always read).
+      for (let page = 0; page < maxPages; page++) {
+        const skip = page * pageSize;
+        const archivedConversations = conn && password
+          ? await this.mashovClient.getForConnection<MashovConversation[]>(
+              `/api/mail/archive/conversations?skip=${skip}&take=${pageSize}`,
+              conn.id,
+              conn.schoolCode,
+              conn.schoolYear,
+              conn.username,
+              password,
+              { headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/archive' } },
+            )
+          : await this.mashovClient.get<MashovConversation[]>(
+              `/api/mail/archive/conversations?skip=${skip}&take=${pageSize}`,
+              {
+                headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/archive' },
+              },
+            );
+
+        if (archivedConversations.length === 0) break;
+        fetchedCount += archivedConversations.length;
+
+        for (const conv of archivedConversations) {
+          try {
+            const senderName = conv.messages[0]?.senderName ?? null;
+            const sendTime = new Date(conv.sendTime);
+
+            await this.prisma.mailConversation.upsert({
+              where: { conversationId: conv.conversationId },
+              create: {
+                conversationId: conv.conversationId,
+                subject: conv.subject,
+                senderNamePreview: senderName,
+                sendTime,
+                isUnread: false,
+                hasDrafts: conv.hasDrafts,
+                hasAttachments: conv.hasAttachments,
+                preventReply: conv.preventReply,
+                labels: ['archived'] as InputJsonValue,
+                rawPayload: conv as unknown as InputJsonValue,
+                lastFetchedAt: new Date(),
+              },
+              update: {
+                subject: conv.subject,
+                senderNamePreview: senderName,
+                sendTime,
+                isUnread: false,
+                hasDrafts: conv.hasDrafts,
+                hasAttachments: conv.hasAttachments,
+                preventReply: conv.preventReply,
+                labels: ['archived'] as InputJsonValue,
+                rawPayload: conv as unknown as InputJsonValue,
+                lastFetchedAt: new Date(),
+              },
+            });
+
+            for (const msg of conv.messages) {
+              await this.prisma.mailMessage.upsert({
+                where: { messageId: msg.messageId },
+                create: {
+                  messageId: msg.messageId,
+                  conversationId: msg.conversationId,
+                  senderId: msg.senderId,
+                  senderName: msg.senderName,
+                  subject: msg.subject,
+                  sendTime: new Date(msg.sendTime),
+                  isNew: false,
+                  preventReply: msg.preventReply,
+                  sentViaEmail: msg.sentViaEmail,
+                  sentViaSms: msg.sentViaSms,
+                  rawPayload: msg as unknown as InputJsonValue,
+                },
+                update: {
+                  senderName: msg.senderName,
+                  subject: msg.subject,
+                  sendTime: new Date(msg.sendTime),
+                  isNew: false,
+                  preventReply: msg.preventReply,
+                  sentViaEmail: msg.sentViaEmail,
+                  sentViaSms: msg.sentViaSms,
+                  rawPayload: msg as unknown as InputJsonValue,
+                },
+              });
+            }
+
+            upsertCount++;
+          } catch (itemErr) {
+            const msg = itemErr instanceof Error ? itemErr.message : String(itemErr);
+            this.logger.warn(`Failed to upsert archived conversation ${conv.conversationId}: ${msg}`);
+            failedCount++;
+            if (errorMessages.length < 10) errorMessages.push(msg);
+          }
+        }
+
+        if (archivedConversations.length < pageSize) break;
       }
 
       await this.syncRunService.closeRun(syncRun.id, 'success', {

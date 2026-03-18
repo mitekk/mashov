@@ -66,36 +66,52 @@ function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>>) {
 
 describe('MailService', () => {
   describe('getSummary', () => {
-    it('returns newConversations count from cached household count when available', async () => {
+    it('uses DB unread non-archived count and does not read household cachedNewCount', async () => {
+      const householdFindFirst = jest.fn().mockResolvedValue({ cachedNewCount: 68 });
+      const conversationCount = jest.fn().mockResolvedValue(60);
+      const conversationFindMany = jest.fn().mockResolvedValue([
+        makeConversation({ conversationId: 'conv-upstream-1', isUnread: true }),
+      ]);
       const service = new MailService(
         makeMockPrisma({
-          householdFindFirst: jest.fn().mockResolvedValue({ cachedNewCount: 68 }),
-          conversationCount: jest.fn().mockResolvedValue(2),
-          conversationFindMany: jest.fn().mockResolvedValue([
-            makeConversation({ isUnread: true }),
-          ]),
+          householdFindFirst,
+          conversationCount,
+          conversationFindMany,
           syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
         }),
         makeMockMashovClient({}),
       );
 
       const result = await service.getSummary();
-      expect(result.newConversations).toBe(68);
+      expect(result.newConversations).toBe(60);
       expect(result.recentConversations[0].conversationId).toBe('conv-upstream-1');
       expect(result.lastSyncAt).toBe(NOW.toISOString());
+      expect(householdFindFirst).not.toHaveBeenCalled();
     });
 
-    it('falls back to new count from DB when household cache is missing', async () => {
+    it('queries count and recent conversations with unread + non-archived filter', async () => {
+      const conversationCount = jest.fn().mockResolvedValue(4);
+      const conversationFindMany = jest.fn().mockResolvedValue([]);
       const service = new MailService(
         makeMockPrisma({
-          householdFindFirst: jest.fn().mockResolvedValue(null),
-          conversationCount: jest.fn().mockResolvedValue(4),
+          conversationCount,
+          conversationFindMany,
         }),
         makeMockMashovClient({}),
       );
 
-      const result = await service.getSummary();
-      expect(result.newConversations).toBe(4);
+      await service.getSummary();
+
+      const unreadNonArchivedWhere = {
+        isUnread: true,
+        NOT: { labels: { array_contains: ['archived'] } },
+      };
+      expect(conversationCount).toHaveBeenCalledWith({ where: unreadNonArchivedWhere });
+      expect(conversationFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: unreadNonArchivedWhere,
+        }),
+      );
     });
 
     it('does not include unreadConversations field in summary', async () => {

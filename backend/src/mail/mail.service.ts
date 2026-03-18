@@ -78,12 +78,7 @@ export class MailService {
   ) {}
 
   async getSummary() {
-    const [household, newFallback, recentConversations, lastSync] = await Promise.all([
-      this.prisma.householdConnection.findFirst({
-        where: { active: true },
-        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedNewCount: true },
-      }),
+    const [newConversations, recentConversations, lastSync] = await Promise.all([
       this.prisma.mailConversation.count({
         where: {
           isUnread: true,
@@ -104,8 +99,6 @@ export class MailService {
         select: { endedAt: true },
       }),
     ]);
-
-    const newConversations = household?.cachedNewCount ?? newFallback;
 
     return {
       newConversations,

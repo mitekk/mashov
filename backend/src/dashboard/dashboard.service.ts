@@ -79,12 +79,7 @@ export class DashboardService {
   }
 
   private async getSummary() {
-    const [household, newFallback, students, recentHomework, recentBehavior] = await Promise.all([
-      this.prisma.householdConnection.findFirst({
-        where: { active: true },
-        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedNewCount: true },
-      }),
+    const [newConversations, students, recentHomework, recentBehavior] = await Promise.all([
       this.prisma.mailConversation.count({
         where: {
           isUnread: true,
@@ -104,8 +99,6 @@ export class DashboardService {
         },
       }),
     ]);
-
-    const newConversations = household?.cachedNewCount ?? newFallback;
 
     return {
       newConversations,

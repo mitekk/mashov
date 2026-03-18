@@ -68,18 +68,27 @@ export class MailCountsTask {
 
         const unreadCount = data?.unreadConversations ?? 0;
 
+        // Compute local unread count excluding archived — upstream counts unread across all
+        // folders (including archive), which would inflate the badge. Use local DB as source of truth.
+        const localUnreadCount = await this.prisma.mailConversation.count({
+          where: {
+            isUnread: true,
+            NOT: { labels: { array_contains: ['archived'] } },
+          },
+        });
+
         // Update cachedNewCount on this specific connection (or the first active one for shared session)
         const target = conn ?? await this.prisma.householdConnection.findFirst({ where: { active: true } });
         if (target) {
           await this.prisma.householdConnection.update({
             where: { id: target.id },
-            data: { cachedNewCount: unreadCount },
+            data: { cachedNewCount: localUnreadCount },
           });
           updatedCount = 1;
         }
 
         await this.syncRunService.closeRun(syncRun.id, 'success', { fetchedCount: 1 });
-        this.logger.debug(`Mail counts sync (conn=${conn?.id ?? 'shared'}): unreadConversations=${unreadCount}`);
+        this.logger.debug(`Mail counts sync (conn=${conn?.id ?? 'shared'}): upstream=${unreadCount} local=${localUnreadCount}`);
         totalUpdatedCount += updatedCount;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
