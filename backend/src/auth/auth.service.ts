@@ -135,7 +135,7 @@ export class AuthService {
       );
       loginData = response.data;
 
-      const setCookie = response.headers['set-cookie'];
+      const setCookie = response.headers?.['set-cookie'];
       if (setCookie) {
         const cookieList = Array.isArray(setCookie) ? setCookie : [setCookie];
         for (const c of cookieList) {

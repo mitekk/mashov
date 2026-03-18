@@ -79,7 +79,6 @@ test.beforeEach(async ({ page }) => {
           recentBehaviorCount: 0,
           childrenCount: 0,
         },
-        needsAttention: [],
         feed: [],
         children: [],
         school: { schoolName: 'Test School', schoolYear: 2026 },

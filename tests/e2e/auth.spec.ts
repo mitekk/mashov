@@ -51,7 +51,6 @@ const MOCK_ME = {
 const MOCK_EMPTY_DASHBOARD = {
   freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
   summary: { newConversations: 0, recentHomeworkCount: 0, recentBehaviorCount: 0, childrenCount: 0 },
-  needsAttention: [],
   feed: [],
   children: [],
   school: { schoolName: 'בית ספר לדוגמה', schoolYear: 2026 },

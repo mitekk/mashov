@@ -43,7 +43,6 @@ function makeEmptyDashboard(overrides: object = {}) {
       recentBehaviorCount: 0,
       childrenCount: 0,
     },
-    needsAttention: [],
     feed: [],
     children: [],
     school: {

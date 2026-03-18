@@ -39,23 +39,6 @@ export interface DashboardSummary {
   childrenCount: number;
 }
 
-export type NeedsAttentionType =
-  | 'new_conversation'
-  | 'negative_behavior'
-  | 'new_homework'
-  | 'sync_degraded';
-
-export interface NeedsAttentionItem {
-  id: string;
-  type: NeedsAttentionType;
-  title: string;
-  summary: string;
-  studentGuid: string | null;
-  studentName: string | null;
-  timestamp: string;
-  linkPath: string;
-}
-
 export type FeedSourceType = 'homework' | 'behavior' | 'mail' | 'positive';
 export type FeedPriority = 'high' | 'medium' | 'low';
 
@@ -99,7 +82,6 @@ export interface SchoolInfo {
 export interface DashboardResponse {
   freshness: FreshnessStatus;
   summary: DashboardSummary;
-  needsAttention: NeedsAttentionItem[];
   feed: FeedItem[];
   children: DashboardChildCard[];
   school: SchoolInfo;

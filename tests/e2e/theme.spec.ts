@@ -30,7 +30,6 @@ async function mockCoreRoutes(page: Page) {
         recentBehaviorCount: 1,
         childrenCount: 1,
       },
-      needsAttention: [],
       feed: [],
       children: [
         {

@@ -91,7 +91,7 @@ describe('DashboardService', () => {
       const result = await service.getDashboard();
 
       expect(result).toHaveProperty('summary');
-      expect(result).toHaveProperty('needsAttention');
+      expect(result).not.toHaveProperty('needsAttention');
       expect(result).toHaveProperty('feed');
       expect(result).toHaveProperty('children');
       expect(result).toHaveProperty('freshness');
@@ -107,17 +107,23 @@ describe('DashboardService', () => {
 
     it('summary uses newConversations key (not unreadConversations)', async () => {
       seedEmptyState();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({
-        schoolName: 'Test School',
-        schoolYear: 2026,
-        cachedNewCount: 7,
-      });
+      mockPrisma.mailConversation.count.mockResolvedValue(7);
 
       const result = await service.getDashboard();
 
       expect(result.summary).toHaveProperty('newConversations');
       expect(result.summary).not.toHaveProperty('unreadConversations');
       expect(result.summary.newConversations).toBe(7);
+    });
+
+    it('summary newConversations prefers cachedNewCount from active household connection', async () => {
+      seedEmptyState();
+      mockPrisma.householdConnection.findFirst.mockResolvedValue({ cachedNewCount: 23 });
+      mockPrisma.mailConversation.count.mockResolvedValue(7);
+
+      const result = await service.getDashboard();
+
+      expect(result.summary.newConversations).toBe(23);
     });
 
     it('summary newConversations falls back to DB count when cachedNewCount is null', async () => {
@@ -128,161 +134,6 @@ describe('DashboardService', () => {
       const result = await service.getDashboard();
 
       expect(result.summary.newConversations).toBe(4);
-    });
-
-    it('needsAttention queries homework items (isNew/isArchived live in UserItemState, not on HomeworkItem)', async () => {
-      seedEmptyState();
-      const homeworkFindMany = jest.fn().mockResolvedValue([]);
-      mockPrisma.homeworkItem.findMany = homeworkFindMany;
-
-      await service.getDashboard();
-
-      expect(homeworkFindMany).toHaveBeenCalled();
-    });
-
-    it('needsAttention queries behavior items (isNew/isArchived live in UserItemState, not on BehaviorItem)', async () => {
-      seedEmptyState();
-      const behaviorFindMany = jest.fn().mockResolvedValue([]);
-      mockPrisma.behaviorItem.findMany = behaviorFindMany;
-
-      await service.getDashboard();
-
-      expect(behaviorFindMany).toHaveBeenCalled();
-    });
-  });
-
-  describe('needsAttention priority ordering', () => {
-    it('places new conversations before behavior before homework', async () => {
-      const now = new Date();
-
-      mockPrisma.mailConversation.findMany.mockResolvedValue([
-        {
-          id: 'conv-1',
-          subject: 'New message',
-          senderNamePreview: 'Teacher',
-          sendTime: now,
-          conversationId: 'conv-id-1',
-          isNew: true,
-          lastFetchedAt: now,
-        },
-      ]);
-
-      mockPrisma.behaviorItem.findMany.mockResolvedValue([
-        {
-          id: 'beh-1',
-          achvaName: 'Late arrival',
-          remark: 'Late to class',
-          subject: 'Math',
-          studentGuid: 'sg-1',
-          eventAt: now,
-          classification: 'attention',
-          isNew: true,
-          isArchived: false,
-          updatedAt: now,
-        },
-      ]);
-
-      mockPrisma.homeworkItem.findMany.mockResolvedValue([
-        {
-          id: 'hw-1',
-          subjectName: 'Math',
-          homeworkText: 'Do exercises',
-          studentGuid: 'sg-1',
-          lessonDate: now,
-          isNew: true,
-          isArchived: false,
-          updatedAt: now,
-        },
-      ]);
-
-      mockPrisma.student.findMany.mockResolvedValue([
-        { studentGuid: 'sg-1', fullName: 'Test Child' },
-      ]);
-
-      mockPrisma.mailConversation.count.mockResolvedValue(1);
-      mockPrisma.student.count.mockResolvedValue(1);
-      mockPrisma.homeworkItem.count.mockResolvedValue(1);
-      mockPrisma.behaviorItem.count.mockResolvedValue(1);
-      mockPrisma.homeworkItem.findFirst.mockResolvedValue(null);
-      mockPrisma.behaviorItem.findFirst.mockResolvedValue(null);
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
-      mockFreshness.computeFreshness.mockResolvedValue({
-        state: 'fresh',
-        lastSyncAt: null,
-        staleSources: [],
-      });
-
-      const result = await service.getDashboard();
-      const attention = result.needsAttention;
-
-      expect(attention.length).toBeGreaterThan(0);
-      expect(attention[0].type).toBe('new_conversation');
-    });
-
-    it('needsAttention item type for homework is new_homework', async () => {
-      const now = new Date();
-      seedEmptyState();
-
-      mockPrisma.homeworkItem.findMany.mockResolvedValue([
-        {
-          id: 'hw-1',
-          subjectName: 'Math',
-          homeworkText: 'Do exercises',
-          studentGuid: 'sg-1',
-          lessonDate: now,
-          isNew: true,
-          isArchived: false,
-          updatedAt: now,
-        },
-      ]);
-      mockPrisma.student.findMany.mockResolvedValue([
-        { studentGuid: 'sg-1', fullName: 'Test Child' },
-      ]);
-
-      const result = await service.getDashboard();
-      const hwItem = result.needsAttention.find((item: { type: string }) => item.type === 'new_homework');
-      expect(hwItem).toBeDefined();
-    });
-
-    it('needsAttention item type for conversation is new_conversation (not unread_conversation)', async () => {
-      const now = new Date();
-      seedEmptyState();
-
-      mockPrisma.mailConversation.findMany.mockResolvedValue([
-        {
-          id: 'conv-1',
-          subject: 'Message',
-          senderNamePreview: 'Teacher',
-          sendTime: now,
-          conversationId: 'conv-id-1',
-          isNew: true,
-          lastFetchedAt: now,
-        },
-      ]);
-
-      const result = await service.getDashboard();
-      const convItem = result.needsAttention.find((item: { type: string }) => item.type === 'new_conversation');
-      expect(convItem).toBeDefined();
-
-      const oldTypeItem = result.needsAttention.find((item: { type: string }) => item.type === 'unread_conversation');
-      expect(oldTypeItem).toBeUndefined();
-    });
-
-    it('adds sync_degraded item when freshness is degraded and list has room', async () => {
-      seedEmptyState();
-      mockFreshness.computeFreshness.mockResolvedValue({
-        state: 'degraded',
-        lastSyncAt: '2026-03-10T08:00:00Z',
-        staleSources: ['mail_inbox', 'homework'],
-      });
-
-      const result = await service.getDashboard();
-      expect(result.needsAttention).toHaveLength(1);
-      expect(result.needsAttention[0]).toMatchObject({
-        id: 'sync-degraded',
-        type: 'sync_degraded',
-        linkPath: '/more',
-      });
     });
   });
 

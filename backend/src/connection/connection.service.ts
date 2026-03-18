@@ -90,7 +90,7 @@ export class ConnectionService {
         },
       );
 
-      const setCookie = validationResponse.headers['set-cookie'];
+      const setCookie = validationResponse.headers?.['set-cookie'];
       if (setCookie) {
         const cookieList = Array.isArray(setCookie) ? setCookie : [setCookie];
         for (const c of cookieList) {

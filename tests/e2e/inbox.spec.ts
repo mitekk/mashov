@@ -46,7 +46,6 @@ test.beforeEach(async ({ page }) => {
           recentBehaviorCount: 0,
           childrenCount: 0,
         },
-        needsAttention: [],
         feed: [],
         children: [],
         school: { schoolName: 'Test School', schoolYear: 2026 },
@@ -1109,7 +1108,6 @@ test.describe('Inbox page', () => {
         body: JSON.stringify({
           freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
           summary: { newConversations: 1, recentHomeworkCount: 0, recentBehaviorCount: 0, childrenCount: 0 },
-          needsAttention: [],
           feed: [{
             id: 'feed-mail-1',
             sourceType: 'mail',

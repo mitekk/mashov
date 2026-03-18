@@ -66,7 +66,7 @@ function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>>) {
 
 describe('MailService', () => {
   describe('getSummary', () => {
-    it('uses DB unread non-archived count and does not read household cachedNewCount', async () => {
+    it('prefers household cachedNewCount when active connection exists', async () => {
       const householdFindFirst = jest.fn().mockResolvedValue({ cachedNewCount: 68 });
       const conversationCount = jest.fn().mockResolvedValue(60);
       const conversationFindMany = jest.fn().mockResolvedValue([
@@ -83,10 +83,25 @@ describe('MailService', () => {
       );
 
       const result = await service.getSummary();
-      expect(result.newConversations).toBe(60);
+      expect(result.newConversations).toBe(68);
       expect(result.recentConversations[0].conversationId).toBe('conv-upstream-1');
       expect(result.lastSyncAt).toBe(NOW.toISOString());
-      expect(householdFindFirst).not.toHaveBeenCalled();
+      expect(householdFindFirst).toHaveBeenCalled();
+    });
+
+    it('falls back to DB unread non-archived count when no active connection exists', async () => {
+      const conversationCount = jest.fn().mockResolvedValue(60);
+      const service = new MailService(
+        makeMockPrisma({
+          householdFindFirst: jest.fn().mockResolvedValue(null),
+          conversationCount,
+          syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      const result = await service.getSummary();
+      expect(result.newConversations).toBe(60);
     });
 
     it('queries count and recent conversations with unread + non-archived filter', async () => {

@@ -4,17 +4,6 @@ import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { UserItemStateService } from '../common/user-item-state.service';
 
-export interface NeedsAttentionItem {
-  id: string;
-  type: 'new_conversation' | 'negative_behavior' | 'new_homework' | 'sync_degraded';
-  title: string;
-  summary: string;
-  studentGuid: string | null;
-  studentName: string | null;
-  timestamp: string;
-  linkPath: string;
-}
-
 export interface FeedItem {
   id: string;
   sourceType: 'homework' | 'behavior' | 'mail' | 'positive';
@@ -66,12 +55,10 @@ export class DashboardService {
       this.getFreshness(),
       this.getSchoolInfo(),
     ]);
-    const needsAttention = await this.getNeedsAttention(freshness);
 
     return {
       freshness,
       summary,
-      needsAttention,
       feed,
       children: students,
       school,
@@ -79,12 +66,17 @@ export class DashboardService {
   }
 
   private async getSummary() {
-    const [newConversations, students, recentHomework, recentBehavior] = await Promise.all([
+    const [localNewConversations, household, students, recentHomework, recentBehavior] = await Promise.all([
       this.prisma.mailConversation.count({
         where: {
           isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
+      }),
+      this.prisma.householdConnection.findFirst({
+        where: { active: true },
+        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
+        select: { cachedNewCount: true },
       }),
       this.prisma.student.count({ where: { isActive: true } }),
       this.prisma.homeworkItem.count({
@@ -99,6 +91,7 @@ export class DashboardService {
         },
       }),
     ]);
+    const newConversations = household?.cachedNewCount ?? localNewConversations;
 
     return {
       newConversations,
@@ -106,107 +99,6 @@ export class DashboardService {
       recentBehaviorCount: recentBehavior,
       childrenCount: students,
     };
-  }
-
-  private async getNeedsAttention(freshness: {
-    state: 'fresh' | 'syncing' | 'stale' | 'degraded';
-    lastSyncAt: string | null;
-    staleSources: string[];
-  }): Promise<NeedsAttentionItem[]> {
-    const items: NeedsAttentionItem[] = [];
-
-    const students = await this.prisma.student.findMany({
-      where: { isActive: true },
-      select: { studentGuid: true, fullName: true },
-    });
-    const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
-
-    // Priority 1: new (unread) conversations
-    const conversations = await this.prisma.mailConversation.findMany({
-      where: {
-        isUnread: true,
-        NOT: { labels: { array_contains: ['archived'] } },
-      },
-      orderBy: { sendTime: 'desc' },
-      take: 3,
-    });
-    for (const conv of conversations) {
-      items.push({
-        id: conv.id,
-        type: 'new_conversation',
-        title: conv.subject,
-        summary: conv.senderNamePreview ?? 'הודעה שלא נקראה',
-        studentGuid: null,
-        studentName: null,
-        timestamp: conv.sendTime.toISOString(),
-        linkPath: `/inbox/${conv.conversationId}`,
-      });
-    }
-
-    if (items.length >= 5) return items.slice(0, 5);
-
-    // Priority 2: negative behavior (not positive, not neutral)
-    const behaviors = await this.prisma.behaviorItem.findMany({
-      where: {
-        classification: 'attention',
-        lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-      },
-      orderBy: { eventAt: 'desc' },
-      take: 5 - items.length,
-    });
-    for (const b of behaviors) {
-      items.push({
-        id: b.id,
-        type: 'negative_behavior',
-        title: b.achvaName,
-        summary: b.remark ?? b.subject,
-        studentGuid: b.studentGuid,
-        studentName: studentMap.get(b.studentGuid) ?? null,
-        timestamp: b.eventAt.toISOString(),
-        linkPath: `/children/${b.studentGuid}`,
-      });
-    }
-
-    if (items.length >= 5) return items.slice(0, 5);
-
-    // Priority 3: recent homework
-    const homework = await this.prisma.homeworkItem.findMany({
-      where: {
-        lessonDate: { gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
-      },
-      orderBy: { lessonDate: 'desc' },
-      take: 5 - items.length,
-    });
-    for (const hw of homework) {
-      items.push({
-        id: hw.id,
-        type: 'new_homework',
-        title: `${hw.subjectName}: שיעורי בית`,
-        summary: hw.homeworkText,
-        studentGuid: hw.studentGuid,
-        studentName: studentMap.get(hw.studentGuid) ?? null,
-        timestamp: hw.lessonDate.toISOString(),
-        linkPath: `/children/${hw.studentGuid}`,
-      });
-    }
-
-    if (items.length < 5 && freshness.state === 'degraded') {
-      items.push({
-        id: 'sync-degraded',
-        type: 'sync_degraded',
-        title: 'סנכרון חלקי',
-        summary:
-          freshness.staleSources.length > 0
-            ? `מקורות מיושנים: ${freshness.staleSources.join(', ')}`
-            : 'חלק מהמקורות לא התעדכנו לאחרונה',
-        studentGuid: null,
-        studentName: null,
-        timestamp: freshness.lastSyncAt ?? new Date().toISOString(),
-        linkPath: '/more',
-      });
-    }
-
-    return items.slice(0, 5);
   }
 
   private async getFeed(userId?: string): Promise<FeedItem[]> {

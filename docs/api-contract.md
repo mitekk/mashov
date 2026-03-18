@@ -107,16 +107,6 @@
     recentBehaviorCount: number;         // behavior_item in last 7 days
     childrenCount: number;               // active student count
   };
-  needsAttention: Array<{
-    id: string;
-    type: "unread_conversation" | "negative_behavior" | "unhandled_homework" | "sync_degraded";
-    title: string;
-    summary: string;
-    studentGuid: string | null;
-    studentName: string | null;
-    timestamp: string;                   // ISO 8601
-    linkPath: string;                    // internal Next.js route, e.g. "/inbox/abc-123"
-  }>;
   feed: Array<{                          // max 20 items; full feed via GET /api/v1/feed
     id: string;
     sourceType: "homework" | "behavior" | "mail" | "positive";

@@ -5,7 +5,6 @@ import { RefreshCw } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { SummaryStrip } from '@/components/home/SummaryStrip';
 import { ChildQuickCard } from '@/components/home/ChildQuickCard';
-import { NeedsAttentionSection } from '@/components/home/NeedsAttentionSection';
 import { LatestFeed } from '@/components/home/LatestFeed';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
@@ -27,7 +26,6 @@ const EMPTY_DASHBOARD: DashboardResponse = {
     recentBehaviorCount: 0,
     childrenCount: 0,
   },
-  needsAttention: [],
   feed: [],
   children: [],
   school: {
@@ -129,11 +127,6 @@ export default function HomePage() {
               ))}
             </div>
           </section>
-        )}
-
-        {/* Needs attention */}
-        {dashboard.needsAttention.length > 0 && (
-          <NeedsAttentionSection items={dashboard.needsAttention} />
         )}
 
         {/* Latest feed */}

@@ -33,18 +33,6 @@ async function mockBaseRoutes(page: Page) {
         recentBehaviorCount: 1,
         childrenCount: 1,
       },
-      needsAttention: [
-        {
-          id: 'att-1',
-          type: 'new_conversation',
-          title: 'Unread conversation',
-          summary: 'Summary',
-          studentGuid: null,
-          studentName: null,
-          timestamp: new Date().toISOString(),
-          linkPath: `/inbox/${CONVERSATION_ID}`,
-        },
-      ],
       feed: [
         {
           id: 'feed-1',
@@ -590,18 +578,6 @@ test.describe('Navigation and fallback hardening', () => {
           recentBehaviorCount: 0,
           childrenCount: 0,
         },
-        needsAttention: [
-          {
-            id: 'att-out',
-            type: 'sync_degraded',
-            title: 'Out of phase',
-            summary: 'Unsupported path',
-            studentGuid: null,
-            studentName: null,
-            timestamp: new Date().toISOString(),
-            linkPath: '/grades',
-          },
-        ],
         feed: [
           {
             id: 'feed-out',
@@ -631,11 +607,7 @@ test.describe('Navigation and fallback hardening', () => {
     );
 
     await page.goto('/home');
-    await expect(page.getByTestId('attention-card-disabled-att-out')).toBeVisible();
     await expect(page.getByTestId('feed-item-disabled-feed-out')).toBeVisible();
-
-    await page.getByTestId('attention-card-disabled-att-out').click();
-    await expect(page).toHaveURL('/home');
 
     await page.getByTestId('feed-item-disabled-feed-out').click();
     await expect(page).toHaveURL('/home');
