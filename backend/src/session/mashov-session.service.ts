@@ -107,6 +107,12 @@ export class MashovSessionService {
       );
     }
 
+    const stored = await this.prisma.householdConnection.findFirst({
+      where: { schoolCode: Number(semel), schoolYear: Number(year) },
+      select: { mashovUniqueId: true },
+    });
+    const storedUniqueId = stored?.mashovUniqueId ?? null;
+
     const loginBody = {
       semel: Number(semel),
       year: Number(year),
@@ -124,6 +130,11 @@ export class MashovSessionService {
       deviceVersion: "145.0.0.0",
     };
 
+    const extraHeaders: Record<string, string> = {};
+    if (storedUniqueId) {
+      extraHeaders["Cookie"] = `uniquId=${storedUniqueId}`;
+    }
+
     const response: AxiosResponse<LoginResponse> = await this.httpClient.post(
       "/api/login",
       loginBody,
@@ -136,11 +147,10 @@ export class MashovSessionService {
           "sec-ch-ua":
             '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
           "sec-ch-ua-mobile": "?0",
+          ...extraHeaders,
         },
       },
     );
-
-    console.log("Login response headers:", response.headers);
 
     this.extractAndStoreCookies(
       response.headers as Record<string, string | string[]>,
@@ -154,6 +164,13 @@ export class MashovSessionService {
       username,
       password,
     );
+
+    if (this.sessionCookies?.uniquId) {
+      await this.prisma.householdConnection.updateMany({
+        where: { schoolCode: Number(semel), schoolYear: Number(year) },
+        data: { mashovUniqueId: this.sessionCookies.uniquId },
+      });
+    }
 
     this.logger.log("Mashov session established successfully");
   }
@@ -403,7 +420,13 @@ export class MashovSessionService {
     };
     this.connectionSessions.set(connectionId, placeholder);
 
-    const authPromise = this.loginWithCredentials(semel, year, username, password);
+    const connRecord = await this.prisma.householdConnection.findUnique({
+      where: { id: connectionId },
+      select: { mashovUniqueId: true },
+    });
+    const storedUniqueId = connRecord?.mashovUniqueId ?? undefined;
+
+    const authPromise = this.loginWithCredentials(semel, year, username, password, connectionId, storedUniqueId);
     placeholder.authPromise = authPromise;
 
     const cookies = await authPromise;
@@ -432,6 +455,8 @@ export class MashovSessionService {
     year: number,
     username: string,
     password: string,
+    connectionId?: string,
+    storedUniqueId?: string,
   ): Promise<SessionCookies> {
     const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
 
@@ -452,6 +477,11 @@ export class MashovSessionService {
       deviceVersion: '145.0.0.0',
     };
 
+    const extraHeaders: Record<string, string> = {};
+    if (storedUniqueId) {
+      extraHeaders['Cookie'] = `uniquId=${storedUniqueId}`;
+    }
+
     const response: AxiosResponse<LoginResponse> = await this.httpClient.post(
       '/api/login',
       loginBody,
@@ -463,6 +493,7 @@ export class MashovSessionService {
           'sec-ch-ua-platform': '"macOS"',
           'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
           'sec-ch-ua-mobile': '?0',
+          ...extraHeaders,
         },
       },
     );
@@ -491,6 +522,13 @@ export class MashovSessionService {
       throw new Error(
         `Missing required session cookies for connection login. Got: ${Object.keys(parsed).join(', ')}`,
       );
+    }
+
+    if (connectionId && parsed.uniquId) {
+      await this.prisma.householdConnection.update({
+        where: { id: connectionId },
+        data: { mashovUniqueId: parsed.uniquId },
+      });
     }
 
     this.logger.debug(`Connection session established for semel=${semel} username=${username}`);

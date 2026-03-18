@@ -16,6 +16,7 @@ model HouseholdConnection {
   schoolName       String?
   upstreamUserId   String?
   cachedNewCount   Int       @default(0)
+  mashovUniqueId   String?
   lastLoginAt      DateTime?
   active           Boolean   @default(true)
   userId           String?

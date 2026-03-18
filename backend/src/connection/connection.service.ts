@@ -47,6 +47,7 @@ export class ConnectionService {
       : this.encryptionService.decrypt(connection.encryptedPassword);
 
     // Validate new credentials with Mashov before saving
+    let newUniqueId: string | undefined;
     try {
       const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
       const year = Number(this.configService.get<string>('MASHOV_YEAR') ?? '2026');
@@ -67,7 +68,12 @@ export class ConnectionService {
         deviceVersion: '145.0.0.0',
       };
 
-      await axios.post<MashovLoginResponse>(
+      const extraHeaders: Record<string, string> = {};
+      if (connection.mashovUniqueId) {
+        extraHeaders['Cookie'] = `uniquId=${connection.mashovUniqueId}`;
+      }
+
+      const validationResponse = await axios.post<MashovLoginResponse>(
         `${this.mashovBaseUrl}/api/login`,
         loginBody,
         {
@@ -78,10 +84,24 @@ export class ConnectionService {
             Accept: 'application/json',
             'User-Agent':
               'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            ...extraHeaders,
           },
           timeout: 30000,
         },
       );
+
+      const setCookie = validationResponse.headers['set-cookie'];
+      if (setCookie) {
+        const cookieList = Array.isArray(setCookie) ? setCookie : [setCookie];
+        for (const c of cookieList) {
+          const nameValue = c.split(';')[0] ?? '';
+          const eqIdx = nameValue.indexOf('=');
+          if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
+            newUniqueId = nameValue.substring(eqIdx + 1).trim();
+            break;
+          }
+        }
+      }
     } catch {
       throw new BadRequestException({
         error: {
@@ -100,6 +120,7 @@ export class ConnectionService {
         username: newUsername,
         encryptedPassword,
         lastLoginAt: new Date(),
+        ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
       },
     });
 
