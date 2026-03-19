@@ -10,6 +10,7 @@ import {
   fetchChildTimetable,
   fetchChildLessonPlans,
   fetchChildLessonHistory,
+  fetchStudentReleases,
 } from '@/api/children';
 import type { BehaviorBucket } from '@/types/api';
 
@@ -109,5 +110,14 @@ export function useChildLessonHistory(studentGuid: string) {
     queryFn: () => fetchChildLessonHistory(studentGuid),
     staleTime: 30 * 60_000,
     enabled: Boolean(studentGuid),
+  });
+}
+
+export function useStudentReleases(studentGuid: string) {
+  return useQuery({
+    queryKey: ['child', studentGuid, 'releases'],
+    queryFn: () => fetchStudentReleases(studentGuid),
+    enabled: Boolean(studentGuid),
+    staleTime: 60_000,
   });
 }

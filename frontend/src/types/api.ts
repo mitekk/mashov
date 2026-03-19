@@ -140,6 +140,35 @@ export interface ChildWorkspaceResponse {
   lastSyncAt: string | null;
 }
 
+export interface StudentRelease {
+  id: number;
+  studentGuid: string;
+  contactGuid: string;
+  releaseDate: string;
+  startHour: string;
+  remark: string;
+  status: number;
+  isDeleted: boolean;
+  requestEditTime: string;
+}
+
+export interface StudentReleasesResponse {
+  data: StudentRelease[];
+}
+
+export interface UpdateStudentReleaseBody extends StudentRelease {
+  releaseDateMoment: string;
+  isExpired: boolean;
+  isDirty_menu: boolean;
+}
+
+export interface CreateStudentReleaseBody {
+  releaseDate: string;
+  remark: string;
+  studentGuid: string;
+  startHour: string;
+}
+
 // ─── Homework ──────────────────────────────────────────────────────────────
 
 export interface HomeworkFile {

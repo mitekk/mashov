@@ -36,6 +36,11 @@ export class MashovHttpClient {
     return response.data;
   }
 
+  async delete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+    const response = await this.requestWithRetryResponse<T>('DELETE', url, undefined, config);
+    return response.data;
+  }
+
   /**
    * Make a GET request scoped to a specific household connection's credentials.
    * Authenticates using stored encrypted credentials for that connection.
@@ -107,6 +112,8 @@ export class MashovHttpClient {
         response = await this.httpClient.get<T>(url, { ...config, headers });
       } else if (method === 'PUT') {
         response = await this.httpClient.put<T>(url, data, { ...config, headers });
+      } else if (method === 'DELETE') {
+        response = await this.httpClient.delete<T>(url, { ...config, headers });
       } else {
         throw new Error(`Unsupported HTTP method: ${method}`);
       }

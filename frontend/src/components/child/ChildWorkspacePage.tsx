@@ -134,6 +134,7 @@ export function ChildWorkspacePage({
           childOptions={childOptions}
           selectedChildGuid={data.student.studentGuid}
           onChildChange={handleChildChange}
+          studentGuid={data.student.studentGuid}
         />
 
         <div className="sticky top-2 z-10 rounded-2xl border border-border/80 bg-background/85 backdrop-blur">

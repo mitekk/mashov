@@ -115,6 +115,17 @@ async function mockCoreRoutes(page: Page) {
     json(route, { data: [] }),
   );
 
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/releases`, (route) =>
+    json(route, []),
+  );
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/releases/*`, (route) => {
+    if (route.request().method() === 'DELETE') {
+      return route.fulfill({ status: 204 });
+    }
+    return json(route, {});
+  });
+
   await page.route('**/api/v1/mail/summary', (route) =>
     json(route, {
       newConversations: 1,

@@ -1,5 +1,7 @@
-import React from 'react';
-import { BookOpen, AlertTriangle, ThumbsUp, Clock } from 'lucide-react';
+'use client';
+
+import React, { useState } from 'react';
+import { BookOpen, AlertTriangle, ThumbsUp, Clock, DoorOpen } from 'lucide-react';
 import type { ChildStudent, ChildSummary } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import {
@@ -10,6 +12,7 @@ import {
 } from '@/components/ui/Select';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { RefreshButton } from '@/components/ui/RefreshButton';
+import { ReleasesDialog } from './ReleasesDialog';
 
 export interface ChildHeaderOption {
   studentGuid: string;
@@ -24,6 +27,7 @@ interface ChildHeaderProps {
   childOptions: ChildHeaderOption[];
   selectedChildGuid: string;
   onChildChange: (studentGuid: string) => void;
+  studentGuid: string;
 }
 
 export function ChildHeader({
@@ -33,7 +37,9 @@ export function ChildHeader({
   childOptions,
   selectedChildGuid,
   onChildChange,
+  studentGuid,
 }: ChildHeaderProps) {
+  const [isReleasesDialogOpen, setIsReleasesDialogOpen] = useState(false);
 
   return (
     <header className="card-base px-4 py-5">
@@ -80,6 +86,15 @@ export function ChildHeader({
               לא פעיל
             </span>
           )}
+          <button
+            type="button"
+            data-testid="child-header-releases-button"
+            onClick={() => setIsReleasesDialogOpen(true)}
+            aria-label="בקשות שחרור"
+            className="icon-button"
+          >
+            <DoorOpen className="h-5 w-5" />
+          </button>
           <ThemeToggle />
           <RefreshButton />
         </div>
@@ -119,6 +134,11 @@ export function ChildHeader({
           סונכרן {formatRelativeHe(lastSyncAt)}
         </p>
       )}
+      <ReleasesDialog
+        open={isReleasesDialogOpen}
+        onOpenChange={setIsReleasesDialogOpen}
+        studentGuid={studentGuid}
+      />
     </header>
   );
 }

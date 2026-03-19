@@ -15,6 +15,9 @@ import type {
   LessonPlansResponse,
   LessonHistoryResponse,
   BehaviorBucket,
+  StudentRelease,
+  UpdateStudentReleaseBody,
+  CreateStudentReleaseBody,
   MarkIsNewRequest,
   MarkArchivedRequest,
   BulkUpdateResponse,
@@ -201,6 +204,56 @@ export async function fetchChildLessonHistory(studentGuid: string): Promise<Less
       normalizeLessonHistoryEntry(item as unknown as UnknownRecord),
     ),
   };
+}
+
+export async function fetchStudentReleases(studentGuid: string): Promise<StudentRelease[]> {
+  const response = await apiFetch<unknown[] | { data: unknown[] }>(
+    `/children/${encodeURIComponent(studentGuid)}/releases`,
+  );
+  const items = Array.isArray(response)
+    ? response
+    : (Array.isArray(response.data) ? response.data : []);
+
+  return items
+    .map((item) => normalizeStudentRelease(item as unknown as UnknownRecord))
+    .filter((item) => !item.isDeleted);
+}
+
+export async function createStudentRelease(
+  studentGuid: string,
+  body: CreateStudentReleaseBody,
+): Promise<void> {
+  await apiFetch<void>(
+    `/children/${encodeURIComponent(studentGuid)}/releases/request`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function updateStudentRelease(
+  studentGuid: string,
+  releaseId: number,
+  body: UpdateStudentReleaseBody,
+): Promise<void> {
+  await apiFetch<void>(
+    `/children/${encodeURIComponent(studentGuid)}/releases/${releaseId}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function deleteStudentRelease(
+  studentGuid: string,
+  releaseId: number,
+): Promise<void> {
+  await apiFetch<void>(
+    `/children/${encodeURIComponent(studentGuid)}/releases/${releaseId}`,
+    { method: 'DELETE' },
+  );
 }
 
 function normalizeChildListItem(item: UnknownRecord): ChildListItem {
@@ -412,6 +465,20 @@ function normalizeLessonHistoryEntry(item: UnknownRecord) {
       reporterid: Number(lessonLogRaw.reporterid ?? 0),
       reporterGuid: String(lessonLogRaw.reporterGuid ?? ''),
     },
+  };
+}
+
+function normalizeStudentRelease(item: UnknownRecord): StudentRelease {
+  return {
+    id: Number(item.id ?? 0),
+    studentGuid: String(item.studentGuid ?? ''),
+    contactGuid: String(item.contactGuid ?? ''),
+    releaseDate: String(item.releaseDate ?? ''),
+    startHour: String(item.startHour ?? '00:00:00'),
+    remark: typeof item.remark === 'string' ? item.remark : '',
+    status: Number(item.status ?? 0),
+    isDeleted: Boolean(item.isDeleted),
+    requestEditTime: String(item.requestEditTime ?? ''),
   };
 }
 

@@ -581,6 +581,44 @@ export class ChildrenService {
     }
   }
 
+  async getStudentReleases(studentGuid: string) {
+    await this.requireStudent(studentGuid);
+
+    const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
+    return this.mashovClient.get<unknown[]>(
+      `/api/students/${studentGuid}/studentReleases`,
+      { headers: { Referer: referer } },
+    );
+  }
+
+  async createStudentRelease(studentGuid: string, body: unknown) {
+    await this.requireStudent(studentGuid);
+
+    const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
+    return this.mashovClient.put<void>(
+      `/api/students/${studentGuid}/studentRelease/request`,
+      body,
+      { headers: { Referer: referer } },
+    );
+  }
+
+  async updateStudentRelease(studentGuid: string, releaseId: number, body: unknown) {
+    await this.requireStudent(studentGuid);
+
+    return this.mashovClient.put<void>(
+      `/api/students/${studentGuid}/studentRelease/${releaseId}/request`,
+      body,
+    );
+  }
+
+  async deleteStudentRelease(studentGuid: string, releaseId: number) {
+    await this.requireStudent(studentGuid);
+
+    return this.mashovClient.delete<void>(
+      `/api/students/${studentGuid}/studentRelease/${releaseId}`,
+    );
+  }
+
   async getNotices(studentGuid: string) {
     await this.requireStudent(studentGuid);
 

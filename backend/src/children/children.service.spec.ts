@@ -123,6 +123,8 @@ function makeMockSession(overrides: Partial<Record<string, jest.Mock>> = {}) {
 function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>> = {}) {
   return {
     get: overrides.get ?? jest.fn(),
+    put: overrides.put ?? jest.fn(),
+    delete: overrides.delete ?? jest.fn(),
     getResponse: overrides.getResponse ?? jest.fn(),
   } as unknown as jest.Mocked<MashovHttpClient>;
 }
@@ -1114,6 +1116,125 @@ describe('ChildrenService', () => {
 
       const result = await service.getLessonHistory(TEST_GUID);
       expect(result).toEqual({ data: [] });
+    });
+  });
+
+  describe('student releases', () => {
+    it('getStudentReleases proxies upstream with releases referer', async () => {
+      const get = jest.fn().mockResolvedValue([
+        {
+          id: 64,
+          studentGuid: TEST_GUID,
+          contactGuid: 'contact-guid-1',
+          releaseDate: '2026-01-23T00:00:00',
+          startHour: '11:30:00',
+          remark: 'doctor',
+          status: 1,
+          isDeleted: false,
+          requestEditTime: '2026-01-22T18:28:33',
+        },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ get }),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getStudentReleases(TEST_GUID);
+      expect(get).toHaveBeenCalledWith(
+        `/api/students/${TEST_GUID}/studentReleases`,
+        {
+          headers: {
+            Referer: 'https://web.mashov.info/students/main/studentsReleaseRequests',
+          },
+        },
+      );
+      expect(result).toEqual([
+        {
+          id: 64,
+          studentGuid: TEST_GUID,
+          contactGuid: 'contact-guid-1',
+          releaseDate: '2026-01-23T00:00:00',
+          startHour: '11:30:00',
+          remark: 'doctor',
+          status: 1,
+          isDeleted: false,
+          requestEditTime: '2026-01-22T18:28:33',
+        },
+      ]);
+    });
+
+    it('createStudentRelease proxies upstream body and request path', async () => {
+      const put = jest.fn().mockResolvedValue(undefined);
+      const body = {
+        releaseDate: '2026-03-20T02:00:00',
+        remark: 'aaa',
+        studentGuid: TEST_GUID,
+        startHour: '09:00:00',
+      };
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ put }),
+        makeMockUserItemStateService(),
+      );
+
+      await service.createStudentRelease(TEST_GUID, body);
+      expect(put).toHaveBeenCalledWith(
+        `/api/students/${TEST_GUID}/studentRelease/request`,
+        body,
+        {
+          headers: {
+            Referer: 'https://web.mashov.info/students/main/studentsReleaseRequests',
+          },
+        },
+      );
+    });
+
+    it('updateStudentRelease proxies upstream body and path', async () => {
+      const put = jest.fn().mockResolvedValue(undefined);
+      const body = {
+        id: 84,
+        studentGuid: TEST_GUID,
+        contactGuid: 'contact-guid-1',
+        releaseDate: '2026-03-20T00:00:00',
+        startHour: '09:00:00',
+        remark: 'updated',
+        status: 1,
+        isDeleted: false,
+        requestEditTime: '2026-03-19T21:44:35',
+        releaseDateMoment: '2026-03-20T09:00:00',
+        isExpired: false,
+        isDirty_menu: true,
+      };
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ put }),
+        makeMockUserItemStateService(),
+      );
+
+      await service.updateStudentRelease(TEST_GUID, 84, body);
+      expect(put).toHaveBeenCalledWith(
+        `/api/students/${TEST_GUID}/studentRelease/84/request`,
+        body,
+      );
+    });
+
+    it('deleteStudentRelease proxies upstream delete path', async () => {
+      const remove = jest.fn().mockResolvedValue(undefined);
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ delete: remove }),
+        makeMockUserItemStateService(),
+      );
+
+      await service.deleteStudentRelease(TEST_GUID, 84);
+      expect(remove).toHaveBeenCalledWith(
+        `/api/students/${TEST_GUID}/studentRelease/84`,
+      );
     });
   });
 

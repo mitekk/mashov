@@ -56,6 +56,21 @@ function makeBehaviorItem(overrides: object = {}) {
   };
 }
 
+function makeStudentRelease(overrides: object = {}) {
+  return {
+    id: 64,
+    studentGuid: 'e2e-test-student-guid-00002',
+    contactGuid: 'contact-guid-1',
+    releaseDate: '2026-03-20T00:00:00',
+    startHour: '11:30:00',
+    remark: 'אבקש שחרור',
+    status: 1,
+    isDeleted: false,
+    requestEditTime: '2026-03-19T21:44:35',
+    ...overrides,
+  };
+}
+
 function formatLocalMidnight(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -132,6 +147,27 @@ test.beforeEach(async ({ page }) => {
   });
   await page.route('**/api/v1/children/*/behavior/archive', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+  });
+  await page.route('**/api/v1/children/*/releases', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    });
+  });
+  await page.route('**/api/v1/children/*/timetable', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [] }),
+    });
+  });
+  await page.route('**/api/v1/children/*/releases/*', async (route) => {
+    if (route.request().method() === 'DELETE') {
+      await route.fulfill({ status: 204 });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
   });
 });
 
@@ -379,6 +415,215 @@ test.describe('Child workspace page', () => {
     await expect(
       page.getByTestId('child-header-positive-count').locator('svg.lucide-thumbs-up'),
     ).toBeVisible();
+  });
+
+  test('workspace header shows releases button and opens releases dialog', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/releases`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([makeStudentRelease()]),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-releases-button').click();
+    await expect(page.getByTestId('releases-dialog')).toBeVisible();
+    await expect(page.getByTestId('release-item-64')).toContainText('אבקש שחרור');
+  });
+
+  test('releases dialog edits a release and refreshes list', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+
+    const releases = [makeStudentRelease({ remark: 'הערה ישנה' })];
+    let putPayload: Record<string, unknown> | null = null;
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/releases`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(releases),
+      });
+    });
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/releases/64`, async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.fulfill({ status: 405 });
+        return;
+      }
+      putPayload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+      releases[0] = {
+        ...releases[0],
+        ...putPayload,
+      };
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-releases-button').click();
+    await page.getByTestId('release-edit-64').click();
+    await page.getByTestId('release-date-64').fill('2026-03-24');
+    await page.getByTestId('release-time-64').fill('10:15');
+    await page.getByTestId('release-remark-64').fill('הערה מעודכנת');
+    await page.getByTestId('release-save-64').click();
+
+    await expect.poll(() => putPayload?.remark).toBe('הערה מעודכנת');
+    await expect(page.getByTestId('release-item-64')).toContainText('הערה מעודכנת');
+  });
+
+  test('releases dialog date fields include Hebrew locale and today min', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+
+    const releases = [makeStudentRelease({ remark: 'בדיקת עריכה' })];
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/releases`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(releases),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-releases-button').click();
+    await page.getByTestId('release-create-toggle').click();
+
+    const todayIso = await page.evaluate(() => new Date().toISOString().slice(0, 10));
+    const createDate = page.getByTestId('release-create-date');
+    await expect(createDate).toHaveAttribute('lang', 'he-IL');
+    await expect(createDate).toHaveAttribute('min', todayIso);
+
+    const createTime = page.getByTestId('release-create-time');
+    await expect(createTime).toBeDisabled();
+    await expect(createTime).toContainText('בחר תאריך תחילה');
+
+    await page.getByTestId('release-create-cancel').click();
+    await page.getByTestId('release-edit-64').click();
+
+    const editDate = page.getByTestId('release-date-64');
+    await expect(editDate).toHaveAttribute('lang', 'he-IL');
+    await expect(editDate).toHaveAttribute('min', todayIso);
+  });
+
+  test('releases dialog create time picker uses lesson slots and falls back to input with no lessons', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+
+    const selectedDateWithLessons = '2026-04-21';
+    const selectedDateWithoutLessons = '2026-04-22';
+    const dayWithLessons = new Date(`${selectedDateWithLessons}T12:00:00`).getDay() + 1;
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/timetable`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              id: 'release-lesson-2',
+              studentGuid: STUDENT_GUID,
+              groupId: 211,
+              day: dayWithLessons,
+              lesson: 2,
+              roomNum: '201',
+              weeks: 1,
+              groupName: 'חשבון ה1',
+              subjectName: 'חשבון',
+              teachers: [{ teacherGuid: 'teacher-1', teacherName: 'דנה כהן' }],
+              updatedAt: `${selectedDateWithLessons}T00:00:00`,
+            },
+            {
+              id: 'release-lesson-4',
+              studentGuid: STUDENT_GUID,
+              groupId: 212,
+              day: dayWithLessons,
+              lesson: 4,
+              roomNum: '202',
+              weeks: 1,
+              groupName: 'מדעים ה1',
+              subjectName: 'מדעים',
+              teachers: [{ teacherGuid: 'teacher-2', teacherName: 'יעל לוי' }],
+              updatedAt: `${selectedDateWithLessons}T00:00:00`,
+            },
+          ],
+        }),
+      });
+    });
+
+    let createPayload: Record<string, unknown> | null = null;
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/releases/request`, async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.fulfill({ status: 405 });
+        return;
+      }
+      createPayload = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-releases-button').click();
+    await page.getByTestId('release-create-toggle').click();
+
+    await page.getByTestId('release-create-date').fill(selectedDateWithLessons);
+
+    const lessonSelect = page.getByTestId('release-create-time');
+    await expect(lessonSelect).toHaveValue('');
+    await expect(lessonSelect).toContainText('שיעור 2 — חשבון — דנה כהן (08:50)');
+    await expect(lessonSelect).toContainText('שיעור 4 — מדעים — יעל לוי (10:35)');
+    await expect(lessonSelect.locator('option[value="__other__"]')).toHaveCount(0);
+
+    await lessonSelect.selectOption('08:50');
+    await expect(lessonSelect).toHaveValue('08:50');
+
+    await page.getByTestId('release-create-remark').fill('בדיקת שעה ידנית');
+    await page.getByTestId('release-create-submit').click();
+
+    await expect.poll(() => createPayload?.startHour).toBe('08:50:00');
+
+    await page.getByTestId('release-create-toggle').click();
+    await page.getByTestId('release-create-date').fill(selectedDateWithoutLessons);
+    const noLessonTimeControl = page.getByTestId('release-create-time');
+    await expect(noLessonTimeControl).toHaveJSProperty('tagName', 'INPUT');
+  });
+
+  test('releases dialog deletes a release after confirmation', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+
+    const releases = [makeStudentRelease({ id: 77, remark: 'בקשה למחיקה' })];
+    let deleteCalls = 0;
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/releases`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(releases),
+      });
+    });
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/releases/77`, async (route) => {
+      if (route.request().method() !== 'DELETE') {
+        await route.fulfill({ status: 405 });
+        return;
+      }
+      deleteCalls += 1;
+      releases.splice(0, releases.length);
+      await route.fulfill({ status: 204 });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-releases-button').click();
+    await page.getByTestId('release-delete-77').click();
+    await page.getByTestId('release-delete-confirm').click();
+
+    await expect.poll(() => deleteCalls).toBe(1);
+    await expect(page.getByText('אין בקשות שחרור')).toBeVisible();
   });
 
   test('timetable renders table layout with labeled plan/remark/homework and suppresses empty blocks', async ({ page }) => {

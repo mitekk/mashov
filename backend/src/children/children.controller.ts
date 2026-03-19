@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Param, Query, Body, Res, Req, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Put, Delete, Param, Query, Body, Res, Req, StreamableFile } from '@nestjs/common';
 import { IsInt, IsOptional, IsIn, IsBoolean, Min, Max, IsArray, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ChildrenService } from './children.service';
@@ -79,6 +79,72 @@ class BulkBehaviorArchiveDto {
 
   @IsBoolean()
   isArchived!: boolean;
+}
+
+class UpdateReleaseDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  id?: number;
+
+  @IsOptional()
+  @IsString()
+  studentGuid?: string;
+
+  @IsOptional()
+  @IsString()
+  contactGuid?: string;
+
+  @IsOptional()
+  @IsString()
+  releaseDate?: string;
+
+  @IsOptional()
+  @IsString()
+  startHour?: string;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  status?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isDeleted?: boolean;
+
+  @IsOptional()
+  @IsString()
+  requestEditTime?: string;
+
+  @IsOptional()
+  @IsString()
+  releaseDateMoment?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isExpired?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isDirty_menu?: boolean;
+}
+
+class CreateReleaseDto {
+  @IsString()
+  studentGuid!: string;
+
+  @IsString()
+  releaseDate!: string;
+
+  @IsString()
+  startHour!: string;
+
+  @IsString()
+  remark!: string;
 }
 
 @Controller('children')
@@ -302,6 +368,47 @@ export class ChildrenController {
   @Get(':studentGuid/lessons/history')
   getLessonHistory(@Param('studentGuid') studentGuid: string) {
     return this.childrenService.getLessonHistory(studentGuid);
+  }
+
+  @Get(':studentGuid/releases')
+  getStudentReleases(@Param('studentGuid') studentGuid: string) {
+    return this.childrenService.getStudentReleases(studentGuid);
+  }
+
+  @Put(':studentGuid/releases/request')
+  async createStudentRelease(
+    @Param('studentGuid') studentGuid: string,
+    @Body() body: CreateReleaseDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.status(204);
+    await this.childrenService.createStudentRelease(
+      studentGuid,
+      { ...body, studentGuid },
+    );
+  }
+
+  @Put(':studentGuid/releases/:releaseId')
+  updateStudentRelease(
+    @Param('studentGuid') studentGuid: string,
+    @Param('releaseId') releaseId: string,
+    @Body() body: UpdateReleaseDto,
+  ) {
+    return this.childrenService.updateStudentRelease(
+      studentGuid,
+      Number(releaseId),
+      body,
+    );
+  }
+
+  @Delete(':studentGuid/releases/:releaseId')
+  deleteStudentRelease(
+    @Param('studentGuid') studentGuid: string,
+    @Param('releaseId') releaseId: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    res.status(204);
+    return this.childrenService.deleteStudentRelease(studentGuid, Number(releaseId));
   }
 
   @Get(':studentGuid/subjects')
