@@ -51,16 +51,6 @@ export function FeedSkeleton({ count = 3 }: { count?: number }) {
   );
 }
 
-export function SummaryStripSkeleton() {
-  return (
-    <div className="flex gap-2 overflow-x-auto py-1" aria-hidden="true">
-      {Array.from({ length: 4 }).map((_, i) => (
-        <Skeleton key={i} className="h-9 w-24 rounded-full flex-shrink-0" />
-      ))}
-    </div>
-  );
-}
-
 export function TableSkeleton({ rows = 5 }: { rows?: number }) {
   return (
     <div className="space-y-2" aria-label="טוען...">

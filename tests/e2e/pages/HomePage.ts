@@ -5,7 +5,6 @@ export class HomePage {
   readonly homeHeader: Locator;
   readonly headerChildSelector: Locator;
   readonly refreshButton: Locator;
-  readonly summaryStrip: Locator;
   readonly latestFeed: Locator;
   readonly feedFilterAllButton: Locator;
   readonly feedFilterArchivedButton: Locator;
@@ -16,7 +15,6 @@ export class HomePage {
     this.homeHeader = page.getByTestId('home-header');
     this.headerChildSelector = page.getByTestId('home-header-child-selector');
     this.refreshButton = page.getByTestId('refresh-button');
-    this.summaryStrip = page.getByTestId('summary-strip');
     this.latestFeed = page.getByTestId('latest-feed');
     this.feedFilterAllButton = page.getByTestId('home-feed-filter-all');
     this.feedFilterArchivedButton = page.getByTestId('home-feed-filter-archived');

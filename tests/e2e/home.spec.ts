@@ -137,17 +137,6 @@ test.describe('Home page', () => {
     expect(headerText).toContain('מרכז הורים');
   });
 
-  test('renders the summary strip even with no data', async ({ page }) => {
-    await page.route('**/api/v1/dashboard', async (route) => {
-      await route.fulfill({ json: makeEmptyDashboard() });
-    });
-
-    const homePage = new HomePage(page);
-    await homePage.navigate();
-
-    await expect(homePage.summaryStrip).toBeVisible();
-  });
-
   test('renders the latest feed section even when the feed is empty', async ({ page }) => {
     await page.route('**/api/v1/dashboard', async (route) => {
       await route.fulfill({ json: makeEmptyDashboard() });
@@ -268,47 +257,6 @@ test.describe('Home page', () => {
     await expect(homePage.refreshButton.locator('svg')).toHaveClass(/animate-spin/);
     await expect(homePage.refreshButton).toBeEnabled({ timeout: 10000 });
     expect(dashboardCalls).toBeGreaterThanOrEqual(2);
-  });
-
-  test('summary strip shows newConversations count from dashboard response', async ({ page }) => {
-    await page.route('**/api/v1/dashboard', async (route) => {
-      await route.fulfill({
-        json: makeEmptyDashboard({
-          summary: {
-            newConversations: 3,
-            recentHomeworkCount: 2,
-            recentBehaviorCount: 1,
-            childrenCount: 1,
-          },
-        }),
-      });
-    });
-
-    const homePage = new HomePage(page);
-    await homePage.navigate();
-
-    await expect(homePage.summaryStrip).toBeVisible();
-    const stripText = await homePage.summaryStrip.textContent();
-    expect(stripText).toBeTruthy();
-    expect(stripText!.length).toBeGreaterThan(0);
-  });
-
-  test('summary strip does not reference unreadConversations key', async ({ page }) => {
-    let dashboardRequest: string | null = null;
-
-    await page.route('**/api/v1/dashboard', async (route) => {
-      dashboardRequest = JSON.stringify(await route.request().postDataJSON());
-      await route.fulfill({
-        json: makeEmptyDashboard(),
-      });
-    });
-
-    const homePage = new HomePage(page);
-    await homePage.navigate();
-
-    // The response uses newConversations — page should render without error
-    await expect(homePage.summaryStrip).toBeVisible();
-    void dashboardRequest;
   });
 
   test('feed item with isNew=true shows new indicator', async ({ page }) => {
@@ -508,9 +456,6 @@ test.describe('Home page', () => {
 
     await page.reload();
     await expect(homePage.homeHeader).toBeVisible();
-
-    await expect(homePage.homeHeader).toBeVisible();
-    await expect(homePage.summaryStrip).toBeVisible();
   });
 
   test('home quick cards do not render selected-highlight border styles', async ({ page }) => {

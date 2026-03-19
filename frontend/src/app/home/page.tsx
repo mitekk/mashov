@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
-import { SummaryStrip } from '@/components/home/SummaryStrip';
 import { ChildQuickCard } from '@/components/home/ChildQuickCard';
 import { LatestFeed } from '@/components/home/LatestFeed';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -98,9 +97,6 @@ export default function HomePage() {
             onRetry={() => void refetch()}
           />
         )}
-
-        {/* Summary strip */}
-        <SummaryStrip summary={dashboard.summary} />
 
         {hasChildren && (
           <section data-testid="home-children" className="section-stack">
