@@ -11,11 +11,30 @@ const assistant = Assistant({
 });
 
 export const metadata: Metadata = {
-  title: 'מרכז הורים',
-  description: 'מרכז פיקוד הורים — ממשק מאוחד לנתוני בית הספר',
+  metadataBase: new URL('https://mashov.mitya'),
+  title: {
+    default: 'מרכז הורים',
+    template: '%s | מרכז הורים',
+  },
+  description: 'ממשק מאוחד לנתוני בית הספר — ציונים, שיעורי בית, ומסרים',
   manifest: '/manifest.json',
   icons: {
     icon: '/favicon.ico',
+  },
+  openGraph: {
+    type: 'website',
+    locale: 'he_IL',
+    siteName: 'מרכז הורים',
+    title: 'מרכז הורים',
+    description: 'ממשק מאוחד לנתוני בית הספר',
+  },
+  twitter: {
+    card: 'summary',
+    title: 'מרכז הורים',
+    description: 'ממשק מאוחד לנתוני בית הספר',
+  },
+  alternates: {
+    canonical: '/',
   },
 };
 

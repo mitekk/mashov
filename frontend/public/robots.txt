@@ -1,0 +1,10 @@
+User-agent: *
+Disallow: /home
+Disallow: /children
+Disallow: /inbox
+Disallow: /more
+Disallow: /auth/syncing
+Allow: /auth/sign-in
+Allow: /
+
+Sitemap: https://mashov.mitya/sitemap.xml
