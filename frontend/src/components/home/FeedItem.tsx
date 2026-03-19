@@ -16,6 +16,8 @@ import { buildBehaviorDetailHref, buildChildSectionHref, buildHomeworkDetailHref
 interface FeedItemProps {
   item: FeedItemType;
   forceRestoreOnly?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string, checked: boolean) => void;
 }
 
 function getSafeFeedHref(item: FeedItemType): string | null {
@@ -43,7 +45,12 @@ function getSafeFeedHref(item: FeedItemType): string | null {
   return '/home';
 }
 
-export function FeedItem({ item, forceRestoreOnly = false }: FeedItemProps) {
+export function FeedItem({
+  item,
+  forceRestoreOnly = false,
+  selected = false,
+  onToggleSelect,
+}: FeedItemProps) {
   const isMailItem = item.sourceType === 'mail';
   const isArchivable = item.sourceType === 'homework' || item.sourceType === 'behavior' || item.sourceType === 'positive';
   const canToggleReadState = !item.isArchived && !forceRestoreOnly;
@@ -83,8 +90,21 @@ export function FeedItem({ item, forceRestoreOnly = false }: FeedItemProps) {
   return (
     <div
       data-testid={`feed-item-${item.id}`}
-      className="card-base p-4 flex gap-3 items-start"
+      className={cn(
+        'card-base p-4 flex gap-3 items-start',
+        selected && 'border-primary/50 bg-primary/5',
+      )}
     >
+      {onToggleSelect && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(event) => onToggleSelect(item.id, event.target.checked)}
+          data-testid={`feed-select-${item.id}`}
+          className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+          aria-label="בחר עדכון"
+        />
+      )}
       <div className="flex-1 min-w-0">
         {safeHref ? (
           <Link href={safeHref} className="block group">

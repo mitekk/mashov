@@ -9,6 +9,13 @@ export class HomePage {
   readonly feedFilterAllButton: Locator;
   readonly feedFilterArchivedButton: Locator;
   readonly feedFilterUnreadButton: Locator;
+  readonly feedBulkActions: Locator;
+  readonly feedBulkSelectAllVisibleButton: Locator;
+  readonly feedBulkMarkReadButton: Locator;
+  readonly feedBulkMarkUnreadButton: Locator;
+  readonly feedBulkArchiveButton: Locator;
+  readonly feedBulkUnarchiveButton: Locator;
+  readonly feedBulkClearSelectionButton: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -19,6 +26,13 @@ export class HomePage {
     this.feedFilterAllButton = page.getByTestId('home-feed-filter-all');
     this.feedFilterArchivedButton = page.getByTestId('home-feed-filter-archived');
     this.feedFilterUnreadButton = page.getByTestId('home-feed-filter-unread');
+    this.feedBulkActions = page.getByTestId('feed-bulk-actions');
+    this.feedBulkSelectAllVisibleButton = page.getByTestId('feed-bulk-select-all-visible');
+    this.feedBulkMarkReadButton = page.getByTestId('feed-bulk-mark-read');
+    this.feedBulkMarkUnreadButton = page.getByTestId('feed-bulk-mark-unread');
+    this.feedBulkArchiveButton = page.getByTestId('feed-bulk-archive');
+    this.feedBulkUnarchiveButton = page.getByTestId('feed-bulk-unarchive');
+    this.feedBulkClearSelectionButton = page.getByTestId('feed-bulk-clear-selection');
   }
 
   async navigate(): Promise<void> {
@@ -52,5 +66,9 @@ export class HomePage {
 
   archiveButton(itemId: string): Locator {
     return this.page.getByTestId(`feed-item-archive-${itemId}`);
+  }
+
+  feedSelectCheckbox(itemId: string): Locator {
+    return this.page.getByTestId(`feed-select-${itemId}`);
   }
 }

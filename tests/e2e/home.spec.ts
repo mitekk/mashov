@@ -209,6 +209,234 @@ test.describe('Home page', () => {
     await expect(page.getByText('אין עדכונים שלא נקראו')).toBeVisible();
   });
 
+  test('feed bulk bar supports selection, select-all-visible, and mixed action visibility', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          feed: [
+            makeFeedItem({
+              id: 'feed-hw-new',
+              sourceType: 'homework',
+              sourceId: 'hw-new',
+              studentGuid: 'student-1',
+              isNew: true,
+              isArchived: false,
+            }),
+            makeFeedItem({
+              id: 'feed-beh-read',
+              sourceType: 'behavior',
+              sourceId: 'beh-read',
+              studentGuid: 'student-1',
+              isNew: false,
+              isArchived: false,
+            }),
+            makeFeedItem({
+              id: 'feed-mail-new',
+              sourceType: 'mail',
+              sourceId: 'conv-new-1',
+              studentGuid: null,
+              studentName: null,
+              isNew: true,
+              isArchived: false,
+            }),
+          ],
+        }),
+      });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+    await homePage.clickFeedFilterAll();
+
+    await expect(homePage.feedBulkActions).toHaveCount(0);
+
+    await homePage.feedSelectCheckbox('feed-hw-new').click();
+    await expect(homePage.feedBulkActions).toBeVisible();
+    await expect(homePage.feedBulkActions).toContainText('נבחרו 1');
+    await expect(homePage.feedBulkMarkReadButton).toBeVisible();
+    await expect(homePage.feedBulkArchiveButton).toBeVisible();
+    await expect(homePage.feedBulkMarkUnreadButton).toHaveCount(0);
+    await expect(homePage.feedBulkUnarchiveButton).toHaveCount(0);
+
+    await homePage.feedBulkSelectAllVisibleButton.click();
+    await expect(homePage.feedBulkActions).toContainText('נבחרו 3');
+    await expect(homePage.feedSelectCheckbox('feed-hw-new')).toBeChecked();
+    await expect(homePage.feedSelectCheckbox('feed-beh-read')).toBeChecked();
+    await expect(homePage.feedSelectCheckbox('feed-mail-new')).toBeChecked();
+    await expect(homePage.feedBulkMarkReadButton).toBeVisible();
+    await expect(homePage.feedBulkMarkUnreadButton).toBeVisible();
+    await expect(homePage.feedBulkArchiveButton).toBeVisible();
+    await expect(homePage.feedBulkUnarchiveButton).toHaveCount(0);
+  });
+
+  test('feed bulk actions group dispatch by student/type and include mail + positive behavior', async ({ page }) => {
+    const homeworkIsNewByStudent: Record<string, unknown[]> = {};
+    const behaviorIsNewByStudent: Record<string, unknown[]> = {};
+    const homeworkArchiveByStudent: Record<string, unknown[]> = {};
+    const behaviorArchiveByStudent: Record<string, unknown[]> = {};
+    const mailMarkReadBodies: unknown[] = [];
+    const mailArchiveBodies: unknown[] = [];
+
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          feed: [
+            makeFeedItem({
+              id: 'feed-hw-a',
+              sourceType: 'homework',
+              sourceId: 'hw-a',
+              studentGuid: 'student-a',
+              isNew: true,
+              isArchived: false,
+            }),
+            makeFeedItem({
+              id: 'feed-hw-b',
+              sourceType: 'homework',
+              sourceId: 'hw-b',
+              studentGuid: 'student-b',
+              isNew: true,
+              isArchived: false,
+            }),
+            makeFeedItem({
+              id: 'feed-beh-a',
+              sourceType: 'behavior',
+              sourceId: 'beh-a',
+              studentGuid: 'student-a',
+              isNew: true,
+              isArchived: false,
+            }),
+            makeFeedItem({
+              id: 'feed-pos-b',
+              sourceType: 'positive',
+              sourceId: 'pos-b',
+              studentGuid: 'student-b',
+              isNew: true,
+              isArchived: false,
+            }),
+            makeFeedItem({
+              id: 'feed-beh-read-a',
+              sourceType: 'behavior',
+              sourceId: 'beh-read-a',
+              studentGuid: 'student-a',
+              isNew: false,
+              isArchived: false,
+            }),
+            makeFeedItem({
+              id: 'feed-mail-1',
+              sourceType: 'mail',
+              sourceId: 'conv-mail-1',
+              studentGuid: null,
+              studentName: null,
+              isNew: true,
+              isArchived: false,
+            }),
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/children/*/homework/is-new', async (route) => {
+      const body = route.request().postDataJSON();
+      const path = new URL(route.request().url()).pathname;
+      const studentGuid = path.split('/')[4] ?? 'unknown';
+      homeworkIsNewByStudent[studentGuid] = [...(homeworkIsNewByStudent[studentGuid] ?? []), body];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+    });
+    await page.route('**/api/v1/children/*/behavior/is-new', async (route) => {
+      const body = route.request().postDataJSON();
+      const path = new URL(route.request().url()).pathname;
+      const studentGuid = path.split('/')[4] ?? 'unknown';
+      behaviorIsNewByStudent[studentGuid] = [...(behaviorIsNewByStudent[studentGuid] ?? []), body];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+    });
+    await page.route('**/api/v1/children/*/homework/archive', async (route) => {
+      const body = route.request().postDataJSON();
+      const path = new URL(route.request().url()).pathname;
+      const studentGuid = path.split('/')[4] ?? 'unknown';
+      homeworkArchiveByStudent[studentGuid] = [...(homeworkArchiveByStudent[studentGuid] ?? []), body];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+    });
+    await page.route('**/api/v1/children/*/behavior/archive', async (route) => {
+      const body = route.request().postDataJSON();
+      const path = new URL(route.request().url()).pathname;
+      const studentGuid = path.split('/')[4] ?? 'unknown';
+      behaviorArchiveByStudent[studentGuid] = [...(behaviorArchiveByStudent[studentGuid] ?? []), body];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+    });
+    await page.route('**/api/v1/mail/conversations/mark-read', async (route) => {
+      mailMarkReadBodies.push(route.request().postDataJSON());
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+    });
+    await page.route('**/api/v1/mail/conversations/archive', async (route) => {
+      mailArchiveBodies.push(route.request().postDataJSON());
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ updated: 1 }) });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+    await homePage.clickFeedFilterAll();
+
+    await homePage.feedSelectCheckbox('feed-hw-a').click();
+    await homePage.feedBulkSelectAllVisibleButton.click();
+    await homePage.feedBulkMarkReadButton.click();
+
+    await expect.poll(() => (homeworkIsNewByStudent['student-a'] ?? []).length).toBe(1);
+    await expect.poll(() => (homeworkIsNewByStudent['student-b'] ?? []).length).toBe(1);
+    await expect.poll(() => (behaviorIsNewByStudent['student-a'] ?? []).length).toBe(1);
+    await expect.poll(() => (behaviorIsNewByStudent['student-b'] ?? []).length).toBe(1);
+    await expect.poll(() => mailMarkReadBodies.length).toBe(1);
+
+    expect(homeworkIsNewByStudent['student-a'][0]).toEqual({ homeworkIds: ['feed-hw-a'], isNew: false });
+    expect(homeworkIsNewByStudent['student-b'][0]).toEqual({ homeworkIds: ['feed-hw-b'], isNew: false });
+    expect(behaviorIsNewByStudent['student-a'][0]).toEqual({ behaviorIds: ['feed-beh-a'], isNew: false });
+    expect(behaviorIsNewByStudent['student-b'][0]).toEqual({ behaviorIds: ['feed-pos-b'], isNew: false });
+    expect(mailMarkReadBodies[0]).toEqual({ conversationIds: ['conv-mail-1'] });
+    await expect(homePage.feedBulkActions).toHaveCount(0);
+
+    await homePage.feedSelectCheckbox('feed-hw-a').click();
+    await homePage.feedBulkSelectAllVisibleButton.click();
+    await homePage.feedBulkArchiveButton.click();
+
+    await expect.poll(() => (homeworkArchiveByStudent['student-a'] ?? []).length).toBe(1);
+    await expect.poll(() => (homeworkArchiveByStudent['student-b'] ?? []).length).toBe(1);
+    await expect.poll(() => (behaviorArchiveByStudent['student-a'] ?? []).length).toBe(1);
+    await expect.poll(() => (behaviorArchiveByStudent['student-b'] ?? []).length).toBe(1);
+    await expect.poll(() => mailArchiveBodies.length).toBe(1);
+
+    expect(homeworkArchiveByStudent['student-a'][0]).toEqual({ homeworkIds: ['feed-hw-a'], isArchived: true });
+    expect(homeworkArchiveByStudent['student-b'][0]).toEqual({ homeworkIds: ['feed-hw-b'], isArchived: true });
+    expect(behaviorArchiveByStudent['student-a'][0]).toEqual({
+      behaviorIds: expect.arrayContaining(['feed-beh-a', 'feed-beh-read-a']),
+      isArchived: true,
+    });
+    expect(behaviorArchiveByStudent['student-b'][0]).toEqual({ behaviorIds: ['feed-pos-b'], isArchived: true });
+    expect(mailArchiveBodies[0]).toEqual({ conversationIds: ['conv-mail-1'] });
+    await expect(homePage.feedBulkActions).toHaveCount(0);
+  });
+
+  test('feed bulk selection clears when changing filter', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          feed: [
+            makeFeedItem({ id: 'feed-unread-1', isNew: true, isArchived: false }),
+            makeFeedItem({ id: 'feed-read-1', isNew: false, isArchived: false }),
+          ],
+        }),
+      });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+
+    await homePage.feedSelectCheckbox('feed-unread-1').click();
+    await expect(homePage.feedBulkActions).toBeVisible();
+
+    await homePage.clickFeedFilterAll();
+    await expect(homePage.feedBulkActions).toHaveCount(0);
+    await expect(homePage.feedSelectCheckbox('feed-unread-1')).not.toBeChecked();
+  });
+
   test('refresh button stays disabled/spinning through manual refresh and dashboard refetch', async ({ page }) => {
     let dashboardCalls = 0;
 
