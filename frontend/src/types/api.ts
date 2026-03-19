@@ -70,6 +70,7 @@ export interface DashboardChildCard {
   classNum: number;
   recentHomeworkCount: number;
   recentBehaviorCount: number;
+  positiveBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
 }
@@ -104,6 +105,7 @@ export interface ChildListItem {
   isActive: boolean;
   recentHomeworkCount: number;
   recentBehaviorCount: number;
+  positiveBehaviorCount: number;
   subjectCount: number;
   latestUpdateAt: string | null;
 }
@@ -126,6 +128,7 @@ export interface ChildStudent {
 export interface ChildSummary {
   recentHomeworkCount: number;
   recentBehaviorCount: number;
+  positiveBehaviorCount: number;
   subjectCount: number;
   totalWeeklyHours: number;
   attentionBehaviorCount: number;

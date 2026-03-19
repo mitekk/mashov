@@ -48,6 +48,10 @@ export function useMarkNew({
       invalidateKeys.forEach((key) => {
         void queryClient.invalidateQueries({ queryKey: key });
       });
+      if (studentGuid) {
+        void queryClient.invalidateQueries({ queryKey: ['children'] });
+        void queryClient.invalidateQueries({ queryKey: ['child', studentGuid] });
+      }
     },
   });
 }

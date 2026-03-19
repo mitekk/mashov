@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { BookOpen, AlertTriangle } from 'lucide-react';
+import { BookOpen, AlertTriangle, ThumbsUp } from 'lucide-react';
 import type { DashboardChildCard } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
@@ -20,6 +20,8 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
     buildChildSectionHref(child.studentGuid, 'homework'),
   );
 
+  const positiveBehaviorCount = child.positiveBehaviorCount ?? 0;
+
   const content = (
     <>
       <div>
@@ -31,11 +33,15 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
         </p>
       </div>
       <div className="flex gap-3 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1">
+        <span
+          data-testid={`child-card-homework-count-${child.studentGuid}`}
+          className="flex items-center gap-1"
+        >
           <BookOpen className="w-3 h-3" />
           {child.recentHomeworkCount}
         </span>
         <span
+          data-testid={`child-card-negative-count-${child.studentGuid}`}
           className={cn(
             'flex items-center gap-1',
             child.recentBehaviorCount > 0 ? 'text-attention' : 'text-muted-foreground',
@@ -43,6 +49,16 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
         >
           <AlertTriangle className="w-3 h-3" />
           {child.recentBehaviorCount}
+        </span>
+        <span
+          data-testid={`child-card-positive-count-${child.studentGuid}`}
+          className={cn(
+            'flex items-center gap-1',
+            positiveBehaviorCount > 0 ? 'text-positive' : 'text-muted-foreground',
+          )}
+        >
+          <ThumbsUp className="w-3 h-3" />
+          {positiveBehaviorCount}
         </span>
       </div>
       {child.oneLineStatus && (

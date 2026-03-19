@@ -179,6 +179,7 @@ function normalizeChildListItem(item: UnknownRecord): ChildListItem {
     isActive: Boolean(item.isActive ?? true),
     recentHomeworkCount: Number(item.recentHomeworkCount ?? 0),
     recentBehaviorCount: Number(item.recentBehaviorCount ?? 0),
+    positiveBehaviorCount: Number(item.positiveBehaviorCount ?? 0),
     subjectCount: Number(item.subjectCount ?? 0),
     latestUpdateAt:
       typeof item.latestUpdateAt === 'string' ? item.latestUpdateAt : null,
@@ -210,6 +211,7 @@ function normalizeChildWorkspace(response: UnknownRecord): ChildWorkspaceRespons
       recentBehaviorCount: Number(
         summaryRaw.recentBehaviorCount ?? behavior.length ?? 0,
       ),
+      positiveBehaviorCount: Number(summaryRaw.positiveBehaviorCount ?? 0),
       subjectCount: Number(summaryRaw.subjectCount ?? subjects.length ?? 0),
       totalWeeklyHours: Number(summaryRaw.totalWeeklyHours ?? 0),
       attentionBehaviorCount: Number(summaryRaw.attentionBehaviorCount ?? 0),

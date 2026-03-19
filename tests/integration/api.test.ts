@@ -125,9 +125,15 @@ describe("API Integration Tests (isNew refactor contract)", () => {
 
   describe("Children API", () => {
     it("GET /api/v1/children returns {data}", async () => {
+      await seedStudent(prisma);
       const res = await request(app.getHttpServer()).get("/api/v1/children");
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.data[0]).toMatchObject({
+        recentHomeworkCount: expect.any(Number),
+        recentBehaviorCount: expect.any(Number),
+        positiveBehaviorCount: expect.any(Number),
+      });
     });
 
     it("GET /api/v1/children/:studentGuid returns {student, summary, lastSyncAt}", async () => {
@@ -144,6 +150,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       expect(res.body.summary).toMatchObject({
         recentHomeworkCount: expect.any(Number),
         recentBehaviorCount: expect.any(Number),
+        positiveBehaviorCount: expect.any(Number),
         subjectCount: expect.any(Number),
         totalWeeklyHours: expect.any(Number),
         attentionBehaviorCount: expect.any(Number),
@@ -1084,7 +1091,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       expect(res.body.summary).not.toHaveProperty("unreadConversations");
     });
 
-    it("GET /api/v1/dashboard children badge counts only unread (isNew=true), non-archived, within 7 days", async () => {
+    it("GET /api/v1/dashboard children cards include positiveBehaviorCount and 7-day split", async () => {
       await seedStudent(prisma);
 
       const now = new Date();
@@ -1093,7 +1100,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
 
       await prisma.homeworkItem.createMany({
         data: [
-          // counts: unread + recent
+          // counts: recent
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 1,
@@ -1104,7 +1111,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             homeworkText: "Unread recent",
             rawPayload: {},
           },
-          // excluded: read
+          // counts: recent
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 2,
@@ -1115,7 +1122,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             homeworkText: "Read recent",
             rawPayload: {},
           },
-          // excluded: archived
+          // counts: recent
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 3,
@@ -1142,7 +1149,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
 
       await prisma.behaviorItem.createMany({
         data: [
-          // counts: unread + recent + non-positive
+          // counts: recent + non-positive
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 1,
@@ -1158,7 +1165,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             eventAt: threeDaysAgo,
             rawPayload: {},
           },
-          // excluded: read
+          // counts: recent + non-positive
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 2,
@@ -1174,7 +1181,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             eventAt: threeDaysAgo,
             rawPayload: {},
           },
-          // excluded: positive
+          // counted in positiveBehaviorCount
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 3,
@@ -1202,6 +1209,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       expect(child).toBeDefined();
       expect(child.recentHomeworkCount).toBe(3);
       expect(child.recentBehaviorCount).toBe(2);
+      expect(child.positiveBehaviorCount).toBe(1);
     });
 
     it("GET /api/v1/dashboard feed includes archived homework/behavior/mail items", async () => {

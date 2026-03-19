@@ -131,8 +131,14 @@ describe('ChildrenService', () => {
     it('returns {data} with computed counts and latestUpdateAt', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkCount: jest.fn().mockResolvedValue(2),
-          behaviorCount: jest.fn().mockResolvedValue(1),
+          homeworkFindMany: jest.fn().mockResolvedValue([
+            { id: 'hw-1' },
+            { id: 'hw-2' },
+          ]),
+          behaviorFindMany: jest.fn().mockResolvedValue([
+            { id: 'beh-1', classification: 'attention' },
+            { id: 'beh-2', classification: 'positive' },
+          ]),
           subjectCount: jest.fn().mockResolvedValue(5),
           homeworkFindFirst: jest.fn().mockResolvedValue({
             lessonDate: new Date('2026-03-12T12:00:00Z'),
@@ -152,9 +158,53 @@ describe('ChildrenService', () => {
         studentGuid: TEST_GUID,
         recentHomeworkCount: 2,
         recentBehaviorCount: 1,
+        positiveBehaviorCount: 1,
         subjectCount: 5,
       });
       expect(typeof result.data[0].latestUpdateAt).toBe('string');
+    });
+
+    it('applies user-scoped unread and archived state to activity counts', async () => {
+      const mockUserItemState = {
+        getState: jest.fn().mockResolvedValue({ isNew: true, isArchived: false }),
+        getStateBatch: jest
+          .fn()
+          .mockResolvedValueOnce(new Map([
+            ['hw-1', { isNew: false, isArchived: false }],
+            ['hw-2', { isNew: true, isArchived: true }],
+          ]))
+          .mockResolvedValueOnce(new Map([
+            ['beh-1', { isNew: false, isArchived: false }],
+            ['beh-2', { isNew: true, isArchived: true }],
+          ])),
+        setState: jest.fn().mockResolvedValue({ isNew: true, isArchived: false }),
+        setStateBatch: jest.fn().mockResolvedValue(0),
+      } as unknown as jest.Mocked<UserItemStateService>;
+
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindMany: jest.fn().mockResolvedValue([
+            { id: 'hw-1' },
+            { id: 'hw-2' },
+          ]),
+          behaviorFindMany: jest.fn().mockResolvedValue([
+            { id: 'beh-1', classification: 'attention' },
+            { id: 'beh-2', classification: 'positive' },
+            { id: 'beh-3', classification: 'neutral' },
+          ]),
+          subjectCount: jest.fn().mockResolvedValue(1),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        mockUserItemState,
+      );
+
+      const result = await service.getChildren('user-1');
+      expect(result.data[0]).toMatchObject({
+        recentHomeworkCount: 0,
+        recentBehaviorCount: 1,
+        positiveBehaviorCount: 0,
+      });
     });
   });
 
@@ -162,11 +212,16 @@ describe('ChildrenService', () => {
     it('returns contract shape {student, summary, lastSyncAt}', async () => {
       const service = new ChildrenService(
         makeMockPrisma({
-          homeworkCount: jest.fn().mockResolvedValue(3),
-          behaviorCount: jest
-            .fn()
-            .mockResolvedValueOnce(2) // recentBehaviorCount
-            .mockResolvedValueOnce(1), // attentionBehaviorCount
+          homeworkFindMany: jest.fn().mockResolvedValue([
+            { id: 'hw-1' },
+            { id: 'hw-2' },
+            { id: 'hw-3' },
+          ]),
+          behaviorFindMany: jest.fn().mockResolvedValue([
+            { id: 'beh-1', classification: 'attention' },
+            { id: 'beh-2', classification: 'attention' },
+            { id: 'beh-3', classification: 'positive' },
+          ]),
           subjectCount: jest.fn().mockResolvedValue(4),
           subjectAggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 9 } }),
           syncRunFindFirst: jest.fn().mockResolvedValue({
@@ -183,9 +238,10 @@ describe('ChildrenService', () => {
       expect(result.summary).toEqual({
         recentHomeworkCount: 3,
         recentBehaviorCount: 2,
+        positiveBehaviorCount: 1,
         subjectCount: 4,
         totalWeeklyHours: 9,
-        attentionBehaviorCount: 1,
+        attentionBehaviorCount: 2,
       });
       expect(result.lastSyncAt).toBe('2026-03-12T14:00:00.000Z');
     });

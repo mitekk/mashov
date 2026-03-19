@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, AlertTriangle, Clock } from 'lucide-react';
+import { BookOpen, AlertTriangle, ThumbsUp, Clock } from 'lucide-react';
 import type { ChildStudent, ChildSummary } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import {
@@ -85,16 +85,27 @@ export function ChildHeader({
         </div>
       </div>
       <div className="flex flex-wrap gap-2.5">
-        <span className="chip border-info/35 bg-info-subtle text-info">
+        <span
+          data-testid="child-header-homework-count"
+          className="chip border-info/35 bg-info-subtle text-info"
+        >
           <BookOpen className="w-3.5 h-3.5" />
           {summary.recentHomeworkCount} שיעורי בית
         </span>
-        {summary.attentionBehaviorCount > 0 && (
-          <span className="chip border-attention/35 bg-attention-subtle text-attention">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            {summary.attentionBehaviorCount} אירועי תשומת לב
-          </span>
-        )}
+        <span
+          data-testid="child-header-negative-count"
+          className="chip border-attention/35 bg-attention-subtle text-attention"
+        >
+          <AlertTriangle className="w-3.5 h-3.5" />
+          {summary.recentBehaviorCount} אירועים שליליים
+        </span>
+        <span
+          data-testid="child-header-positive-count"
+          className="chip border-positive/35 bg-positive-subtle text-positive"
+        >
+          <ThumbsUp className="w-3.5 h-3.5" />
+          {summary.positiveBehaviorCount} אירועים חיוביים
+        </span>
         <span className="chip">
           {summary.subjectCount} מקצועות
         </span>

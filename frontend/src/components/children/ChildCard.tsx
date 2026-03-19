@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { BookOpen, AlertTriangle, ChevronLeft } from 'lucide-react';
+import { BookOpen, AlertTriangle, ThumbsUp, ChevronLeft } from 'lucide-react';
 import type { ChildListItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
@@ -19,6 +19,8 @@ export function ChildCard({ child }: ChildCardProps) {
   const safeHref = getPhase1HrefOrNull(
     buildChildSectionHref(child.studentGuid, 'homework'),
   );
+
+  const positiveBehaviorCount = child.positiveBehaviorCount ?? 0;
 
   const content = (
     <>
@@ -37,16 +39,33 @@ export function ChildCard({ child }: ChildCardProps) {
           כיתה {child.classCode}{child.classNum}
         </p>
         <div className="flex gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1">
+          <span
+            data-testid={`child-list-homework-count-${child.studentGuid}`}
+            className="flex items-center gap-1"
+          >
             <BookOpen className="w-3.5 h-3.5" />
             {child.recentHomeworkCount} שיעורי בית
           </span>
-          {child.recentBehaviorCount > 0 && (
-            <span className="flex items-center gap-1 text-attention">
-              <AlertTriangle className="w-3.5 h-3.5" />
-              {child.recentBehaviorCount} אירועים
-            </span>
-          )}
+          <span
+            data-testid={`child-list-negative-count-${child.studentGuid}`}
+            className={cn(
+              'flex items-center gap-1',
+              child.recentBehaviorCount > 0 ? 'text-attention' : 'text-muted-foreground',
+            )}
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            {child.recentBehaviorCount} אירועים
+          </span>
+          <span
+            data-testid={`child-list-positive-count-${child.studentGuid}`}
+            className={cn(
+              'flex items-center gap-1',
+              positiveBehaviorCount > 0 ? 'text-positive' : 'text-muted-foreground',
+            )}
+          >
+            <ThumbsUp className="w-3.5 h-3.5" />
+            {positiveBehaviorCount} חיוביים
+          </span>
         </div>
         {child.latestUpdateAt && (
           <p className="text-xs text-muted-foreground mt-1 opacity-60">

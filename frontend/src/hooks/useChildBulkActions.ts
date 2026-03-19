@@ -34,6 +34,8 @@ export function useBulkHomeworkIsNew(studentGuid: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['child-homework', studentGuid] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      void queryClient.invalidateQueries({ queryKey: ['children'] });
+      void queryClient.invalidateQueries({ queryKey: ['child', studentGuid] });
     },
   });
 }
@@ -46,6 +48,8 @@ export function useBulkHomeworkArchive(studentGuid: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['child-homework', studentGuid] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      void queryClient.invalidateQueries({ queryKey: ['children'] });
+      void queryClient.invalidateQueries({ queryKey: ['child', studentGuid] });
     },
   });
 }
@@ -58,6 +62,8 @@ export function useBulkBehaviorIsNew(studentGuid: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['child-behavior', studentGuid] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      void queryClient.invalidateQueries({ queryKey: ['children'] });
+      void queryClient.invalidateQueries({ queryKey: ['child', studentGuid] });
     },
   });
 }
@@ -70,6 +76,8 @@ export function useBulkBehaviorArchive(studentGuid: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['child-behavior', studentGuid] });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      void queryClient.invalidateQueries({ queryKey: ['children'] });
+      void queryClient.invalidateQueries({ queryKey: ['child', studentGuid] });
     },
   });
 }

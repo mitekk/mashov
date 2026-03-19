@@ -32,6 +32,7 @@ export interface ChildCard {
   classNum: number;
   recentHomeworkCount: number;
   recentBehaviorCount: number;
+  positiveBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
 }
@@ -49,7 +50,7 @@ export class DashboardService {
     await this.sessionService.ensureStudentsAvailable();
 
     const [students, summary, feed, freshness, school] = await Promise.all([
-      this.getChildren(),
+      this.getChildren(userId),
       this.getSummary(),
       this.getFeed(userId),
       this.getFreshness(),
@@ -218,7 +219,7 @@ export class DashboardService {
     return [];
   }
 
-  private async getChildren(): Promise<ChildCard[]> {
+  private async getChildren(userId?: string): Promise<ChildCard[]> {
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
       orderBy: { fullName: 'asc' },
@@ -228,19 +229,20 @@ export class DashboardService {
 
     const cards: ChildCard[] = await Promise.all(
       students.map(async (student) => {
-        const [recentHw, recentBehavior, latestHomework, latestBehavior] = await Promise.all([
-          this.prisma.homeworkItem.count({
+        const [recentHomeworkRows, recentBehaviorRows, latestHomework, latestBehavior] = await Promise.all([
+          this.prisma.homeworkItem.findMany({
             where: {
               studentGuid: student.studentGuid,
               lessonDate: { gte: sevenDaysAgo },
             },
+            select: { id: true },
           }),
-          this.prisma.behaviorItem.count({
+          this.prisma.behaviorItem.findMany({
             where: {
               studentGuid: student.studentGuid,
               lessonDate: { gte: sevenDaysAgo },
-              classification: { not: 'positive' },
             },
+            select: { id: true, classification: true },
           }),
           this.prisma.homeworkItem.findFirst({
             where: { studentGuid: student.studentGuid },
@@ -254,6 +256,30 @@ export class DashboardService {
           }),
         ]);
 
+        const homeworkIds = recentHomeworkRows.map((row) => row.id);
+        const behaviorIds = recentBehaviorRows.map((row) => row.id);
+        const [homeworkStateMap, behaviorStateMap] = userId
+          ? await Promise.all([
+              this.userItemStateService.getStateBatch(userId, 'homework', homeworkIds),
+              this.userItemStateService.getStateBatch(userId, 'behavior', behaviorIds),
+            ])
+          : [
+              new Map<string, { isNew: boolean; isArchived: boolean }>(),
+              new Map<string, { isNew: boolean; isArchived: boolean }>(),
+            ];
+
+        const recentHw = recentHomeworkRows.filter((row) =>
+          this.isUnreadAndNotArchived(homeworkStateMap.get(row.id)),
+        ).length;
+        const recentBehavior = recentBehaviorRows.filter((row) =>
+          row.classification !== 'positive'
+          && this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
+        ).length;
+        const positiveBehavior = recentBehaviorRows.filter((row) =>
+          row.classification === 'positive'
+          && this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
+        ).length;
+
         const latestUpdateAt = [
           student.updatedAt,
           latestHomework?.lessonDate ?? null,
@@ -266,6 +292,7 @@ export class DashboardService {
         const statusParts: string[] = [];
         if (recentHw > 0) statusParts.push(`${recentHw} homework`);
         if (recentBehavior > 0) statusParts.push(`${recentBehavior} behavior`);
+        if (positiveBehavior > 0) statusParts.push(`${positiveBehavior} positive`);
         const oneLineStatus =
           statusParts.length > 0 ? statusParts.join(', ') : 'אין פעילות אחרונה';
 
@@ -278,6 +305,7 @@ export class DashboardService {
           classNum: student.classNum,
           recentHomeworkCount: recentHw,
           recentBehaviorCount: recentBehavior,
+          positiveBehaviorCount: positiveBehavior,
           latestUpdateAt,
           oneLineStatus,
         };
@@ -307,5 +335,12 @@ export class DashboardService {
       schoolName: household?.schoolName ?? '',
       schoolYear: household?.schoolYear ?? new Date().getFullYear(),
     };
+  }
+
+  private isUnreadAndNotArchived(
+    state: { isNew: boolean; isArchived: boolean } | undefined,
+  ): boolean {
+    const effectiveState = state ?? { isNew: true, isArchived: false };
+    return effectiveState.isNew && !effectiveState.isArchived;
   }
 }

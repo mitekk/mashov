@@ -115,6 +115,7 @@ export function ChildWorkspacePage({
   const summary = data?.summary ?? {
     recentHomeworkCount: 0,
     recentBehaviorCount: 0,
+    positiveBehaviorCount: 0,
     subjectCount: 0,
     totalWeeklyHours: 0,
     attentionBehaviorCount: 0,

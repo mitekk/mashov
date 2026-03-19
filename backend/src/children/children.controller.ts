@@ -86,13 +86,16 @@ export class ChildrenController {
   constructor(private readonly childrenService: ChildrenService) {}
 
   @Get()
-  async getChildren() {
-    return this.childrenService.getChildren();
+  async getChildren(@Req() req: Request) {
+    return this.childrenService.getChildren(req.user?.userId);
   }
 
   @Get(':studentGuid')
-  async getChild(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getChildWorkspace(studentGuid);
+  async getChild(
+    @Param('studentGuid') studentGuid: string,
+    @Req() req: Request,
+  ) {
+    return this.childrenService.getChildWorkspace(studentGuid, req.user?.userId);
   }
 
   @Get(':studentGuid/homework')

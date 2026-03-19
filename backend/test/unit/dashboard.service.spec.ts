@@ -166,7 +166,7 @@ describe('DashboardService', () => {
       });
     });
 
-    it('returns children cards with recentHomeworkCount/recentBehaviorCount/oneLineStatus', async () => {
+    it('returns children cards with unread homework/negative behavior/positive behavior counts', async () => {
       const now = new Date('2026-03-12T10:00:00Z');
       seedEmptyState();
       mockPrisma.student.count.mockResolvedValue(1);
@@ -181,8 +181,27 @@ describe('DashboardService', () => {
           updatedAt: now,
         },
       ]);
-      mockPrisma.homeworkItem.count.mockResolvedValue(2);
-      mockPrisma.behaviorItem.count.mockResolvedValue(1);
+      mockPrisma.homeworkItem.findMany.mockImplementation(async (args: { select?: object; take?: number }) => {
+        if (args?.select) {
+          return [{ id: 'hw-1' }, { id: 'hw-2' }];
+        }
+        if (args?.take) {
+          return [];
+        }
+        return [];
+      });
+      mockPrisma.behaviorItem.findMany.mockImplementation(async (args: { select?: object; take?: number }) => {
+        if (args?.select) {
+          return [
+            { id: 'beh-1', classification: 'attention' },
+            { id: 'beh-2', classification: 'positive' },
+          ];
+        }
+        if (args?.take) {
+          return [];
+        }
+        return [];
+      });
       mockPrisma.homeworkItem.findFirst.mockResolvedValue({ lessonDate: now });
       mockPrisma.behaviorItem.findFirst.mockResolvedValue({ eventAt: now });
 
@@ -193,6 +212,7 @@ describe('DashboardService', () => {
         familyName: 'Child',
         recentHomeworkCount: 2,
         recentBehaviorCount: 1,
+        positiveBehaviorCount: 1,
       });
       expect(typeof result.children[0].oneLineStatus).toBe('string');
     });

@@ -39,7 +39,7 @@ export class ChildrenService {
     private readonly userItemStateService: UserItemStateService,
   ) {}
 
-  async getChildren() {
+  async getChildren(userId?: string) {
     await this.sessionService.ensureStudentsAvailable();
 
     const students = await this.prisma.student.findMany({
@@ -51,21 +51,14 @@ export class ChildrenService {
 
     const data = await Promise.all(
       students.map(async (student) => {
-        const [recentHomeworkCount, recentBehaviorCount, subjectCount, latestHomework, latestBehavior] =
+        const [
+          activityCounts,
+          subjectCount,
+          latestHomework,
+          latestBehavior,
+        ] =
           await Promise.all([
-            this.prisma.homeworkItem.count({
-              where: {
-                studentGuid: student.studentGuid,
-                lessonDate: { gte: sevenDaysAgo },
-              },
-            }),
-            this.prisma.behaviorItem.count({
-              where: {
-                studentGuid: student.studentGuid,
-                lessonDate: { gte: sevenDaysAgo },
-                classification: { not: 'positive' },
-              },
-            }),
+            this.getUnreadChildActivityCounts(student.studentGuid, sevenDaysAgo, userId),
             this.prisma.subjectEnrollment.count({
               where: { studentGuid: student.studentGuid },
             }),
@@ -100,8 +93,9 @@ export class ChildrenService {
           classNum: student.classNum,
           gender: student.gender,
           isActive: student.isActive,
-          recentHomeworkCount,
-          recentBehaviorCount,
+          recentHomeworkCount: activityCounts.recentHomeworkCount,
+          recentBehaviorCount: activityCounts.recentBehaviorCount,
+          positiveBehaviorCount: activityCounts.positiveBehaviorCount,
           subjectCount,
           latestUpdateAt,
         };
@@ -111,44 +105,23 @@ export class ChildrenService {
     return { data };
   }
 
-  async getChildWorkspace(studentGuid: string) {
+  async getChildWorkspace(studentGuid: string, userId?: string) {
     const student = await this.getStudentOrThrow(studentGuid);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const [
-      recentHomeworkCount,
-      recentBehaviorCount,
+      activityCounts,
       subjectCount,
       totalWeeklyHours,
-      attentionBehaviorCount,
       lastSync,
     ] = await Promise.all([
-      this.prisma.homeworkItem.count({
-        where: {
-          studentGuid,
-          lessonDate: { gte: sevenDaysAgo },
-        },
-      }),
-      this.prisma.behaviorItem.count({
-        where: {
-          studentGuid,
-          lessonDate: { gte: sevenDaysAgo },
-          classification: { not: 'positive' },
-        },
-      }),
+      this.getUnreadChildActivityCounts(studentGuid, sevenDaysAgo, userId),
       this.prisma.subjectEnrollment.count({
         where: { studentGuid },
       }),
       this.prisma.subjectEnrollment.aggregate({
         where: { studentGuid },
         _sum: { weeklyHours: true },
-      }),
-      this.prisma.behaviorItem.count({
-        where: {
-          studentGuid,
-          lessonDate: { gte: sevenDaysAgo },
-          classification: 'attention',
-        },
       }),
       this.prisma.syncRun.findFirst({
         where: {
@@ -180,11 +153,12 @@ export class ChildrenService {
         isActive: student.isActive,
       },
       summary: {
-        recentHomeworkCount,
-        recentBehaviorCount,
+        recentHomeworkCount: activityCounts.recentHomeworkCount,
+        recentBehaviorCount: activityCounts.recentBehaviorCount,
+        positiveBehaviorCount: activityCounts.positiveBehaviorCount,
         subjectCount,
         totalWeeklyHours: totalWeeklyHours._sum.weeklyHours ?? 0,
-        attentionBehaviorCount,
+        attentionBehaviorCount: activityCounts.attentionBehaviorCount,
       },
       lastSyncAt: lastSync?.endedAt?.toISOString() ?? null,
     };
@@ -695,6 +669,72 @@ export class ChildrenService {
     await this.getStudentOrThrow(studentGuid);
   }
 
+  private async getUnreadChildActivityCounts(
+    studentGuid: string,
+    since: Date,
+    userId?: string,
+  ): Promise<{
+    recentHomeworkCount: number;
+    recentBehaviorCount: number;
+    positiveBehaviorCount: number;
+    attentionBehaviorCount: number;
+  }> {
+    const [homeworkRows, behaviorRows] = await Promise.all([
+      this.prisma.homeworkItem.findMany({
+        where: {
+          studentGuid,
+          lessonDate: { gte: since },
+        },
+        select: { id: true },
+      }),
+      this.prisma.behaviorItem.findMany({
+        where: {
+          studentGuid,
+          lessonDate: { gte: since },
+        },
+        select: { id: true, classification: true },
+      }),
+    ]);
+
+    const homeworkIds = homeworkRows.map((row) => row.id);
+    const behaviorIds = behaviorRows.map((row) => row.id);
+
+    const [homeworkStateMap, behaviorStateMap] = userId
+      ? await Promise.all([
+          this.userItemStateService.getStateBatch(userId, 'homework', homeworkIds),
+          this.userItemStateService.getStateBatch(userId, 'behavior', behaviorIds),
+        ])
+      : [
+          new Map<string, { isNew: boolean; isArchived: boolean }>(),
+          new Map<string, { isNew: boolean; isArchived: boolean }>(),
+        ];
+
+    const recentHomeworkCount = homeworkRows.filter((row) =>
+      this.isUnreadAndNotArchived(homeworkStateMap.get(row.id)),
+    ).length;
+
+    const visibleBehaviorRows = behaviorRows.filter((row) =>
+      this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
+    );
+
+    const recentBehaviorCount = visibleBehaviorRows.filter(
+      (row) => row.classification !== 'positive',
+    ).length;
+    const positiveBehaviorCount = visibleBehaviorRows.filter(
+      (row) => row.classification === 'positive',
+    ).length;
+    const attentionBehaviorCount = visibleBehaviorRows.filter(
+      (row) => row.classification === 'attention',
+    ).length;
+
+    return {
+      recentHomeworkCount,
+      recentBehaviorCount,
+      positiveBehaviorCount,
+      attentionBehaviorCount,
+    };
+  }
+
   private async getStudentOrThrow(studentGuid: string) {
     let student = await this.prisma.student.findUnique({
       where: { studentGuid },
@@ -888,5 +928,12 @@ export class ChildrenService {
 
   private asArray(value: unknown): unknown[] {
     return Array.isArray(value) ? value : [];
+  }
+
+  private isUnreadAndNotArchived(
+    state: { isNew: boolean; isArchived: boolean } | undefined,
+  ): boolean {
+    const effectiveState = state ?? { isNew: true, isArchived: false };
+    return effectiveState.isNew && !effectiveState.isArchived;
   }
 }

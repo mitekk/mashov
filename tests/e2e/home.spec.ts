@@ -509,6 +509,63 @@ test.describe('Home page', () => {
     await expect(secondCard).not.toHaveClass(/border-primary|shadow-\[0_0_0_1px_hsl\(var\(--primary\)\)\]/);
   });
 
+  test('home quick cards show homework, negative, and positive indicators including zero values', async ({ page }) => {
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({
+        json: makeEmptyDashboard({
+          summary: {
+            newConversations: 0,
+            recentHomeworkCount: 2,
+            recentBehaviorCount: 1,
+            childrenCount: 2,
+          },
+          children: [
+            {
+              studentGuid: 'student-indicators-1',
+              privateName: 'First',
+              familyName: 'Kid',
+              fullName: 'First Kid',
+              classCode: 'א',
+              classNum: 1,
+              recentHomeworkCount: 2,
+              recentBehaviorCount: 0,
+              positiveBehaviorCount: 0,
+              latestUpdateAt: new Date().toISOString(),
+              oneLineStatus: 'status',
+            },
+            {
+              studentGuid: 'student-indicators-2',
+              privateName: 'Second',
+              familyName: 'Kid',
+              fullName: 'Second Kid',
+              classCode: 'ב',
+              classNum: 2,
+              recentHomeworkCount: 1,
+              recentBehaviorCount: 1,
+              positiveBehaviorCount: 2,
+              latestUpdateAt: new Date().toISOString(),
+              oneLineStatus: 'status',
+            },
+          ],
+        }),
+      });
+    });
+
+    const homePage = new HomePage(page);
+    await homePage.navigate();
+
+    await expect(page.getByTestId('child-card-homework-count-student-indicators-1')).toContainText('2');
+    await expect(page.getByTestId('child-card-negative-count-student-indicators-1')).toContainText('0');
+    await expect(page.getByTestId('child-card-positive-count-student-indicators-1')).toContainText('0');
+    await expect(
+      page.getByTestId('child-card-positive-count-student-indicators-1').locator('svg.lucide-thumbs-up'),
+    ).toBeVisible();
+
+    await expect(page.getByTestId('child-card-homework-count-student-indicators-2')).toContainText('1');
+    await expect(page.getByTestId('child-card-negative-count-student-indicators-2')).toContainText('1');
+    await expect(page.getByTestId('child-card-positive-count-student-indicators-2')).toContainText('2');
+  });
+
   test('manifest.json is served with required app metadata', async ({ page }) => {
     const response = await page.request.get('/manifest.json');
     expect(response.ok()).toBe(true);

@@ -35,6 +35,8 @@ export function useArchive({
       invalidateKeys.forEach((key) => {
         void queryClient.invalidateQueries({ queryKey: key });
       });
+      void queryClient.invalidateQueries({ queryKey: ['children'] });
+      void queryClient.invalidateQueries({ queryKey: ['child', studentGuid] });
     },
   });
 }

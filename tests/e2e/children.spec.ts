@@ -222,6 +222,59 @@ test.describe('Children page', () => {
     await expect(firstCard).not.toHaveClass(/border-primary|shadow-\[0_0_0_1px_hsl\(var\(--primary\)\)\]/);
     await expect(secondCard).not.toHaveClass(/border-primary|shadow-\[0_0_0_1px_hsl\(var\(--primary\)\)\]/);
   });
+
+  test('children list cards show homework, negative, and positive indicators including zero values', async ({ page }) => {
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              studentGuid: 'student-indicators-1',
+              privateName: 'One',
+              familyName: 'Kid',
+              fullName: 'One Kid',
+              classCode: 'א',
+              classNum: 1,
+              gender: 'M',
+              isActive: true,
+              recentHomeworkCount: 2,
+              recentBehaviorCount: 0,
+              positiveBehaviorCount: 0,
+              subjectCount: 0,
+              latestUpdateAt: new Date().toISOString(),
+            },
+            {
+              studentGuid: 'student-indicators-2',
+              privateName: 'Two',
+              familyName: 'Kid',
+              fullName: 'Two Kid',
+              classCode: 'ב',
+              classNum: 2,
+              gender: 'F',
+              isActive: true,
+              recentHomeworkCount: 1,
+              recentBehaviorCount: 1,
+              positiveBehaviorCount: 2,
+              subjectCount: 0,
+              latestUpdateAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      });
+    });
+
+    const childrenPage = new ChildrenPage(page);
+    await childrenPage.navigate();
+
+    await expect(page.getByTestId('child-list-homework-count-student-indicators-1')).toContainText('2');
+    await expect(page.getByTestId('child-list-negative-count-student-indicators-1')).toContainText('0');
+    await expect(page.getByTestId('child-list-positive-count-student-indicators-1')).toContainText('0');
+    await expect(
+      page.getByTestId('child-list-positive-count-student-indicators-1').locator('svg.lucide-thumbs-up'),
+    ).toBeVisible();
+  });
 });
 
 test.describe('Child workspace page', () => {
@@ -247,6 +300,7 @@ test.describe('Child workspace page', () => {
           summary: {
             recentHomeworkCount: 1,
             recentBehaviorCount: 1,
+            positiveBehaviorCount: 1,
             subjectCount: 1,
             totalWeeklyHours: 6,
             attentionBehaviorCount: 1,
@@ -277,6 +331,19 @@ test.describe('Child workspace page', () => {
     const childrenPage = new ChildrenPage(page);
     await childrenPage.navigate();
     expect(page.url()).toContain('/children');
+  });
+
+  test('workspace header shows homework, negative, and positive indicators', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await expect(page.getByTestId('child-header-homework-count')).toContainText('1');
+    await expect(page.getByTestId('child-header-negative-count')).toContainText('1');
+    await expect(page.getByTestId('child-header-positive-count')).toContainText('1');
+    await expect(
+      page.getByTestId('child-header-positive-count').locator('svg.lucide-thumbs-up'),
+    ).toBeVisible();
   });
 
   test('homework item opens dedicated detail page', async ({ page }) => {
