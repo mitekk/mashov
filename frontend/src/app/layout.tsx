@@ -19,7 +19,10 @@ export const metadata: Metadata = {
   description: 'ממשק מאוחד לנתוני בית הספר — ציונים, שיעורי בית, ומסרים',
   manifest: '/manifest.json',
   icons: {
-    icon: '/favicon.ico',
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/favicon.ico', sizes: '32x32' },
+    ],
   },
   openGraph: {
     type: 'website',
