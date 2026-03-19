@@ -173,6 +173,103 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       expect(Array.isArray(noticesRes.body.data)).toBe(true);
     });
 
+    it("GET lessons/plans returns {data} and proxies upstream with weeklyPlan referer", async () => {
+      await seedStudent(prisma);
+
+      mashovGetMock.mockImplementation(async (path: string) => {
+        if (path === `/api/students/${TEST_STUDENT_GUID}/lessons/plans`) {
+          return [
+            {
+              groupid: 181,
+              lessondate: "2026-03-20T00:00:00",
+              lesson: 1,
+              plan: "קריאת טקסט",
+            },
+          ];
+        }
+        return [];
+      });
+
+      const res = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/lessons/plans`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        data: [
+          {
+            groupid: 181,
+            lessondate: "2026-03-20T00:00:00",
+            lesson: 1,
+            plan: "קריאת טקסט",
+          },
+        ],
+      });
+      expect(mashovGetMock).toHaveBeenCalledWith(
+        `/api/students/${TEST_STUDENT_GUID}/lessons/plans`,
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Referer: `https://web.mashov.info/students/main/students/${TEST_STUDENT_GUID}/weeklyPlan`,
+          }),
+        }),
+      );
+    });
+
+    it("GET lessons/history returns {data} and gracefully falls back to empty array on upstream error", async () => {
+      await seedStudent(prisma);
+
+      mashovGetMock.mockImplementationOnce(async (path: string) => {
+        if (path === `/api/students/${TEST_STUDENT_GUID}/lessons/history`) {
+          return [
+            {
+              groupName: "שפה ג3",
+              subjectName: "שפה",
+              lessonLog: {
+                lessonID: 537,
+                groupId: 181,
+                lessonDate: "2026-03-20T00:00:00",
+                lesson: 1,
+                tookPlace: true,
+                remark: "עבדנו על הבנת הנקרא",
+                homeWork: "לקרוא עמוד 12",
+                lessontype: 0,
+                reporterid: 0,
+                reporterGuid: "a7246be3-18b8-45dd-874c-fa426d022348",
+              },
+            },
+          ];
+        }
+        return [];
+      });
+
+      const successRes = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/lessons/history`,
+      );
+      expect(successRes.status).toBe(200);
+      expect(successRes.body.data).toHaveLength(1);
+      expect(successRes.body.data[0]).toMatchObject({
+        groupName: "שפה ג3",
+        subjectName: "שפה",
+      });
+      expect(mashovGetMock).toHaveBeenCalledWith(
+        `/api/students/${TEST_STUDENT_GUID}/lessons/history`,
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Referer: `https://web.mashov.info/students/main/students/${TEST_STUDENT_GUID}/weeklyPlan`,
+          }),
+        }),
+      );
+
+      mashovGetMock.mockImplementationOnce(async () => {
+        throw new Error("upstream unavailable");
+      });
+
+      const fallbackRes = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/lessons/history`,
+      );
+      expect(fallbackRes.status).toBe(200);
+      expect(fallbackRes.body).toEqual({ data: [] });
+    });
+
     it("GET homework/behavior include isNew and isArchived (not isHandled)", async () => {
       await seedStudent(prisma);
 

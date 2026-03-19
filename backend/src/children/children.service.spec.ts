@@ -122,6 +122,7 @@ function makeMockSession(overrides: Partial<Record<string, jest.Mock>> = {}) {
 
 function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>> = {}) {
   return {
+    get: overrides.get ?? jest.fn(),
     getResponse: overrides.getResponse ?? jest.fn(),
   } as unknown as jest.Mocked<MashovHttpClient>;
 }
@@ -1028,6 +1029,91 @@ describe('ChildrenService', () => {
       );
 
       await expect(service.getTimetable(TEST_GUID)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getLessonHistory', () => {
+    it('returns upstream array in {data} envelope', async () => {
+      const get = jest.fn().mockResolvedValue([
+        {
+          groupName: 'שפה ג3',
+          subjectName: 'שפה',
+          lessonLog: {
+            lessonID: 537,
+            groupId: 181,
+            lessonDate: '2025-09-12T00:00:00',
+            lesson: 1,
+            tookPlace: true,
+            remark: 'טקסט קריאה',
+            homeWork: 'לקרוא 3 פעמים',
+            lessontype: 0,
+            reporterid: 0,
+            reporterGuid: 'a7246be3-18b8-45dd-874c-fa426d022348',
+          },
+        },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ get }),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getLessonHistory(TEST_GUID);
+      expect(get).toHaveBeenCalledWith(
+        `/api/students/${TEST_GUID}/lessons/history`,
+        {
+          headers: {
+            Referer: `https://web.mashov.info/students/main/students/${TEST_GUID}/weeklyPlan`,
+          },
+        },
+      );
+      expect(result).toEqual({
+        data: [
+          {
+            groupName: 'שפה ג3',
+            subjectName: 'שפה',
+            lessonLog: {
+              lessonID: 537,
+              groupId: 181,
+              lessonDate: '2025-09-12T00:00:00',
+              lesson: 1,
+              tookPlace: true,
+              remark: 'טקסט קריאה',
+              homeWork: 'לקרוא 3 פעמים',
+              lessontype: 0,
+              reporterid: 0,
+              reporterGuid: 'a7246be3-18b8-45dd-874c-fa426d022348',
+            },
+          },
+        ],
+      });
+    });
+
+    it('returns {data: []} when upstream throws', async () => {
+      const get = jest.fn().mockRejectedValue(new Error('upstream failed'));
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ get }),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getLessonHistory(TEST_GUID);
+      expect(result).toEqual({ data: [] });
+    });
+
+    it('returns {data: []} when upstream payload is not an array', async () => {
+      const get = jest.fn().mockResolvedValue({ lessonLog: {} });
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ get }),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getLessonHistory(TEST_GUID);
+      expect(result).toEqual({ data: [] });
     });
   });
 

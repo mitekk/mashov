@@ -8,6 +8,8 @@ import {
   fetchChildSubjects,
   fetchChildNotices,
   fetchChildTimetable,
+  fetchChildLessonPlans,
+  fetchChildLessonHistory,
 } from '@/api/children';
 import type { BehaviorBucket } from '@/types/api';
 
@@ -88,6 +90,24 @@ export function useChildTimetable(studentGuid: string) {
     queryKey: ['child-timetable', studentGuid],
     queryFn: () => fetchChildTimetable(studentGuid),
     staleTime: 5 * 60_000,
+    enabled: Boolean(studentGuid),
+  });
+}
+
+export function useChildLessonPlans(studentGuid: string) {
+  return useQuery({
+    queryKey: ['child-lesson-plans', studentGuid],
+    queryFn: () => fetchChildLessonPlans(studentGuid),
+    staleTime: 30 * 60_000,
+    enabled: Boolean(studentGuid),
+  });
+}
+
+export function useChildLessonHistory(studentGuid: string) {
+  return useQuery({
+    queryKey: ['child-lesson-history', studentGuid],
+    queryFn: () => fetchChildLessonHistory(studentGuid),
+    staleTime: 30 * 60_000,
     enabled: Boolean(studentGuid),
   });
 }

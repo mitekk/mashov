@@ -294,6 +294,16 @@ export class ChildrenController {
     return this.childrenService.getTimetable(studentGuid);
   }
 
+  @Get(':studentGuid/lessons/plans')
+  getLessonPlans(@Param('studentGuid') studentGuid: string) {
+    return this.childrenService.getLessonPlans(studentGuid);
+  }
+
+  @Get(':studentGuid/lessons/history')
+  getLessonHistory(@Param('studentGuid') studentGuid: string) {
+    return this.childrenService.getLessonHistory(studentGuid);
+  }
+
   @Get(':studentGuid/subjects')
   async getSubjects(@Param('studentGuid') studentGuid: string) {
     return this.childrenService.getSubjects(studentGuid);

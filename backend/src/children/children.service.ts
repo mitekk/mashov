@@ -549,6 +549,38 @@ export class ChildrenService {
     };
   }
 
+  async getLessonPlans(studentGuid: string) {
+    await this.requireStudent(studentGuid);
+
+    const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
+    try {
+      const plans = await this.mashovClient.get<unknown[]>(
+        `/api/students/${studentGuid}/lessons/plans`,
+        { headers: { Referer: referer } },
+      );
+      const data = Array.isArray(plans) ? plans : [];
+      return { data };
+    } catch {
+      return { data: [] };
+    }
+  }
+
+  async getLessonHistory(studentGuid: string) {
+    await this.requireStudent(studentGuid);
+
+    const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
+    try {
+      const history = await this.mashovClient.get<unknown[]>(
+        `/api/students/${studentGuid}/lessons/history`,
+        { headers: { Referer: referer } },
+      );
+      const data = Array.isArray(history) ? history : [];
+      return { data };
+    } catch {
+      return { data: [] };
+    }
+  }
+
   async getNotices(studentGuid: string) {
     await this.requireStudent(studentGuid);
 

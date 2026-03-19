@@ -12,6 +12,8 @@ import type {
   SubjectsResponse,
   NoticesResponse,
   TimetableResponse,
+  LessonPlansResponse,
+  LessonHistoryResponse,
   BehaviorBucket,
   MarkIsNewRequest,
   MarkArchivedRequest,
@@ -164,6 +166,40 @@ export async function fetchChildTimetable(studentGuid: string): Promise<Timetabl
   const items = Array.isArray(response.data) ? response.data : [];
   return {
     data: items.map((item) => normalizeTimetableEntry(item as unknown as UnknownRecord)),
+  };
+}
+
+export async function fetchChildLessonPlans(studentGuid: string): Promise<LessonPlansResponse> {
+  const response = await apiFetch<LessonPlansResponse | unknown[]>(
+    `/children/${encodeURIComponent(studentGuid)}/lessons/plans`,
+  );
+  if (Array.isArray(response)) {
+    return {
+      data: response.map((item) => normalizeLessonPlan(item as unknown as UnknownRecord)),
+    };
+  }
+  const items = Array.isArray(response.data) ? response.data : [];
+  return {
+    data: items.map((item) => normalizeLessonPlan(item as unknown as UnknownRecord)),
+  };
+}
+
+export async function fetchChildLessonHistory(studentGuid: string): Promise<LessonHistoryResponse> {
+  const response = await apiFetch<LessonHistoryResponse | { data: unknown[] } | unknown[]>(
+    `/children/${encodeURIComponent(studentGuid)}/lessons/history`,
+  );
+  if (Array.isArray(response)) {
+    return {
+      data: response.map((item) =>
+        normalizeLessonHistoryEntry(item as unknown as UnknownRecord),
+      ),
+    };
+  }
+  const items = Array.isArray(response.data) ? response.data : [];
+  return {
+    data: items.map((item) =>
+      normalizeLessonHistoryEntry(item as unknown as UnknownRecord),
+    ),
   };
 }
 
@@ -340,6 +376,42 @@ function normalizeTimetableEntry(item: UnknownRecord) {
       };
     }),
     updatedAt: String(item.updatedAt ?? ''),
+  };
+}
+
+function normalizeLessonPlan(item: UnknownRecord) {
+  return {
+    groupid: Number(item.groupid ?? 0),
+    lessondate: String(item.lessondate ?? ''),
+    lesson: Number(item.lesson ?? 0),
+    plan: String(item.plan ?? ''),
+    lessonLink:
+      typeof item.lessonLink === 'string' && item.lessonLink.length > 0
+        ? item.lessonLink
+        : undefined,
+  };
+}
+
+function normalizeLessonHistoryEntry(item: UnknownRecord) {
+  const lessonLogRaw = (item.lessonLog ?? {}) as UnknownRecord;
+  return {
+    groupName: String(item.groupName ?? ''),
+    subjectName: String(item.subjectName ?? ''),
+    lessonLog: {
+      lessonID: Number(lessonLogRaw.lessonID ?? 0),
+      groupId: Number(lessonLogRaw.groupId ?? 0),
+      lessonDate: String(lessonLogRaw.lessonDate ?? ''),
+      lesson: Number(lessonLogRaw.lesson ?? 0),
+      tookPlace: Boolean(lessonLogRaw.tookPlace),
+      remark: String(lessonLogRaw.remark ?? ''),
+      homeWork:
+        typeof lessonLogRaw.homeWork === 'string' && lessonLogRaw.homeWork.length > 0
+          ? lessonLogRaw.homeWork
+          : undefined,
+      lessontype: Number(lessonLogRaw.lessontype ?? 0),
+      reporterid: Number(lessonLogRaw.reporterid ?? 0),
+      reporterGuid: String(lessonLogRaw.reporterGuid ?? ''),
+    },
   };
 }
 

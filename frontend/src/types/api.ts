@@ -429,6 +429,41 @@ export interface TimetableEntry {
 
 export type TimetableResponse = { data: TimetableEntry[] };
 
+// ─── Lesson Plans ───────────────────────────────────────────────────────────
+
+export interface LessonPlan {
+  groupid: number;
+  lessondate: string;
+  lesson: number;
+  plan: string;
+  lessonLink?: string;
+}
+
+export type LessonPlansResponse = { data: LessonPlan[] };
+
+// ─── Lesson History ─────────────────────────────────────────────────────────
+
+export interface LessonHistoryLog {
+  lessonID: number;
+  groupId: number;
+  lessonDate: string;
+  lesson: number;
+  tookPlace: boolean;
+  remark: string;
+  homeWork?: string;
+  lessontype: number;
+  reporterid: number;
+  reporterGuid: string;
+}
+
+export interface LessonHistoryEntry {
+  groupName: string;
+  subjectName: string;
+  lessonLog: LessonHistoryLog;
+}
+
+export type LessonHistoryResponse = { data: LessonHistoryEntry[] };
+
 // ─── Bulk Mail Actions ─────────────────────────────────────────────────────
 
 export interface MailBulkActionRequest {

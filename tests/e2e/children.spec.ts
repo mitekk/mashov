@@ -56,6 +56,23 @@ function makeBehaviorItem(overrides: object = {}) {
   };
 }
 
+function formatLocalMidnight(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}T00:00:00`;
+}
+
+function weekDateForSchoolDay(schoolDay: number, baseDate: Date): string {
+  const sunday = new Date(baseDate);
+  sunday.setDate(baseDate.getDate() - baseDate.getDay());
+  sunday.setHours(0, 0, 0, 0);
+
+  const target = new Date(sunday);
+  target.setDate(sunday.getDate() + (schoolDay - 1));
+  return formatLocalMidnight(target);
+}
+
 const MOCK_ME = {
   mashovUserId: 'e2e-parent-1',
   username: 'e2e-parent',
@@ -282,6 +299,24 @@ test.describe('Child workspace page', () => {
   const STUDENT_GUID = 'e2e-test-student-guid-00002';
 
   function stubWorkspaceRoutes(page: import('@playwright/test').Page) {
+    page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [],
+          pagination: {
+            page: 1,
+            limit: 50,
+            total: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrev: false,
+          },
+        }),
+      });
+    });
+
     return page.route(`**/api/v1/children/${STUDENT_GUID}`, async (route) => {
       await route.fulfill({
         status: 200,
@@ -344,6 +379,235 @@ test.describe('Child workspace page', () => {
     await expect(
       page.getByTestId('child-header-positive-count').locator('svg.lucide-thumbs-up'),
     ).toBeVisible();
+  });
+
+  test('timetable renders table layout with labeled plan/remark/homework and suppresses empty blocks', async ({ page }) => {
+    const fixedNow = '2026-03-20T09:00:00';
+    await page.addInitScript((isoNow: string) => {
+      const OriginalDate = Date;
+      class MockDate extends OriginalDate {
+        constructor(...args: ConstructorParameters<typeof Date>) {
+          if (args.length === 0) {
+            super(isoNow);
+            return;
+          }
+          super(...args);
+        }
+
+        static now(): number {
+          return new OriginalDate(isoNow).getTime();
+        }
+      }
+      MockDate.parse = OriginalDate.parse;
+      MockDate.UTC = OriginalDate.UTC;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).Date = MockDate;
+    }, fixedNow);
+
+    await stubWorkspaceRoutes(page);
+    const baseDate = new Date(fixedNow);
+    const todaySchoolDay = baseDate.getDay() + 1;
+    const lessonDate = weekDateForSchoolDay(todaySchoolDay, baseDate);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/timetable`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              id: 'tt-1',
+              studentGuid: STUDENT_GUID,
+              groupId: 181,
+              day: todaySchoolDay,
+              lesson: 1,
+              roomNum: '104',
+              weeks: 1,
+              groupName: 'שפה ג3',
+              subjectName: 'שפה',
+              teachers: [{ teacherGuid: 't-1', teacherName: 'מורן לוי' }],
+              updatedAt: lessonDate,
+            },
+            {
+              id: 'tt-2',
+              studentGuid: STUDENT_GUID,
+              groupId: 999,
+              day: todaySchoolDay,
+              lesson: 2,
+              roomNum: '105',
+              weeks: 1,
+              groupName: 'חשבון ג3',
+              subjectName: 'חשבון',
+              teachers: [{ teacherGuid: 't-2', teacherName: 'דנה כהן' }],
+              updatedAt: lessonDate,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/plans`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              groupid: 181,
+              lessondate: lessonDate,
+              lesson: 1,
+              plan: 'קריאת טקסט והבנת הנקרא',
+            },
+            {
+              groupid: 999,
+              lessondate: lessonDate,
+              lesson: 2,
+              plan: '   ',
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/history`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              groupName: 'שפה ג3',
+              subjectName: 'שפה',
+              lessonLog: {
+                lessonID: 537,
+                groupId: 181,
+                lessonDate,
+                lesson: 1,
+                tookPlace: true,
+                remark: 'עבדנו על מילות קישור',
+                homeWork: 'לקרוא עמוד 12 ולענות על שאלות',
+                lessontype: 0,
+                reporterid: 0,
+                reporterGuid: 'a7246be3-18b8-45dd-874c-fa426d022348',
+              },
+            },
+            {
+              groupName: 'חשבון ג3',
+              subjectName: 'חשבון',
+              lessonLog: {
+                lessonID: 538,
+                groupId: 999,
+                lessonDate,
+                lesson: 2,
+                tookPlace: true,
+                remark: '   ',
+                lessontype: 0,
+                reporterid: 0,
+                reporterGuid: 'b7246be3-18b8-45dd-874c-fa426d022349',
+              },
+            },
+          ],
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'timetable', 'all');
+
+    await expect(page.getByTestId('timetable-section')).toBeVisible();
+    await expect(page.locator('[data-testid="timetable-day-card"]')).toHaveCount(0);
+
+    const lessonCells = page.locator('[data-testid="timetable-lesson-cell"]');
+    await expect(lessonCells).toHaveCount(2);
+
+    const firstCell = lessonCells.first();
+    await expect(firstCell).toContainText('תכנון:');
+    await expect(firstCell).toContainText('הערה:');
+    await expect(firstCell).toContainText('שיעורי בית:');
+
+    const secondCell = lessonCells.nth(1);
+    await expect(secondCell).not.toContainText('תכנון:');
+    await expect(secondCell).not.toContainText('הערה:');
+    await expect(secondCell).not.toContainText('שיעורי בית:');
+  });
+
+  test('timetable highlights today and auto-scrolls horizontal table on narrow viewport', async ({ page }) => {
+    const fixedNow = '2026-03-18T09:00:00';
+    await page.addInitScript((isoNow: string) => {
+      const OriginalDate = Date;
+      class MockDate extends OriginalDate {
+        constructor(...args: ConstructorParameters<typeof Date>) {
+          if (args.length === 0) {
+            super(isoNow);
+            return;
+          }
+          super(...args);
+        }
+
+        static now(): number {
+          return new OriginalDate(isoNow).getTime();
+        }
+      }
+      MockDate.parse = OriginalDate.parse;
+      MockDate.UTC = OriginalDate.UTC;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).Date = MockDate;
+    }, fixedNow);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await stubWorkspaceRoutes(page);
+
+    const baseDate = new Date(fixedNow);
+    const entries = Array.from({ length: 6 }, (_, idx) => {
+      const day = idx + 1;
+      return {
+        id: `tt-day-${day}`,
+        studentGuid: STUDENT_GUID,
+        groupId: 100 + day,
+        day,
+        lesson: 1,
+        roomNum: `${100 + day}`,
+        weeks: 1,
+        groupName: `Group ${day}`,
+        subjectName: `Subject ${day}`,
+        teachers: [{ teacherGuid: `t-${day}`, teacherName: `Teacher ${day}` }],
+        updatedAt: weekDateForSchoolDay(day, baseDate),
+      };
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/timetable`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: entries }),
+      });
+    });
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/plans`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [] }),
+      });
+    });
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/history`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [] }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'timetable', 'all');
+
+    const todayHeader = page.locator('th').filter({ hasText: 'היום' }).first();
+    await expect(todayHeader).toBeVisible();
+    await expect(todayHeader).toHaveClass(/min-w-\[196px\]/);
+
+    const overflow = page.locator('[data-testid="timetable-section"] .overflow-x-auto').first();
+    await expect(overflow).toBeVisible();
+    const horizontalOffset = await overflow.evaluate((el) => Math.abs((el as HTMLElement).scrollLeft));
+    expect(horizontalOffset).toBeGreaterThan(0);
   });
 
   test('homework item opens dedicated detail page', async ({ page }) => {

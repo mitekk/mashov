@@ -11,7 +11,7 @@ export class ChildWorkspacePage {
 
   async navigate(
     studentGuid: string,
-    section: 'homework' | 'behavior' | 'subjects' | 'notices' = 'homework',
+    section: 'homework' | 'behavior' | 'subjects' | 'notices' | 'timetable' = 'homework',
     behavior: 'all' | 'attention' | 'positive' | 'neutral' = 'all',
   ): Promise<void> {
     const params = new URLSearchParams({
@@ -26,11 +26,11 @@ export class ChildWorkspacePage {
     );
   }
 
-  sectionTab(sectionId: 'homework' | 'behavior' | 'subjects' | 'notices'): Locator {
+  sectionTab(sectionId: 'homework' | 'behavior' | 'subjects' | 'notices' | 'timetable'): Locator {
     return this.page.getByTestId(`section-tab-${sectionId}`);
   }
 
-  async clickSection(sectionId: 'homework' | 'behavior' | 'subjects' | 'notices'): Promise<void> {
+  async clickSection(sectionId: 'homework' | 'behavior' | 'subjects' | 'notices' | 'timetable'): Promise<void> {
     await this.sectionTab(sectionId).click();
     await this.page.waitForURL((url) => url.searchParams.get('section') === sectionId);
   }
