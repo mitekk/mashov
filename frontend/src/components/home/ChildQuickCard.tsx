@@ -61,11 +61,6 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
           {positiveBehaviorCount}
         </span>
       </div>
-      {child.oneLineStatus && (
-        <p className="text-xs text-muted-foreground line-clamp-1">
-          {child.oneLineStatus}
-        </p>
-      )}
       {child.latestUpdateAt && (
         <p className="text-[10px] text-muted-foreground opacity-60">
           {formatRelativeHe(child.latestUpdateAt)}
