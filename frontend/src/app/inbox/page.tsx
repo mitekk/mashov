@@ -9,6 +9,7 @@ import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { RefreshButton } from '@/components/ui/RefreshButton';
 import {
   useArchive,
   useConversations,
@@ -193,6 +194,7 @@ function InboxPageContent() {
             </button>
           </div>
           <ThemeToggle />
+          <RefreshButton />
         </div>
       </header>
 

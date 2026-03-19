@@ -9,6 +9,7 @@ import {
   SelectTrigger,
 } from '@/components/ui/Select';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { RefreshButton } from '@/components/ui/RefreshButton';
 
 export interface ChildHeaderOption {
   studentGuid: string;
@@ -80,6 +81,7 @@ export function ChildHeader({
             </span>
           )}
           <ThemeToggle />
+          <RefreshButton />
         </div>
       </div>
       <div className="flex flex-wrap gap-2.5">

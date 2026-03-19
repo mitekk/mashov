@@ -9,6 +9,7 @@ import { ProfileCard } from '@/components/more/ProfileCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSourceHealth, useProfile } from '@/hooks/useSettings';
 import { useMe } from '@/hooks/useAuth';
 import { updateConnection, deleteConnection } from '@/api/connection';
@@ -90,7 +91,10 @@ export default function MorePage() {
       <div data-testid="more-page" className="page-shell space-y-7">
         <header className="page-header">
           <h1 className="page-title">עוד</h1>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <RefreshButton />
+          </div>
         </header>
 
         {/* Connected school */}

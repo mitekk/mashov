@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useMemo } from 'react';
-import { RefreshCw } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
 import { SummaryStrip } from '@/components/home/SummaryStrip';
 import { ChildQuickCard } from '@/components/home/ChildQuickCard';
@@ -9,7 +8,8 @@ import { LatestFeed } from '@/components/home/LatestFeed';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { useDashboard, useSyncRefresh } from '@/hooks/useDashboard';
+import { RefreshButton } from '@/components/ui/RefreshButton';
+import { useDashboard } from '@/hooks/useDashboard';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { formatRelativeHe } from '@/lib/dates';
 import type { DashboardResponse } from '@/types/api';
@@ -36,16 +36,11 @@ const EMPTY_DASHBOARD: DashboardResponse = {
 
 export default function HomePage() {
   const { data, isLoading, isError, refetch } = useDashboard();
-  const { mutate: triggerRefresh, isPending: isRefreshing } = useSyncRefresh();
   const {
     selectedChildGuid,
     setSelectedChildGuid,
     hasHydrated: hasSelectedChildHydrated,
   } = useSelectedChild();
-
-  const handleRefresh = () => {
-    triggerRefresh();
-  };
 
   const dashboard = data ?? EMPTY_DASHBOARD;
   const hasChildren = dashboard.children.length > 0;
@@ -93,15 +88,7 @@ export default function HomePage() {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <button
-              data-testid="refresh-button"
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-              aria-label="רענן נתונים"
-              className="icon-button disabled:opacity-50"
-            >
-              <RefreshCw className={`h-5 w-5 ${isRefreshing ? 'animate-spin' : ''}`} />
-            </button>
+            <RefreshButton />
           </div>
         </header>
 

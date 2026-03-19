@@ -7,6 +7,7 @@ import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useChildren } from '@/hooks/useChildren';
 import { Users } from 'lucide-react';
 
@@ -18,7 +19,10 @@ export default function ChildrenPage() {
       <div className="page-shell space-y-5">
         <header className="page-header">
           <h1 className="page-title">ילדים</h1>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <RefreshButton />
+          </div>
         </header>
 
         {isLoading && <LoadingState message="טוען ילדים..." />}
