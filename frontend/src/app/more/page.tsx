@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AppShell } from '@/components/layout/AppShell';
@@ -12,9 +12,8 @@ import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSourceHealth, useProfile } from '@/hooks/useSettings';
 import { useMe } from '@/hooks/useAuth';
-import { updateConnection, deleteConnection } from '@/api/connection';
+import { deleteConnection } from '@/api/connection';
 import { signOut } from '@/api/auth';
-import { ApiError } from '@/api/client';
 import { School } from 'lucide-react';
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? '1.0.0';
@@ -27,31 +26,8 @@ export default function MorePage() {
   const { data: profile } = useProfile();
   const { data: me } = useMe();
 
-  // Update credentials form
-  const [showCredentials, setShowCredentials] = useState(false);
-  const [credUsername, setCredUsername] = useState('');
-  const [credPassword, setCredPassword] = useState('');
-  const [credSuccess, setCredSuccess] = useState(false);
-  const [credError, setCredError] = useState<string | null>(null);
-
   // Disconnect confirm modal
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-
-  const updateCredentialsMutation = useMutation({
-    mutationFn: updateConnection,
-    onSuccess: () => {
-      setCredSuccess(true);
-      setCredError(null);
-      setCredUsername('');
-      setCredPassword('');
-      setTimeout(() => setCredSuccess(false), 3000);
-    },
-    onError: (err) => {
-      if (err instanceof ApiError) {
-        setCredError('שגיאה בעדכון פרטים, נסה שוב');
-      }
-    },
-  });
 
   const disconnectMutation = useMutation({
     mutationFn: deleteConnection,
@@ -72,19 +48,6 @@ export default function MorePage() {
       router.push('/auth/sign-in');
     },
   });
-
-  function handleUpdateCredentials(e: React.FormEvent) {
-    e.preventDefault();
-    setCredError(null);
-    const body: { username?: string; password?: string } = {};
-    if (credUsername.trim()) body.username = credUsername.trim();
-    if (credPassword) body.password = credPassword;
-    if (!body.username && !body.password) {
-      setCredError('יש להזין שם משתמש או סיסמה חדשים');
-      return;
-    }
-    updateCredentialsMutation.mutate(body);
-  }
 
   return (
     <AppShell>
@@ -121,71 +84,6 @@ export default function MorePage() {
             </div>
           </section>
         )}
-
-        {/* Update credentials */}
-        <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            פרטי חיבור
-          </h2>
-          <div className="card-base overflow-hidden">
-            <button
-              data-testid="settings-update-credentials-btn"
-              onClick={() => setShowCredentials((v) => !v)}
-              className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
-            >
-              <span>עדכון שם משתמש / סיסמה</span>
-              <span className="text-muted-foreground text-xs">{showCredentials ? '▲' : '▼'}</span>
-            </button>
-            {showCredentials && (
-              <form
-                onSubmit={handleUpdateCredentials}
-                className="px-4 pb-4 pt-2 space-y-4 border-t border-border/50"
-              >
-                <div className="space-y-1.5">
-                  <label htmlFor="cred-username" className="block text-xs font-medium text-muted-foreground">
-                    שם משתמש חדש (אופציונלי)
-                  </label>
-                  <input
-                    id="cred-username"
-                    type="text"
-                    autoComplete="username"
-                    value={credUsername}
-                    onChange={(e) => setCredUsername(e.target.value)}
-                    className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label htmlFor="cred-password" className="block text-xs font-medium text-muted-foreground">
-                    סיסמה חדשה (אופציונלי)
-                  </label>
-                  <input
-                    id="cred-password"
-                    type="password"
-                    autoComplete="new-password"
-                    value={credPassword}
-                    onChange={(e) => setCredPassword(e.target.value)}
-                    className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
-                  />
-                </div>
-                {credError && (
-                  <p role="alert" className="text-xs text-destructive">{credError}</p>
-                )}
-                {credSuccess && (
-                  <p role="status" className="text-xs text-green-600 dark:text-green-400">
-                    עודכן בהצלחה
-                  </p>
-                )}
-                <button
-                  type="submit"
-                  disabled={updateCredentialsMutation.isPending}
-                  className="w-full rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-                >
-                  {updateCredentialsMutation.isPending ? 'שומר...' : 'שמור'}
-                </button>
-              </form>
-            )}
-          </div>
-        </section>
 
         {/* Profile */}
         {profile && (

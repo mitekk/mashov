@@ -8,7 +8,6 @@
  * 3. Session protection: direct navigate to / without cookie → redirect to /auth/sign-in
  * 4. Sign-out: sign in → click sign-out → redirect to /auth/sign-in →
  *    subsequent navigation to / redirects to sign-in again
- * 5. Settings — credential update: sign in → /more → Update credentials → submit → success
  *
  * All Mashov upstream calls are intercepted via page.route() — no real upstream calls.
  */
@@ -508,44 +507,7 @@ test.describe('Auth — sign-out', () => {
   });
 });
 
-test.describe('Auth — credential update in settings', () => {
-  test('sign in → navigate to /more → update credentials → success message', async ({ page }) => {
-    await page.route('**/api/v1/auth/me', async (route) => {
-      await route.fulfill({ json: MOCK_ME });
-    });
-
-    await page.route('**/api/v1/dashboard', async (route) => {
-      await route.fulfill({ json: MOCK_EMPTY_DASHBOARD });
-    });
-    await mockMorePageQueries(page);
-
-    await page.route('**/api/v1/connection', async (route) => {
-      if (route.request().method() === 'PUT') {
-        await route.fulfill({ json: { ok: true } });
-      } else {
-        await route.continue();
-      }
-    });
-
-    // Navigate to settings as authenticated user
-    await seedAuthenticatedCookie(page);
-    await page.goto('/more');
-    await expect(page.getByTestId('more-page')).toBeVisible();
-
-    const updateCredsButton = page.getByTestId('settings-update-credentials-btn');
-    await expect(updateCredsButton).toBeVisible({ timeout: 5_000 });
-    await updateCredsButton.click();
-
-    await page.getByLabel('שם משתמש חדש (אופציונלי)').fill('newusername');
-    await page.getByLabel('סיסמה חדשה (אופציונלי)').fill('newpassword');
-
-    await page.getByRole('button', { name: 'שמור' }).click();
-
-    const successMessage = page.getByRole('status');
-    await expect(successMessage).toBeVisible({ timeout: 5_000 });
-    await expect(successMessage).toContainText('עודכן בהצלחה');
-  });
-
+test.describe('Auth — settings page', () => {
   test('settings page shows connected school info for authenticated user', async ({ page }) => {
     await page.route('**/api/v1/auth/me', async (route) => {
       await route.fulfill({ json: MOCK_ME });
