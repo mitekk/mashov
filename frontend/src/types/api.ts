@@ -169,6 +169,19 @@ export interface CreateStudentReleaseBody {
   startHour: string;
 }
 
+export interface SchoolActivity {
+  id: number;
+  createTime: string;
+  activityStartDate: string;
+  activityEndDate: string;
+  activityType: number;
+  creatorGuid: string;
+  title: string;
+  description: string;
+  endAnswerDate: string;
+  isAnswered: boolean;
+}
+
 // ─── Homework ──────────────────────────────────────────────────────────────
 
 export interface HomeworkFile {

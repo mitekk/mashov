@@ -6,8 +6,8 @@ import { useChildNotices } from '@/hooks/useChild';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { FeedSkeleton } from '@/components/ui/LoadingState';
+import { RichTextContent } from '@/components/ui/RichTextContent';
 import { formatShortDate } from '@/lib/dates';
-import DOMPurify from 'dompurify';
 
 interface NoticesSectionProps {
   studentGuid: string;
@@ -41,11 +41,10 @@ export function NoticesSection({ studentGuid }: NoticesSectionProps) {
               <p className="text-xs text-muted-foreground mb-2">
                 בתוקף עד {formatShortDate(notice.expirationDate)}
               </p>
-              <div
-                className="prose-rtl text-sm text-foreground"
-                dangerouslySetInnerHTML={{
-                  __html: DOMPurify.sanitize(notice.eventText),
-                }}
+              <RichTextContent
+                html={notice.eventText}
+                className="text-sm text-foreground"
+                contentTestId={`notice-content-${notice.id}`}
               />
             </div>
           ))}

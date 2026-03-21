@@ -11,6 +11,7 @@ import {
   fetchChildLessonPlans,
   fetchChildLessonHistory,
   fetchStudentReleases,
+  fetchSchoolActivities,
 } from '@/api/children';
 import type { BehaviorBucket } from '@/types/api';
 
@@ -119,5 +120,14 @@ export function useStudentReleases(studentGuid: string) {
     queryFn: () => fetchStudentReleases(studentGuid),
     enabled: Boolean(studentGuid),
     staleTime: 60_000,
+  });
+}
+
+export function useSchoolActivities(studentGuid: string) {
+  return useQuery({
+    queryKey: ['child', studentGuid, 'school-activities'],
+    queryFn: () => fetchSchoolActivities(studentGuid),
+    enabled: Boolean(studentGuid),
+    staleTime: 5 * 60_000,
   });
 }

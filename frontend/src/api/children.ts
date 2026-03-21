@@ -16,6 +16,7 @@ import type {
   LessonHistoryResponse,
   BehaviorBucket,
   StudentRelease,
+  SchoolActivity,
   UpdateStudentReleaseBody,
   CreateStudentReleaseBody,
   MarkIsNewRequest,
@@ -217,6 +218,17 @@ export async function fetchStudentReleases(studentGuid: string): Promise<Student
   return items
     .map((item) => normalizeStudentRelease(item as unknown as UnknownRecord))
     .filter((item) => !item.isDeleted);
+}
+
+export async function fetchSchoolActivities(studentGuid: string): Promise<SchoolActivity[]> {
+  const response = await apiFetch<unknown[] | { data: unknown[] }>(
+    `/children/${encodeURIComponent(studentGuid)}/school-activities`,
+  );
+  const items = Array.isArray(response)
+    ? response
+    : (Array.isArray(response.data) ? response.data : []);
+
+  return items.map((item) => normalizeSchoolActivity(item as unknown as UnknownRecord));
 }
 
 export async function createStudentRelease(
@@ -479,6 +491,21 @@ function normalizeStudentRelease(item: UnknownRecord): StudentRelease {
     status: Number(item.status ?? 0),
     isDeleted: Boolean(item.isDeleted),
     requestEditTime: String(item.requestEditTime ?? ''),
+  };
+}
+
+function normalizeSchoolActivity(item: UnknownRecord): SchoolActivity {
+  return {
+    id: Number(item.id ?? 0),
+    createTime: String(item.createTime ?? ''),
+    activityStartDate: String(item.activityStartDate ?? ''),
+    activityEndDate: String(item.activityEndDate ?? ''),
+    activityType: Number(item.activityType ?? 0),
+    creatorGuid: String(item.creatorGuid ?? ''),
+    title: String(item.title ?? ''),
+    description: String(item.description ?? ''),
+    endAnswerDate: String(item.endAnswerDate ?? ''),
+    isAnswered: Boolean(item.isAnswered),
   };
 }
 

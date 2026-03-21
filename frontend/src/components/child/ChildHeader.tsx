@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { BookOpen, AlertTriangle, ThumbsUp, Clock, DoorOpen } from 'lucide-react';
+import { BookOpen, AlertTriangle, ThumbsUp, Clock, DoorOpen, ClipboardList } from 'lucide-react';
 import type { ChildStudent, ChildSummary } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import {
@@ -12,7 +12,9 @@ import {
 } from '@/components/ui/Select';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { RefreshButton } from '@/components/ui/RefreshButton';
+import { useSchoolActivities } from '@/hooks/useChild';
 import { ReleasesDialog } from './ReleasesDialog';
+import { SchoolActivitiesDialog } from './SchoolActivitiesDialog';
 
 export interface ChildHeaderOption {
   studentGuid: string;
@@ -40,6 +42,9 @@ export function ChildHeader({
   studentGuid,
 }: ChildHeaderProps) {
   const [isReleasesDialogOpen, setIsReleasesDialogOpen] = useState(false);
+  const [isActivitiesDialogOpen, setIsActivitiesDialogOpen] = useState(false);
+  const { data: activitiesData } = useSchoolActivities(studentGuid);
+  const pendingCount = activitiesData?.filter((activity) => !activity.isAnswered).length ?? 0;
 
   return (
     <header className="card-base px-4 py-5">
@@ -95,6 +100,26 @@ export function ChildHeader({
           >
             <DoorOpen className="h-5 w-5" />
           </button>
+          <div className="relative">
+            <button
+              type="button"
+              data-testid="child-header-activities-button"
+              onClick={() => setIsActivitiesDialogOpen(true)}
+              aria-label={`פעילויות בית ספר${pendingCount > 0 ? ` (${pendingCount} ממתינות)` : ''}`}
+              className="icon-button"
+            >
+              <ClipboardList className="h-5 w-5" />
+            </button>
+            {pendingCount > 0 && (
+              <span
+                data-testid="child-header-activities-badge"
+                aria-hidden="true"
+                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-white"
+              >
+                {pendingCount > 9 ? '9+' : pendingCount}
+              </span>
+            )}
+          </div>
           <ThemeToggle />
           <RefreshButton />
         </div>
@@ -137,6 +162,11 @@ export function ChildHeader({
       <ReleasesDialog
         open={isReleasesDialogOpen}
         onOpenChange={setIsReleasesDialogOpen}
+        studentGuid={studentGuid}
+      />
+      <SchoolActivitiesDialog
+        open={isActivitiesDialogOpen}
+        onOpenChange={setIsActivitiesDialogOpen}
         studentGuid={studentGuid}
       />
     </header>

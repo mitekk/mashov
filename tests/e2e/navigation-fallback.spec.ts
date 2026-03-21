@@ -184,6 +184,10 @@ async function mockBaseRoutes(page: Page) {
     json(route, []),
   );
 
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/school-activities`, (route) =>
+    json(route, []),
+  );
+
   await page.route(`**/api/v1/children/${STUDENT_GUID}/releases/*`, (route) => {
     if (route.request().method() === 'DELETE') {
       return route.fulfill({ status: 204 });

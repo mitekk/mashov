@@ -71,6 +71,22 @@ function makeStudentRelease(overrides: object = {}) {
   };
 }
 
+function makeSchoolActivity(overrides: object = {}) {
+  return {
+    id: 1,
+    createTime: '2026-03-10T08:00:00',
+    activityStartDate: '2026-03-30T00:00:00',
+    activityEndDate: '2026-03-30T00:00:00',
+    activityType: 1,
+    creatorGuid: 'creator-guid-1',
+    title: 'טיול כיתה',
+    description: '<p>יש להביא כובע ומים</p>',
+    endAnswerDate: '2026-03-27T00:00:00',
+    isAnswered: false,
+    ...overrides,
+  };
+}
+
 function formatLocalMidnight(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -153,6 +169,20 @@ test.beforeEach(async ({ page }) => {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify([]),
+    });
+  });
+  await page.route('**/api/v1/children/*/school-activities', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    });
+  });
+  await page.route('**/api/v1/children/*/notices', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: [] }),
     });
   });
   await page.route('**/api/v1/children/*/timetable', async (route) => {
@@ -433,6 +463,165 @@ test.describe('Child workspace page', () => {
     await page.getByTestId('child-header-releases-button').click();
     await expect(page.getByTestId('releases-dialog')).toBeVisible();
     await expect(page.getByTestId('release-item-64')).toContainText('אבקש שחרור');
+  });
+
+  test('workspace header shows activities button, badge count, and opens activities dialog', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/school-activities`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          makeSchoolActivity({ id: 11, isAnswered: false }),
+          makeSchoolActivity({ id: 12, isAnswered: false }),
+          makeSchoolActivity({ id: 13, isAnswered: true }),
+        ]),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await expect(page.getByTestId('child-header-activities-button')).toBeVisible();
+    await expect(page.getByTestId('child-header-activities-badge')).toContainText('2');
+
+    await page.getByTestId('child-header-activities-button').click();
+    await expect(page.getByTestId('school-activities-dialog')).toBeVisible();
+    await expect(page.getByTestId('school-activity-item-11')).toBeVisible();
+  });
+
+  test('school activities dialog renders sorted pending/answered cards and sanitized descriptions', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/school-activities`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          makeSchoolActivity({
+            id: 31,
+            endAnswerDate: '2026-04-20T00:00:00',
+            isAnswered: false,
+            title: 'טיול שנתי',
+            description:
+              '<p class="MsoNormal" style="text-align:center" align="center"><span lang="HE">תיאור חוקי עבור הורים</span></p><script>alert(\"xss\")</script>',
+          }),
+          makeSchoolActivity({
+            id: 32,
+            endAnswerDate: '2026-04-10T00:00:00',
+            isAnswered: false,
+            title: 'סיור מוזיאון',
+          }),
+          makeSchoolActivity({
+            id: 33,
+            createTime: '2026-04-15T08:00:00',
+            isAnswered: true,
+            title: 'הצגה בית ספרית',
+          }),
+        ]),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-activities-button').click();
+    await expect(page.getByTestId('school-activities-dialog')).toBeVisible();
+
+    const cards = page.locator('[data-testid^="school-activity-item-"]');
+    await expect(cards).toHaveCount(3);
+    await expect(cards.nth(0)).toHaveAttribute('data-testid', 'school-activity-item-32');
+    await expect(cards.nth(1)).toHaveAttribute('data-testid', 'school-activity-item-31');
+    await expect(cards.nth(2)).toHaveAttribute('data-testid', 'school-activity-item-33');
+    await expect(cards.nth(0)).toContainText('ממתין לאישור');
+    await expect(cards.nth(2)).toContainText('נענה ✓');
+
+    await expect(page.getByTestId('school-activity-preview-31')).toBeVisible();
+    await expect(page.getByTestId('school-activity-description-31')).toHaveCount(0);
+
+    await page.getByTestId('school-activity-toggle-31').click();
+    await expect(page.getByTestId('school-activity-description-31')).toBeVisible();
+    const sanitizedHtml = await page
+      .getByTestId('school-activity-description-31')
+      .innerHTML();
+    expect(sanitizedHtml.toLowerCase()).not.toContain('<script');
+    expect(sanitizedHtml.toLowerCase()).not.toContain('style=');
+    expect(sanitizedHtml.toLowerCase()).not.toContain('class=');
+    expect(sanitizedHtml.toLowerCase()).not.toContain('align=');
+    expect(sanitizedHtml.toLowerCase()).not.toContain('lang=');
+  });
+
+  test('school activities dialog shows empty state', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/school-activities`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([]),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-activities-button').click();
+    await expect(page.getByTestId('school-activities-dialog')).toBeVisible();
+    await expect(page.getByText('אין פעילויות בית ספר')).toBeVisible();
+  });
+
+  test('school activities dialog shows error state when endpoint fails', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/school-activities`, async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'UPSTREAM_ERROR', message: 'boom' } }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+
+    await page.getByTestId('child-header-activities-button').click();
+    await expect(page.getByTestId('school-activities-dialog')).toBeVisible();
+    await expect(page.getByText('לא ניתן לטעון פעילויות בית ספר')).toBeVisible();
+  });
+
+  test('notices section renders normalized rich text without source styling attributes', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/notices`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              id: 'notice-1',
+              studentGuid: STUDENT_GUID,
+              eventId: 100,
+              eventText:
+                '<p class="MsoNormal" dir="rtl" style="font-family: Arial; color: red;" align="center"><strong><span lang="HE">שלום להורים</span></strong></p><ul style="margin:0"><li class="x">יש להביא מים</li></ul>',
+              expirationDate: '2026-04-01T00:00:00',
+              inSite: true,
+              updatedAt: '2026-03-20T10:00:00',
+            },
+          ],
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'notices');
+
+    const content = page.getByTestId('notice-content-notice-1');
+    await expect(content).toBeVisible();
+    await expect(content).toContainText('שלום להורים');
+    await expect(content).toContainText('יש להביא מים');
+
+    const sanitizedHtml = await content.innerHTML();
+    expect(sanitizedHtml.toLowerCase()).not.toContain('style=');
+    expect(sanitizedHtml.toLowerCase()).not.toContain('class=');
+    expect(sanitizedHtml.toLowerCase()).not.toContain('align=');
+    expect(sanitizedHtml.toLowerCase()).not.toContain('lang=');
   });
 
   test('releases dialog edits a release and refreshes list', async ({ page }) => {

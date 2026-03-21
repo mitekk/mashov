@@ -230,12 +230,32 @@
   .prose-rtl {
     direction: rtl;
     unicode-bidi: embed;
-    line-height: 1.7;
+    font-size: 0.875rem;
+    line-height: 1.75;
+    color: hsl(var(--foreground));
     word-break: break-word;
     overflow-wrap: break-word;
   }
 
-  .prose-rtl p {
+  .prose-rtl :where(*) {
+    color: inherit;
+    font-family: inherit;
+    line-height: inherit;
+  }
+
+  .prose-rtl :where(h1, h2, h3, h4, h5, h6) {
+    @apply mb-2 mt-3 font-semibold text-foreground;
+  }
+
+  .prose-rtl :where(h1) {
+    @apply text-base;
+  }
+
+  .prose-rtl :where(h2, h3) {
+    @apply text-sm;
+  }
+
+  .prose-rtl :where(p) {
     @apply mb-3;
   }
 
@@ -254,6 +274,21 @@
 
   .prose-rtl strong {
     @apply font-semibold;
+  }
+
+  .prose-rtl blockquote {
+    @apply my-3 border-r-2 border-border/80 pr-3 text-muted-foreground;
+  }
+
+  .prose-rtl hr {
+    @apply my-3 border-border/70;
+  }
+
+  .rich-text-preview {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
   }
 }
 

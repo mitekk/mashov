@@ -375,6 +375,11 @@ export class ChildrenController {
     return this.childrenService.getStudentReleases(studentGuid);
   }
 
+  @Get(':studentGuid/school-activities')
+  getSchoolActivities(@Param('studentGuid') studentGuid: string) {
+    return this.childrenService.getSchoolActivities(studentGuid);
+  }
+
   @Put(':studentGuid/releases/request')
   async createStudentRelease(
     @Param('studentGuid') studentGuid: string,

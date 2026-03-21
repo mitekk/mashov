@@ -1238,6 +1238,40 @@ describe('ChildrenService', () => {
     });
   });
 
+  describe('school activities', () => {
+    it('getSchoolActivities proxies upstream with school activities referer', async () => {
+      const get = jest.fn().mockResolvedValue([
+        {
+          id: 1,
+          title: 'טיול כיתה',
+          isAnswered: false,
+          activityType: 1,
+        },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient({ get }),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getSchoolActivities(TEST_GUID);
+      expect(get).toHaveBeenCalledWith('/api/schoolActivities/permitted', {
+        headers: {
+          Referer: 'https://web.mashov.info/students/main/schoolActivities',
+        },
+      });
+      expect(result).toEqual([
+        {
+          id: 1,
+          title: 'טיול כיתה',
+          isAnswered: false,
+          activityType: 1,
+        },
+      ]);
+    });
+  });
+
   describe('student fallback + attachment downloads', () => {
     it('retries student lookup after ensureStudentsAvailable when student is initially missing', async () => {
       const studentFindUnique = jest

@@ -591,6 +591,16 @@ export class ChildrenService {
     );
   }
 
+  async getSchoolActivities(studentGuid: string) {
+    await this.requireStudent(studentGuid);
+
+    const referer = 'https://web.mashov.info/students/main/schoolActivities';
+    return this.mashovClient.get<unknown[]>(
+      '/api/schoolActivities/permitted',
+      { headers: { Referer: referer } },
+    );
+  }
+
   async createStudentRelease(studentGuid: string, body: unknown) {
     await this.requireStudent(studentGuid);
 
