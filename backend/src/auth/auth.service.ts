@@ -38,7 +38,7 @@ interface MashovLoginResponse {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly mashovBaseUrl = 'https://web.mashov.info';
+  private readonly mashovBaseUrl: string;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -46,7 +46,10 @@ export class AuthService {
     private readonly appSessionService: AppSessionService,
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    this.mashovBaseUrl =
+      this.configService.get<string>('MASHOV_BASE_URL') ?? 'https://web.mashov.info';
+  }
 
   async getSchools(): Promise<unknown[]> {
     const response = await axios.get<unknown[]>(
