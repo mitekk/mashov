@@ -37,7 +37,10 @@ export class AuthController {
     try {
       return await this.authService.getSchools();
     } catch {
-      return { error: { code: 'UPSTREAM_ERROR', message: 'Failed to fetch school list' } };
+      throw new HttpException(
+        { error: { code: 'UPSTREAM_ERROR', message: 'Failed to fetch school list' } },
+        HttpStatus.BAD_GATEWAY,
+      );
     }
   }
 
