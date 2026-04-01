@@ -3,6 +3,10 @@ import axios from 'axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../session/encryption.service';
+import {
+  getMashovProxyConfig,
+  resolveMashovBaseUrl,
+} from '../common/http/mashov-http';
 
 interface MashovLoginResponse {
   credential?: {
@@ -13,13 +17,19 @@ interface MashovLoginResponse {
 @Injectable()
 export class ConnectionService {
   private readonly logger = new Logger(ConnectionService.name);
-  private readonly mashovBaseUrl = 'https://web.mashov.info';
+  private readonly mashovBaseUrl: string;
+  private readonly mashovProxyConfig: ReturnType<typeof getMashovProxyConfig>;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    this.mashovBaseUrl = resolveMashovBaseUrl(
+      this.configService.get<string>('MASHOV_BASE_URL'),
+    );
+    this.mashovProxyConfig = getMashovProxyConfig(this.mashovBaseUrl);
+  }
 
   async updateConnection(
     userId: string,
@@ -87,6 +97,7 @@ export class ConnectionService {
             ...extraHeaders,
           },
           timeout: 30000,
+          ...this.mashovProxyConfig,
         },
       );
 

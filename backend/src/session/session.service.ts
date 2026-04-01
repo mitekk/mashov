@@ -1,8 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import axios, { AxiosInstance, AxiosResponse } from "axios";
+import { AxiosInstance, AxiosResponse } from "axios";
 import { PrismaService } from "../prisma/prisma.service";
 import { EncryptionService } from "./encryption.service";
+import {
+  createMashovAxios,
+  resolveMashovBaseUrl,
+} from "../common/http/mashov-http";
 
 interface LoginChild {
   childGuid: string;
@@ -41,7 +45,7 @@ interface SessionCookies {
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger(SessionService.name);
-  private readonly baseUrl = "https://web.mashov.info";
+  private readonly baseUrl: string;
   private csrfToken: string | null = null;
   private sessionCookies: SessionCookies | null = null;
   private isAuthenticating = false;
@@ -53,15 +57,10 @@ export class SessionService {
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
   ) {
-    this.httpClient = axios.create({
-      baseURL: this.baseUrl,
-      timeout: 30000,
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-      },
-    });
+    this.baseUrl = resolveMashovBaseUrl(
+      this.configService.get<string>("MASHOV_BASE_URL"),
+    );
+    this.httpClient = createMashovAxios(this.baseUrl);
   }
 
   // async bootstrap(): Promise<string> {

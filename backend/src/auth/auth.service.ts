@@ -5,6 +5,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
+import {
+  getMashovProxyConfig,
+  resolveMashovBaseUrl,
+} from '../common/http/mashov-http';
 
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SECONDS = 900; // 15 minutes
@@ -39,6 +43,7 @@ interface MashovLoginResponse {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly mashovBaseUrl: string;
+  private readonly mashovProxyConfig: ReturnType<typeof getMashovProxyConfig>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -47,8 +52,10 @@ export class AuthService {
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
   ) {
-    this.mashovBaseUrl =
-      this.configService.get<string>('MASHOV_BASE_URL') ?? 'https://web.mashov.info';
+    this.mashovBaseUrl = resolveMashovBaseUrl(
+      this.configService.get<string>('MASHOV_BASE_URL'),
+    );
+    this.mashovProxyConfig = getMashovProxyConfig(this.mashovBaseUrl);
   }
 
   async getSchools(): Promise<unknown[]> {
@@ -61,6 +68,7 @@ export class AuthService {
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         },
         timeout: 10000,
+        ...this.mashovProxyConfig,
       },
     );
     return response.data;
@@ -134,6 +142,7 @@ export class AuthService {
             ...extraHeaders,
           },
           timeout: 30000,
+          ...this.mashovProxyConfig,
         },
       );
       loginData = response.data;

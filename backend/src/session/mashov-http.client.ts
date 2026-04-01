@@ -1,22 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { MashovSessionService } from './mashov-session.service';
+import {
+  createMashovAxios,
+  resolveMashovBaseUrl,
+} from '../common/http/mashov-http';
 
 @Injectable()
 export class MashovHttpClient {
   private readonly logger = new Logger(MashovHttpClient.name);
   private readonly httpClient: AxiosInstance;
-  private readonly baseUrl = 'https://web.mashov.info';
+  private readonly baseUrl = resolveMashovBaseUrl(process.env.MASHOV_BASE_URL);
 
   constructor(private readonly sessionService: MashovSessionService) {
-    this.httpClient = axios.create({
-      baseURL: this.baseUrl,
-      timeout: 30000,
-      headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-      },
-    });
+    this.httpClient = createMashovAxios(this.baseUrl);
   }
 
   async get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
