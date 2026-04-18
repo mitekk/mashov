@@ -428,16 +428,20 @@ export class MashovSessionService {
     const authPromise = this.loginWithCredentials(semel, year, username, password, connectionId, storedUniqueId);
     placeholder.authPromise = authPromise;
 
-    const cookies = await authPromise;
-    const csrfToken = cookies.csrfToken;
-    this.connectionSessions.set(connectionId, {
-      csrfToken,
-      cookies,
-      isAuthenticating: false,
-      authPromise: null,
-    });
-
-    return this.buildHeaders(cookies, csrfToken);
+    try {
+      const cookies = await authPromise;
+      const csrfToken = cookies.csrfToken;
+      this.connectionSessions.set(connectionId, {
+        csrfToken,
+        cookies,
+        isAuthenticating: false,
+        authPromise: null,
+      });
+      return this.buildHeaders(cookies, csrfToken);
+    } catch (err) {
+      this.connectionSessions.delete(connectionId);
+      throw err;
+    }
   }
 
   private buildHeaders(cookies: SessionCookies, csrfToken: string): Record<string, string> {

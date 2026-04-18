@@ -67,9 +67,11 @@ export class MashovHttpClient {
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
-        if ((status === 401 || status === 403) && !isRetry) {
+        const isAuthError = status === 401 || status === 403;
+        const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
+        if ((isAuthError || isTimeout) && !isRetry) {
           this.logger.debug(
-            `Connection ${connectionId} got ${status}, refreshing session and retrying`,
+            `Connection ${connectionId} got ${isTimeout ? 'timeout' : status}, refreshing session and retrying`,
           );
           const refreshedHeaders = await this.sessionService.getAuthHeadersForConnection(
             connectionId,
