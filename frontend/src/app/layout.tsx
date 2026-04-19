@@ -11,7 +11,7 @@ const assistant = Assistant({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://mashov.mitya'),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_BASE_URL ?? 'https://mashov.mitya.dev'),
   title: {
     default: 'מרכז הורים',
     template: '%s | מרכז הורים',
@@ -52,6 +52,22 @@ interface RootLayoutProps {
   children: React.ReactNode;
 }
 
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'WebApplication',
+  name: 'מרכז הורים',
+  url: process.env.NEXT_PUBLIC_BASE_URL ?? 'https://mashov.mitya.dev',
+  description: 'ממשק מאוחד לנתוני בית הספר — ציונים, שיעורי בית, ומסרים',
+  inLanguage: 'he',
+  applicationCategory: 'EducationApplication',
+  operatingSystem: 'All',
+  offers: {
+    '@type': 'Offer',
+    price: '0',
+    priceCurrency: 'ILS',
+  },
+};
+
 export default function RootLayout({ children }: RootLayoutProps) {
   const themeBootstrap = `
     (() => {
@@ -73,6 +89,10 @@ export default function RootLayout({ children }: RootLayoutProps) {
     <html lang="he" dir="rtl" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
       </head>
       <body className={`${assistant.className} ${assistant.variable}`}>
         <Providers>{children}</Providers>
