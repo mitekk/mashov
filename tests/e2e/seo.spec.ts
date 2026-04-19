@@ -22,13 +22,13 @@ test.describe('SEO metadata and crawler policy', () => {
     expect(text).toContain('Disallow: /auth/syncing');
     expect(text).toContain('Allow: /auth/sign-in');
     expect(text).toContain('Allow: /');
-    expect(text).toContain('Sitemap: https://mashov.mitya/sitemap.xml');
+    expect(text).toContain('Sitemap: https://mashov.mitya.dev/sitemap.xml');
   });
 
   test('sitemap.xml includes only the public sign-in URL', async ({ request }) => {
     const xml = await getResponseBody(request, '/sitemap.xml');
 
-    expect(xml).toContain('<loc>https://mashov.mitya/auth/sign-in</loc>');
+    expect(xml).toContain('<loc>https://mashov.mitya.dev/auth/sign-in</loc>');
     expect(xml).not.toContain('/home</loc>');
     expect(xml).not.toContain('/children</loc>');
     expect(xml).not.toContain('/inbox</loc>');
@@ -38,11 +38,11 @@ test.describe('SEO metadata and crawler policy', () => {
   test('sign-in page exposes canonical, description, and social tags', async ({ request }) => {
     const html = await getResponseBody(request, '/auth/sign-in');
 
-    expect(html).toContain('<title>כניסה | מרכז הורים</title>');
-    expect(html).toContain('name="description" content="ממשק מאוחד לנתוני בית הספר — ציונים, שיעורי בית, ומסרים"');
-    expect(html).toContain('rel="canonical" href="https://mashov.mitya/auth/sign-in"');
-    expect(html).toContain('property="og:title" content="מרכז הורים"');
-    expect(html).toContain('property="og:description" content="ממשק מאוחד לנתוני בית הספר"');
+    expect(html).toContain('<title>כניסה למרכז הורים | מרכז הורים</title>');
+    expect(html).toContain('name="description" content="התחברו למרכז הורים — צפו בציונים, שיעורי בית והודעות של ילדכם דרך מערכת משוב"');
+    expect(html).toContain('rel="canonical" href="https://mashov.mitya.dev/auth/sign-in"');
+    expect(html).toContain('property="og:title" content="כניסה | מרכז הורים"');
+    expect(html).toContain('property="og:description" content="התחברו למרכז הורים — צפו בציונים, שיעורי בית והודעות של ילדכם דרך מערכת משוב"');
     expect(html).toContain('name="twitter:card" content="summary"');
     expect(html).toContain('name="twitter:title" content="מרכז הורים"');
   });
