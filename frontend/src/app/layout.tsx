@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Assistant } from 'next/font/google';
+import { GoogleAnalytics } from '@next/third-parties/google';
 import './globals.css';
 import Providers from './providers';
 
@@ -96,6 +97,9 @@ export default function RootLayout({ children }: RootLayoutProps) {
       </head>
       <body className={`${assistant.className} ${assistant.variable}`}>
         <Providers>{children}</Providers>
+        {process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID && (
+          <GoogleAnalytics gaId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID} />
+        )}
       </body>
     </html>
   );

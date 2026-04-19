@@ -79,6 +79,7 @@ services:
     environment:
       BACKEND_URL: http://backend:3000
       NEXT_PUBLIC_API_URL: /api/v1
+      NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
       ENABLE_E2E_AUTH_BYPASS: "1"
     ports:
       - "3000:3000"
