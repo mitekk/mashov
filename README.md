@@ -1,6 +1,48 @@
 # Mashov Parent Command Center
 
-A mobile-first household dashboard built on top of the [Mashov](https://web.mashov.info) Israeli school API. Gives parents a single, aggregated briefing screen: what changed across all children, which child needs attention, and what school messages are waiting.
+> The school portal a busy parent can actually keep up with — every kid's messages, homework & behavior in one daily glance, on top of Israel's [Mashov](https://web.mashov.info) system.
+
+**🔗 Live app: [mashov.mitya.dev](https://mashov.mitya.dev)**
+
+A mobile-first, Hebrew/RTL household dashboard that sits on top of the Mashov Israeli school API. Sign in once with your existing Mashov account and get a single, aggregated briefing across all your children — what changed, who needs attention, and which school messages are waiting.
+
+## What is this?
+
+The school portal already has all your kids' data — it's just exhausting to use day to day. You log in, navigate a heavy legacy interface, switch context between children, and reassemble "what changed" from a half-dozen screens. Every time.
+
+This app removes that. It's a calm, low-click **summary and triage layer** over Mashov that answers one question fast: *what changed, who it affects, and what needs attention right now.* The goal is to understand your whole household's school status in **under 30 seconds**, without hunting through menus.
+
+## What you get
+
+- **📋 One daily briefing** — a single mixed feed of what changed across all your children, newest first.
+- **🔔 Attention first** — surfaces who needs you: new unread messages, behavior and attendance events, and recently assigned homework.
+- **✉️ Clean inbox** — read school messages without the legacy clutter, with exact unread counts and attachment indicators.
+- **🧒 Per-child workspace** — homework history, a behavior & attendance timeline, subjects & teachers, and the weekly timetable for each child.
+- **🔑 No new account** — sign in with your existing Mashov school credentials; nothing extra to remember.
+- **📱 Mobile-first & RTL** — designed for the phone and built for Hebrew (including mixed Hebrew/English) from the ground up.
+- **🔒 Private by default** — each parent gets their own read/handled state, and stored credentials are encrypted at rest.
+
+## How it works
+
+1. **Sign in** — pick your school and log in with your Mashov username and password (the school year is detected automatically).
+2. **First sync** — the app pulls your household's latest data once in the background.
+3. **Glance** — open it whenever, see what's new across all your kids, and drill into a single message or child only if you need to.
+
+## Good to know
+
+This is a reading and triage companion, **not** a rebuild of the school portal. It's read-only by design and intentionally scoped — it does **not** include grades, report cards, or performance analytics. Think "daily briefing," not "admin portal."
+
+## Tech stack
+
+| Layer | Tech |
+|-------|------|
+| Frontend | Next.js + TypeScript (mobile-first, RTL) |
+| Backend | NestJS + TypeScript + per-household sync engine |
+| Database | PostgreSQL |
+| Cache / rate limiting | Redis |
+| Infrastructure | Docker Compose |
+
+---
 
 ## Prerequisites
 
