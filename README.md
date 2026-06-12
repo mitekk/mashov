@@ -154,6 +154,6 @@ working defaults in [`.env.example`](.env.example). Never commit `.env`.
 
 ### Docs & decisions
 
-- **Product:** [`docs/prd/PRD-current.md`](docs/prd/PRD-current.md)
+- **Product:** [`docs/prd/PRD-current.md`](docs/prd/PRD-current.md) (history: [`docs/prd/`](docs/prd/))
 - **Architecture:** [`docs/architecture.md`](docs/architecture.md) · **API contract:** [`docs/api-contract.md`](docs/api-contract.md)
 - **Decisions:** [`docs/adr/`](docs/adr/) — ADR 0001–0022 ([index](docs/adr/README.md))
