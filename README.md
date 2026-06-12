@@ -1,18 +1,53 @@
-# Mashov Parent Command Center
+<div align="center">
 
-> The school portal a busy parent can actually keep up with — every kid's messages, homework & behavior in one daily glance, on top of Israel's [Mashov](https://web.mashov.info) system.
+# 🎒 Mashov Parent Command Center
 
-**🔗 Live app: [mashov.mitya.dev](https://mashov.mitya.dev)**
+**The school portal a busy parent can actually keep up with** — _glance · triage · done in 30 seconds_
 
-A mobile-first, Hebrew/RTL household dashboard that sits on top of the Mashov Israeli school API. Sign in once with your existing Mashov account and get a single, aggregated briefing across all your children — what changed, who needs attention, and which school messages are waiting.
+[![CI](https://github.com/mitekk/mashov/actions/workflows/ci.yml/badge.svg)](https://github.com/mitekk/mashov/actions/workflows/ci.yml)
+![Node](https://img.shields.io/badge/Node-22-7c3aed?logo=nodedotjs&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-15-0a0612?logo=nextdotjs&logoColor=white)
+![NestJS](https://img.shields.io/badge/NestJS-11-ea2845?logo=nestjs&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-5-2d3748?logo=prisma&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-dc382d?logo=redis&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)
 
-## What is this?
+A mobile-first, Hebrew/RTL household dashboard over Israel's [Mashov](https://web.mashov.info)
+school system. Sign in once with your existing Mashov account and get a single, aggregated
+briefing across all your children — what changed, who needs attention, and which school
+messages are waiting.
 
-The school portal already has all your kids' data — it's just exhausting to use day to day. You log in, navigate a heavy legacy interface, switch context between children, and reassemble "what changed" from a half-dozen screens. Every time.
+**🔗 Live — [mashov.mitya.dev](https://mashov.mitya.dev)**
 
-This app removes that. It's a calm, low-click **summary and triage layer** over Mashov that answers one question fast: *what changed, who it affects, and what needs attention right now.* The goal is to understand your whole household's school status in **under 30 seconds**, without hunting through menus.
+</div>
 
-## What you get
+> ⚠️ **Unofficial companion — not affiliated with or endorsed by Mashov
+> ([web.mashov.info](https://web.mashov.info)).** You sign in with your own school credentials;
+> the app is **read-only** and never writes back to the portal. Stored credentials are encrypted
+> at rest.
+
+---
+
+- **For parents** — [What it is](#what-it-is) · [What you get](#what-you-get) · [How it works](#how-it-works) · [Good to know](#good-to-know)
+- **For developers** — [Quick start](#quick-start) · [Architecture](#architecture) · [Tech stack](#tech-stack) · [Testing](#testing) · [Configuration](#configuration) · [Docs & decisions](#docs--decisions)
+
+---
+
+## 🏠 For parents
+
+### What it is
+
+The school portal already has all your kids' data — it's just exhausting to use day to day. You
+log in, navigate a heavy legacy interface, switch context between children, and reassemble "what
+changed" from a half-dozen screens. Every time.
+
+This app removes that. It's a calm, low-click **summary and triage layer** over Mashov that
+answers one question fast: *what changed, who it affects, and what needs attention right now.* The
+goal is to understand your whole household's school status in **under 30 seconds**, without
+hunting through menus.
+
+### What you get
 
 - **📋 One daily briefing** — a single mixed feed of what changed across all your children, newest first.
 - **🔔 Attention first** — surfaces who needs you: new unread messages, behavior and attendance events, and recently assigned homework.
@@ -22,103 +57,103 @@ This app removes that. It's a calm, low-click **summary and triage layer** over 
 - **📱 Mobile-first & RTL** — designed for the phone and built for Hebrew (including mixed Hebrew/English) from the ground up.
 - **🔒 Private by default** — each parent gets their own read/handled state, and stored credentials are encrypted at rest.
 
-## How it works
+### How it works
 
 1. **Sign in** — pick your school and log in with your Mashov username and password (the school year is detected automatically).
 2. **First sync** — the app pulls your household's latest data once in the background.
 3. **Glance** — open it whenever, see what's new across all your kids, and drill into a single message or child only if you need to.
 
-## Good to know
+### Good to know
 
-This is a reading and triage companion, **not** a rebuild of the school portal. It's read-only by design and intentionally scoped — it does **not** include grades, report cards, or performance analytics. Think "daily briefing," not "admin portal."
+This is a reading and triage companion, **not** a rebuild of the school portal. It's read-only by
+design and intentionally scoped — it does **not** include grades, report cards, or performance
+analytics. Think "daily briefing," not "admin portal."
 
-## Tech stack
+## 🛠️ For developers
+
+### Quick start
+
+```bash
+cp .env.example .env        # then fill in your Mashov credentials
+docker compose up --build   # db, redis, backend, frontend (hot reload via the override file)
+```
+
+| Service | URL | Notes |
+|---|---|---|
+| Frontend (Next.js) | <http://localhost:3000> | the app |
+| Backend (NestJS) | <http://localhost:3001> | health check at `/health` |
+| PostgreSQL | `localhost:5432` | |
+| Redis | `localhost:6379` | cache + sessions |
+
+> **Requirements:** Docker + Docker Compose v2. Node 22+ is only needed for host-side tooling;
+> `docker compose up` is the supported path.
+
+### Architecture
+
+The browser only ever calls the **same-origin** `/api/*`; the Next.js server proxies those to the
+NestJS API. The API owns a per-household **sync engine** that pulls from the upstream Mashov API
+with your credentials into Postgres, and uses Redis for caching and sessions.
+
+```mermaid
+flowchart LR
+  UI["Browser · Next.js UI<br/>mobile-first · RTL"]
+  Next["Next.js web :3000<br/>App Router + /api proxy"]
+  Nest["NestJS api :3001<br/>auth · sync engine · feed"]
+  PG[("Postgres 16<br/>Prisma ORM")]
+  RD[("Redis 7<br/>cache · sessions")]
+  MASHOV{{"Mashov API<br/>web.mashov.info"}}
+  UI -- "same-origin /api/*" --> Next
+  Next -- "server-side proxy" --> Nest
+  Nest -- "SQL" --> PG
+  Nest -- "cache · sessions" --> RD
+  Nest -- "sync · your creds" --> MASHOV
+```
+
+```
+.
+├── frontend/   # Next.js + TypeScript UI (mobile-first, RTL) + /api proxy
+├── backend/    # NestJS API + per-household sync engine (Prisma)
+├── docs/       # PRD, ADRs (0001–0022), architecture, API contract
+└── tests/      # integration + Playwright e2e
+```
+
+See [`docs/architecture.md`](docs/architecture.md) for the full design.
+
+### Tech stack
 
 | Layer | Tech |
-|-------|------|
-| Frontend | Next.js + TypeScript (mobile-first, RTL) |
-| Backend | NestJS + TypeScript + per-household sync engine |
-| Database | PostgreSQL |
-| Cache / rate limiting | Redis |
+|---|---|
+| Frontend | Next.js 15 (App Router) · React 19 · TanStack Query · TypeScript |
+| Backend | NestJS 11 · per-household sync engine · TypeScript |
+| Data | PostgreSQL 16 · Prisma ORM |
+| Cache / sessions | Redis 7 |
 | Infrastructure | Docker Compose |
 
----
+### Testing
 
-## Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose v2
-- Node.js 22+ (for local development without Docker)
-
-## Quick Start (Docker)
+All suites run inside the containers (`--profile test`):
 
 ```bash
-cp .env.example .env
-# Fill in your Mashov credentials in .env
-docker compose up --build
+npm run test:unit         # backend unit tests
+npm run test:integration  # backend API integration tests
+npm run test:e2e          # full-stack Playwright e2e
 ```
 
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:3001
-- Health check: http://localhost:3001/health
+### Configuration
 
-## Environment Variables
+Copy `.env.example` to `.env`. The values you **must** set:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:postgres@db:5432/mashov` |
-| `DB_NAME` | Database name | `mashov` |
-| `DB_USER` | Database user | `postgres` |
-| `DB_PASSWORD` | Database password | `postgres` |
-| `MASHOV_SEMEL` | School ID (semel) | `482273` |
-| `MASHOV_YEAR` | Academic year | `2026` |
-| `MASHOV_USERNAME` | Parent ID number (username) | `your_id_number` |
-| `MASHOV_PASSWORD` | Parent password | `your_password` |
-| `ENCRYPTION_KEY` | 64-char hex key for encrypting stored credentials | `your_64_hex_chars_here` |
-| `REDIS_URL` | Redis connection string | `redis://redis:6379` |
-| `SESSION_LIFETIME_DAYS` | Session cookie lifetime in days (rolling) | `30` |
-| `SESSION_SECURE_COOKIE` | Set `false` for local dev (no HTTPS) | `false` |
-| `CORS_ORIGIN` | Allowed CORS origin(s) for the backend | `http://localhost:3000` |
-| `FEATURE_DAILY_BEHAVE` | Enable daily behaviour sync | `false` |
-| `FEATURE_OUT_BEHAVE` | Enable out-of-school behaviour sync | `false` |
+| Variable | What |
+|---|---|
+| `MASHOV_USERNAME` · `MASHOV_PASSWORD` | your Mashov login |
+| `MASHOV_SEMEL` · `MASHOV_YEAR` | school ID (semel) + academic year |
+| `ENCRYPTION_KEY` | 64-char hex key; encrypts stored credentials at rest |
 
-Copy `.env.example` to `.env` and fill in your values. Never commit `.env`.
+`DATABASE_URL`, `REDIS_URL`, the session/CORS settings, and the `FEATURE_*` flags all ship with
+working defaults in [`.env.example`](.env.example). Never commit `.env`.
 
-## Running Tests (Containers Only)
+### Docs & decisions
 
-```bash
-# Backend unit tests with coverage (inside container)
-npm run test:unit
-
-# Backend API integration tests (inside container)
-npm run test:integration
-
-# Full-stack E2E tests with Playwright (inside container)
-npm run test:e2e
-```
-
-## Local Development (Hot Reload)
-
-`docker-compose.override.yml` is automatically loaded by `docker compose up` and mounts source directories for live reload — no rebuild needed on code changes.
-
-```bash
-docker compose up          # hot reload enabled automatically
-docker compose down -v     # stop and remove volumes
-```
-
-Service ports:
-
-| Service | Port |
-|---------|------|
-| Frontend (Next.js) | 3000 |
-| Backend (NestJS) | 3001 |
-| PostgreSQL | 5432 |
-| Redis | 6379 |
-
-## Project Structure
-
-```
-frontend/     Next.js + TypeScript UI
-backend/      NestJS + TypeScript API + sync engine
-docs/         Architecture, ADRs, API contract, PRD
-tests/        Integration and E2E tests
-```
+- **Product:** [`docs/prd/PRD-current.md`](docs/prd/PRD-current.md)
+- **Architecture:** [`docs/architecture.md`](docs/architecture.md) · **API contract:** [`docs/api-contract.md`](docs/api-contract.md)
+- **Decisions:** [`docs/adr/`](docs/adr/) — ADR 0001–0022 ([index](docs/adr/README.md))
