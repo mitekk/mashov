@@ -30,3 +30,4 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0020](0020-auth-controller-passthrough-response.md) | Auth Controller — NestJS Passthrough Mode with Exception-Based Error Paths | Accepted | Backend agent, Smoke test verifier | 2026-03-17 |
 | [ADR-0021](0021-api-contract-field-name-alignment.md) | API Response Field Names — Explicit Mapping Layer over Prisma Model Passthrough | Accepted | Backend agent, Smoke test verifier | 2026-03-17 |
 | [ADR-0022](0022-middleware-cookie-name-alignment.md) | Next.js Middleware Auth Check — Read `mashov_session` Cookie, Not `session` | Accepted | Frontend agent, Smoke test verifier | 2026-03-17 |
+| [ADR-0023](0023-bounding-mashov-egress-abortsignal.md) | Bounding Mashov Egress — `AbortSignal` in a Shared Axios Factory | Accepted | Backend agent, Smoke test verifier | 2026-11-16 |

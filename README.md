@@ -113,7 +113,8 @@ flowchart LR
 .
 ├── frontend/   # Next.js + TypeScript UI (mobile-first, RTL) + /api proxy
 ├── backend/    # NestJS API + per-household sync engine (Prisma)
-├── docs/       # PRD, ADRs (0001–0022), architecture, API contract
+├── docs/       # PRD, ADRs (0001–0023), architecture, API contract
+├── ops/        # egress proxy provisioning + diagnostics
 └── tests/      # integration + Playwright e2e
 ```
 
@@ -152,8 +153,50 @@ Copy `.env.example` to `.env`. The values you **must** set:
 `DATABASE_URL`, `REDIS_URL`, the session/CORS settings, and the `FEATURE_*` flags all ship with
 working defaults in [`.env.example`](.env.example). Never commit `.env`.
 
+Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
+
+| Variable | What | Default |
+|---|---|---|
+| `MASHOV_BASE_URL` | upstream Mashov origin | `https://web.mashov.info` |
+| `HTTPS_PROXY` | egress proxy for Mashov calls — **required in production** | unset |
+| `MASHOV_TIMEOUT_MS` | wall-clock bound per Mashov request | `10000` |
+| `PROXY_TIMEOUT_MS` | bound per backend call from the frontend `/api/v1/*` proxy | `15000` |
+| `PROXY_SLOW_TIMEOUT_MS` | bound for long synchronous paths (`/api/v1/sync/*`) | `90000` |
+| `ENABLE_E2E_AUTH_BYPASS` | **tests only** — `1` lets the e2e browser skip the auth guard. Must stay unset or `0` in production. | `0` |
+
+### Reaching Mashov
+
+Mashov **blocks the production server's IP**: `GET /api/schools` returns 403 from the server and
+200 from a residential address. Every Mashov call therefore egresses through an HTTP proxy on an
+always-on box with a residential connection, reached over a private VPN and pointed at by
+`HTTPS_PROXY`.
+
+```
+backend ──HTTPS_PROXY──> tinyproxy on a residential host ──> web.mashov.info
+         (private VPN)        (ACL: backend host only)
+```
+
+Provision or repair that hop with [`ops/install-egress-proxy.sh`](ops/install-egress-proxy.sh);
+diagnose it from the backend host with [`ops/check-egress.sh`](ops/check-egress.sh). If sign-in
+breaks and the school dropdown stays empty, run the diagnostic first — it separates the three
+failure modes that are indistinguishable from inside the app:
+
+| Symptom at the proxy | Meaning |
+|---|---|
+| TCP times out, no refusal | The proxy host has left the VPN. Check its node key. |
+| TCP refused | Host is up, proxy service is down. Re-run the install script. |
+| Connects but returns 403 | Proxy works but is egressing from a blocked IP. |
+
+**Why the timeouts are separate knobs.** When the proxy host drops off the VPN it *blackholes*
+traffic — packets vanish rather than being refused — and axios' own `timeout` never arms, because
+it is started by `req.setTimeout()` once a socket is assigned and `HttpsProxyAgent` defers
+assignment until CONNECT completes. Every Mashov request is therefore additionally bounded by an
+`AbortSignal`, which starts counting immediately. A stalled egress path surfaces as a 502 in ~10s
+instead of a CDN gateway timeout after ~125s. See
+[ADR-0023](docs/adr/0023-bounding-mashov-egress-abortsignal.md).
+
 ### Docs & decisions
 
 - **Product:** [`docs/prd/PRD-current.md`](docs/prd/PRD-current.md) (history: [`docs/prd/`](docs/prd/))
 - **Architecture:** [`docs/architecture.md`](docs/architecture.md) · **API contract:** [`docs/api-contract.md`](docs/api-contract.md)
-- **Decisions:** [`docs/adr/`](docs/adr/) — ADR 0001–0022 ([index](docs/adr/README.md))
+- **Decisions:** [`docs/adr/`](docs/adr/) — ADR 0001–0023 ([index](docs/adr/README.md))
