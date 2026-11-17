@@ -919,6 +919,49 @@ describe('MailService', () => {
       );
     });
 
+    it('unarchive does not invent unread state when the upstream mark-unread fails', async () => {
+      // conv.isNew is the read-state authority. Claiming unread for a conversation
+      // upstream still considers read is what inflated the badge in the first place;
+      // the next walk settles it within 7 minutes either way.
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: jest.fn().mockRejectedValue(new Error('upstream down')) }),
+      );
+
+      await service.unarchive(['conv-1']);
+
+      const data = conversationUpdateMany.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty('isUnread');
+      expect(data.labels).toEqual([]);
+    });
+
+    it('unarchive does not invent unread state when upstream marked nothing', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: jest.fn().mockResolvedValue(0) }),
+      );
+
+      await service.unarchive(['conv-1']);
+
+      expect(conversationUpdateMany.mock.calls[0][0].data).not.toHaveProperty('isUnread');
+    });
+
+    it('unarchive shields a confirmed unread from the reconciliation sweep', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: jest.fn().mockResolvedValue(1) }),
+      );
+
+      await service.unarchive(['conv-1']);
+
+      const data = conversationUpdateMany.mock.calls[0][0].data;
+      expect(data.isUnread).toBe(true);
+      expect(data.locallyMarkedUnreadAt).toBeInstanceOf(Date);
+    });
+
     it('unarchive clears the read watermark', async () => {
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       const service = new MailService(

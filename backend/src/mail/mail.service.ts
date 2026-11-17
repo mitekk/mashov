@@ -797,14 +797,20 @@ export class MailService {
   }
 
   async unarchive(conversationIds: string[]) {
+    // No unarchive endpoint is documented in apis/; markAsUnread is the closest upstream
+    // lever we have. It answers with the number of conversations it actually marked
+    // (apis/put-api-mail-conversations-markAsUnread.md), which is what tells us whether
+    // the unread state we are about to store locally is real.
+    let markedUnreadUpstream = false;
     try {
-      await this.mashovClient.put(
+      const marked = await this.mashovClient.put<unknown>(
         '/api/mail/conversations/markAsUnread',
         conversationIds,
         {
           headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
         },
       );
+      markedUnreadUpstream = typeof marked === 'number' ? marked > 0 : true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Upstream unarchive(markAsUnread) failed: ${msg}; updating DB only`);
@@ -813,9 +819,15 @@ export class MailService {
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
       data: {
-        isUnread: true,
         labels: [] as unknown as Prisma.InputJsonValue,
         locallyReadThroughAt: null,
+        // Only claim unread when upstream confirms it. conv.isNew is the read-state
+        // authority, and a conversation archived while read is read -- inventing unread
+        // here would inflate the badge, which is the bug this branch exists to fix. If
+        // the call failed, the next walk settles the real state within 7 minutes.
+        ...(markedUnreadUpstream
+          ? { isUnread: true, locallyMarkedUnreadAt: new Date() }
+          : {}),
       },
     });
 
