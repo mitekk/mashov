@@ -33,5 +33,5 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0023](0023-bounding-mashov-egress-abortsignal.md) | Bounding Mashov Egress — `AbortSignal` in a Shared Axios Factory | Accepted | Backend agent, Smoke test verifier | 2026-11-16 |
 | [ADR-0024](0024-school-year-resolution-and-rollover.md) | School Year — Resolve from Upstream, Persist on the Connection, Scope the Rows | Accepted | Backend agent, Planner | 2026-11-17 |
 | [ADR-0025](0025-school-year-history-window.md) | `MASHOV_YEAR` Means the Earliest Year to Fetch, Never the Year in Scope | Accepted | Backend agent, Planner | 2026-11-17 |
-| [ADR-0025](0025-outbound-digest-delivery-and-llm-egress.md) | Outbound Digest Delivery — Pluggable Sender, Telegram First, and the Project's First Runtime LLM Call | Accepted | Backend agent, Planner | 2026-11-17 |
-| [ADR-0026](0026-derived-homework-deadlines.md) | Derived Homework Deadlines — Label the Estimate, Never Promise a Due Date | Accepted | Backend agent, Planner | 2026-11-17 |
+| [ADR-0026](0026-outbound-digest-delivery-and-llm-egress.md) | Outbound Digest Delivery — Pluggable Sender, Telegram First, and the Project's First Runtime LLM Call | Accepted | Backend agent, Planner | 2026-11-17 |
+| [ADR-0027](0027-derived-homework-deadlines.md) | Derived Homework Deadlines — Label the Estimate, Never Promise a Due Date | Accepted | Backend agent, Planner | 2026-11-17 |

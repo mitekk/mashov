@@ -121,7 +121,7 @@ const SYSTEM_PROMPT = [
  * address the child; it is withheld now because the rendered message already
  * carries it in its header, and an instruction not to repeat it held only
  * sometimes. Gender is sent in its place, which is what gendered Hebrew
- * actually needs. See ADR-0025.
+ * actually needs. See ADR-0026.
  */
 export function buildPrompt(payload: DigestPayload): string {
   const sections: string[] = [`תאריך: ${formatSchoolDate(payload.reportFor)}`];

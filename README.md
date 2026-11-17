@@ -199,7 +199,7 @@ timeout, refusal, malformed output — falls back to deterministic Hebrew and st
 > **The submission date is an estimate, not a deadline.** Mashov exposes no homework due-date
 > field, only when the work was given. The digest estimates from an explicit date written in the
 > teacher's text, else the group's next lesson, and labels it as an estimate.
-> See [ADR-0026](docs/adr/0026-derived-homework-deadlines.md).
+> See [ADR-0027](docs/adr/0027-derived-homework-deadlines.md).
 
 To try it on your own machine — including the Telegram RTL check, which no test can make —
 follow [docs/ops/digest-local-test.md](docs/ops/digest-local-test.md). It seeds a synthetic
@@ -208,7 +208,7 @@ nothing.
 
 Neither the Telegram client nor the Anthropic client uses `HTTPS_PROXY`: that hop is a single
 residential box provisioned for Mashov only. See
-[ADR-0025](docs/adr/0025-outbound-digest-delivery-and-llm-egress.md), which also records what
+[ADR-0026](docs/adr/0026-outbound-digest-delivery-and-llm-egress.md), which also records what
 child data reaches the model (first names only) and what does not.
 
 ### Reaching Mashov

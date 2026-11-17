@@ -1,4 +1,4 @@
-# ADR-0026: Derived Homework Deadlines — Label the Estimate, Never Promise a Due Date
+# ADR-0027: Derived Homework Deadlines — Label the Estimate, Never Promise a Due Date
 
 - **Date**: 2026-11-17
 - **Status**: Accepted

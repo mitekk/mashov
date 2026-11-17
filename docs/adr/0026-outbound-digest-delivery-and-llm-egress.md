@@ -1,4 +1,4 @@
-# ADR-0025: Outbound Digest Delivery — Pluggable Sender, Telegram First, and the Project's First Runtime LLM Call
+# ADR-0026: Outbound Digest Delivery — Pluggable Sender, Telegram First, and the Project's First Runtime LLM Call
 
 - **Date**: 2026-11-17
 - **Status**: Accepted

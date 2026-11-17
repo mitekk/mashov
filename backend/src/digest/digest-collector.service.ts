@@ -26,7 +26,7 @@ export interface DigestCollectInput {
  * This is the PII boundary in data form: it reads the child's `privateName` and
  * nothing else identifying. `familyName`, `studentGuid`, `reporter` and
  * `rawPayload` are never selected, so they cannot reach a prompt by accident
- * later. See ADR-0025.
+ * later. See ADR-0026.
  */
 @Injectable()
 export class DigestCollectorService {

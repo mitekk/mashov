@@ -3,7 +3,7 @@
  *
  * Telegram is the only real implementation today; the interface exists so the
  * channel is a configuration detail rather than a rewrite, and so dev, tests,
- * and dry runs can use a sink that sends nothing. See ADR-0025.
+ * and dry runs can use a sink that sends nothing. See ADR-0026.
  */
 export interface DigestSender {
   /** Matches `DigestRecipient.channel`. */

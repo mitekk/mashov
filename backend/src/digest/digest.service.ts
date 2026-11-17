@@ -680,7 +680,7 @@ function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPa
 /**
  * Applies the model's deadline reading to the due-tomorrow section.
  *
- * Resolution order is explicit-from-text over timetable estimate (ADR-0026).
+ * Resolution order is explicit-from-text over timetable estimate (ADR-0027).
  * An item whose resolved deadline is not tomorrow leaves the section: the
  * checker deliberately over-collects on a text hint so the model can find a
  * deadline the timetable would have missed, and this is where that set is

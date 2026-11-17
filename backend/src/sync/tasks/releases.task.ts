@@ -26,7 +26,7 @@ interface MashovStudentRelease {
  * them on the day.
  *
  * The digest cannot fetch this itself: it reads local Postgres only and must
- * never touch the Mashov residential egress hop (ADR-0023, ADR-0025). So the
+ * never touch the Mashov residential egress hop (ADR-0023, ADR-0026). So the
  * sync layer owns the fetch, exactly as it does for homework and behaviour,
  * and the digest reads the table.
  */

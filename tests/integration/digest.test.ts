@@ -223,7 +223,7 @@ describe('Per-child daily digest', () => {
     expect(text).toContain('אבי');
     expect(text).toContain('איחור');
     expect(text).toContain('לפתור עמוד 42');
-    // First names only, and never the reporting teacher. See ADR-0025.
+    // First names only, and never the reporting teacher. See ADR-0026.
     expect(text).not.toContain('כהן');
     expect(text).not.toContain('רחל לוי');
     expect(text).not.toContain(CHILD_WITH_NEWS);

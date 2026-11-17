@@ -1,7 +1,7 @@
 # Per-child daily activity digest → Telegram
 
 Spec: `school-parent-portal-requirements-v3.md` (§3–4 product thesis; constraint 4 is
-deliberately departed from — see ADR-0026, Task 12).
+deliberately departed from — see ADR-0027, Task 12).
 
 ## Context
 
@@ -446,7 +446,7 @@ paths, string IDs, error envelope).
    roster refactor. Knowingly accepted failure mode: nothing stops user A creating a recipient
    row for user B's child. Mitigation now — the controller requires `studentGuid` to be in
    `student.findMany({ isActive: true })`, and the row records `userId`, so every row is
-   attributable. A real ownership fix is separate work; note it in ADR-0025.
+   attributable. A real ownership fix is separate work; note it in ADR-0026.
 4. `POST /api/v1/digest/runs` makes an LLM call, so add its prefix to `SLOW_PATH_PREFIXES` in
    `frontend/src/app/api/v1/[...path]/route.ts` — otherwise it inherits the 15 s
    `PROXY_TIMEOUT_MS` bound (the `PROXY_SLOW_TIMEOUT_MS` precedent added for `/sync/*`).
@@ -508,7 +508,7 @@ injected `ConfigService` with an inline default at the read site; no zod anywher
 | `ANTHROPIC_API_KEY` | — | Secret. Never logged |
 | `TELEGRAM_BOT_TOKEN` | — | Secret. Never logged |
 
-**ADR-0025 — Outbound digest delivery and runtime LLM egress.** Why a pluggable sender with
+**ADR-0026 — Outbound digest delivery and runtime LLM egress.** Why a pluggable sender with
 Telegram first; why this is the project's first third-party egress and why it must bypass the
 Mashov proxy; what child data leaves the host and the first-names-only redaction; why push was
 a Phase-1 must-not and what changed; the recipient-row-as-ownership trade-off.
@@ -516,7 +516,7 @@ a Phase-1 must-not and what changed; the recipient-row-as-ownership trade-off.
 and `ops/` has no secrets-management path — flag that. `docs/model-routing-policy.md` governs
 the *build* agents, not runtime LLM use — this ADR fills that gap.
 
-**ADR-0026 — Derived homework deadlines.** Documents the departure from requirements
+**ADR-0027 — Derived homework deadlines.** Documents the departure from requirements
 constraint 4: *"Homework has no proven due date field… must not promise overdue or due-soon
 logic."* Confirmed — `apis/get-api-students-studentguid-homework.md` exposes only `lessonDate`
 (when homework was **given**). The "1 day remains" half of this feature is therefore a
@@ -569,7 +569,7 @@ then `/review` against the Definition of Done.
 | **13:00 is early** — Israeli school days end 13:00–14:00 and teachers enter behavior later. | Accepted: hourly incremental reporting means later runs pick it up, and dedup stops repeats. |
 | **Double-send across restarts / instances.** | Postgres unique constraint + claim-then-send + 30-min unconfirmed reclaim. No Redis lock exists to use. |
 | **LLM latency or failure stalls the window.** | Per-child timeout, per-child try/catch, deterministic fallback that still sends. |
-| **Secrets** — two new third-party credentials, no ops path. | Env vars + `.env.example` placeholders, never logged; flagged in ADR-0025. |
+| **Secrets** — two new third-party credentials, no ops path. | Env vars + `.env.example` placeholders, never logged; flagged in ADR-0026. |
 | **Telegram client accidentally using the Mashov residential proxy.** | `proxy: false` explicitly on both clients. Asserted in a unit test. |
-| **No child→parent FK.** | Validated against the active roster, `userId` recorded, limitation documented in ADR-0025. |
+| **No child→parent FK.** | Validated against the active roster, `userId` recorded, limitation documented in ADR-0026. |
 | **`sync_run` unindexed and unbounded.** | `@@index([source, startedAt])` added in Task 1. |

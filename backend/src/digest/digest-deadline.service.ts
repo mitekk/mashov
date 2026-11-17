@@ -96,7 +96,7 @@ export class DigestDeadlineService {
    * `fromDate`, or null when the group has no timetable rows to reason from.
    *
    * This is the weaker half of the deadline estimate: an explicit date written
-   * in the homework text beats it (see ADR-0026). It is an estimate either way
+   * in the homework text beats it (see ADR-0027). It is an estimate either way
    * -- Mashov exposes no due-date field.
    */
   async estimateFromTimetable(

@@ -55,7 +55,7 @@ export interface DigestDeliveryTarget {
  * B's child, because there is no FK to validate against. What is done here is
  * what can be done -- the studentGuid must be on the active roster, and the
  * creating userId is recorded on every row, so each one is attributable. A real
- * ownership model is separate work; see ADR-0025.
+ * ownership model is separate work; see ADR-0026.
  */
 @Injectable()
 export class DigestRecipientService {
@@ -180,7 +180,7 @@ export class DigestRecipientService {
    * `userId` scopes the list to one user's own children. The cron omits it and
    * runs every opted-in child; the manual-run endpoint always passes it,
    * because a `studentGuid` in a request body cannot be validated against a
-   * child -> parent FK that does not exist (ADR-0025).
+   * child -> parent FK that does not exist (ADR-0026).
    */
   async listDeliveryTargets(userId?: string): Promise<DigestDeliveryTarget[]> {
     const rows = await this.prisma.digestRecipient.findMany({
@@ -216,7 +216,7 @@ export class DigestRecipientService {
   /**
    * There is no child -> parent FK to validate against, but every row records
    * who created it, so a user cannot silently disable or delete another
-   * household's digest. See ADR-0025 for what this does and does not cover.
+   * household's digest. See ADR-0026 for what this does and does not cover.
    */
   private async requireOwned(id: string, userId: string): Promise<void> {
     const existing = await this.prisma.digestRecipient.findUnique({ where: { id } });

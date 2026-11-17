@@ -28,7 +28,7 @@ export interface DigestCandidate {
   /**
    * The timetable-derived estimate of when this homework is next needed, when
    * the item is a `homework_due` candidate. Never a promise: Mashov exposes no
-   * due-date field at all (see ADR-0026), so this is an estimate and the report
+   * due-date field at all (see ADR-0027), so this is an estimate and the report
    * must label it as one.
    */
   estimatedDueDate?: Date | null;
@@ -107,7 +107,7 @@ export interface DigestPayload {
   /**
    * First name only, and the **template's** alone: it heads the rendered
    * message and is never put in the prompt, so no part of the child's name
-   * leaves the host. See `buildPrompt` and ADR-0025.
+   * leaves the host. See `buildPrompt` and ADR-0026.
    */
   childFirstName: string;
   /**

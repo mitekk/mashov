@@ -55,7 +55,7 @@ function candidate(overrides: Partial<DigestCandidate> = {}): DigestCandidate {
 
 describe('DigestCollectorService.collect', () => {
   it('carries the child first name only, never the family name', async () => {
-    // The payload is what reaches the LLM prompt. ADR-0025: first names only.
+    // The payload is what reaches the LLM prompt. ADR-0026: first names only.
     const harness = makeHarness({ behavior: [BEHAVIOR_ROW] });
 
     const payload = await harness.service.collect({

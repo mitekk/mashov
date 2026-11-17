@@ -82,7 +82,7 @@ function respondWith(text: string) {
 
 describe('buildPrompt', () => {
   // This test is the enforcement mechanism for the first-names-only decision
-  // in ADR-0025. It is deliberately hostile: it hands buildPrompt a payload
+  // in ADR-0026. It is deliberately hostile: it hands buildPrompt a payload
   // carrying fields it must never forward, which is what a future
   // JSON.stringify(payload) would leak.
   it('carries the child first name, subjects, and remark text', () => {

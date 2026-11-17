@@ -100,7 +100,7 @@ describe('renderReport', () => {
 
   it('labels a derived deadline as an estimate and never as a due date', () => {
     // Mashov exposes no due-date field at all, so promising one would be a lie.
-    // ADR-0026 records the departure; this label is where it is honoured.
+    // ADR-0027 records the departure; this label is where it is honoured.
     const text = renderReport(
       makePayload({
         homeworkDueTomorrow: [
@@ -128,7 +128,7 @@ describe('renderReport', () => {
   it('carries no standing caveat under an estimate', () => {
     // The explanatory sentence was removed: it ran to a full line, repeated
     // every day, and said the same thing in every message. The `צפי` label on
-    // the date is what marks the date as derived now -- see ADR-0026.
+    // the date is what marks the date as derived now -- see ADR-0027.
     const text = renderReport(
       makePayload({
         homeworkDueTomorrow: [
@@ -319,7 +319,7 @@ describe('renderReport without item bullets', () => {
   });
 
   it('still labels the estimated deadline, from the template and not the model', () => {
-    // ADR-0026 promises this label is never left to the model. With the
+    // ADR-0027 promises this label is never left to the model. With the
     // bullets gone it is a parenthetical on the section's prose instead.
     const text = renderReport(FULL, LINES);
 

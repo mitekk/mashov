@@ -67,7 +67,7 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
   if (payload.homeworkDueTomorrow.length > 0) {
     // The one fact the model is not trusted to carry, and now the *only* thing
     // marking this date as derived: the explanatory caveat that used to follow
-    // the section was removed as a daily wall of text. ADR-0026 is a promise
+    // the section was removed as a daily wall of text. ADR-0027 is a promise
     // that a derived deadline is always labelled as derived, so the label and
     // the date are appended by the template rather than hoped for in the prose
     // -- and the date is safe to state once, because narrowing has already

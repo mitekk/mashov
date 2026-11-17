@@ -401,7 +401,7 @@ describe('DigestService.runAll', () => {
   });
 
   it('prefers the text deadline over the timetable estimate', async () => {
-    // ADR-0026: explicit from text beats the next-lesson heuristic.
+    // ADR-0027: explicit from text beats the next-lesson heuristic.
     const harness = makeHarness({
       candidates: [
         { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', estimatedDueDate: TOMORROW },

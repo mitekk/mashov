@@ -63,7 +63,7 @@ describe('DigestRecipientService', () => {
 
   it('refuses a studentGuid that is not on the active roster', async () => {
     // Student has no userId FK, so this check plus the recorded userId is the
-    // only validation available. See ADR-0025.
+    // only validation available. See ADR-0026.
     const harness = makeHarness({ roster: ['other-child'] });
 
     await expect(

@@ -248,7 +248,7 @@ export class DigestCheckerService {
    * deadline the timetable would have missed, and the LLM narrows it afterwards.
    *
    * Mashov has no due-date field, so this is an estimate throughout; the report
-   * labels it as one. See ADR-0026.
+   * labels it as one. See ADR-0027.
    */
   /**
    * Early releases scheduled for today or tomorrow.

@@ -91,7 +91,7 @@
 ### Digest — per-child daily activity briefing
 
 Delivery is strictly opt-in: a child receives a digest only if an enabled recipient row exists
-for it. See ADR-0025 (delivery and LLM egress) and ADR-0026 (derived deadlines).
+for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
 
 | Method | Path | Auth | Request Body | Response Body | Status | State |
 |--------|------|------|--------------|---------------|--------|-------|
@@ -705,6 +705,6 @@ return 403 otherwise.
 5. **`POST /api/v1/sync/refresh`** — returns `202 Accepted` immediately. Sync runs asynchronously. Frontend should poll `GET /api/v1/settings/source-health` to observe progress.
 6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects`, `/children/notices`, and `/children/timetable` return full lists (no pagination needed at current data scale).
 7. **Read/handled state** — implemented directly on items (`isNew`, `isArchived` fields on `homework_item` and `behavior_item`; `isNew` on `mail_conversation`). There is no separate `read_state` table in Phase 1. State is household-global.
-8. **Digest deadlines** — the `צפי הגשה` date in a digest message is an *estimate*, never a due date. Mashov exposes no homework due-date field; the estimate comes from an explicit deadline written in the Hebrew text when there is one, else the group's next lesson from the timetable. ADR-0026 records this departure from the requirement not to promise due-soon logic.
-9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. The API validates that `studentGuid` is on the active roster and records the creating `userId`, but nothing prevents a row for another household's child. ADR-0025 documents the limitation.
+8. **Digest deadlines** — the `צפי הגשה` date in a digest message is an *estimate*, never a due date. Mashov exposes no homework due-date field; the estimate comes from an explicit deadline written in the Hebrew text when there is one, else the group's next lesson from the timetable. ADR-0027 records this departure from the requirement not to promise due-soon logic.
+9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. The API validates that `studentGuid` is on the active roster and records the creating `userId`, but nothing prevents a row for another household's child. ADR-0026 documents the limitation.
 10. **Timetable** — synced weekly (Sunday 03:00). The `day` field uses Israeli school week: 1=Sunday, 2=Monday, …, 6=Friday. Frontend should handle the case where `data` is empty (sync not yet run or source returned no data).
