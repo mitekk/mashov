@@ -48,9 +48,18 @@ A parent's message must never traverse it, and neither must a prompt.
   constructed with no agent, no `fetch`, and no `fetchOptions`. A test asserts that, because
   the realistic regression is someone passing an agent in by hand.
 
-  **Residual risk, recorded deliberately:** a global undici dispatcher
+  **Two residual risks, recorded deliberately.** A global undici dispatcher
   (`setGlobalDispatcher(new ProxyAgent(...))`) installed anywhere in the process would capture
   the LLM call, and no test here would catch it. Nothing in the repo does this today.
+
+  More likely: **Node 24 added `--use-env-proxy` and `NODE_USE_ENV_PROXY`**, which make built-in
+  `fetch` honour `HTTPS_PROXY` with no code change at all. `backend/Dockerfile` pins
+  `node:22-alpine`, so passing no agent is sufficient as shipped — but a routine base-image bump
+  would have silently routed every prompt through the residential box with the existing test
+  still green, because that test only asserts what is *passed* to the client. The summarizer
+  therefore refuses to call the model outright when that flag is set and a proxy is configured,
+  and falls back to the deterministic renderer. Refusing is the safe direction: a plainer
+  message still reaches the parent.
 
 **What child data leaves the host, and what does not.**
 
@@ -109,4 +118,24 @@ a recipient goes live would be a worthwhile follow-up.
 
 **Volume.** Seven runs a day per child, each capable of sending. Nothing caps messages per day,
 and a parent who finds the bot noisy will mute it, which costs more than a missed digest. A
-minimum item age and a daily cap are the obvious next refinement.
+minimum item age and a daily cap are the obvious next refinement. One specific failure here was
+closed during review: a single unreachable recipient used to fail the whole run and release its
+claims, so the *working* recipient was re-sent the same digest every hour indefinitely.
+Delivery is now per-recipient. What is still missing is a permanent-vs-transient distinction —
+a `403 bot was blocked` is retried on the same cadence as a `503`, forever, with no
+consecutive-failure counter and no auto-disable.
+
+**Ownership, partially tightened.** Recipient mutations and delivery history are scoped by the
+creating `userId`, because a `digest_delivery` row carries `messageText` — the rendered
+behavior remarks that were sent to a parent — and one household could otherwise read another's
+or silently disable its digest. This does **not** amount to an ownership model: creation is
+still validated only against the global active roster, so a user can still register a recipient
+for another household's child. That remains separate work.
+
+**Silence is no longer unqualified.** A run that finds nothing now distinguishes a genuinely
+quiet day from one where the school data has not synced successfully for hours, recording
+`skipped_stale`. The digest reads only local Postgres, so without that distinction a dead
+Mashov session looks exactly like "nothing happened at school today" — which is a materially
+wrong belief to leave a parent holding. What this does *not* yet do is tell the parent: the
+distinction is visible in `GET /digest/deliveries` but no message is sent. Whether a stale-data
+notice should reach the parent is a product decision, not a technical one.

@@ -55,20 +55,38 @@ support — is kept. The departure is one labelled string rather than a silent i
 meets Sunday will have Sunday reported when the real expectation was Thursday. The caveat is
 what makes that survivable, and it is a weaker guarantee than the rest of the app offers.
 
-**A known defect, recorded rather than hidden.** The resolved deadline is **not persisted**.
-The model re-reads the same text on every run that reaches it, and two runs can in principle
-resolve the same item differently. The orchestrator therefore releases — rather than confirms —
-the claim on an item whose deadline turns out not to be tomorrow, so that the item is
-re-evaluated and *is* reported on the day it is actually near. Confirming it, as the original
-plan specified, would have meant that on Wednesday, when a Thursday deadline really is
-tomorrow, the item counted as already reported and the parent was never told — silently
-defeating the half of the feature this ADR exists to justify.
+### The resolved deadline is persisted, and why that was not optional
 
-The cost of that choice is bounded: the model is called once per child per run regardless of
-item count, so re-evaluation adds no call that was not already happening. What it does cost is
-that a child whose only unreported news is a deferred deadline triggers a model call on each of
-the seven runs and sends nothing.
+The implementation plan offered a dichotomy for an item the model dates to some day other than
+tomorrow: either confirm it as reported (so the model is not asked again) or release the claim
+(so it is looked at again). Review established that **neither is acceptable**.
 
-**Persisting the resolved due date is the proper fix** — a `homework_due_date` row keyed by item
-and school year, written once and read by the checker — which would remove both the flapping and
-the repeated evaluation. It needs a schema change and is deliberately left as follow-up work.
+Confirming buries the warning. A homework item reading `יש להגיש עד יום חמישי`, surfaced on
+Tuesday by the text hint, would be marked reported — and on Wednesday, when Thursday genuinely
+is tomorrow, the checker filters it out and the parent is never told. That defeats the half of
+the feature this ADR exists to justify. It is also the common case rather than the exotic one:
+the burying only happens when something *else* is in the report, which on a school day it
+usually is.
+
+Releasing avoids that but re-asks the model on every run for as long as the item stays in the
+14-day lookback. `hasDeadlineHint` is deliberately broad, so an ordinary `יש להגיש בשיעור הבא`
+qualifies, and seven runs a day for a fortnight is on the order of a hundred model calls per
+item that produce no message at all.
+
+So `digest_reported_item` carries **`resolvedDueDate`**. A confirmed row with it null means
+fully reported; with it set, it means deferred to that date. The checker re-admits the item on
+the day that date is tomorrow, and the orchestrator takes the row over when it does. One
+resolution per item, no burying.
+
+An item with no resolvable date at all — no explicit date in the text and no timetable rows for
+its group — is released instead. There is nothing to defer to, and confirming it would bury it
+permanently, because the content hash does not include the estimate: a later timetable sync
+that finally gave the group a lesson tomorrow would never resurface it.
+
+**What remains imperfect.** The model still re-reads the text on the runs before a resolution is
+recorded, and two runs could in principle resolve the same item differently. That is benign in
+the message itself — an item is shown only when its resolution *equals* tomorrow, and the date
+displayed is that same value, so a wrong reading can cause a spurious "due tomorrow" but can
+never print a date the model did not resolve to. A deterministic Hebrew date parser for the
+common forms (`עד יום <weekday>`, `d/m`) would remove most of the model's involvement here and
+is worthwhile follow-up.

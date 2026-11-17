@@ -98,7 +98,7 @@ for it. See ADR-0025 (delivery and LLM egress) and ADR-0026 (derived deadlines).
 | GET | `/api/v1/digest/recipients?studentGuid=` | **Yes** | — | `{ data: DigestRecipient[] }` | 200, 400, 401 | new |
 | POST | `/api/v1/digest/recipients` | **Yes** | `{ studentGuid, channel, address, displayName? }` | `{ data: DigestRecipient }` | 201, 400, 401 | new |
 | PATCH | `/api/v1/digest/recipients/:id` | **Yes** | `{ enabled?, displayName? }` | `{ data: DigestRecipient }` | 200, 401, 404 | new |
-| DELETE | `/api/v1/digest/recipients/:id` | **Yes** | — | — | 204, 401, 404 | new |
+| DELETE | `/api/v1/digest/recipients/:id` | **Yes** | — | — | 204, 401, 403, 404 | new |
 | POST | `/api/v1/digest/runs` | **Yes** | `{ studentGuid?, dryRun? }` | `{ data: DigestRunResult[] }` | 201, 401, 429 | new |
 | GET | `/api/v1/digest/deliveries?studentGuid=&page=&limit=` | **Yes** | — | Paginated `DigestDelivery[]` | 200, 401 | new |
 
@@ -643,7 +643,7 @@ gets the longer timeout rather than the 15 s default.
   "data": [
     {
       "studentGuid": "string",
-      "status": "sent | skipped_empty | failed | dry_run",
+      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
       "itemCount": 2,
       "recipientCount": 1,
       "usedLlm": true,
@@ -667,7 +667,7 @@ itself defaults to `true`.
       "studentGuid": "string",
       "reportFor": "2026-11-17",
       "runAt": "2026-11-17T13:00:04Z",
-      "status": "sent | skipped_empty | failed | dry_run",
+      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
       "itemCount": 2,
       "recipientCount": 1,
       "channel": "telegram",
@@ -681,10 +681,17 @@ itself defaults to `true`.
 ```
 
 Every run writes a row, `status: "skipped_empty"` included. That is deliberate: without it a
-quiet child is indistinguishable from a broken job. Digest runs are **not** recorded in
-`sync_run` — `GET /sync/status` counts distinct successful sources against a hardcoded
+quiet child is indistinguishable from a broken job. `skipped_stale` is the stronger version of
+that — no items *and* the school data has not synced successfully for hours, so "nothing
+happened today" would be a wrong thing to imply. Digest runs are **not** recorded in `sync_run`
+— `GET /sync/status` counts distinct successful sources against a hardcoded
 `TOTAL_SYNC_SOURCES`, so digest rows there would skew the freshness percentage the dashboard
 shows.
+
+Scoped to the caller: a delivery row holds `messageText`, the rendered behavior remarks that
+were sent to a parent, so the history returns only children the caller has recipient rows for.
+`PATCH` and `DELETE` on a recipient are likewise restricted to the user who created it and
+return 403 otherwise.
 
 
 ---
