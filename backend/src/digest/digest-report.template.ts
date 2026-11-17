@@ -46,8 +46,16 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
   return blocks.filter((block) => block.length > 0).join('\n\n');
 }
 
+/**
+ * Plain text, no markup. Telegram's Markdown parse modes reject a whole message
+ * when the text contains an unbalanced `*` or `_`, or (in MarkdownV2) any of
+ * `.-!()`, which free-text teacher remarks and homework text routinely do. A
+ * rejected message would fail, retry the next hour, and fail again. Hebrew
+ * renders right-to-left in Telegram without any markup, so bold is not worth a
+ * delivery failure.
+ */
 function section(title: string, prose: string, bullets: string[]): string {
-  const body = [`*${title}*`];
+  const body = [title];
   const trimmed = prose.trim();
   if (trimmed.length > 0) body.push(trimmed);
   body.push(...bullets.map((bullet) => `• ${bullet}`));
