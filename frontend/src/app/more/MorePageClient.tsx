@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AppShell } from '@/components/layout/AppShell';
 import { SourceHealthList } from '@/components/more/SourceHealthList';
+import { ContentFreshnessCard } from '@/components/more/ContentFreshnessCard';
 import { ProfileCard } from '@/components/more/ProfileCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
@@ -102,7 +103,12 @@ export default function MorePage() {
           </h2>
           {healthLoading && <LoadingState message="טוען..." />}
           {healthError && <ErrorState />}
-          {health && <SourceHealthList sources={health.sources} />}
+          {health && (
+            <div className="space-y-3">
+              <ContentFreshnessCard contentFreshness={health.contentFreshness} />
+              <SourceHealthList sources={health.sources} />
+            </div>
+          )}
         </section>
 
         {/* Account actions */}

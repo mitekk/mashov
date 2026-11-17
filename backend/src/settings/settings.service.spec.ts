@@ -26,6 +26,13 @@ function makeMockFreshnessService(overrides: Partial<Record<string, jest.Mock>>)
         state: 'fresh',
         lastSyncAt: null,
         staleSources: [],
+        contentFreshness: {
+          expectedSchoolYear: 2027,
+          observedSchoolYear: 2027,
+          newestContentAt: '2026-11-14T00:00:00.000Z',
+          contentAgeDays: 3,
+          status: 'current',
+        },
       }),
   } as unknown as jest.Mocked<FreshnessService>;
 }

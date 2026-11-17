@@ -6,6 +6,7 @@ import { SyncRunService } from '../sync-run.service';
 import { BehaviorClassifierService } from '../behavior-classifier.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { currentSchoolYearFor } from '../../common/school-year/school-year.scope';
 
 // Same shape as /behave response
 interface MashovDailyBehaviorItem {
@@ -66,6 +67,7 @@ export class DailyBehaveTask {
         active: true,
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
+      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
     const useSharedSession = !context.connectionId && connections.length === 0;
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
@@ -74,7 +76,15 @@ export class DailyBehaveTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
+    // The year the row belongs to. Scoped per student because the connection
+    // that answers is picked per student below; a stored year is the fallback
+    // for the shared-session path, which has no user-owned connection: it
+    // resolves the SAME stored year the year-scoped reads use, so writes and
+    // reads cannot drift apart when the schools API runs ahead of the calendar.
+    const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
+
     for (const student of students) {
+      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${DailyBehaveTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -95,6 +105,7 @@ export class DailyBehaveTask {
                 `/api/students/${student.studentGuid}/dailyBehave`,
                 conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
               );
+              schoolYear = conn.schoolYear;
               break;
             } catch { /* try next connection */ }
           }
@@ -115,13 +126,15 @@ export class DailyBehaveTask {
 
             await this.prisma.behaviorItem.upsert({
               where: {
-                studentGuid_lessonId_eventCode: {
+                studentGuid_schoolYear_lessonId_eventCode: {
+                  schoolYear,
                   studentGuid: item.studentGuid,
                   lessonId: item.lessonId,
                   eventCode: item.eventCode,
                 },
               },
               create: {
+                schoolYear,
                 studentGuid: item.studentGuid,
                 lessonId: item.lessonId,
                 groupId: item.groupId,
@@ -140,6 +153,7 @@ export class DailyBehaveTask {
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
+                schoolYear,
                 achvaName: item.achvaName,
                 classification: classification.bucket,
                 justifiable,

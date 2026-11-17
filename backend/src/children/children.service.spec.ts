@@ -4,6 +4,7 @@ import { ChildrenService } from './children.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 import { UserItemStateService } from '../common/user-item-state.service';
+import { calendarSchoolYear } from '../common/school-year/school-year.service';
 
 const TEST_GUID = 'student-guid-001';
 
@@ -109,6 +110,11 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     },
     syncRun: {
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
+    },
+    householdConnection: {
+      findFirst:
+        overrides.connectionFindFirst ??
+        jest.fn().mockResolvedValue({ schoolYear: 2027 }),
     },
   } as unknown as jest.Mocked<PrismaService>;
 }
@@ -998,7 +1004,7 @@ describe('ChildrenService', () => {
 
       const result = await service.getTimetable(TEST_GUID);
       expect(timetableFindMany).toHaveBeenCalledWith({
-        where: { studentGuid: TEST_GUID },
+        where: { studentGuid: TEST_GUID, schoolYear: { in: [2027, 0] } },
         orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
       });
       expect(result).toEqual({
@@ -1272,6 +1278,131 @@ describe('ChildrenService', () => {
     });
   });
 
+  describe('latestUpdateAt', () => {
+    it('omits latestUpdateAt when there is no content, ignoring student.updatedAt', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getChildren('user-1');
+
+      expect(result.data[0].latestUpdateAt).toBeNull();
+    });
+
+    it('reports the newest content date, not the sign-in timestamp', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindFirst: jest
+            .fn()
+            .mockResolvedValue({ lessonDate: new Date('2026-11-14T00:00:00Z') }),
+          behaviorFindFirst: jest
+            .fn()
+            .mockResolvedValue({ eventAt: new Date('2026-11-10T00:00:00Z') }),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getChildren('user-1');
+
+      expect(result.data[0].latestUpdateAt).toBe('2026-11-14T00:00:00.000Z');
+    });
+  });
+
+  describe('school year scoping', () => {
+    it("excludes last year's homework from the recent count", async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getChildren('user-1');
+
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+    });
+
+    it("excludes last year's behaviour from the recent count", async () => {
+      const behaviorFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ behaviorFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getChildren('user-1');
+
+      expect(behaviorFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+    });
+
+    it("excludes last year's subjects from subjectCount", async () => {
+      const subjectCount = jest.fn().mockResolvedValue(0);
+      const service = new ChildrenService(
+        makeMockPrisma({ subjectCount }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getChildren('user-1');
+
+      expect(subjectCount).toHaveBeenCalledWith({
+        where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+      });
+    });
+
+    it("scopes the homework list to the connection's year", async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
+
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+    });
+
+    it('falls back to the calendar year when there is no connection', async () => {
+      const subjectFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          subjectFindMany,
+          connectionFindFirst: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getSubjects(TEST_GUID);
+
+      const { where } = subjectFindMany.mock.calls[0][0];
+      expect(where.schoolYear.in[0]).toBe(calendarSchoolYear(new Date()));
+    });
+  });
+
   describe('student fallback + attachment downloads', () => {
     it('retries student lookup after ensureStudentsAvailable when student is initially missing', async () => {
       const studentFindUnique = jest
@@ -1292,6 +1423,60 @@ describe('ChildrenService', () => {
       expect(result.student.studentGuid).toBe(TEST_GUID);
       expect(ensureStudentsAvailable).toHaveBeenCalledTimes(1);
       expect(studentFindUnique).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns the NOT_FOUND envelope when the student is still missing', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          studentFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await expect(service.getSubjects(TEST_GUID)).rejects.toMatchObject({
+        response: {
+          error: {
+            code: 'NOT_FOUND',
+            message: expect.stringContaining(TEST_GUID),
+            details: [],
+          },
+        },
+      });
+    });
+
+    it("passes the caller's userId to the roster self-heal", async () => {
+      const ensureStudentsAvailable = jest.fn().mockResolvedValue(undefined);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          studentFindUnique: jest
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(makeStudent()),
+        }),
+        makeMockSession({ ensureStudentsAvailable }),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getChildWorkspace(TEST_GUID, 'user-9');
+
+      expect(ensureStudentsAvailable).toHaveBeenCalledWith('user-9');
+    });
+
+    it("passes the caller's userId to the roster self-heal on the children list", async () => {
+      const ensureStudentsAvailable = jest.fn().mockResolvedValue(undefined);
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession({ ensureStudentsAvailable }),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getChildren('user-9');
+
+      expect(ensureStudentsAvailable).toHaveBeenCalledWith('user-9');
     });
 
     it('throws NotFoundException after fallback student lookup still fails', async () => {

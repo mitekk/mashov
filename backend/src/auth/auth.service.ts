@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
+import { SchoolYearService } from '../common/school-year/school-year.service';
 import {
   createMashovAxios,
   isUpstreamUnreachable,
@@ -41,6 +42,12 @@ interface MashovLoginResponse {
       gender: string;
       groups: number[];
     }>;
+    /**
+     * Children no longer enrolled. Element shape is undocumented, so it is
+     * parsed defensively — `childGuid`, else `guid`, else a bare string.
+     */
+    inactiveChildren?: unknown[];
+    userSchoolYears?: number[];
     username: string;
   };
 }
@@ -58,6 +65,7 @@ export class AuthService {
     private readonly appSessionService: AppSessionService,
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
+    private readonly schoolYearService: SchoolYearService,
   ) {
     this.mashovBaseUrl = resolveMashovBaseUrl(
       this.configService.get<string>('MASHOV_BASE_URL'),
@@ -89,67 +97,68 @@ export class AuthService {
   ): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
     await this.checkRateLimit(ip);
 
-    // Authenticate against Mashov
+    // The year is resolved, not configured: Mashov scopes the whole session to
+    // the year in this body, so a stale year silently freezes every later GET.
+    const candidate = await this.schoolYearService.resolveForSchool(Number(semel));
+
+    // Deliberately NOT keyed on the year — keying on it stranded existing
+    // connections on the year they were created with, which is what froze
+    // production on 2025/26. School + username is the stable identity.
+    const existingConnBeforeLogin = await this.prisma.householdConnection.findFirst({
+      where: { schoolCode: Number(semel), username },
+      select: { id: true, mashovUniqueId: true },
+    });
+
+    let year = candidate.year;
     let loginData: MashovLoginResponse;
     let newUniqueId: string | undefined;
+
     try {
-      const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
-      const year = Number(this.configService.get<string>('MASHOV_YEAR') ?? '2026');
-
-      const existingConn = await this.prisma.householdConnection.findFirst({
-        where: { schoolCode: Number(semel), schoolYear: year },
-        select: { mashovUniqueId: true },
-      });
-      const storedUniqueId = existingConn?.mashovUniqueId ?? null;
-
-      const loginBody = {
-        semel: Number(semel),
+      let attempt = await this.postLogin(
+        Number(semel),
         year,
         username,
         password,
-        IsBiometric: false,
-        appName: 'info.mashov.students',
-        apiVersion: '3.20210425',
-        appVersion: 3.20210425,
-        appBuild: 3.20210425,
-        deviceUuid: 'chrome',
-        devicePlatform: 'chrome',
-        deviceManufacturer: 'mac',
-        deviceModel: 'desktop',
-        deviceVersion: '145.0.0.0',
-      };
-
-      const extraHeaders: Record<string, string> = {};
-      if (storedUniqueId) {
-        extraHeaders['Cookie'] = `uniquId=${storedUniqueId}`;
-      }
-
-      const response = await this.http.post<MashovLoginResponse>(
-        '/api/login',
-        loginBody,
-        {
-          headers: {
-            'X-Csrf-Token': csrfToken,
-            'Content-Type': 'application/json',
-            Referer: `${this.mashovBaseUrl}/students/login`,
-            ...extraHeaders,
-          },
-        },
+        existingConnBeforeLogin?.mashovUniqueId ?? null,
       );
-      loginData = response.data;
 
-      const setCookie = response.headers?.['set-cookie'];
-      if (setCookie) {
-        const cookieList = Array.isArray(setCookie) ? setCookie : [setCookie];
-        for (const c of cookieList) {
-          const nameValue = c.split(';')[0] ?? '';
-          const eqIdx = nameValue.indexOf('=');
-          if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
-            newUniqueId = nameValue.substring(eqIdx + 1).trim();
-            break;
-          }
+      // Phase 2: Mashov is the authority. Its cookies are year-scoped, so a
+      // corrected year needs a fresh login — reusing the first login's cookies
+      // would reproduce the frozen-year bug a year later. Capped at one retry.
+      const reconciled = this.schoolYearService.reconcileFromLogin(year, attempt.data);
+      if (reconciled.changed) {
+        this.logger.warn(
+          `Mashov reports active year=${reconciled.year} for semel=${semel}, re-logging in (sent ${year})`,
+        );
+        // The resolver caches per semel for 6h. Leaving the vetoed candidate in
+        // the cache makes every sign-in for the rest of that window pay two
+        // full logins against a rate-limited upstream.
+        this.schoolYearService.invalidate(Number(semel));
+        try {
+          const corrected = await this.postLogin(
+            Number(semel),
+            reconciled.year,
+            username,
+            password,
+            existingConnBeforeLogin?.mashovUniqueId ?? null,
+          );
+          year = reconciled.year;
+          attempt = corrected;
+        } catch (retryErr) {
+          // The first login already succeeded, so the credentials are good.
+          // Reporting this as INVALID_CREDENTIALS would send the parent off to
+          // retype a password that was correct — the same lie this method
+          // refuses to tell about an unreachable upstream.
+          this.logger.error(
+            `Re-login at year=${reconciled.year} failed for semel=${semel}; keeping the year ${year} session: ${
+              retryErr instanceof Error ? retryErr.message : 'unknown error'
+            }`,
+          );
         }
       }
+
+      loginData = attempt.data;
+      newUniqueId = attempt.newUniqueId;
     } catch (err) {
       // Never report an upstream outage as bad credentials — the user would be
       // sent off to retype a password that was correct all along.
@@ -223,10 +232,12 @@ export class AuthService {
     const isFirstLogin = existingUser === null;
 
     // Upsert HouseholdConnection with userId
-    const year = Number(this.configService.get<string>('MASHOV_YEAR') ?? '2026');
-    const existingConn = await this.prisma.householdConnection.findFirst({
-      where: { schoolCode: Number(semel), schoolYear: year },
-    });
+    const existingConn =
+      existingConnBeforeLogin ??
+      (await this.prisma.householdConnection.findFirst({
+        where: { schoolCode: Number(semel), username },
+        select: { id: true, mashovUniqueId: true },
+      }));
 
     if (existingConn) {
       await this.prisma.householdConnection.update({
@@ -234,6 +245,9 @@ export class AuthService {
         data: {
           username,
           encryptedPassword,
+          // This is the mechanism that advances an existing connection with no
+          // admin action: the 13 sync crons read conn.schoolYear, not the env.
+          schoolYear: year,
           schoolName: schoolSettings?.schoolName,
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
@@ -290,10 +304,97 @@ export class AuthService {
       });
     }
 
+    const inactiveGuids = this.parseInactiveChildGuids(
+      loginData.accessToken?.inactiveChildren,
+    );
+    if (inactiveGuids.length > 0) {
+      await this.prisma.student.updateMany({
+        where: { studentGuid: { in: inactiveGuids } },
+        data: { isActive: false },
+      });
+    }
+
     // Create session
     const sessionToken = await this.appSessionService.createSession(appUser.id, ip);
 
     return { sessionToken, isFirstLogin };
+  }
+
+  /**
+   * One `POST /api/login`. Separated out because the year reconciliation may
+   * need to run it twice, and both attempts share the same error handling.
+   */
+  private async postLogin(
+    semel: number,
+    year: number,
+    username: string,
+    password: string,
+    storedUniqueId: string | null,
+  ): Promise<{ data: MashovLoginResponse; newUniqueId: string | undefined }> {
+    const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
+
+    const loginBody = {
+      semel,
+      year,
+      username,
+      password,
+      IsBiometric: false,
+      appName: 'info.mashov.students',
+      apiVersion: '3.20210425',
+      appVersion: 3.20210425,
+      appBuild: 3.20210425,
+      deviceUuid: 'chrome',
+      devicePlatform: 'chrome',
+      deviceManufacturer: 'mac',
+      deviceModel: 'desktop',
+      deviceVersion: '145.0.0.0',
+    };
+
+    const extraHeaders: Record<string, string> = {};
+    if (storedUniqueId) {
+      extraHeaders['Cookie'] = `uniquId=${storedUniqueId}`;
+    }
+
+    const response = await this.http.post<MashovLoginResponse>('/api/login', loginBody, {
+      headers: {
+        'X-Csrf-Token': csrfToken,
+        'Content-Type': 'application/json',
+        Referer: `${this.mashovBaseUrl}/students/login`,
+        ...extraHeaders,
+      },
+    });
+
+    let newUniqueId: string | undefined;
+    const setCookie = response.headers?.['set-cookie'];
+    if (setCookie) {
+      const cookieList = Array.isArray(setCookie) ? setCookie : [setCookie];
+      for (const c of cookieList) {
+        const nameValue = c.split(';')[0] ?? '';
+        const eqIdx = nameValue.indexOf('=');
+        if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
+          newUniqueId = nameValue.substring(eqIdx + 1).trim();
+          break;
+        }
+      }
+    }
+
+    return { data: response.data, newUniqueId };
+  }
+
+  /** `inactiveChildren` is undocumented; accept every plausible element shape. */
+  private parseInactiveChildGuids(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((entry) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object') {
+          const record = entry as Record<string, unknown>;
+          const guid = record.childGuid ?? record.guid ?? record.studentGuid;
+          return typeof guid === 'string' ? guid : null;
+        }
+        return null;
+      })
+      .filter((guid): guid is string => Boolean(guid));
   }
 
   async getMe(userId: string): Promise<{

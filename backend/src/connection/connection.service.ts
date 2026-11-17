@@ -14,6 +14,7 @@ import {
   isUpstreamUnreachable,
   resolveMashovBaseUrl,
 } from '../common/http/mashov-http';
+import { SchoolYearService } from '../common/school-year/school-year.service';
 
 interface MashovLoginResponse {
   credential?: {
@@ -32,6 +33,7 @@ export class ConnectionService {
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
+    private readonly schoolYearService: SchoolYearService,
   ) {
     this.mashovBaseUrl = resolveMashovBaseUrl(
       this.configService.get<string>('MASHOV_BASE_URL'),
@@ -68,7 +70,13 @@ export class ConnectionService {
     let newUniqueId: string | undefined;
     try {
       const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
-      const year = Number(this.configService.get<string>('MASHOV_YEAR') ?? '2026');
+      // The connection's own year, not an env constant: it is what the 13 sync
+      // crons use, so validating against anything else can pass for a year the
+      // rest of the app never talks to.
+      const year =
+        connection.schoolYear > 0
+          ? connection.schoolYear
+          : (await this.schoolYearService.resolveForSchool(connection.schoolCode)).year;
       const loginBody = {
         semel: connection.schoolCode,
         year,

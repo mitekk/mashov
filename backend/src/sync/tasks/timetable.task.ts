@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { currentSchoolYearFor } from '../../common/school-year/school-year.scope';
 
 interface MashovTeacher {
   teacherGuid: string;
@@ -53,6 +54,7 @@ export class TimetableTask {
         active: true,
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
+      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
     const useSharedSession = !context.connectionId && connections.length === 0;
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
@@ -61,7 +63,15 @@ export class TimetableTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
+    // The year the row belongs to. Scoped per student because the connection
+    // that answers is picked per student below; a stored year is the fallback
+    // for the shared-session path, which has no user-owned connection: it
+    // resolves the SAME stored year the year-scoped reads use, so writes and
+    // reads cannot drift apart when the schools API runs ahead of the calendar.
+    const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
+
     for (const student of students) {
+      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${TimetableTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -85,6 +95,7 @@ export class TimetableTask {
                 conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
                 { headers: { 'Referer': referer } },
               );
+              schoolYear = conn.schoolYear;
               break;
             } catch { /* try next connection */ }
           }
@@ -100,13 +111,15 @@ export class TimetableTask {
 
             await this.prisma.timetableEntry.upsert({
               where: {
-                studentGuid_day_lesson: {
+                studentGuid_schoolYear_day_lesson: {
+                  schoolYear,
                   studentGuid: student.studentGuid,
                   day,
                   lesson,
                 },
               },
               create: {
+                schoolYear,
                 studentGuid: student.studentGuid,
                 groupId,
                 day,
@@ -118,6 +131,7 @@ export class TimetableTask {
                 teachers: groupTeachers as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
+                schoolYear,
                 groupId,
                 roomNum: roomNum ?? '',
                 weeks: weeks ?? -1,

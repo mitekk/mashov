@@ -172,9 +172,14 @@ model HomeworkItem {
   remark       String?
   files        Json     @default("[]")
   rawPayload   Json?
+  // Mashov school year, named by its ending calendar year (2027 = Sep 2026 -
+  // Jun 2027). Declared with a default so `prisma db push` adds it
+  // non-destructively to the populated production tables; the backfill script
+  // in backend/scripts/backfill-school-year.ts rewrites 0 -> 2026.
+  schoolYear   Int      @default(0)
   updatedAt    DateTime @updatedAt
 
-  @@unique([studentGuid, lessonId])
+  @@unique([studentGuid, schoolYear, lessonId])
   @@map("homework_item")
 }
 
@@ -196,9 +201,10 @@ model BehaviorItem {
   justification  String?
   eventAt        DateTime
   rawPayload     Json?
+  schoolYear     Int      @default(0)
   updatedAt      DateTime @updatedAt
 
-  @@unique([studentGuid, lessonId, eventCode])
+  @@unique([studentGuid, schoolYear, lessonId, eventCode])
   @@map("behavior_item")
 }
 
@@ -213,9 +219,10 @@ model SubjectEnrollment {
   weeklyHours      Int      @default(0)
   lessonsCount     Int      @default(0)
   rawPayload       Json?
+  schoolYear       Int      @default(0)
   updatedAt        DateTime @updatedAt
 
-  @@unique([studentGuid, groupId])
+  @@unique([studentGuid, schoolYear, groupId])
   @@map("subject_enrollment")
 }
 
@@ -242,9 +249,10 @@ model MessageBoardItem {
   expirationDate DateTime
   inSite         Boolean  @default(false)
   rawPayload     Json?
+  schoolYear     Int      @default(0)
   updatedAt      DateTime @updatedAt
 
-  @@unique([studentGuid, eventId])
+  @@unique([studentGuid, schoolYear, eventId])
   @@map("message_board_item")
 }
 
@@ -288,9 +296,10 @@ model TimetableEntry {
   groupName   String
   subjectName String
   teachers    Json     @default("[]")
+  schoolYear  Int      @default(0)
   updatedAt   DateTime @updatedAt
 
-  @@unique([studentGuid, day, lesson])
+  @@unique([studentGuid, schoolYear, day, lesson])
   @@index([studentGuid])
   @@map("timetable_entry")
 }

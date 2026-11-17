@@ -6,11 +6,13 @@ services:
     volumes:
       - ./backend/src:/app/src
       - ./backend/prisma:/app/prisma
+    # Mirrors the Dockerfile CMD ordering: the school-year migration runs
+    # between `db push` and the app, never after. See backend/Dockerfile.
     command:
       [
         "sh",
         "-c",
-        "npx prisma db push --accept-data-loss --skip-generate && npm run start:dev",
+        "npx prisma db push --accept-data-loss --skip-generate && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261117000000_school_year_scoping/migration.sql && npm run start:dev",
       ]
     environment:
       NODE_ENV: development

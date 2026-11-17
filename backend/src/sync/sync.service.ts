@@ -12,6 +12,7 @@ import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
 import { TimetableTask } from './tasks/timetable.task';
+import { StudentsTask } from './tasks/students.task';
 import type {
   ManualSyncRefreshResponse,
   ManualSyncTaskResult,
@@ -38,6 +39,7 @@ export class SyncService {
     private readonly dailyBehaveTask: DailyBehaveTask,
     private readonly outBehaveTask: OutBehaveTask,
     private readonly timetableTask: TimetableTask,
+    private readonly studentsTask: StudentsTask,
   ) {}
 
   async refreshAll(context: SyncExecutionContext = {}): Promise<ManualSyncRefreshResponse> {
@@ -61,6 +63,14 @@ export class SyncService {
     );
 
     const refreshStartedAt = new Date();
+
+    // The roster goes first, on its own: every other task iterates
+    // `prisma.student.findMany`, so a child who moved up a grade — or a child
+    // who is new — is invisible to them until this has landed.
+    const rosterResult = await this.executeTask('students', () =>
+      this.studentsTask.execute(context),
+    );
+
     const tasks: Array<{ name: string; fn: () => Promise<SyncTaskRunResult> }> = [
       { name: 'notifications', fn: () => this.notificationsTask.execute(context) },
       { name: 'mailCounts', fn: () => this.mailCountsTask.execute(context) },
@@ -77,7 +87,10 @@ export class SyncService {
       { name: 'timetable', fn: () => this.timetableTask.execute(context) },
     ];
 
-    const taskResults = await Promise.all(tasks.map((task) => this.executeTask(task.name, task.fn)));
+    const taskResults = [
+      rosterResult,
+      ...(await Promise.all(tasks.map((task) => this.executeTask(task.name, task.fn)))),
+    ];
     const hasFailures = taskResults.some((result) => result.status === 'failed');
     const refreshEndedAt = new Date();
 

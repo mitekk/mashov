@@ -4,6 +4,11 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import { TimetableTask } from './timetable.task';
+import { calendarSchoolYear } from '../../common/school-year/school-year.service';
+
+// This suite exercises the legacy shared-session path (no household
+// connection), where the year falls back to the calendar.
+const FALLBACK_YEAR = calendarSchoolYear(new Date());
 
 function makeTimetableItem(overrides: Record<string, unknown> = {}) {
   return {
@@ -61,6 +66,9 @@ describe('TimetableTask', () => {
       } as unknown as PrismaService['timetableEntry'],
       householdConnection: {
         findMany: jest.fn().mockResolvedValue([]),
+        // The shared-session path takes its year from the stored connection,
+        // which is the same year the year-scoped reads use.
+        findFirst: jest.fn().mockResolvedValue({ schoolYear: FALLBACK_YEAR }),
       } as unknown as PrismaService['householdConnection'],
     } as unknown as jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry' | 'householdConnection'>>;
     mockSyncRunService = {
@@ -128,8 +136,9 @@ describe('TimetableTask', () => {
       1,
       expect.objectContaining({
         where: {
-          studentGuid_day_lesson: {
+          studentGuid_schoolYear_day_lesson: {
             studentGuid: 'stu-1',
+            schoolYear: FALLBACK_YEAR,
             day: 1,
             lesson: 1,
           },
@@ -137,6 +146,7 @@ describe('TimetableTask', () => {
         create: expect.objectContaining({
           roomNum: '',
           weeks: -1,
+          schoolYear: FALLBACK_YEAR,
         }),
         update: expect.objectContaining({
           roomNum: '',

@@ -16,7 +16,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
-    "migrate:phase2": "ts-node scripts/migrate-phase2.ts"
+    "migrate:phase2": "ts-node scripts/migrate-phase2.ts",
+    "backfill:school-year": "ts-node scripts/backfill-school-year.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

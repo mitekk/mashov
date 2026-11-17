@@ -13,6 +13,7 @@ import { UserDetailsTask } from '../../src/sync/tasks/user-details.task';
 import { DailyBehaveTask } from '../../src/sync/tasks/daily-behave.task';
 import { OutBehaveTask } from '../../src/sync/tasks/out-behave.task';
 import { TimetableTask } from '../../src/sync/tasks/timetable.task';
+import { StudentsTask } from '../../src/sync/tasks/students.task';
 
 const createMockTask = () => ({
   execute: jest.fn().mockResolvedValue({
@@ -28,7 +29,7 @@ const createMockTask = () => ({
 });
 
 describe('SyncService', () => {
-  const EXPECTED_TASK_COUNT = 13;
+  const EXPECTED_TASK_COUNT = 14;
 
   let service: SyncService;
   let notificationsTask: ReturnType<typeof createMockTask>;
@@ -44,6 +45,7 @@ describe('SyncService', () => {
   let dailyBehaveTask: ReturnType<typeof createMockTask>;
   let outBehaveTask: ReturnType<typeof createMockTask>;
   let timetableTask: ReturnType<typeof createMockTask>;
+  let studentsTask: ReturnType<typeof createMockTask>;
 
   beforeEach(async () => {
     notificationsTask = createMockTask();
@@ -59,6 +61,7 @@ describe('SyncService', () => {
     dailyBehaveTask = createMockTask();
     outBehaveTask = createMockTask();
     timetableTask = createMockTask();
+    studentsTask = createMockTask();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -76,6 +79,7 @@ describe('SyncService', () => {
         { provide: DailyBehaveTask, useValue: dailyBehaveTask },
         { provide: OutBehaveTask, useValue: outBehaveTask },
         { provide: TimetableTask, useValue: timetableTask },
+        { provide: StudentsTask, useValue: studentsTask },
       ],
     }).compile();
 
@@ -99,6 +103,7 @@ describe('SyncService', () => {
       expect(dailyBehaveTask.execute).toHaveBeenCalledTimes(1);
       expect(outBehaveTask.execute).toHaveBeenCalledTimes(1);
       expect(timetableTask.execute).toHaveBeenCalledTimes(1);
+      expect(studentsTask.execute).toHaveBeenCalledTimes(1);
     });
 
     it('does not reject when one task throws an error', async () => {
@@ -142,6 +147,7 @@ describe('SyncService', () => {
       dailyBehaveTask.execute.mockRejectedValue(error);
       outBehaveTask.execute.mockRejectedValue(error);
       timetableTask.execute.mockRejectedValue(error);
+      studentsTask.execute.mockRejectedValue(error);
 
       const result = await service.refreshAll();
       expect(result.status).toBe('partial');

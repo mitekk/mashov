@@ -33,6 +33,7 @@ export async function fetchSourceHealth(): Promise<SourceHealthResponse> {
           .filter((value): value is string => typeof value === 'string')
           .sort()
           .at(-1) ?? null,
+      contentFreshness: null,
     };
   }
 
@@ -40,6 +41,7 @@ export async function fetchSourceHealth(): Promise<SourceHealthResponse> {
     sources: Array.isArray(response.sources) ? response.sources : [],
     overallState: response.overallState,
     lastFullSyncAt: response.lastFullSyncAt,
+    contentFreshness: response.contentFreshness ?? null,
   };
 }
 

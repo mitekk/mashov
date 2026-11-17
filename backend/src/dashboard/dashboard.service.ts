@@ -3,6 +3,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { UserItemStateService } from '../common/user-item-state.service';
+import {
+  currentSchoolYearFor,
+  schoolYearScope,
+} from '../common/school-year/school-year.scope';
 
 export interface FeedItem {
   id: string;
@@ -22,6 +26,8 @@ export interface FeedItem {
   syncedAt: string;
   linkPath: string;
 }
+
+type YearScope = { schoolYear: { in: number[] } };
 
 export interface ChildCard {
   studentGuid: string;
@@ -47,12 +53,14 @@ export class DashboardService {
   ) {}
 
   async getDashboard(userId?: string) {
-    await this.sessionService.ensureStudentsAvailable();
+    await this.sessionService.ensureStudentsAvailable(userId);
+
+    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
 
     const [students, summary, feed, freshness, school] = await Promise.all([
-      this.getChildren(userId),
-      this.getSummary(),
-      this.getFeed(userId),
+      this.getChildren(yearScope, userId),
+      this.getSummary(yearScope),
+      this.getFeed(yearScope, userId),
       this.getFreshness(),
       this.getSchoolInfo(),
     ]);
@@ -66,7 +74,7 @@ export class DashboardService {
     };
   }
 
-  private async getSummary() {
+  private async getSummary(yearScope: YearScope) {
     const [localNewConversations, household, students, recentHomework, recentBehavior] = await Promise.all([
       this.prisma.mailConversation.count({
         where: {
@@ -83,12 +91,14 @@ export class DashboardService {
       this.prisma.homeworkItem.count({
         where: {
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          ...yearScope,
         },
       }),
       this.prisma.behaviorItem.count({
         where: {
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
           classification: { not: 'positive' },
+          ...yearScope,
         },
       }),
     ]);
@@ -102,7 +112,7 @@ export class DashboardService {
     };
   }
 
-  private async getFeed(userId?: string): Promise<FeedItem[]> {
+  private async getFeed(yearScope: YearScope, userId?: string): Promise<FeedItem[]> {
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
       select: { studentGuid: true, fullName: true },
@@ -111,10 +121,12 @@ export class DashboardService {
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
+        where: yearScope,
         orderBy: { lessonDate: 'desc' },
         take: 20,
       }),
       this.prisma.behaviorItem.findMany({
+        where: yearScope,
         orderBy: { eventAt: 'desc' },
         take: 20,
       }),
@@ -219,7 +231,7 @@ export class DashboardService {
     return [];
   }
 
-  private async getChildren(userId?: string): Promise<ChildCard[]> {
+  private async getChildren(yearScope: YearScope, userId?: string): Promise<ChildCard[]> {
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
       orderBy: { fullName: 'asc' },
@@ -234,6 +246,7 @@ export class DashboardService {
             where: {
               studentGuid: student.studentGuid,
               lessonDate: { gte: sevenDaysAgo },
+              ...yearScope,
             },
             select: { id: true },
           }),
@@ -241,16 +254,17 @@ export class DashboardService {
             where: {
               studentGuid: student.studentGuid,
               lessonDate: { gte: sevenDaysAgo },
+              ...yearScope,
             },
             select: { id: true, classification: true },
           }),
           this.prisma.homeworkItem.findFirst({
-            where: { studentGuid: student.studentGuid },
+            where: { studentGuid: student.studentGuid, ...yearScope },
             orderBy: { lessonDate: 'desc' },
             select: { lessonDate: true },
           }),
           this.prisma.behaviorItem.findFirst({
-            where: { studentGuid: student.studentGuid },
+            where: { studentGuid: student.studentGuid, ...yearScope },
             orderBy: { eventAt: 'desc' },
             select: { eventAt: true },
           }),
@@ -280,8 +294,9 @@ export class DashboardService {
           && this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
         ).length;
 
+        // Deliberately excludes student.updatedAt — it bumps on every sign-in
+        // and would report content as fresh that is a school year old.
         const latestUpdateAt = [
-          student.updatedAt,
           latestHomework?.lessonDate ?? null,
           latestBehavior?.eventAt ?? null,
         ]

@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { SyncRun } from '@prisma/client';
 import { SyncRunService } from './sync-run.service';
+import { PrismaService } from '../prisma/prisma.service';
+import {
+  calendarSchoolYear,
+  SchoolYearService,
+} from '../common/school-year/school-year.service';
 
 export type FreshnessState = 'fresh' | 'syncing' | 'stale' | 'degraded';
 
@@ -23,7 +28,37 @@ const SOURCE_THRESHOLDS: SourceThreshold[] = [
     sources: ['achvas', 'groups', 'lessons_count', 'user_details', 'message_board'],
     staleThresholdMinutes: 7 * 24 * 60, // 7 days
   },
+  {
+    // Global, not per-student: the roster is what tells us which students exist.
+    sources: ['students'],
+    staleThresholdMinutes: 24 * 60,
+  },
 ];
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * How long after 1 September an empty year is still unremarkable.
+ *
+ * The year-start date test is what catches a dead school year, but in the first
+ * weeks of a *correct* new year the newest item is legitimately still from last
+ * June — teachers have not posted anything yet. Without this grace period a
+ * healthy system reports `stale_year` every September, which is when operators
+ * are watching the signal most closely. The `observedSchoolYear < expected`
+ * test is unaffected and still fires immediately: asking for the wrong year is
+ * a fault whatever the date.
+ */
+const NEW_YEAR_GRACE_DAYS = 45;
+
+export type ContentFreshnessStatus = 'current' | 'stale_year' | 'no_content';
+
+export interface ContentFreshness {
+  expectedSchoolYear: number;
+  observedSchoolYear: number;
+  newestContentAt: string | null;
+  contentAgeDays: number | null;
+  status: ContentFreshnessStatus;
+}
 
 export interface SourceHealth {
   source: string;
@@ -37,15 +72,103 @@ export interface SourceHealth {
 
 @Injectable()
 export class FreshnessService {
-  constructor(private readonly syncRunService: SyncRunService) {}
+  constructor(
+    private readonly syncRunService: SyncRunService,
+    private readonly prisma: PrismaService,
+    private readonly schoolYearService: SchoolYearService,
+  ) {}
+
+  /**
+   * Measures the age of the *content*, not of the sync.
+   *
+   * This is the check that catches a dead school year. The source thresholds
+   * above only ever asked "did a sync run recently", so for five months they
+   * answered "fresh" while every GET returned data from a school year that had
+   * ended — the crons were succeeding at fetching the wrong year.
+   */
+  async computeContentFreshness(): Promise<ContentFreshness> {
+    const connection = await this.prisma.householdConnection.findFirst({
+      where: { active: true },
+      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
+      select: { schoolCode: true, schoolYear: true },
+    });
+
+    const observedSchoolYear = connection?.schoolYear ?? 0;
+    const expectedSchoolYear = connection
+      ? (await this.schoolYearService.resolveForSchool(connection.schoolCode)).year
+      : calendarSchoolYear(new Date());
+
+    const studentGuids = (
+      await this.prisma.student.findMany({
+        where: { isActive: true },
+        select: { studentGuid: true },
+      })
+    ).map((student) => student.studentGuid);
+
+    const [homework, behavior] = await Promise.all([
+      this.prisma.homeworkItem.aggregate({
+        where: { studentGuid: { in: studentGuids } },
+        _max: { lessonDate: true },
+      }),
+      this.prisma.behaviorItem.aggregate({
+        where: { studentGuid: { in: studentGuids } },
+        _max: { eventAt: true },
+      }),
+    ]);
+
+    const candidates = [homework._max.lessonDate, behavior._max.eventAt].filter(
+      (value): value is Date => value instanceof Date,
+    );
+    const newestContent = candidates.sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
+    if (!newestContent) {
+      return {
+        expectedSchoolYear,
+        observedSchoolYear,
+        newestContentAt: null,
+        contentAgeDays: null,
+        status: 'no_content',
+      };
+    }
+
+    // A Mashov year named N runs Sep (N-1) to Jun N, so nothing inside the
+    // current year can predate 1 September of the year before it.
+    const yearStart = new Date(Date.UTC(expectedSchoolYear - 1, 8, 1));
+    const graceEndsAt = yearStart.getTime() + NEW_YEAR_GRACE_DAYS * MS_PER_DAY;
+
+    // Inside the grace window a lagging connection year is the CORRECT state,
+    // not a fault: `resolveForSchool` jumps on 1 September while Mashov may not
+    // open the year for weeks, and reconciliation deliberately keeps the
+    // connection on the old year until it does. Degrading the whole dashboard
+    // every September is exactly the false positive the grace exists to avoid.
+    const withinNewYearGrace = Date.now() <= graceEndsAt;
+
+    const askingForTheWrongYear =
+      observedSchoolYear < expectedSchoolYear && !withinNewYearGrace;
+    const nothingFromThisYearYet =
+      newestContent < yearStart && !withinNewYearGrace;
+
+    const status: ContentFreshnessStatus =
+      askingForTheWrongYear || nothingFromThisYearYet ? 'stale_year' : 'current';
+
+    return {
+      expectedSchoolYear,
+      observedSchoolYear,
+      newestContentAt: newestContent.toISOString(),
+      contentAgeDays: Math.floor((Date.now() - newestContent.getTime()) / MS_PER_DAY),
+      status,
+    };
+  }
 
   async computeFreshness(): Promise<{
     state: FreshnessState;
     lastSyncAt: string | null;
     staleSources: string[];
+    contentFreshness: ContentFreshness;
   }> {
     const successRuns = await this.syncRunService.getLatestSuccessfulRuns();
     const allRuns = await this.syncRunService.getAllSourceHealth();
+    const contentFreshness = await this.computeContentFreshness();
     const now = new Date();
 
     const staleSources: string[] = [];
@@ -117,10 +240,17 @@ export class FreshnessService {
       state = 'fresh';
     }
 
+    // A stale year outranks every source threshold: the syncs are fine, the
+    // data is wrong, and "fresh" is the most misleading thing we could say.
+    if (contentFreshness.status === 'stale_year') {
+      state = 'degraded';
+    }
+
     return {
       state,
       lastSyncAt: latestSyncAt?.toISOString() ?? null,
       staleSources,
+      contentFreshness,
     };
   }
 

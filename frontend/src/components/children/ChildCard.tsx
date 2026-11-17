@@ -35,7 +35,10 @@ export function ChildCard({ child }: ChildCardProps) {
             </span>
           )}
         </div>
-        <p className="text-sm text-muted-foreground mb-2">
+        <p
+          data-testid={`child-list-class-${child.studentGuid}`}
+          className="text-sm text-muted-foreground mb-2"
+        >
           כיתה {child.classCode}{child.classNum}
         </p>
         <div className="flex gap-4 text-xs text-muted-foreground">

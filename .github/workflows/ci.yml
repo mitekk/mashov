@@ -152,7 +152,6 @@ jobs:
           DB_PASSWORD=postgres
           DATABASE_URL=postgresql://postgres:postgres@db:5432/mashov
           MASHOV_SEMEL=0
-          MASHOV_YEAR=2026
           MASHOV_USERNAME=e2e_test_user
           MASHOV_PASSWORD=e2e_test_pass
           ENCRYPTION_KEY=e2e-test-encryption-key-32chars!

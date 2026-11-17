@@ -9,6 +9,7 @@ import axios, { AxiosError, CanceledError } from 'axios';
 import { ConnectionService } from './connection.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../session/encryption.service';
+import { SchoolYearService } from '../common/school-year/school-year.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -46,7 +47,13 @@ const mockEncryption = {
 };
 
 const mockConfig = {
-  get: jest.fn().mockReturnValue('2026'),
+  get: jest.fn().mockReturnValue(undefined),
+};
+
+const mockSchoolYearService = {
+  resolveForSchool: jest.fn(),
+  reconcileFromLogin: jest.fn(),
+  invalidate: jest.fn(),
 };
 
 describe('ConnectionService', () => {
@@ -55,6 +62,10 @@ describe('ConnectionService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolYearService.resolveForSchool.mockResolvedValue({
+      year: 2027,
+      source: 'calendar',
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -62,6 +73,7 @@ describe('ConnectionService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: EncryptionService, useValue: mockEncryption },
         { provide: ConfigService, useValue: mockConfig },
+        { provide: SchoolYearService, useValue: mockSchoolYearService },
       ],
     }).compile();
 
@@ -73,9 +85,41 @@ describe('ConnectionService', () => {
       id: 'conn-1',
       userId: 'user-1',
       schoolCode: 482273,
+      schoolYear: 2027,
       username: 'olduser',
       encryptedPassword: 'enc-old',
     };
+
+    it("validates against the connection's own school year, not an env constant", async () => {
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(existingConn);
+      mockHttp.post.mockResolvedValue({ data: { credential: { userId: 'u' } }, headers: {} });
+
+      await service.updateConnection('user-1', 'newuser', 'newpass');
+
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2027 }),
+        expect.anything(),
+      );
+      expect(mockSchoolYearService.resolveForSchool).not.toHaveBeenCalled();
+    });
+
+    it('resolves the year when the connection carries none', async () => {
+      mockPrisma.householdConnection.findFirst.mockResolvedValue({
+        ...existingConn,
+        schoolYear: 0,
+      });
+      mockHttp.post.mockResolvedValue({ data: { credential: { userId: 'u' } }, headers: {} });
+
+      await service.updateConnection('user-1', 'newuser', 'newpass');
+
+      expect(mockSchoolYearService.resolveForSchool).toHaveBeenCalledWith(482273);
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2027 }),
+        expect.anything(),
+      );
+    });
 
     it('throws 404 when no active connection found', async () => {
       mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
