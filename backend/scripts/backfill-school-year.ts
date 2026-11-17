@@ -35,6 +35,27 @@ const COUNTED_TABLES = [
   'message_board_item',
 ];
 
+/**
+ * Splitting on `;` leaves every statement carrying the comment lines that
+ * preceded it, so a statement cannot be recognised — or discarded — by its
+ * first character. Dropping anything that *starts* with `--` silently threw
+ * away the whole `UPDATE "homework_item"` statement, which sits directly under
+ * the "-- Backfill:" comment; an integration test caught it. Strip the leading
+ * comment lines instead of filtering the statement out.
+ */
+export function stripLeadingComments(statement: string): string {
+  const lines = statement.split('\n');
+  while (lines.length > 0) {
+    const first = (lines[0] ?? '').trim();
+    if (first.length === 0 || first.startsWith('--')) {
+      lines.shift();
+      continue;
+    }
+    break;
+  }
+  return lines.join('\n').trim();
+}
+
 async function rowCounts(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const table of COUNTED_TABLES) {
@@ -61,8 +82,8 @@ async function main() {
   const statements = fs
     .readFileSync(migrationPath, 'utf-8')
     .split(';')
-    .map((statement) => statement.trim())
-    .filter((statement) => statement.length > 0 && !statement.startsWith('--'));
+    .map(stripLeadingComments)
+    .filter((statement) => statement.length > 0);
 
   console.log(`Executing ${statements.length} SQL statements...`);
 
@@ -114,9 +135,13 @@ async function main() {
   console.log('School-year backfill complete.');
 }
 
-main()
-  .catch((err) => {
-    console.error('Backfill failed:', err);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+// Guarded so the file can be imported for its `stripLeadingComments` parser
+// without running the migration as a side effect.
+if (require.main === module) {
+  main()
+    .catch((err) => {
+      console.error('Backfill failed:', err);
+      process.exit(1);
+    })
+    .finally(() => prisma.$disconnect());
+}

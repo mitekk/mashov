@@ -18,6 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PrismaClient } from '../../backend/node_modules/@prisma/client';
+import { stripLeadingComments } from '../../backend/scripts/backfill-school-year';
 import { SchoolYearRolloverTask } from '../../backend/src/sync/tasks/school-year-rollover.task';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { SchoolYearService } from '../../backend/src/common/school-year/school-year.service';
@@ -207,13 +208,17 @@ describe('School-year scoping & rollover', () => {
       __dirname,
       '../../backend/prisma/migrations/20261117000000_school_year_scoping/migration.sql',
     );
+    // Each statement carries the comment lines that preceded it, so it has to
+    // be stripped before it can be recognised — the same parsing the backfill
+    // script uses, reused here on purpose so the two cannot drift.
     const updates = fs
       .readFileSync(migrationPath, 'utf-8')
       .split(';')
-      .map((statement) => statement.trim())
+      .map(stripLeadingComments)
       .filter((statement) => statement.toUpperCase().startsWith('UPDATE '));
 
-    expect(updates.length).toBeGreaterThan(0);
+    // One per year-scoped table.
+    expect(updates).toHaveLength(5);
     for (const statement of updates) {
       await prisma.$executeRawUnsafe(statement);
     }
