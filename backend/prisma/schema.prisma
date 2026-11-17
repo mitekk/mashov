@@ -152,6 +152,13 @@ model MailConversation {
   // would sit 2-3h behind the instants it is compared against and clear the
   // override for any mail read soon after it arrived.
   locallyReadThroughAt DateTime?
+  // Set when the user explicitly marks the conversation unread, cleared when they mark
+  // it read or archive it. MailInboxTask's reconciliation sweep skips these rows: for a
+  // conversation upstream has stopped returning, the local row is the only record of
+  // what the user wanted, and without this the sweep would flip it back to read every
+  // 7 minutes -- the same bouncing state locallyReadThroughAt exists to prevent, in the
+  // opposite direction.
+  locallyMarkedUnreadAt DateTime?
 
   messages MailMessage[]
 

@@ -328,9 +328,28 @@ describe('MailInboxTask', () => {
       await task.execute();
 
       expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith({
-        where: { isUnread: true, lastFetchedAt: { lt: RUN_STARTED_AT } },
+        where: {
+          isUnread: true,
+          lastFetchedAt: { lt: RUN_STARTED_AT },
+          // An orphan the user explicitly marked unread is their decision, not drift.
+          locallyMarkedUnreadAt: null,
+        },
         data: { isUnread: false },
       });
+    });
+
+    it('skips the sweep when the inbox walk returned nothing at all', async () => {
+      // A 2xx with an empty array is not evidence that the mailbox is empty -- it is
+      // also what a soft-failing referer-gated endpoint or a school year with no mail
+      // looks like. Sweeping on it would clear isUnread across the whole table.
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([makeConversation({ conversationId: 'conv-archived-1' })])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
     });
 
     it('skips the sweep when an item failed to upsert', async () => {

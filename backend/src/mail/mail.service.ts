@@ -675,7 +675,7 @@ export class MailService {
   async markConversationsRead(conversationIds: string[]) {
     await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isUnread: false },
+      data: { isUnread: false, locallyMarkedUnreadAt: null },
     });
 
     // This is the only mail mutation with no upstream call -- markUnread, archive and
@@ -689,11 +689,24 @@ export class MailService {
     // instants it is compared against and clear the override for mail read within
     // hours of arriving -- the common case. Comparing sendTimes against sendTimes
     // keeps both sides in one parsing domain.
-    const messages = await this.prisma.mailMessage.findMany({
-      where: { conversationId: { in: conversationIds } },
-      select: { conversationId: true, sendTime: true },
-    });
+    const [conversations, messages] = await Promise.all([
+      this.prisma.mailConversation.findMany({
+        where: { conversationId: { in: conversationIds } },
+        select: { conversationId: true, sendTime: true },
+      }),
+      this.prisma.mailMessage.findMany({
+        where: { conversationId: { in: conversationIds } },
+        select: { conversationId: true, sendTime: true },
+      }),
+    ]);
     const newestByConversationId = new Map<string, Date>();
+    // Seed from the conversation's own sendTime so a conversation whose messages are not
+    // stored yet still gets a watermark -- otherwise mark-read bounces back on exactly
+    // those rows. It is a Mashov-parsed timestamp like the message sendTimes that
+    // override it below, so both stay in one parsing domain.
+    for (const conversation of conversations) {
+      newestByConversationId.set(conversation.conversationId, conversation.sendTime);
+    }
     for (const message of messages) {
       const current = newestByConversationId.get(message.conversationId);
       if (!current || message.sendTime.getTime() > current.getTime()) {
@@ -744,8 +757,10 @@ export class MailService {
         conversationId: { in: eligibleConversationIds },
         NOT: { labels: { array_contains: ['archived'] } },
       },
-      // Clear the local read override: the user is explicitly undoing it.
-      data: { isUnread: true, locallyReadThroughAt: null },
+      // Clear the local read override: the user is explicitly undoing it. Record the
+      // request so the reconciliation sweep leaves this row alone -- for a conversation
+      // upstream no longer returns, this row is the only record of what the user wanted.
+      data: { isUnread: true, locallyReadThroughAt: null, locallyMarkedUnreadAt: new Date() },
     });
 
     await this.updateCachedNewCount();
@@ -769,7 +784,11 @@ export class MailService {
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isUnread: false, labels: ['archived'] as unknown as Prisma.InputJsonValue },
+      data: {
+        isUnread: false,
+        labels: ['archived'] as unknown as Prisma.InputJsonValue,
+        locallyMarkedUnreadAt: null,
+      },
     });
 
     await this.updateCachedNewCount();

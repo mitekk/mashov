@@ -34,13 +34,20 @@ export class MailCountsTask {
    * interval: both of that task's walks refresh lastFetchedAt on every row upstream
    * still returns, so anything older is a conversation upstream has stopped returning.
    */
-  private async describeDrift(): Promise<{
+  private async describeDrift(connectionId?: string): Promise<{
     archived: number;
     orphans: number | 'unknown';
     locallyOverridden: number;
   }> {
     const lastInboxRun = await this.prisma.syncRun.findFirst({
-      where: { source: { startsWith: MailInboxTask.SOURCE }, status: 'success' },
+      // The exact source this connection's walk writes, not a prefix match: under two
+      // connections a prefix would pick up the other one's run, and then every row of
+      // this mailbox reads as an orphan. It would also match a future
+      // `mail_inbox_<something>` source.
+      where: {
+        source: connectionId ? `${MailInboxTask.SOURCE}:${connectionId}` : MailInboxTask.SOURCE,
+        status: 'success',
+      },
       orderBy: { startedAt: 'desc' },
       select: { startedAt: true },
     });
@@ -144,7 +151,7 @@ export class MailCountsTask {
           // Drift means the badge is lying to the user, so it is a warning, and it
           // carries the breakdown that tells an operator which cause is live. The extra
           // queries run only when drifting.
-          const breakdown = await this.describeDrift();
+          const breakdown = await this.describeDrift(conn?.id);
           this.logger.warn(
             `Mail counts drift (${label}): upstream=${unreadCount} local=${localUnreadCount} ` +
               `archived=${breakdown.archived} orphans=${breakdown.orphans} ` +

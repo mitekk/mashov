@@ -72,6 +72,13 @@ export class MailInboxTask {
     targeted: boolean;
   }): string | null {
     if (gates.failedCount > 0) return `${gates.failedCount} item failure(s) in this run`;
+    // An empty inbox response is indistinguishable from a soft failure: a 2xx with `[]`
+    // is also what a referer-gated endpoint, an expired session, or a schoolYear with no
+    // mail returns. A hard failure throws and never reaches here, but this does, and
+    // sweeping on it would clear isUnread on every row in the table because none was
+    // refreshed. The cost of skipping is that a genuinely empty inbox leaves its orphans
+    // unreconciled for one cycle; the cost of not skipping is a badge that reads zero.
+    if (gates.pageCount === 0) return 'inbox walk returned no conversations';
     if (gates.pageCount >= gates.maxPages) return 'inbox walk hit the page cap';
     if (gates.archivePageCount >= gates.maxPages) return 'archive walk hit the page cap';
     if (gates.targeted) return 'run targeted at a single connection';
@@ -368,7 +375,12 @@ export class MailInboxTask {
       let sweptCount = 0;
       if (sweepSkipReason === null) {
         const swept = await this.prisma.mailConversation.updateMany({
-          where: { isUnread: true, lastFetchedAt: { lt: runStartedAt } },
+          where: {
+            isUnread: true,
+            lastFetchedAt: { lt: runStartedAt },
+            // An orphan the user explicitly marked unread is their decision, not drift.
+            locallyMarkedUnreadAt: null,
+          },
           data: { isUnread: false },
         });
         sweptCount = swept.count;

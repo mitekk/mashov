@@ -135,6 +135,22 @@ describe('MailCountsTask', () => {
     expect(conversationCount).toHaveBeenCalledTimes(1);
   });
 
+  it('scopes the orphan reference run to the connection being reported on', async () => {
+    // startsWith('mail_inbox') would pick up another connection's run -- and then every
+    // row of this connection's mailbox reads as an orphan, because the union table's
+    // rows were last refreshed by whichever walk ran most recently. A diagnostic that
+    // lies on the multi-connection setup is worse than no diagnostic.
+    (mockMashovClient.get as jest.Mock).mockResolvedValue({ unreadConversations: 16 });
+
+    await task.execute();
+
+    expect(mockPrisma.syncRun.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { source: 'mail_inbox', status: 'success' },
+      }),
+    );
+  });
+
   it('reports orphans as unknown when no successful inbox run is on record', async () => {
     (mockPrisma.syncRun.findFirst as jest.Mock).mockResolvedValue(null);
     (mockMashovClient.get as jest.Mock).mockResolvedValue({ unreadConversations: 16 });

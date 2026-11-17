@@ -802,21 +802,101 @@ describe('MailService', () => {
       });
     });
 
-    it('records no watermark for a conversation with no stored messages', async () => {
+    it('falls back to the conversation sendTime when no messages are stored yet', async () => {
+      // Without a watermark the next walk would restore isUnread from a payload whose
+      // messages are unread -- the bounce-back this whole mechanism exists to stop. The
+      // conversation's own sendTime is a Mashov-parsed timestamp from the same parsing
+      // domain as MailMessage.sendTime, so it is a safe substitute for their max.
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       const service = new MailService(
         makeMockPrisma({
           conversationUpdateMany,
           messageFindMany: jest.fn().mockResolvedValue([]),
+          conversationFindMany: jest
+            .fn()
+            .mockResolvedValue([{ conversationId: 'conv-1', sendTime: OLDER }]),
         }),
         makeMockMashovClient({}),
       );
 
       await service.markConversationsRead(['conv-1']);
 
-      expect(conversationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(conversationUpdateMany).toHaveBeenCalledWith({
+        where: { conversationId: 'conv-1' },
+        data: { locallyReadThroughAt: OLDER },
+      });
+    });
+
+    it('prefers the newest message sendTime over the conversation sendTime', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany,
+          messageFindMany: jest
+            .fn()
+            .mockResolvedValue([{ conversationId: 'conv-1', sendTime: NEWER }]),
+          conversationFindMany: jest
+            .fn()
+            .mockResolvedValue([{ conversationId: 'conv-1', sendTime: OLDER }]),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markConversationsRead(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith({
+        where: { conversationId: 'conv-1' },
+        data: { locallyReadThroughAt: NEWER },
+      });
+    });
+
+    it('markUnread records that the user asked for unread, so the sweep cannot undo it', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindMany: jest.fn().mockResolvedValue([{ conversationId: 'conv-1' }]),
+          conversationUpdateMany,
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markUnread(['conv-1']);
+
+      const marked = conversationUpdateMany.mock.calls
+        .map((call) => call[0].data.locallyMarkedUnreadAt)
+        .find((value) => value instanceof Date);
+      expect(marked).toBeInstanceOf(Date);
+    });
+
+    it('markConversationsRead clears the explicit-unread marker', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markConversationsRead(['conv-1']);
+
       expect(conversationUpdateMany).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { isUnread: false } }),
+        expect.objectContaining({
+          data: expect.objectContaining({ isUnread: false, locallyMarkedUnreadAt: null }),
+        }),
+      );
+    });
+
+    it('archive clears the explicit-unread marker', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({}),
+      );
+
+      await service.archive(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isUnread: false, locallyMarkedUnreadAt: null }),
+        }),
       );
     });
 
