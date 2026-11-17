@@ -60,31 +60,26 @@ describe('SchoolYearService', () => {
   });
 
   describe('resolveForSchool', () => {
-    it('returns the override when MASHOV_YEAR is set', async () => {
+    it('does not let MASHOV_YEAR change the resolved current year', async () => {
+      // MASHOV_YEAR is the earliest year to fetch, not the year in scope.
+      // Honouring it here is the frozen-year condition this service exists to
+      // prevent, and production has carried a stale value for months.
+      mockHttp.get.mockResolvedValue({ data: [] });
       const service = makeService({ env: { MASHOV_YEAR: '2031' } });
 
       await expect(service.resolveForSchool(1234)).resolves.toEqual({
-        year: 2031,
-        source: 'override',
+        year: 2027,
+        source: 'calendar',
       });
-      expect(mockHttp.get).not.toHaveBeenCalled();
+      expect(mockHttp.get).toHaveBeenCalled();
     });
 
-    it('ignores an empty override', async () => {
+    it('resolves the current year from the calendar when MASHOV_YEAR is far in the past', async () => {
       mockHttp.get.mockResolvedValue({ data: [] });
-      const service = makeService({ env: { MASHOV_YEAR: '   ' } });
+      const service = makeService({ env: { MASHOV_YEAR: '2019' } });
 
       const resolved = await service.resolveForSchool(1234);
-      expect(resolved.source).not.toBe('override');
-      expect(resolved.year).toBe(2027);
-    });
 
-    it('ignores a non-numeric override', async () => {
-      mockHttp.get.mockResolvedValue({ data: [] });
-      const service = makeService({ env: { MASHOV_YEAR: 'next-year' } });
-
-      const resolved = await service.resolveForSchool(1234);
-      expect(resolved.source).not.toBe('override');
       expect(resolved.year).toBe(2027);
     });
 

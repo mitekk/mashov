@@ -231,7 +231,7 @@ Tasks are ordered by dependency. Each task is scoped for a single agent session.
 1. **[MVP]** Create project structure: `backend/`, `frontend/`, `tests/`, `docs/`, `.github/workflows/`
 2. **[MVP]** Write `docker-compose.yml` with services: `db` (postgres:16-alpine), `backend`, `frontend`; health checks on all services; named volume for DB
 3. **[MVP]** Write `docker-compose.override.yml` with source volume mounts and hot-reload commands for backend (`tsx watch`) and frontend (`next dev`)
-4. **[MVP]** Write `.env.example` with all required variables: `DATABASE_URL`, `MASHOV_SEMEL`, `MASHOV_YEAR`, `MASHOV_USERNAME`, `MASHOV_PASSWORD`, `MASHOV_BASE_URL`, `NODE_ENV`, `PORT`
+4. **[MVP]** Write `.env.example` with all required variables: `DATABASE_URL`, `MASHOV_SEMEL`, `MASHOV_USERNAME`, `MASHOV_PASSWORD`, `MASHOV_BASE_URL`, `NODE_ENV`, `PORT`. `MASHOV_YEAR` is optional and is *not* the year in scope — it is the earliest year to fetch; the current year is resolved from upstream ([ADR-0025](adr/0025-school-year-history-window.md)).
 5. **[MVP]** Write `README.md` with: setup steps, env vars, `docker compose up`, test commands, hot reload instructions, port map
 
 ### Backend — Foundation

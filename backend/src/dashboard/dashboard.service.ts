@@ -3,9 +3,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { UserItemStateService } from '../common/user-item-state.service';
+import { ConfigService } from '@nestjs/config';
 import {
-  currentSchoolYearFor,
-  schoolYearScope,
+  currentYearScope,
+  historyScope,
+  schoolYearWindowFor,
 } from '../common/school-year/school-year.scope';
 
 export interface FeedItem {
@@ -27,7 +29,10 @@ export interface FeedItem {
   linkPath: string;
 }
 
+/** The current year alone: counts, and every staleness signal. */
 type YearScope = { schoolYear: { in: number[] } };
+/** The configured history window: the lists, where more data is the point. */
+type HistoryWhere = ReturnType<typeof historyScope>;
 
 export interface ChildCard {
   studentGuid: string;
@@ -50,17 +55,24 @@ export class DashboardService {
     private readonly freshnessService: FreshnessService,
     private readonly sessionService: MashovSessionService,
     private readonly userItemStateService: UserItemStateService,
+    private readonly configService: ConfigService,
   ) {}
 
   async getDashboard(userId?: string) {
     await this.sessionService.ensureStudentsAvailable(userId);
 
-    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
+    // Two scopes, deliberately: the lists span the history window, while the
+    // counts and `latestUpdateAt` stay on the current year. In September the
+    // feed therefore shows last year's items rather than being empty, and
+    // `latestUpdateAt` is what still reports the new year as quiet.
+    const window = await schoolYearWindowFor(this.prisma, this.configService, userId);
+    const yearScope = currentYearScope(window.current);
+    const windowScope = historyScope(window);
 
     const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(yearScope, userId),
       this.getSummary(yearScope),
-      this.getFeed(yearScope, userId),
+      this.getFeed(windowScope, userId),
       this.getFreshness(),
       this.getSchoolInfo(),
     ]);
@@ -112,7 +124,7 @@ export class DashboardService {
     };
   }
 
-  private async getFeed(yearScope: YearScope, userId?: string): Promise<FeedItem[]> {
+  private async getFeed(yearScope: HistoryWhere, userId?: string): Promise<FeedItem[]> {
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
       select: { studentGuid: true, fullName: true },

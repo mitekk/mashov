@@ -17,6 +17,10 @@ model HouseholdConnection {
   upstreamUserId   String?
   cachedNewCount   Int       @default(0)
   mashovUniqueId   String?
+  /// accessToken.userSchoolYears from the last login: the years this household
+  /// actually has records for. Json rather than Int[] to match every other
+  /// list in this schema and to stay additive for `prisma db push`.
+  schoolYears      Json      @default("[]")
   lastLoginAt      DateTime?
   active           Boolean   @default(true)
   userId           String?
@@ -180,6 +184,9 @@ model HomeworkItem {
   updatedAt    DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId])
+  // The feed filters on schoolYear with no studentGuid, so the compound
+  // uniques above (all leading on studentGuid) cannot serve a range predicate.
+  @@index([schoolYear, lessonDate])
   @@map("homework_item")
 }
 
@@ -205,6 +212,7 @@ model BehaviorItem {
   updatedAt      DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId, eventCode])
+  @@index([schoolYear, eventAt])
   @@map("behavior_item")
 }
 

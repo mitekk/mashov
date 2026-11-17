@@ -462,6 +462,186 @@ describe('MashovSessionService', () => {
     });
   });
 
+  describe('historical logins', () => {
+    it('does not persist the roster on a login for an earlier year', async () => {
+      // persistRoster writes classCode/classNum and isActive, and Student has
+      // no schoolYear — identity is stable across years. A 2026 login would
+      // therefore stamp the live roster with 2026's classes and resurrect
+      // children who have since left.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(prisma.student.upsert).not.toHaveBeenCalled();
+      expect(prisma.student.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not write the connection back on a login for an earlier year', async () => {
+      // The replayed uniquId may evict the live session upstream, and the
+      // enrolled-years list from a dead year is not news.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(
+        loginPayload([CHILD], { userSchoolYears: [2024, 2025] }),
+      );
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalled();
+    });
+
+    it('still returns usable headers for the earlier year', async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      const headers = await service.getAuthHeadersForConnection(
+        'conn-1',
+        1234,
+        2026,
+        'parent',
+        'pw',
+      );
+
+      expect(headers['X-Csrf-Token']).toBe('csrf-1');
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2026 }),
+        expect.anything(),
+      );
+    });
+
+    it('still persists the roster at the connection year', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.student.upsert).toHaveBeenCalled();
+    });
+
+    it('still persists the roster when probing a later year', async () => {
+      // The rollover offers a candidate year ahead of the stored one and needs
+      // the roster read at it; only reaching backwards is suppressed.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2028, 'parent', 'pw');
+
+      expect(prisma.student.upsert).toHaveBeenCalled();
+    });
+  });
+
+  describe('enrolled school years', () => {
+    it('persists the enrolled school years from the login body', async () => {
+      // The backfill needs to know which years a child actually has, or it
+      // spends a login per year on years with no records at all.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(
+        loginPayload([CHILD], { userSchoolYears: [2025, 2026, 2027] }),
+      );
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'conn-1' },
+          data: expect.objectContaining({ schoolYears: [2025, 2026, 2027] }),
+        }),
+      );
+    });
+
+    it('leaves the enrolled years untouched when the login omits them', async () => {
+      // Overwriting with [] would make the backfill skip every year rather
+      // than fall back to the capped window.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYears: expect.anything() }),
+        }),
+      );
+    });
+
+    it('ignores a non-numeric entry rather than writing it', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(
+        loginPayload([CHILD], { userSchoolYears: [2026, 'nope', null, 2027] }),
+      );
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYears: [2026, 2027] }),
+        }),
+      );
+    });
+  });
+
+  describe('per-year session cache', () => {
+    it('does not reuse a session cached for a different year on the same connection', async () => {
+      // The backfill and the live crons hold one connection between them. A
+      // cache keyed on connectionId alone hands the second caller the first
+      // caller's year-scoped cookies, and the wrong-year response is a valid
+      // 200 that no retry can detect.
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+      expect(mockHttp.post).toHaveBeenLastCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2026 }),
+        expect.anything(),
+      );
+    });
+
+    it("keeps two years' sessions concurrently", async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('evicts only the year asked for on forceRefresh', async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw', true);
+      expect(mockHttp.post).toHaveBeenCalledTimes(3);
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(3);
+    });
+
+    it("still evicts the superseded year's session after a year correction", async () => {
+      const { service } = makeHarness({
+        reconcile: jest.fn().mockReturnValue({ year: 2026, changed: true }),
+      });
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.refreshRosterForConnection('conn-1', 2027);
+      const afterCorrection = mockHttp.post.mock.calls.length;
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(mockHttp.post.mock.calls.length).toBe(afterCorrection + 1);
+    });
+  });
+
   describe('ensureStudentsAvailable syncRun bookkeeping', () => {
     it('records a successful students run so the TTL gate is satisfied next time', async () => {
       const { service, prisma } = makeHarness({ lastStudentsRunEndedAt: null });

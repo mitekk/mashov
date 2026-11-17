@@ -41,7 +41,25 @@ export class GroupsTask {
       },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
+    // One value feeds both the login year and the row stamp.
+    const requestedYear = context.schoolYear;
+    const sourcePrefix = context.sourcePrefix ?? '';
+
     const useSharedSession = !context.connectionId && connections.length === 0;
+
+    // The shared session is process-global and carries no per-year identity,
+    // so it would answer with the current year while this run stamps another.
+    // The backfill always passes a connectionId and never reaches here; this
+    // refuses the combination rather than writing mislabelled rows.
+    if (useSharedSession && requestedYear !== undefined) {
+      const message = `${GroupsTask.SOURCE}: refusing year ${requestedYear} on the shared-session path; a historical year needs an explicit connectionId`;
+      this.logger.warn(message);
+      return {
+        status: 'failed',
+        summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
+        errorMessages: [message],
+      };
+    }
 
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
@@ -57,8 +75,8 @@ export class GroupsTask {
     const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
 
     for (const student of students) {
-      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
-      const source = `${GroupsTask.SOURCE}:${student.studentGuid}`;
+      let schoolYear = requestedYear ?? connections[0]?.schoolYear ?? fallbackSchoolYear;
+      const source = `${sourcePrefix}${GroupsTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
       let upsertCount = 0;
@@ -77,14 +95,16 @@ export class GroupsTask {
           );
         } else {
           groups = [];
+          let answered = false;
           for (const conn of connections) {
             try {
               const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              const connYear = requestedYear ?? conn.schoolYear;
               groups = await this.mashovClient.getForConnection<MashovGroup[]>(
                 `/api/students/${student.studentGuid}/groups`,
                 conn.id,
                 conn.schoolCode,
-                conn.schoolYear,
+                connYear,
                 conn.username,
                 password,
                 {
@@ -93,12 +113,22 @@ export class GroupsTask {
                   },
                 },
               );
-              schoolYear = conn.schoolYear;
+              schoolYear = connYear;
+              answered = true;
               break;
             } catch (connErr) {
               const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
               this.logger.warn(`Groups: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
             }
+          }
+          // Every connection failed. Reporting success here would let the
+          // history backfill record a year permanently complete having
+          // fetched nothing, and would hide a broken live sync behind a
+          // green run. The per-student catch below records the failure.
+          if (!answered) {
+            throw new Error(
+              `every connection failed for ${student.studentGuid} (tried ${connections.length})`,
+            );
           }
         }
 

@@ -23,6 +23,7 @@ import { OutBehaveTask } from './tasks/out-behave.task';
 import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
 import { SchoolYearRolloverTask } from './tasks/school-year-rollover.task';
+import { HistoryBackfillTask } from './tasks/history-backfill.task';
 
 @Module({
   imports: [ConfigModule, PrismaModule, MashovSessionModule, SchoolYearModule],
@@ -47,6 +48,7 @@ import { SchoolYearRolloverTask } from './tasks/school-year-rollover.task';
     TimetableTask,
     StudentsTask,
     SchoolYearRolloverTask,
+    HistoryBackfillTask,
   ],
   exports: [SyncRunService, BehaviorClassifierService, FreshnessService, SyncService],
 })

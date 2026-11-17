@@ -87,11 +87,19 @@ export class MashovSessionService {
   private isAuthenticating = false;
   private authPromise: Promise<void> | null = null;
   private readonly httpClient: AxiosInstance;
-  /** Per-connection session cache keyed by householdConnection.id */
+  /**
+   * Per-connection session cache keyed by `connectionId:year`.
+   *
+   * The year is part of the key because Mashov scopes a whole session to the
+   * year in the login body. Keyed on the connection alone, a caller asking for
+   * one year is handed another caller's cookies and reads that year's data
+   * while stamping its own — and the wrong-year response is a valid 200, so
+   * neither the 401/403 retry nor any error path can notice.
+   */
   private readonly connectionSessions = new Map<string, ConnectionSession>();
-  /** Last roster counts per connection, written by every connection login. */
+  /** Last roster counts per `connectionId:year`, written by every login. */
   private readonly lastRosterByConnection = new Map<string, RosterResult>();
-  /** Last login payload per connection, so the year can be reconciled from it. */
+  /** Last login payload per `connectionId:year`, for year reconciliation. */
   private readonly lastLoginByConnection = new Map<string, LoginResponse>();
   /**
    * Dedupes concurrent self-heal refreshes. Without it a page-load storm fires
@@ -140,9 +148,11 @@ export class MashovSessionService {
     const username = this.configService.get<string>("MASHOV_USERNAME");
     const password = this.configService.get<string>("MASHOV_PASSWORD");
 
-    // `year` is deliberately absent from this guard: MASHOV_YEAR is now an
-    // optional break-glass override, and requiring it here would mean the app
-    // cannot boot without the very constant that froze the school year.
+    // `year` is deliberately absent from this guard. MASHOV_YEAR no longer
+    // names the year in scope at all - it is the earliest year to *fetch* -
+    // and the current year comes from `resolveForSchool` below. Requiring it
+    // here would mean the app cannot boot without the very constant that froze
+    // the school year.
     if (!semel || !username || !password) {
       throw new Error(
         "Missing required Mashov credentials in environment variables",
@@ -454,9 +464,10 @@ export class MashovSessionService {
       true,
     );
 
-    const login = this.lastLoginByConnection.get(connection.id);
+    const attemptedKey = this.sessionKey(connection.id, attemptedYear);
+    const login = this.lastLoginByConnection.get(attemptedKey);
     const roster =
-      this.lastRosterByConnection.get(connection.id) ??
+      this.lastRosterByConnection.get(attemptedKey) ??
       { created: 0, updated: 0, deactivated: 0 };
 
     // Mashov is the authority on which year is active, on THIS path too — not
@@ -482,6 +493,13 @@ export class MashovSessionService {
       // year needs a fresh session or every later GET reads the wrong year.
       if (reconciled.year !== attemptedYear) {
         this.schoolYearService.invalidate(connection.schoolCode);
+        // forceRefresh below only evicts the corrected year's key, so the
+        // superseded year's cookies have to go explicitly. Leaving them would
+        // let a later caller asking for the year Mashov rejected be served a
+        // session it already said was wrong.
+        this.connectionSessions.delete(attemptedKey);
+        this.lastLoginByConnection.delete(attemptedKey);
+        this.lastRosterByConnection.delete(attemptedKey);
         await this.getAuthHeadersForConnection(
           connection.id,
           connection.schoolCode,
@@ -637,6 +655,20 @@ export class MashovSessionService {
       .filter((guid): guid is string => Boolean(guid));
   }
 
+  /**
+   * The years this household has records for, or null when the login did not
+   * say. `apis/post-api-login.md` documents the field as always present, but
+   * an empty or junk array is treated as "did not say" rather than "none".
+   */
+  private enrolledSchoolYears(data: LoginResponse): number[] | null {
+    const raw = data.accessToken?.userSchoolYears;
+    if (!Array.isArray(raw)) return null;
+    const years = raw
+      .map((entry) => Number(entry))
+      .filter((year) => Number.isInteger(year) && year > 0);
+    return years.length > 0 ? years : null;
+  }
+
   private async parseAndPersistHousehold(
     data: LoginResponse,
     semel: number,
@@ -647,6 +679,7 @@ export class MashovSessionService {
     const schoolSettings = data.accessToken?.schoolSettings;
     const credential = data.credential;
     const encryptedPassword = this.encryptionService.encrypt(password);
+    const enrolledYears = this.enrolledSchoolYears(data);
 
     const existing = await this.prisma.householdConnection.findFirst({
       where: { schoolCode: semel, username },
@@ -663,6 +696,7 @@ export class MashovSessionService {
           upstreamUserId: credential?.userId,
           lastLoginAt: new Date(),
           active: true,
+          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
         },
       });
     } else {
@@ -676,6 +710,7 @@ export class MashovSessionService {
           upstreamUserId: credential?.userId,
           lastLoginAt: new Date(),
           active: true,
+          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
         },
       });
     }
@@ -700,11 +735,13 @@ export class MashovSessionService {
     password: string,
     forceRefresh = false,
   ): Promise<Record<string, string>> {
+    const sessionKey = this.sessionKey(connectionId, year);
+
     if (forceRefresh) {
-      this.connectionSessions.delete(connectionId);
+      this.connectionSessions.delete(sessionKey);
     }
 
-    const cached = this.connectionSessions.get(connectionId);
+    const cached = this.connectionSessions.get(sessionKey);
     if (cached && !cached.isAuthenticating) {
       return this.buildHeaders(cached.cookies, cached.csrfToken);
     }
@@ -721,21 +758,35 @@ export class MashovSessionService {
       isAuthenticating: true,
       authPromise: null,
     };
-    this.connectionSessions.set(connectionId, placeholder);
+    this.connectionSessions.set(sessionKey, placeholder);
 
     const connRecord = await this.prisma.householdConnection.findUnique({
       where: { id: connectionId },
-      select: { mashovUniqueId: true },
+      select: { mashovUniqueId: true, schoolYear: true },
     });
     const storedUniqueId = connRecord?.mashovUniqueId ?? undefined;
 
-    const authPromise = this.loginWithCredentials(semel, year, username, password, connectionId, storedUniqueId);
+    // A login reaching BACKWARDS is a history backfill, and must not touch
+    // anything that describes the present. Reaching forwards is the rollover
+    // offering a candidate year, which does need the roster read at it.
+    const isHistorical =
+      connRecord?.schoolYear !== undefined && Number(year) < connRecord.schoolYear;
+
+    const authPromise = this.loginWithCredentials(
+      semel,
+      year,
+      username,
+      password,
+      connectionId,
+      storedUniqueId,
+      isHistorical,
+    );
     placeholder.authPromise = authPromise;
 
     try {
       const { cookies } = await authPromise;
       const csrfToken = cookies.csrfToken;
-      this.connectionSessions.set(connectionId, {
+      this.connectionSessions.set(sessionKey, {
         csrfToken,
         cookies,
         isAuthenticating: false,
@@ -743,9 +794,14 @@ export class MashovSessionService {
       });
       return this.buildHeaders(cookies, csrfToken);
     } catch (err) {
-      this.connectionSessions.delete(connectionId);
+      this.connectionSessions.delete(sessionKey);
       throw err;
     }
+  }
+
+  /** Cache key for everything a connection login produces: both ends matter. */
+  private sessionKey(connectionId: string, year: number): string {
+    return `${connectionId}:${Number(year)}`;
   }
 
   private buildHeaders(cookies: SessionCookies, csrfToken: string): Record<string, string> {
@@ -764,6 +820,15 @@ export class MashovSessionService {
     password: string,
     connectionId?: string,
     storedUniqueId?: string,
+    /**
+     * A login for a year earlier than the connection's own. `Student` has no
+     * `schoolYear` — identity is stable across years — so persisting a roster
+     * read at a dead year would stamp the live children with that year's
+     * `classCode`/`classNum` and set `isActive: true` on children who have
+     * since left. Writing `mashovUniqueId` back may also evict the live
+     * session upstream. So a historical login reads data and nothing else.
+     */
+    isHistorical = false,
   ): Promise<ConnectionLogin> {
     const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
 
@@ -831,20 +896,31 @@ export class MashovSessionService {
       );
     }
 
-    if (connectionId && parsed.uniquId) {
+    if (connectionId && parsed.uniquId && !isHistorical) {
+      const enrolledYears = this.enrolledSchoolYears(response.data);
       await this.prisma.householdConnection.update({
         where: { id: connectionId },
-        data: { mashovUniqueId: parsed.uniquId },
+        data: {
+          mashovUniqueId: parsed.uniquId,
+          // Only when Mashov actually sent them: writing [] over a known list
+          // would make the backfill skip every year instead of falling back to
+          // the capped window.
+          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
+        },
       });
     }
 
-    // Always persist the roster. The old version read `response.headers` and
-    // discarded `response.data`, throwing `accessToken.children[]` away — the
-    // single reason a child's class never updated.
-    const roster = await this.persistRoster(response.data, Number(semel), Number(year));
+    // Persist the roster on every login EXCEPT a historical one. The old
+    // version read `response.headers` and discarded `response.data`, throwing
+    // `accessToken.children[]` away — the single reason a child's class never
+    // updated. See `isHistorical` for why the backfill is the one exception.
+    const roster = isHistorical
+      ? { created: 0, updated: 0, deactivated: 0 }
+      : await this.persistRoster(response.data, Number(semel), Number(year));
     if (connectionId) {
-      this.lastRosterByConnection.set(connectionId, roster);
-      this.lastLoginByConnection.set(connectionId, response.data);
+      const key = this.sessionKey(connectionId, Number(year));
+      this.lastRosterByConnection.set(key, roster);
+      this.lastLoginByConnection.set(key, response.data);
     }
 
     this.logger.debug(`Connection session established for semel=${semel} username=${username}`);

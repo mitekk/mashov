@@ -6,7 +6,7 @@ import { createMashovAxios, resolveMashovBaseUrl } from '../http/mashov-http';
 import { currentSchoolYearFor } from './school-year.scope';
 
 /** How the resolved year was arrived at — logged, and surfaced in source health. */
-export type SchoolYearSource = 'override' | 'schools-api' | 'calendar' | 'stored';
+export type SchoolYearSource = 'schools-api' | 'calendar' | 'stored';
 
 export interface ResolvedSchoolYear {
   year: number;
@@ -45,7 +45,9 @@ export function calendarSchoolYear(now: Date): number {
  * The year used to be a deploy-time constant (`MASHOV_YEAR=2026`), which froze
  * every sync on a year that had ended: Mashov scopes the whole session to the
  * year in the login body, so a stale year means stale data on every downstream
- * GET while the crons keep reporting success.
+ * GET while the crons keep reporting success. `MASHOV_YEAR` now means the
+ * earliest year to *fetch* (see `schoolYearWindowFor`) and is deliberately not
+ * read here: nothing in the environment may decide which year is current.
  *
  * Deliberately does NOT depend on `MashovSessionModule`: `AuthModule`,
  * `ConnectionModule` and `SyncModule` all consume this service, and routing the
@@ -71,11 +73,6 @@ export class SchoolYearService {
    * to say which year is actually active. `reconcileFromLogin` is phase 2.
    */
   async resolveForSchool(semel: number): Promise<ResolvedSchoolYear> {
-    const override = this.readOverride();
-    if (override !== null) {
-      return { year: override, source: 'override' };
-    }
-
     const cached = this.cache.get(semel);
     if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
       return cached.resolved;
@@ -157,15 +154,6 @@ export class SchoolYearService {
     } else {
       this.cache.delete(semel);
     }
-  }
-
-  private readOverride(): number | null {
-    const raw = this.configService.get<string | number>('MASHOV_YEAR');
-    if (raw === undefined || raw === null) return null;
-    const trimmed = String(raw).trim();
-    if (trimmed.length === 0) return null;
-    const parsed = Number(trimmed);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
   private async maxYearFromSchoolsApi(semel: number): Promise<number | null> {
