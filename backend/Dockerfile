@@ -24,4 +24,9 @@ EXPOSE 3000
 # the file's own SQL comments, and every statement in it is idempotent, so this
 # is a cheap no-op on every later boot. Failing here deliberately blocks
 # startup rather than serving duplicated data.
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss --skip-generate && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261117000000_school_year_scoping/migration.sql && node dist/src/main.js"]
+# The roster-presence backfill runs here for the same reason: `db push` creates
+# lastSeenInRosterAt but cannot fill it, and a NULL is never swept, so without
+# this line a child who left the school is never retired. Idempotent, like the
+# file above. src/prisma/boot-migrations.spec.ts fails if a migration with data
+# statements is added without being executed here or explicitly exempted.
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss --skip-generate && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261117000000_school_year_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261119010000_roster_presence/migration.sql && node dist/src/main.js"]
