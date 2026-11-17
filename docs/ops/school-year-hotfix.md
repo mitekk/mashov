@@ -69,11 +69,15 @@ docker compose logs backend | grep "resolved year"
 # expect: resolved year=2027 source=schools-api semel=<semel>
 ```
 
-`MASHOV_YEAR` is **not** a useful lever here, despite the name. It only overrides the *candidate*
-year that `SchoolYearService` puts in the login body; Mashov's own
-`accessToken.schoolSettings.schoolYear` is then reconciled on top and persisted to the
-connection, which is what the crons read. Setting it cannot make the app read a year Mashov
-disagrees with. Use step 2's `UPDATE` instead — and if the two disagree, Mashov is right.
+`MASHOV_YEAR` is **not** a lever on the current year, despite the name — it is the *earliest year
+to fetch*, which is a different thing. Setting it opens a history window: the nightly
+`HistoryBackfillTask` fills in that year once, capped at two years back, and the lists and feeds
+widen to span it. It cannot move the year the crons ask for, and a value later than the current
+year is ignored with a warning rather than honoured. See
+[ADR-0025](../adr/0025-school-year-history-window.md).
+
+To change the year the app actually uses, use step 2's `UPDATE` — and if the stored year and
+Mashov disagree, Mashov is right.
 
 ## 4. Refresh the roster
 

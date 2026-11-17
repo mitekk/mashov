@@ -148,9 +148,11 @@ export class MashovSessionService {
     const username = this.configService.get<string>("MASHOV_USERNAME");
     const password = this.configService.get<string>("MASHOV_PASSWORD");
 
-    // `year` is deliberately absent from this guard: MASHOV_YEAR is now an
-    // optional break-glass override, and requiring it here would mean the app
-    // cannot boot without the very constant that froze the school year.
+    // `year` is deliberately absent from this guard. MASHOV_YEAR no longer
+    // names the year in scope at all - it is the earliest year to *fetch* -
+    // and the current year comes from `resolveForSchool` below. Requiring it
+    // here would mean the app cannot boot without the very constant that froze
+    // the school year.
     if (!semel || !username || !password) {
       throw new Error(
         "Missing required Mashov credentials in environment variables",

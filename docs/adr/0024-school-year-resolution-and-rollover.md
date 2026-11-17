@@ -1,7 +1,7 @@
 # ADR-0024: School Year — Resolve from Upstream, Persist on the Connection, Scope the Rows
 
 - **Date**: 2026-11-17
-- **Status**: Accepted
+- **Status**: Accepted (the `MASHOV_YEAR` decision is superseded by [ADR-0025](0025-school-year-history-window.md))
 - **Deciders**: Backend agent, Planner
 
 ## Context and Problem Statement
@@ -53,7 +53,7 @@ Three defects compounded:
 | Option | Pros | Cons | Verdict |
 |--------|------|------|---------|
 | Auto-detect from upstream, persist on the connection, re-check daily | Rolls over with no human in the loop; the connection stays the single source the 13 crons already read | Two-phase (the login body needs a year before Mashov will say the right one), so a corrected year costs one extra login | **Selected** |
-| Keep `MASHOV_YEAR` as the source of truth, document the August edit | Zero new code | This *is* the bug. It already failed once, silently, for five months, and the failure is only visible to someone who knows what 28/06 means | Rejected (retained as an optional break-glass override) |
+| Keep `MASHOV_YEAR` as the source of truth, document the August edit | Zero new code | This *is* the bug. It already failed once, silently, for five months, and the failure is only visible to someone who knows what 28/06 means | Rejected. Retained at the time as an optional break-glass override; that override was itself removed by [ADR-0025](0025-school-year-history-window.md), which found it could re-pin the current year and so recreate this very bug |
 | Derive from the calendar alone | No upstream call, never lags | Cannot tell an unavailable year from a live one, so a school that publishes late would get an empty year with no signal | Rejected as the sole source; used as the floor |
 | Trust `/api/schools[].years` alone | Upstream's own answer | The sample in `apis/get-api-schools.md` tops out at 2025 for a doc captured in 2026, so `years[]` appears to lag the in-progress year | Rejected as the sole source; used as the other input |
 
@@ -105,6 +105,11 @@ key next year's timetable overwrites last year's row by row, silently.
 `MASHOV_YEAR` survives as an optional break-glass override and is therefore **dropped from the
 required-env guard**. Leaving it there would mean the app cannot boot without the very constant
 that caused the freeze.
+
+> **Superseded by [ADR-0025](0025-school-year-history-window.md).** The override was removed
+> outright: it short-circuited `resolveForSchool` ahead of every other input, so setting it pinned
+> the current year — this bug's exact condition. `MASHOV_YEAR` now means the *earliest year to
+> fetch* and has no say in which year is current.
 
 **Rationale**: the single most important property is that no human has to notice. Every other
 option on the table — including the one the codebase already had — put a person in the loop
@@ -177,7 +182,9 @@ they are year-scoped upstream.
 - `src/session/session.service.ts` is dead code (`SessionModule` is not imported by
   `app.module.ts`) yet carries a third copy of the children-persist logic. Only its hard
   requirement on `MASHOV_YEAR` was removed here, via the pure `calendarSchoolYear` helper, so the
-  boot hazard is gone without threading a new dependency through unreachable code.
+  boot hazard is gone without threading a new dependency through unreachable code. It still reads
+  `MASHOV_YEAR` as a year override, which [ADR-0025](0025-school-year-history-window.md) retired
+  everywhere reachable; the file is left whole rather than half-updated.
 
 ## Links
 
