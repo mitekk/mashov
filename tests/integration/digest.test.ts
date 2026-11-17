@@ -570,7 +570,7 @@ describe('Digest releases and school activities', () => {
     }
   });
 
-  it('reminds about a release scheduled for tomorrow and shows the remark', async () => {
+  it('reminds about a release scheduled for tomorrow, without the remark', async () => {
     await prisma.studentRelease.create({
       data: {
         studentGuid: CHILD_WITH_NEWS,
@@ -593,7 +593,10 @@ describe('Digest releases and school activities', () => {
     const message = sender.sent[0].text;
     expect(message).toContain('שחרור מוקדם');
     expect(message).toContain('11:30');
-    expect(message).toContain('תור לרופא');
+    // The parent's own remark went with the item bullets: they wrote it, and it
+    // was the only other place the child's name appeared in the message.
+    expect(message).not.toContain('תור לרופא');
+    expect(occurrences(message, 'אבי')).toBe(1);
   });
 
   it('never reports a release the parent cancelled', async () => {
