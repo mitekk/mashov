@@ -24,6 +24,10 @@ export class SyncRunService {
       fetchedCount?: number;
       createdCount?: number;
       updatedCount?: number;
+      // mail_counts only: Mashov's unreadConversations against our own derived count,
+      // so their drift is queryable without container logs.
+      upstreamCount?: number;
+      localCount?: number;
       errorMessage?: string;
     },
   ): Promise<SyncRun> {

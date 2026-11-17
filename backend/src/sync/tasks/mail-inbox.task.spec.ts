@@ -317,4 +317,73 @@ describe('MailInboxTask', () => {
       expectUpsertedIsUnread(true);
     });
   });
+  describe('reconciliation sweep', () => {
+    const RUN_STARTED_AT = new Date('2026-03-18T00:00:00Z');
+
+    it('clears unread on conversations upstream no longer returns', async () => {
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([makeConversation()])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith({
+        where: { isUnread: true, lastFetchedAt: { lt: RUN_STARTED_AT } },
+        data: { isUnread: false },
+      });
+    });
+
+    it('skips the sweep when an item failed to upsert', async () => {
+      (mockPrisma.mailConversation.upsert as jest.Mock).mockRejectedValueOnce(
+        new Error('upsert boom'),
+      );
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([makeConversation()])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('skips the sweep when more than one connection is active', async () => {
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+        { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
+        { id: 'conn-2', schoolCode: 2, schoolYear: 2026, username: 'b', encryptedPassword: 'y' },
+      ]);
+      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue([]);
+
+      await task.execute();
+
+      expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('skips the sweep on a run targeted at a single connection', async () => {
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+        { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
+      ]);
+      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue([]);
+
+      await task.execute({ connectionId: 'conn-1' });
+
+      expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('refreshes cachedNewCount so the badge and the list agree before the next counts tick', async () => {
+      (mockPrisma.householdConnection.findFirst as jest.Mock).mockResolvedValue({
+        id: 'household-1',
+      });
+      (mockPrisma.mailConversation.count as jest.Mock).mockResolvedValue(16);
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([makeConversation()])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith({
+        where: { id: 'household-1' },
+        data: { cachedNewCount: 16 },
+      });
+    });
+  });
 });
