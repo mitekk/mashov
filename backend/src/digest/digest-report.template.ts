@@ -19,9 +19,13 @@ export function formatSchoolDate(date: Date): string {
 }
 
 export function renderReport(payload: DigestPayload, lines: DigestLines): string {
+  // Who and when first: this is what a parent scans for in a list of Telegram
+  // chats, and it is the only place the child's name appears. Prose that
+  // repeats the name reads like a form letter, so neither the deterministic
+  // lines nor the system prompt reintroduce it.
   const blocks: string[] = [
-    lines.headline.trim(),
     `${payload.childFirstName} · ${formatSchoolDate(payload.reportFor)}`,
+    lines.headline.trim(),
   ];
 
   if (payload.behavior.length > 0) {
@@ -100,7 +104,7 @@ export function deterministicLines(payload: DigestPayload): DigestLines {
   const dueCount = payload.homeworkDueTomorrow.length;
 
   return {
-    headline: `עדכון יומי · ${payload.childFirstName}`,
+    headline: 'עדכון יומי מבית הספר',
     behaviorLine:
       behaviorCount === 0
         ? ''

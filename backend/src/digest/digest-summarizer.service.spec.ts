@@ -21,6 +21,7 @@ const REPORT_FOR = new Date('2026-11-17T00:00:00Z');
 function makePayload(): DigestPayload {
   return {
     childFirstName: 'אבי',
+    childGender: 'male',
     reportFor: REPORT_FOR,
     behavior: [
       {
@@ -83,7 +84,6 @@ describe('buildPrompt', () => {
   it('carries the child first name, subjects, and remark text', () => {
     const prompt = buildPrompt(makePayload());
 
-    expect(prompt).toContain('אבי');
     expect(prompt).toContain('מתמטיקה');
     expect(prompt).toContain('איחור');
     expect(prompt).toContain('הגיע באיחור של 10 דקות');
@@ -113,6 +113,30 @@ describe('buildPrompt', () => {
     expect(prompt).not.toContain('rachel.levi');
     // No guid in any shape.
     expect(prompt).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/);
+  });
+
+  it('never forwards the first name either', () => {
+    // The name heads the rendered message, so the model has no use for it --
+    // and an instruction not to repeat it was followed only sometimes, which
+    // makes withholding it the only reliable way to keep it out of the prose.
+    // It also means no part of the child's name leaves the host.
+    const prompt = buildPrompt(makePayload());
+
+    expect(prompt).not.toContain('אבי');
+  });
+
+  it('states the gender in Hebrew, which is what the prose needs instead', () => {
+    // Hebrew verbs are gendered, and plenty of Israeli first names are not
+    // (נועם, שחר, רותם), so the name was never a reliable signal anyway.
+    expect(buildPrompt({ ...makePayload(), childGender: 'female' })).toContain('נקבה');
+    expect(buildPrompt({ ...makePayload(), childGender: 'male' })).toContain('זכר');
+  });
+
+  it('says nothing about gender when the roster does not record it', () => {
+    const prompt = buildPrompt({ ...makePayload(), childGender: null });
+
+    expect(prompt).not.toContain('זכר');
+    expect(prompt).not.toContain('נקבה');
   });
 });
 

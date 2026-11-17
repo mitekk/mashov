@@ -13,6 +13,7 @@ const LINES: DigestLines = {
 function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
   return {
     childFirstName: 'אבי',
+    childGender: 'male',
     reportFor: REPORT_FOR,
     behavior: [],
     homeworkNew: [],
@@ -48,12 +49,23 @@ describe('formatSchoolDate', () => {
 });
 
 describe('renderReport', () => {
-  it('opens with the headline and names the child and the day', () => {
+  it('opens with the child and the day, before any prose', () => {
     const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES);
 
+    // Who and when is what a parent scans for first in a Telegram list.
+    expect(text.split('\n')[0]).toBe('אבי · 17/11/2026');
     expect(text).toContain('יום רגוע עם הערה אחת');
-    expect(text).toContain('אבי');
-    expect(text).toContain('17/11/2026');
+  });
+
+  it('names the child once only, in that opening line', () => {
+    // The name is in the header, so prose that repeats it reads like a form
+    // letter. The deterministic lines must not reintroduce it, and the system
+    // prompt tells the model the same thing.
+    const payload = makePayload({ behavior: [BEHAVIOR], homeworkNew: [HOMEWORK] });
+
+    const text = renderReport(payload, deterministicLines(payload));
+
+    expect(text.split('אבי').length - 1).toBe(1);
   });
 
   it('renders a behavior section with the event and its remark', () => {

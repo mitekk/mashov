@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   DigestBehaviorFact,
   DigestCandidate,
+  DigestGender,
   DigestHomeworkFact,
   DigestPayload,
 } from './digest.types';
@@ -36,7 +37,7 @@ export class DigestCollectorService {
 
     const student = await this.prisma.student.findUnique({
       where: { studentGuid },
-      select: { privateName: true },
+      select: { privateName: true, gender: true },
     });
 
     const behavior = behaviorIds.length > 0 ? await this.readBehavior(behaviorIds) : [];
@@ -54,6 +55,7 @@ export class DigestCollectorService {
 
     return {
       childFirstName: student?.privateName ?? '',
+      childGender: normalizeGender(student?.gender),
       reportFor,
       behavior,
       homeworkNew: newIds
@@ -107,4 +109,20 @@ function idsOf(candidates: DigestCandidate[], itemType: DigestCandidate['itemTyp
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+/**
+ * Mashov sends the child's gender as a single Hebrew letter on the login
+ * response -- `ז` for male, `נ` for female (`apis/post-api-login.md:114`) --
+ * and the column is a free-text `String`, so older or hand-seeded rows can
+ * hold `M`/`F` instead. Anything unrecognised becomes null rather than a
+ * guess: the prompt then says nothing about gender, which is better than
+ * telling the model the wrong one and getting every verb wrong.
+ */
+export function normalizeGender(raw: string | null | undefined): DigestGender | null {
+  const value = raw?.trim().toLowerCase();
+  if (!value) return null;
+  if (value === 'ז' || value === 'm' || value === 'male') return 'male';
+  if (value === 'נ' || value === 'f' || value === 'female') return 'female';
+  return null;
 }

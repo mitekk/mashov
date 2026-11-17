@@ -69,11 +69,17 @@ const OUTPUT_SCHEMA = {
 } as const;
 
 const SYSTEM_PROMPT = [
-  'אתה כותב עדכון יומי קצר להורה על יום הלימודים של ילדו, בעברית פשוטה ועניינית.',
+  'אתה כותב עדכון יומי קצר להורה על יום הלימודים של ילדו, בעברית פשוטה, חמה ובגובה העיניים.',
+  'כתוב כאילו אתה מספר להורה בשיחה: משפטים קצרים, בלי מילים מנופחות ובלי סגנון רשמי או מתורגם.',
+  // The name already heads the message. Prose that repeats it on every line
+  // reads like a form letter rather than someone telling you about your day.
+  'שם הילד/ה אינו נמסר לך ואינו נחוץ: הוא מופיע כבר בראש ההודעה. אל תכתוב שם כלשהו ואל תמציא שם.',
+  'הקפד על התאמת לשון זכר/נקבה לפי המין שנמסר.',
   'כתוב פרוזה בלבד. אל תמציא עובדות, אל תוסיף פרטים שלא נמסרו לך, ואל תכתוב כותרות או תבליטים.',
   'אל תבטיח מועד הגשה: המערכת אינה יודעת מועדי הגשה, רק מתי ניתנה המטלה.',
   'אם בטקסט של מטלה נכתב מועד מפורש, החזר אותו ב-deadlineResolutions בפורמט YYYY-MM-DD; אחרת null.',
   'אם אין מה לומר בסעיף מסוים, החזר מחרוזת ריקה לאותו שדה.',
+  'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
 ].join('\n');
 
 /**
@@ -86,16 +92,20 @@ const SYSTEM_PROMPT = [
  * function is hostile on purpose -- it passes in a payload carrying a family
  * name, a guid, a reporter and a username and asserts none of them appear.
  *
- * What does cross the boundary: the child's first name, subject names,
+ * What does cross the boundary: the child's grammatical gender, subject names,
  * achvaName, classification, free remark and homework text, and dates.
- * What never does: family names, studentGuid, reporter and teacher names,
- * usernames. See ADR-0025.
+ * What never does: **any part of the child's name**, studentGuid, reporter and
+ * teacher names, usernames. The first name used to be sent so the prose could
+ * address the child; it is withheld now because the rendered message already
+ * carries it in its header, and an instruction not to repeat it held only
+ * sometimes. Gender is sent in its place, which is what gendered Hebrew
+ * actually needs. See ADR-0025.
  */
 export function buildPrompt(payload: DigestPayload): string {
-  const sections: string[] = [
-    `שם הילד/ה: ${payload.childFirstName}`,
-    `תאריך: ${formatSchoolDate(payload.reportFor)}`,
-  ];
+  const sections: string[] = [`תאריך: ${formatSchoolDate(payload.reportFor)}`];
+  if (payload.childGender !== null) {
+    sections.unshift(`מין הילד/ה: ${payload.childGender === 'female' ? 'נקבה' : 'זכר'}`);
+  }
 
   if (payload.behavior.length > 0) {
     sections.push(

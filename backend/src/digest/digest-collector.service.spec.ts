@@ -1,4 +1,4 @@
-import { DigestCollectorService } from './digest-collector.service';
+import { DigestCollectorService, normalizeGender } from './digest-collector.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { DigestCandidate } from './digest.types';
 
@@ -157,5 +157,26 @@ describe('DigestCollectorService.collect', () => {
     expect(select.reporter).toBeUndefined();
     expect(select.rawPayload).toBeUndefined();
     expect(select.studentGuid).toBeUndefined();
+  });
+});
+
+describe('normalizeGender', () => {
+  it('reads the Hebrew letters Mashov actually sends', () => {
+    expect(normalizeGender('ז')).toBe('male');
+    expect(normalizeGender('נ')).toBe('female');
+  });
+
+  it('still reads the latin forms older rows may hold', () => {
+    expect(normalizeGender('M')).toBe('male');
+    expect(normalizeGender('f')).toBe('female');
+  });
+
+  it('returns null rather than guessing', () => {
+    // A wrong gender gets every Hebrew verb in the message wrong, which is
+    // worse than prose that avoids the question.
+    expect(normalizeGender('')).toBeNull();
+    expect(normalizeGender(null)).toBeNull();
+    expect(normalizeGender(undefined)).toBeNull();
+    expect(normalizeGender('other')).toBeNull();
   });
 });

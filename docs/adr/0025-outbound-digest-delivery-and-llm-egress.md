@@ -48,6 +48,17 @@ the gate only protects *empty* sections, and loose description of a section that
 would reach a parent. Sonnet costs roughly a fifth of Opus on this task; at ≤7 calls per child
 per active day, all three are small enough that cost did not decide this.
 
+**No part of the child's name reaches the model.** The first name was originally sent so the
+prose could address the child. It is withheld now for two reasons that point the same way: the
+rendered message already carries the name in its header line, so prose repeating it reads like a
+form letter; and an instruction not to repeat it was obeyed only *sometimes* — in testing, Haiku
+honoured it on one run and Sonnet did not, then the reverse. A constraint that matters is
+enforced by withholding the data, not by asking. What the prompt sends instead is the child's
+grammatical gender (`ז`/`נ` from the roster, mapped to `male`/`female`), which is what gendered
+Hebrew actually needs and which the name never reliably supplied anyway — נועם, שחר and רותם are
+all ambiguous. An unrecognised value becomes `null` and the prompt says nothing, because a wrong
+gender makes every verb in the message wrong.
+
 `low` effort is deliberate rather than timid: thinking counts against `max_tokens` on these
 models, so a higher level raises the chance of a truncated response — which lands on the
 deterministic fallback and costs the parent the prose entirely. `DIGEST_LLM_MODEL` and

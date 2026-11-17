@@ -64,12 +64,21 @@ export interface DigestHomeworkFact {
 }
 
 /** Everything the summarizer and the template are allowed to see for one child. */
+export type DigestGender = 'male' | 'female';
+
 export interface DigestPayload {
   /**
-   * First name only. Family names never reach the prompt -- see
-   * `buildPrompt` and ADR-0025.
+   * First name only, and the **template's** alone: it heads the rendered
+   * message and is never put in the prompt, so no part of the child's name
+   * leaves the host. See `buildPrompt` and ADR-0025.
    */
   childFirstName: string;
+  /**
+   * What the prose needs instead of the name. Hebrew verbs are gendered, and
+   * many Israeli first names are not (נועם, שחר, רותם), so the name was never
+   * a dependable signal. `null` when the roster does not say.
+   */
+  childGender: DigestGender | null;
   /** The school day this report covers, UTC midnight. */
   reportFor: Date;
   behavior: DigestBehaviorFact[];

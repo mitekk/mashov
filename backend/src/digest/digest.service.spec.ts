@@ -34,6 +34,7 @@ function duePayloadItem(id: string, estimated: Date | null) {
 function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
   return {
     childFirstName: 'אבי',
+    childGender: 'male',
     reportFor: TODAY,
     behavior: [
       {
