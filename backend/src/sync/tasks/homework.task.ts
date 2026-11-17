@@ -54,7 +54,25 @@ export class HomeworkTask {
     const errorMessages: string[] = [];
 
     // Fall back to single shared session when no user-owned connections exist
+    // One value feeds both the login year and the row stamp.
+    const requestedYear = context.schoolYear;
+    const sourcePrefix = context.sourcePrefix ?? '';
+
     const useSharedSession = !context.connectionId && connections.length === 0;
+
+    // The shared session is process-global and carries no per-year identity,
+    // so it would answer with the current year while this run stamps another.
+    // The backfill always passes a connectionId and never reaches here; this
+    // refuses the combination rather than writing mislabelled rows.
+    if (useSharedSession && requestedYear !== undefined) {
+      const message = `${HomeworkTask.SOURCE}: refusing year ${requestedYear} on the shared-session path; a historical year needs an explicit connectionId`;
+      this.logger.warn(message);
+      return {
+        status: 'failed',
+        summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
+        errorMessages: [message],
+      };
+    }
 
     // The year the row belongs to. Scoped per student because the connection
     // that answers is picked per student below; a stored year is the fallback
@@ -64,8 +82,8 @@ export class HomeworkTask {
     const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
 
     for (const student of students) {
-      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
-      const source = `${HomeworkTask.SOURCE}:${student.studentGuid}`;
+      let schoolYear = requestedYear ?? connections[0]?.schoolYear ?? fallbackSchoolYear;
+      const source = `${sourcePrefix}${HomeworkTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
       let upsertCount = 0;
@@ -88,11 +106,12 @@ export class HomeworkTask {
           for (const conn of connections) {
             try {
               const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              const connYear = requestedYear ?? conn.schoolYear;
               items = await this.mashovClient.getForConnection<MashovHomework[]>(
                 `/api/students/${student.studentGuid}/homework`,
                 conn.id,
                 conn.schoolCode,
-                conn.schoolYear,
+                connYear,
                 conn.username,
                 password,
                 {
@@ -101,7 +120,7 @@ export class HomeworkTask {
                   },
                 },
               );
-              schoolYear = conn.schoolYear;
+              schoolYear = connYear;
               break;
             } catch (connErr) {
               const connMsg = connErr instanceof Error ? connErr.message : String(connErr);

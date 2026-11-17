@@ -157,4 +157,72 @@ describe('HomeworkTask', () => {
       expect.objectContaining({ orderBy: expect.anything() }),
     );
   });
+  describe('historical year context', () => {
+    it('stamps and fetches the context school year when given one', async () => {
+      await task.execute({ connectionId: 'conn-1', schoolYear: 2026 });
+
+      // One value feeds both the login year and the row stamp: a session is
+      // scoped to the year in its login body, so a stamp that disagrees with
+      // the fetch writes one year's data under another year's label.
+      const fetchArgs = mashovClient.getForConnection.mock.calls[0];
+      expect(fetchArgs).toContain(2026);
+      expect(prisma.homeworkItem.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ schoolYear: 2026 }),
+          where: {
+            studentGuid_schoolYear_lessonId: {
+              studentGuid: 'stu-1',
+              schoolYear: 2026,
+              lessonId: 555,
+            },
+          },
+        }),
+      );
+    });
+
+    it("still uses the connection's year when no context year is given", async () => {
+      await task.execute({ connectionId: 'conn-1' });
+
+      expect(mashovClient.getForConnection.mock.calls[0]).toContain(2027);
+      expect(prisma.homeworkItem.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ schoolYear: 2027 }),
+        }),
+      );
+    });
+
+    it('prefixes the run source when given a source prefix', async () => {
+      await task.execute({
+        connectionId: 'conn-1',
+        schoolYear: 2026,
+        sourcePrefix: 'history:2026:',
+      });
+
+      expect(syncRunService.openRun).toHaveBeenCalledWith(
+        'history:2026:homework:stu-1',
+        'conn-1',
+      );
+    });
+
+    it('refuses a historical year on the shared-session path', async () => {
+      // The shared session is process-global and has no per-year identity, so
+      // it would silently answer with the current year's data.
+      prisma.householdConnection.findMany.mockResolvedValue([]);
+
+      const result = await task.execute({ schoolYear: 2026 });
+
+      expect(result.status).toBe('failed');
+      expect(mashovClient.get).not.toHaveBeenCalled();
+      expect(prisma.homeworkItem.upsert).not.toHaveBeenCalled();
+    });
+
+    it('still runs the shared-session path when no year is asked for', async () => {
+      prisma.householdConnection.findMany.mockResolvedValue([]);
+
+      const result = await task.execute();
+
+      expect(result.status).toBe('success');
+      expect(mashovClient.get).toHaveBeenCalled();
+    });
+  });
 });

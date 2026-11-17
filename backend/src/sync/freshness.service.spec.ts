@@ -330,6 +330,26 @@ describe('FreshnessService', () => {
       expect(health?.status).toBe('stale');
     });
 
+    it('does not let a completed historical year make a stale live source look fresh', async () => {
+      // Variant matching treats `homework:<anything>` as a fresh `homework`
+      // success. A backfill named `homework:<guid>:2026` would therefore hide
+      // a broken current-year homework sync — PR #8's blindness by a new
+      // route. The `history:<year>:` prefix is what keeps it invisible here.
+      const staleLive = makeSyncRun('homework:stu-1', 'success', 48 * 60);
+      const freshHistory = makeSyncRun('history:2026:homework:stu-1', 'success', 1);
+      const successRuns = new Map([
+        ['homework:stu-1', staleLive],
+        ['history:2026:homework:stu-1', freshHistory],
+      ]);
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+      const results = await service.getAllSourceHealth(['stu-1']);
+
+      expect(results.find((r) => r.source === 'homework:stu-1')?.status).toBe('stale');
+      expect(results.some((r) => r.source.startsWith('history:'))).toBe(false);
+    });
+
     it('returns failed status when latest run failed and no successful run exists', async () => {
       const failedRun = makeSyncRun('notifications', 'failed', 5);
       failedRun.errorMessage = 'network error';

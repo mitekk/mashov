@@ -82,6 +82,10 @@ export class SyncController {
         householdConnectionId: connection.id,
         status: 'success',
         endedAt: { gte: thirtyMinutesAgo },
+        // The nightly history backfill writes one run per task per student
+        // under a `history:<year>:` prefix. Counted here they would inflate
+        // sourcesCompleted and trip `done` before the live sync has finished.
+        source: { not: { startsWith: 'history:' } },
       },
     });
 

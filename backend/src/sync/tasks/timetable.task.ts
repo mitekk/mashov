@@ -56,7 +56,25 @@ export class TimetableTask {
       },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
+    // One value feeds both the login year and the row stamp.
+    const requestedYear = context.schoolYear;
+    const sourcePrefix = context.sourcePrefix ?? '';
+
     const useSharedSession = !context.connectionId && connections.length === 0;
+
+    // The shared session is process-global and carries no per-year identity,
+    // so it would answer with the current year while this run stamps another.
+    // The backfill always passes a connectionId and never reaches here; this
+    // refuses the combination rather than writing mislabelled rows.
+    if (useSharedSession && requestedYear !== undefined) {
+      const message = `${TimetableTask.SOURCE}: refusing year ${requestedYear} on the shared-session path; a historical year needs an explicit connectionId`;
+      this.logger.warn(message);
+      return {
+        status: 'failed',
+        summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
+        errorMessages: [message],
+      };
+    }
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -71,8 +89,8 @@ export class TimetableTask {
     const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
 
     for (const student of students) {
-      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
-      const source = `${TimetableTask.SOURCE}:${student.studentGuid}`;
+      let schoolYear = requestedYear ?? connections[0]?.schoolYear ?? fallbackSchoolYear;
+      const source = `${sourcePrefix}${TimetableTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
       let upsertCount = 0;
@@ -90,12 +108,13 @@ export class TimetableTask {
           for (const conn of connections) {
             try {
               const password = this.encryptionService.decrypt(conn.encryptedPassword);
+              const connYear = requestedYear ?? conn.schoolYear;
               items = await this.mashovClient.getForConnection<MashovTimetableItem[]>(
                 `/api/students/${student.studentGuid}/timetable`,
-                conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
+                conn.id, conn.schoolCode, connYear, conn.username, password,
                 { headers: { 'Referer': referer } },
               );
-              schoolYear = conn.schoolYear;
+              schoolYear = connYear;
               break;
             } catch { /* try next connection */ }
           }
