@@ -678,6 +678,35 @@ export class MailService {
       data: { isUnread: false },
     });
 
+    // This is the only mail mutation with no upstream call -- markUnread, archive and
+    // unarchive all PUT to Mashov, but no markAsRead endpoint is documented. Upstream
+    // therefore keeps reporting the message unread, and without a record of the user's
+    // action the next inbox walk would restore isUnread: true and the badge would
+    // visibly bounce back within 7 minutes.
+    //
+    // The watermark is a stored message sendTime, never now(): Mashov timestamps are
+    // naive and parsed in the container's zone, so a UTC now() would sit behind the
+    // instants it is compared against and clear the override for mail read within
+    // hours of arriving -- the common case. Comparing sendTimes against sendTimes
+    // keeps both sides in one parsing domain.
+    const messages = await this.prisma.mailMessage.findMany({
+      where: { conversationId: { in: conversationIds } },
+      select: { conversationId: true, sendTime: true },
+    });
+    const newestByConversationId = new Map<string, Date>();
+    for (const message of messages) {
+      const current = newestByConversationId.get(message.conversationId);
+      if (!current || message.sendTime.getTime() > current.getTime()) {
+        newestByConversationId.set(message.conversationId, message.sendTime);
+      }
+    }
+    for (const [conversationId, locallyReadThroughAt] of newestByConversationId) {
+      await this.prisma.mailConversation.updateMany({
+        where: { conversationId },
+        data: { locallyReadThroughAt },
+      });
+    }
+
     await this.updateCachedNewCount();
 
     return { updated: conversationIds.length };
@@ -715,7 +744,8 @@ export class MailService {
         conversationId: { in: eligibleConversationIds },
         NOT: { labels: { array_contains: ['archived'] } },
       },
-      data: { isUnread: true },
+      // Clear the local read override: the user is explicitly undoing it.
+      data: { isUnread: true, locallyReadThroughAt: null },
     });
 
     await this.updateCachedNewCount();
@@ -763,7 +793,11 @@ export class MailService {
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isUnread: true, labels: [] as unknown as Prisma.InputJsonValue },
+      data: {
+        isUnread: true,
+        labels: [] as unknown as Prisma.InputJsonValue,
+        locallyReadThroughAt: null,
+      },
     });
 
     await this.updateCachedNewCount();
