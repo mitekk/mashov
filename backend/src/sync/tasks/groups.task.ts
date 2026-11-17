@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { calendarSchoolYear } from '../../common/school-year/school-year.service';
 
 interface MashovGroup {
   groupId: number;
@@ -47,7 +48,13 @@ export class GroupsTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
+    // The year the row belongs to. Scoped per student because the connection
+    // that answers is picked per student below; the calendar is the fallback
+    // for the legacy shared-session path, which has no connection at all.
+    const fallbackSchoolYear = calendarSchoolYear(new Date());
+
     for (const student of students) {
+      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${GroupsTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -83,6 +90,7 @@ export class GroupsTask {
                   },
                 },
               );
+              schoolYear = conn.schoolYear;
               break;
             } catch (connErr) {
               const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
@@ -98,12 +106,14 @@ export class GroupsTask {
           try {
             await this.prisma.subjectEnrollment.upsert({
               where: {
-                studentGuid_groupId: {
+                studentGuid_schoolYear_groupId: {
+                  schoolYear,
                   studentGuid: student.studentGuid,
                   groupId: group.groupId,
                 },
               },
               create: {
+                schoolYear,
                 studentGuid: student.studentGuid,
                 groupId: group.groupId,
                 groupName: group.groupName,
@@ -113,6 +123,7 @@ export class GroupsTask {
                 rawPayload: group as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
+                schoolYear,
                 groupName: group.groupName,
                 subjectName: group.subjectName,
                 teachers: group.groupTeachers as unknown as import('@prisma/client').Prisma.InputJsonValue,

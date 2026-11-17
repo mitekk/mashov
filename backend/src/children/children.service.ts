@@ -3,6 +3,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 import { UserItemStateService } from '../common/user-item-state.service';
+import {
+  currentSchoolYearFor,
+  schoolYearScope,
+} from '../common/school-year/school-year.scope';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -48,6 +52,7 @@ export class ChildrenService {
     });
 
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
 
     const data = await Promise.all(
       students.map(async (student) => {
@@ -58,17 +63,22 @@ export class ChildrenService {
           latestBehavior,
         ] =
           await Promise.all([
-            this.getUnreadChildActivityCounts(student.studentGuid, sevenDaysAgo, userId),
+            this.getUnreadChildActivityCounts(
+              student.studentGuid,
+              sevenDaysAgo,
+              yearScope,
+              userId,
+            ),
             this.prisma.subjectEnrollment.count({
-              where: { studentGuid: student.studentGuid },
+              where: { studentGuid: student.studentGuid, ...yearScope },
             }),
             this.prisma.homeworkItem.findFirst({
-              where: { studentGuid: student.studentGuid },
+              where: { studentGuid: student.studentGuid, ...yearScope },
               orderBy: { lessonDate: 'desc' },
               select: { lessonDate: true },
             }),
             this.prisma.behaviorItem.findFirst({
-              where: { studentGuid: student.studentGuid },
+              where: { studentGuid: student.studentGuid, ...yearScope },
               orderBy: { eventAt: 'desc' },
               select: { eventAt: true },
             }),
@@ -108,6 +118,7 @@ export class ChildrenService {
   async getChildWorkspace(studentGuid: string, userId?: string) {
     const student = await this.getStudentOrThrow(studentGuid, userId);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
 
     const [
       activityCounts,
@@ -115,12 +126,12 @@ export class ChildrenService {
       totalWeeklyHours,
       lastSync,
     ] = await Promise.all([
-      this.getUnreadChildActivityCounts(studentGuid, sevenDaysAgo, userId),
+      this.getUnreadChildActivityCounts(studentGuid, sevenDaysAgo, yearScope, userId),
       this.prisma.subjectEnrollment.count({
-        where: { studentGuid },
+        where: { studentGuid, ...yearScope },
       }),
       this.prisma.subjectEnrollment.aggregate({
-        where: { studentGuid },
+        where: { studentGuid, ...yearScope },
         _sum: { weeklyHours: true },
       }),
       this.prisma.syncRun.findFirst({
@@ -175,7 +186,10 @@ export class ChildrenService {
 
     // Fetch all non-filtered items for state-based filtering
     const allItems = await this.prisma.homeworkItem.findMany({
-      where: { studentGuid },
+      where: {
+        studentGuid,
+        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+      },
       orderBy: { lessonDate: 'desc' },
     });
 
@@ -241,6 +255,7 @@ export class ChildrenService {
       where: {
         studentGuid,
         ...(bucket !== 'all' ? { classification: bucket } : {}),
+        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
       },
       orderBy: { eventAt: 'desc' },
     });
@@ -500,11 +515,14 @@ export class ChildrenService {
     return { updated: behaviorIds.length };
   }
 
-  async getTimetable(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getTimetable(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const entries = await this.prisma.timetableEntry.findMany({
-      where: { studentGuid },
+      where: {
+        studentGuid,
+        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+      },
       orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
     });
 
@@ -525,11 +543,14 @@ export class ChildrenService {
     };
   }
 
-  async getSubjects(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getSubjects(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const items = await this.prisma.subjectEnrollment.findMany({
-      where: { studentGuid },
+      where: {
+        studentGuid,
+        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+      },
       orderBy: { subjectName: 'asc' },
     });
 
@@ -629,14 +650,15 @@ export class ChildrenService {
     );
   }
 
-  async getNotices(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getNotices(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const now = new Date();
     const items = await this.prisma.messageBoardItem.findMany({
       where: {
         studentGuid,
         expirationDate: { gt: now },
+        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
       },
       orderBy: { expirationDate: 'asc' },
     });
@@ -752,6 +774,7 @@ export class ChildrenService {
   private async getUnreadChildActivityCounts(
     studentGuid: string,
     since: Date,
+    yearScope: { schoolYear: { in: number[] } },
     userId?: string,
   ): Promise<{
     recentHomeworkCount: number;
@@ -764,6 +787,7 @@ export class ChildrenService {
         where: {
           studentGuid,
           lessonDate: { gte: since },
+          ...yearScope,
         },
         select: { id: true },
       }),
@@ -771,6 +795,7 @@ export class ChildrenService {
         where: {
           studentGuid,
           lessonDate: { gte: since },
+          ...yearScope,
         },
         select: { id: true, classification: true },
       }),

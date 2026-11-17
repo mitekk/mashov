@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { AxiosInstance } from 'axios';
 import { PrismaService } from '../../prisma/prisma.service';
 import { createMashovAxios, resolveMashovBaseUrl } from '../http/mashov-http';
+import { currentSchoolYearFor } from './school-year.scope';
 
 /** How the resolved year was arrived at — logged, and surfaced in source health. */
 export type SchoolYearSource = 'override' | 'schools-api' | 'calendar' | 'stored';
@@ -135,18 +136,9 @@ export class SchoolYearService {
     return { year: authoritative, changed: authoritative !== candidate };
   }
 
-  /** The year to scope a user's reads to — their connection's, else resolved. */
+  /** The year to scope a user's reads to — their connection's, else the calendar. */
   async currentSchoolYearFor(userId?: string): Promise<number> {
-    const connection = await this.prisma.householdConnection.findFirst({
-      where: { active: true, ...(userId ? { userId } : {}) },
-      orderBy: [{ schoolYear: 'desc' }, { lastLoginAt: 'desc' }],
-      select: { schoolCode: true, schoolYear: true },
-    });
-
-    if (connection) {
-      return connection.schoolYear;
-    }
-    return calendarSchoolYear(new Date());
+    return currentSchoolYearFor(this.prisma, userId);
   }
 
   /** Drops the cached resolution for a semel — used right after a rollover. */

@@ -6,6 +6,7 @@ import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import sanitizeHtml = require('sanitize-html');
+import { calendarSchoolYear } from '../../common/school-year/school-year.service';
 
 interface MashovMessageBoardItem {
   eventid: number;
@@ -48,7 +49,13 @@ export class MessageBoardTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
+    // The year the row belongs to. Scoped per student because the connection
+    // that answers is picked per student below; the calendar is the fallback
+    // for the legacy shared-session path, which has no connection at all.
+    const fallbackSchoolYear = calendarSchoolYear(new Date());
+
     for (const student of students) {
+      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${MessageBoardTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -72,6 +79,7 @@ export class MessageBoardTask {
                 conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
                 { headers: { 'Referer': referer } },
               );
+              schoolYear = conn.schoolYear;
               break;
             } catch { /* try next connection */ }
           }
@@ -94,12 +102,14 @@ export class MessageBoardTask {
 
             await this.prisma.messageBoardItem.upsert({
               where: {
-                studentGuid_eventId: {
+                studentGuid_schoolYear_eventId: {
+                  schoolYear,
                   studentGuid: student.studentGuid,
                   eventId: item.eventid,
                 },
               },
               create: {
+                schoolYear,
                 studentGuid: student.studentGuid,
                 eventId: item.eventid,
                 eventText: sanitizedText,
@@ -108,6 +118,7 @@ export class MessageBoardTask {
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
+                schoolYear,
                 eventText: sanitizedText,
                 expirationDate,
                 inSite: item.inSite,

@@ -6,6 +6,7 @@ import { SyncRunService } from '../sync-run.service';
 import { BehaviorClassifierService } from '../behavior-classifier.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { calendarSchoolYear } from '../../common/school-year/school-year.service';
 
 interface MashovOutBehaviorItem {
   studentGuid: string;
@@ -73,7 +74,13 @@ export class OutBehaveTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
+    // The year the row belongs to. Scoped per student because the connection
+    // that answers is picked per student below; the calendar is the fallback
+    // for the legacy shared-session path, which has no connection at all.
+    const fallbackSchoolYear = calendarSchoolYear(new Date());
+
     for (const student of students) {
+      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${OutBehaveTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -94,6 +101,7 @@ export class OutBehaveTask {
                 `/api/students/${student.studentGuid}/outBehave`,
                 conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
               );
+              schoolYear = conn.schoolYear;
               break;
             } catch { /* try next connection */ }
           }
@@ -114,13 +122,15 @@ export class OutBehaveTask {
 
             await this.prisma.behaviorItem.upsert({
               where: {
-                studentGuid_lessonId_eventCode: {
+                studentGuid_schoolYear_lessonId_eventCode: {
+                  schoolYear,
                   studentGuid: item.studentGuid,
                   lessonId: item.lessonId,
                   eventCode: item.eventCode,
                 },
               },
               create: {
+                schoolYear,
                 studentGuid: item.studentGuid,
                 lessonId: item.lessonId,
                 groupId: item.groupId,
@@ -139,6 +149,7 @@ export class OutBehaveTask {
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
+                schoolYear,
                 achvaName: item.achvaName,
                 classification: classification.bucket,
                 justifiable,

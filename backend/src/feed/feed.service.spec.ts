@@ -6,8 +6,14 @@ function makeMockPrisma(overrides: Partial<{
   homeworkFindMany: jest.Mock;
   behaviorFindMany: jest.Mock;
   mailFindMany: jest.Mock;
+  connectionFindFirst: jest.Mock;
 }>): jest.Mocked<PrismaService> {
   return {
+    householdConnection: {
+      findFirst:
+        overrides.connectionFindFirst ??
+        jest.fn().mockResolvedValue({ schoolYear: 2027 }),
+    },
     student: { findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([]) },
     homeworkItem: { findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]) },
     behaviorItem: { findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]) },
@@ -84,6 +90,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
+          where: { schoolYear: { in: [2027, 0] } },
           orderBy: { lessonDate: 'desc' },
         }),
       );
@@ -98,6 +105,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
+          where: { schoolYear: { in: [2027, 0] } },
           orderBy: { eventAt: 'desc' },
         }),
       );

@@ -6,6 +6,7 @@ import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import * as crypto from 'crypto';
+import { calendarSchoolYear } from '../../common/school-year/school-year.service';
 
 interface MashovHomework {
   lessonId: number;
@@ -54,7 +55,13 @@ export class HomeworkTask {
     // Fall back to single shared session when no user-owned connections exist
     const useSharedSession = !context.connectionId && connections.length === 0;
 
+    // The year the row belongs to. Scoped per student because the connection
+    // that answers is picked per student below; the calendar is the fallback
+    // for the legacy shared-session path, which has no connection at all.
+    const fallbackSchoolYear = calendarSchoolYear(new Date());
+
     for (const student of students) {
+      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${HomeworkTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -91,6 +98,7 @@ export class HomeworkTask {
                   },
                 },
               );
+              schoolYear = conn.schoolYear;
               break;
             } catch (connErr) {
               const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
@@ -108,13 +116,20 @@ export class HomeworkTask {
             const files = item.files ?? [];
             const remark = item.remark && item.remark !== 'ללא הערות' ? item.remark : null;
 
-            let whereClause: { studentGuid_lessonId: { studentGuid: string; lessonId: number } };
+            let whereClause: {
+              studentGuid_schoolYear_lessonId: {
+                studentGuid: string;
+                schoolYear: number;
+                lessonId: number;
+              };
+            };
             let lessonId: number;
 
             if (item.lessonId) {
               lessonId = item.lessonId;
               whereClause = {
-                studentGuid_lessonId: {
+                studentGuid_schoolYear_lessonId: {
+                  schoolYear,
                   studentGuid: item.studentGuid,
                   lessonId: item.lessonId,
                 },
@@ -125,7 +140,8 @@ export class HomeworkTask {
               const hash = crypto.createHash('sha256').update(hashInput).digest('hex');
               lessonId = parseInt(hash.substring(0, 8), 16);
               whereClause = {
-                studentGuid_lessonId: {
+                studentGuid_schoolYear_lessonId: {
+                  schoolYear,
                   studentGuid: item.studentGuid,
                   lessonId,
                 },
@@ -135,6 +151,7 @@ export class HomeworkTask {
             await this.prisma.homeworkItem.upsert({
               where: whereClause,
               create: {
+                schoolYear,
                 studentGuid: item.studentGuid,
                 lessonId,
                 groupId: item.groupId,
@@ -147,6 +164,7 @@ export class HomeworkTask {
                 rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
               },
               update: {
+                schoolYear,
                 groupId: item.groupId,
                 lessonDate,
                 lesson: item.lesson,

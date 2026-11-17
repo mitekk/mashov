@@ -1,4 +1,5 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, Req } from '@nestjs/common';
+import type { Request } from 'express';
 import { IsInt, IsOptional, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 import { FeedService } from './feed.service';
@@ -23,9 +24,9 @@ export class FeedController {
   constructor(private readonly feedService: FeedService) {}
 
   @Get()
-  async getFeed(@Query() query: FeedQueryDto) {
+  async getFeed(@Query() query: FeedQueryDto, @Req() req: Request) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    return this.feedService.getFeed(page, limit);
+    return this.feedService.getFeed(page, limit, req.user?.userId);
   }
 }

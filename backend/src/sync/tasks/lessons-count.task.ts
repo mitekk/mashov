@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { calendarSchoolYear } from '../../common/school-year/school-year.service';
 
 interface MashovLessonsCount {
   studentGuid: string;
@@ -45,7 +46,13 @@ export class LessonsCountTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
+    // The year the row belongs to. Scoped per student because the connection
+    // that answers is picked per student below; the calendar is the fallback
+    // for the legacy shared-session path, which has no connection at all.
+    const fallbackSchoolYear = calendarSchoolYear(new Date());
+
     for (const student of students) {
+      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${LessonsCountTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -69,6 +76,7 @@ export class LessonsCountTask {
                 conn.id, conn.schoolCode, conn.schoolYear, conn.username, password,
                 { headers: { 'Referer': referer } },
               );
+              schoolYear = conn.schoolYear;
               break;
             } catch { /* try next connection */ }
           }
@@ -81,7 +89,8 @@ export class LessonsCountTask {
           try {
             const existing = await this.prisma.subjectEnrollment.findUnique({
               where: {
-                studentGuid_groupId: {
+                studentGuid_schoolYear_groupId: {
+                  schoolYear,
                   studentGuid: item.studentGuid,
                   groupId: item.groupId,
                 },
@@ -91,7 +100,8 @@ export class LessonsCountTask {
             if (existing) {
               await this.prisma.subjectEnrollment.update({
                 where: {
-                  studentGuid_groupId: {
+                  studentGuid_schoolYear_groupId: {
+                  schoolYear,
                     studentGuid: item.studentGuid,
                     groupId: item.groupId,
                   },

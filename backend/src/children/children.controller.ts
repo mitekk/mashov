@@ -356,8 +356,8 @@ export class ChildrenController {
   }
 
   @Get(':studentGuid/timetable')
-  getTimetable(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getTimetable(studentGuid);
+  getTimetable(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getTimetable(studentGuid, req.user?.userId);
   }
 
   @Get(':studentGuid/lessons/plans')
@@ -417,12 +417,12 @@ export class ChildrenController {
   }
 
   @Get(':studentGuid/subjects')
-  async getSubjects(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getSubjects(studentGuid);
+  async getSubjects(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getSubjects(studentGuid, req.user?.userId);
   }
 
   @Get(':studentGuid/notices')
-  async getNotices(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getNotices(studentGuid);
+  async getNotices(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getNotices(studentGuid, req.user?.userId);
   }
 }

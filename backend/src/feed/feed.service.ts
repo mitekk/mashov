@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  currentSchoolYearFor,
+  schoolYearScope,
+} from '../common/school-year/school-year.scope';
 
 export interface FeedItem {
   id: string;
@@ -24,7 +28,11 @@ export interface FeedItem {
 export class FeedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getFeed(page: number, limit: number) {
+  async getFeed(page: number, limit: number, userId?: string) {
+    // These two reads are unbounded `orderBy desc`, so without the year scope
+    // the feed mixes a finished school year into the current one.
+    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
+
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
       select: { studentGuid: true, fullName: true },
@@ -33,9 +41,11 @@ export class FeedService {
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
+        where: yearScope,
         orderBy: { lessonDate: 'desc' },
       }),
       this.prisma.behaviorItem.findMany({
+        where: yearScope,
         orderBy: { eventAt: 'desc' },
       }),
       this.prisma.mailConversation.findMany({
