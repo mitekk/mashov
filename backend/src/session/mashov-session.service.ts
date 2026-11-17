@@ -33,9 +33,31 @@ interface LoginResponse {
       schoolYear: number;
     };
     children: LoginChild[];
+    /** Children no longer enrolled. Element shape is undocumented. */
+    inactiveChildren?: unknown[];
+    userSchoolYears?: number[];
     username: string;
   };
 }
+
+export interface RosterResult {
+  created: number;
+  updated: number;
+  deactivated: number;
+}
+
+export interface RosterRefreshResult extends RosterResult {
+  year: number;
+}
+
+/**
+ * How long a successful `students` sync keeps the self-heal path quiet. The
+ * signal is the `syncRun` table — the same one freshness already reads — so no
+ * new column is needed.
+ */
+export const ROSTER_TTL_MINUTES = 60;
+
+const STUDENTS_SOURCE = 'students';
 
 interface SessionCookies {
   csrfToken: string;
@@ -43,10 +65,16 @@ interface SessionCookies {
   uniquId: string;
 }
 
+interface ConnectionLogin {
+  cookies: SessionCookies;
+  loginData: LoginResponse;
+  roster: RosterResult;
+}
+
 interface ConnectionSession {
   csrfToken: string;
   cookies: SessionCookies;
-  authPromise: Promise<SessionCookies> | null;
+  authPromise: Promise<ConnectionLogin> | null;
   isAuthenticating: boolean;
 }
 
@@ -61,6 +89,15 @@ export class MashovSessionService {
   private readonly httpClient: AxiosInstance;
   /** Per-connection session cache keyed by householdConnection.id */
   private readonly connectionSessions = new Map<string, ConnectionSession>();
+  /** Last roster counts per connection, written by every connection login. */
+  private readonly lastRosterByConnection = new Map<string, RosterResult>();
+  /**
+   * Dedupes concurrent self-heal refreshes. Without it a page-load storm fires
+   * one upstream login per request.
+   */
+  private readonly inFlightRosterRefresh = new Map<string, Promise<void>>();
+  /** `inactiveChildren` is undocumented; log one raw sample, once. */
+  private hasLoggedInactiveChildrenShape = false;
 
   constructor(
     private readonly configService: ConfigService,
@@ -161,7 +198,7 @@ export class MashovSessionService {
       response.headers as Record<string, string | string[]>,
     );
 
-    await this.parseAndPersistChildren(response.data, username, password);
+    await this.persistRoster(response.data, Number(semel), year);
     await this.parseAndPersistHousehold(
       response.data,
       Number(semel),
@@ -244,28 +281,93 @@ export class MashovSessionService {
     await this.ensureAuthenticated();
   }
 
-  async ensureStudentsAvailable(): Promise<void> {
+  /**
+   * Keeps the roster from going stale. The old version short-circuited on
+   * `activeStudents > 0`, so it only ever fired when the `student` table was
+   * completely empty — which is why `classCode`/`classNum` stayed on last
+   * year's class for five months while every cron reported success.
+   */
+  async ensureStudentsAvailable(userId?: string): Promise<void> {
     if (process.env.NODE_ENV === "test") {
       return;
     }
 
-    const activeStudents = await this.prisma.student.count({
-      where: { isActive: true },
+    const lastRun = await this.prisma.syncRun.findFirst({
+      where: { source: STUDENTS_SOURCE, status: "success" },
+      orderBy: { endedAt: "desc" },
+      select: { endedAt: true },
     });
-    if (activeStudents > 0) {
+
+    if (
+      lastRun?.endedAt &&
+      Date.now() - new Date(lastRun.endedAt).getTime() <
+        ROSTER_TTL_MINUTES * 60 * 1000
+    ) {
       return;
     }
 
-    this.logger.warn(
-      "No active students found in DB; forcing re-authentication to refresh roster",
+    const connection = await this.prisma.householdConnection.findFirst({
+      where: { active: true, ...(userId ? { userId } : {}) },
+      orderBy: { lastLoginAt: "desc" },
+    });
+
+    const dedupeKey = connection?.id ?? "__env__";
+    const existing = this.inFlightRosterRefresh.get(dedupeKey);
+    if (existing) {
+      return existing;
+    }
+
+    const refresh = (
+      connection
+        ? this.refreshRosterForConnection(connection.id).then(() => undefined)
+        : this.ensureAuthenticated(true)
+    )
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Failed to refresh student roster: ${msg}`);
+      })
+      .finally(() => {
+        this.inFlightRosterRefresh.delete(dedupeKey);
+      });
+
+    this.inFlightRosterRefresh.set(dedupeKey, refresh);
+    return refresh;
+  }
+
+  /**
+   * Force-relogins a connection and re-reads `accessToken.children[]`. This is
+   * the only place the roster can change: children exist nowhere else in the
+   * Mashov API, so without a re-login a child who moves up a grade keeps last
+   * year's `classCode` forever.
+   */
+  async refreshRosterForConnection(
+    connectionId: string,
+  ): Promise<RosterRefreshResult> {
+    const connection = await this.prisma.householdConnection.findUnique({
+      where: { id: connectionId },
+    });
+
+    if (!connection) {
+      throw new Error(`Household connection not found: ${connectionId}`);
+    }
+
+    const password = this.encryptionService.decrypt(connection.encryptedPassword);
+    const year = connection.schoolYear;
+
+    await this.getAuthHeadersForConnection(
+      connection.id,
+      connection.schoolCode,
+      year,
+      connection.username,
+      password,
+      true,
     );
 
-    try {
-      await this.ensureAuthenticated(true);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to refresh student roster: ${msg}`);
-    }
+    const roster =
+      this.lastRosterByConnection.get(connection.id) ??
+      { created: 0, updated: 0, deactivated: 0 };
+
+    return { ...roster, year };
   }
 
   private async ensureAuthenticated(force = false): Promise<void> {
@@ -296,47 +398,117 @@ export class MashovSessionService {
     }
   }
 
-  private async parseAndPersistChildren(
+  /**
+   * Upserts `accessToken.children[]` and deactivates `inactiveChildren`.
+   *
+   * Deliberately does NOT deactivate the complement (students in neither
+   * list): `Student` has no FK to a connection, so the complement includes
+   * other households' children.
+   */
+  async persistRoster(
     data: LoginResponse,
-    _username: string,
-    _password: string,
-  ): Promise<void> {
+    semel: number,
+    year: number,
+  ): Promise<RosterResult> {
     const children = data.accessToken?.children ?? [];
+    const guids = children
+      .map((child) => this.readChildGuid(child))
+      .filter((guid): guid is string => Boolean(guid));
+
+    const existing =
+      guids.length > 0
+        ? await this.prisma.student.findMany({
+            where: { studentGuid: { in: guids } },
+            select: { studentGuid: true },
+          })
+        : [];
+    const existingGuids = new Set(existing.map((row) => row.studentGuid));
+
+    let created = 0;
+    let updated = 0;
 
     for (const child of children) {
+      const studentGuid = this.readChildGuid(child);
+      if (!studentGuid) {
+        this.logger.warn(
+          `Skipping a child with no recognisable guid in the login payload for semel=${semel}`,
+        );
+        continue;
+      }
+
+      const fields = {
+        privateName: child.privateName,
+        familyName: child.familyName,
+        fullName: `${child.privateName} ${child.familyName}`,
+        classCode: child.classCode,
+        classNum: child.classNum,
+        gender: child.gender,
+        groupsRaw:
+          child.groups as unknown as import("@prisma/client").Prisma.InputJsonValue,
+        isActive: true,
+        rawPayload:
+          child as unknown as import("@prisma/client").Prisma.InputJsonValue,
+      };
+
       await this.prisma.student.upsert({
-        where: { studentGuid: child.childGuid },
-        create: {
-          studentGuid: child.childGuid,
-          privateName: child.privateName,
-          familyName: child.familyName,
-          fullName: `${child.privateName} ${child.familyName}`,
-          classCode: child.classCode,
-          classNum: child.classNum,
-          gender: child.gender,
-          groupsRaw:
-            child.groups as unknown as import("@prisma/client").Prisma.InputJsonValue,
-          isActive: true,
-          rawPayload:
-            child as unknown as import("@prisma/client").Prisma.InputJsonValue,
-        },
-        update: {
-          privateName: child.privateName,
-          familyName: child.familyName,
-          fullName: `${child.privateName} ${child.familyName}`,
-          classCode: child.classCode,
-          classNum: child.classNum,
-          gender: child.gender,
-          groupsRaw:
-            child.groups as unknown as import("@prisma/client").Prisma.InputJsonValue,
-          isActive: true,
-          rawPayload:
-            child as unknown as import("@prisma/client").Prisma.InputJsonValue,
-        },
+        where: { studentGuid },
+        create: { studentGuid, ...fields },
+        update: fields,
       });
+
+      if (existingGuids.has(studentGuid)) {
+        updated += 1;
+      } else {
+        created += 1;
+      }
     }
 
-    this.logger.debug(`Persisted ${children.length} children`);
+    const inactiveGuids = this.parseInactiveChildGuids(
+      data.accessToken?.inactiveChildren,
+    );
+    let deactivated = 0;
+    if (inactiveGuids.length > 0) {
+      const result = await this.prisma.student.updateMany({
+        where: { studentGuid: { in: inactiveGuids } },
+        data: { isActive: false },
+      });
+      deactivated = result.count;
+    }
+
+    this.logger.debug(
+      `Roster persisted for semel=${semel} year=${year}: created=${created} updated=${updated} deactivated=${deactivated}`,
+    );
+
+    return { created, updated, deactivated };
+  }
+
+  private readChildGuid(child: LoginChild): string | null {
+    const record = child as unknown as Record<string, unknown>;
+    const guid = record.childGuid ?? record.guid ?? record.studentGuid;
+    return typeof guid === "string" && guid.length > 0 ? guid : null;
+  }
+
+  private parseInactiveChildGuids(value: unknown): string[] {
+    if (!Array.isArray(value) || value.length === 0) return [];
+
+    if (!this.hasLoggedInactiveChildrenShape) {
+      this.hasLoggedInactiveChildrenShape = true;
+      this.logger.log(
+        `inactiveChildren raw sample: ${JSON.stringify(value[0])}`,
+      );
+    }
+
+    return value
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry === "object") {
+          const record = entry as Record<string, unknown>;
+          const guid = record.childGuid ?? record.guid ?? record.studentGuid;
+          return typeof guid === "string" ? guid : null;
+        }
+        return null;
+      })
+      .filter((guid): guid is string => Boolean(guid));
   }
 
   private async parseAndPersistHousehold(
@@ -413,9 +585,8 @@ export class MashovSessionService {
 
     // If already authenticating, wait for the in-flight promise
     if (cached?.isAuthenticating && cached.authPromise) {
-      const cookies = await cached.authPromise;
-      const session = this.connectionSessions.get(connectionId)!;
-      return this.buildHeaders(cookies, session.csrfToken);
+      const login = await cached.authPromise;
+      return this.buildHeaders(login.cookies, login.cookies.csrfToken);
     }
 
     const placeholder: ConnectionSession = {
@@ -436,7 +607,7 @@ export class MashovSessionService {
     placeholder.authPromise = authPromise;
 
     try {
-      const cookies = await authPromise;
+      const { cookies } = await authPromise;
       const csrfToken = cookies.csrfToken;
       this.connectionSessions.set(connectionId, {
         csrfToken,
@@ -467,7 +638,7 @@ export class MashovSessionService {
     password: string,
     connectionId?: string,
     storedUniqueId?: string,
-  ): Promise<SessionCookies> {
+  ): Promise<ConnectionLogin> {
     const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
 
     const loginBody = {
@@ -541,7 +712,15 @@ export class MashovSessionService {
       });
     }
 
+    // Always persist the roster. The old version read `response.headers` and
+    // discarded `response.data`, throwing `accessToken.children[]` away — the
+    // single reason a child's class never updated.
+    const roster = await this.persistRoster(response.data, Number(semel), Number(year));
+    if (connectionId) {
+      this.lastRosterByConnection.set(connectionId, roster);
+    }
+
     this.logger.debug(`Connection session established for semel=${semel} username=${username}`);
-    return parsed as SessionCookies;
+    return { cookies: parsed as SessionCookies, loginData: response.data, roster };
   }
 }

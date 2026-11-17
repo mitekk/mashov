@@ -1294,6 +1294,60 @@ describe('ChildrenService', () => {
       expect(studentFindUnique).toHaveBeenCalledTimes(2);
     });
 
+    it('returns the NOT_FOUND envelope when the student is still missing', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          studentFindUnique: jest.fn().mockResolvedValue(null),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await expect(service.getSubjects(TEST_GUID)).rejects.toMatchObject({
+        response: {
+          error: {
+            code: 'NOT_FOUND',
+            message: expect.stringContaining(TEST_GUID),
+            details: [],
+          },
+        },
+      });
+    });
+
+    it("passes the caller's userId to the roster self-heal", async () => {
+      const ensureStudentsAvailable = jest.fn().mockResolvedValue(undefined);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          studentFindUnique: jest
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(makeStudent()),
+        }),
+        makeMockSession({ ensureStudentsAvailable }),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getChildWorkspace(TEST_GUID, 'user-9');
+
+      expect(ensureStudentsAvailable).toHaveBeenCalledWith('user-9');
+    });
+
+    it("passes the caller's userId to the roster self-heal on the children list", async () => {
+      const ensureStudentsAvailable = jest.fn().mockResolvedValue(undefined);
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession({ ensureStudentsAvailable }),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      await service.getChildren('user-9');
+
+      expect(ensureStudentsAvailable).toHaveBeenCalledWith('user-9');
+    });
+
     it('throws NotFoundException after fallback student lookup still fails', async () => {
       const ensureStudentsAvailable = jest.fn().mockResolvedValue(undefined);
       const service = new ChildrenService(

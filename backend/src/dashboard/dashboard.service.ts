@@ -47,7 +47,7 @@ export class DashboardService {
   ) {}
 
   async getDashboard(userId?: string) {
-    await this.sessionService.ensureStudentsAvailable();
+    await this.sessionService.ensureStudentsAvailable(userId);
 
     const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(userId),

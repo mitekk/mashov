@@ -40,7 +40,7 @@ export class ChildrenService {
   ) {}
 
   async getChildren(userId?: string) {
-    await this.sessionService.ensureStudentsAvailable();
+    await this.sessionService.ensureStudentsAvailable(userId);
 
     const students = await this.prisma.student.findMany({
       where: { isActive: true },
@@ -106,7 +106,7 @@ export class ChildrenService {
   }
 
   async getChildWorkspace(studentGuid: string, userId?: string) {
-    const student = await this.getStudentOrThrow(studentGuid);
+    const student = await this.getStudentOrThrow(studentGuid, userId);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const [
@@ -171,7 +171,7 @@ export class ChildrenService {
     status: ItemStatusFilter = 'new',
     userId?: string,
   ) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     // Fetch all non-filtered items for state-based filtering
     const allItems = await this.prisma.homeworkItem.findMany({
@@ -211,7 +211,7 @@ export class ChildrenService {
   }
 
   async getHomeworkDetail(studentGuid: string, homeworkId: string, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.homeworkItem.findUnique({
       where: { id: homeworkId },
@@ -235,7 +235,7 @@ export class ChildrenService {
     status: ItemStatusFilter = 'new',
     userId?: string,
   ) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const allItems = await this.prisma.behaviorItem.findMany({
       where: {
@@ -277,7 +277,7 @@ export class ChildrenService {
   }
 
   async getBehaviorDetail(studentGuid: string, behaviorId: string, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.behaviorItem.findUnique({
       where: { id: behaviorId },
@@ -364,7 +364,7 @@ export class ChildrenService {
   }
 
   async setHomeworkIsNew(studentGuid: string, homeworkId: string, isNew: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
     if (!item || item.studentGuid !== studentGuid) {
@@ -384,7 +384,7 @@ export class ChildrenService {
   }
 
   async setHomeworkManyIsNew(studentGuid: string, homeworkIds: string[], isNew: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
     if (homeworkIds.length === 0) return { updated: 0 };
 
     if (userId) {
@@ -396,7 +396,7 @@ export class ChildrenService {
   }
 
   async setHomeworkArchived(studentGuid: string, homeworkId: string, isArchived: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
     if (!item || item.studentGuid !== studentGuid) {
@@ -417,7 +417,7 @@ export class ChildrenService {
   }
 
   async setHomeworkManyArchived(studentGuid: string, homeworkIds: string[], isArchived: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
     if (homeworkIds.length === 0) return { updated: 0 };
 
     if (userId) {
@@ -433,7 +433,7 @@ export class ChildrenService {
   }
 
   async setBehaviorIsNew(studentGuid: string, behaviorId: string, isNew: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
     if (!item || item.studentGuid !== studentGuid) {
@@ -453,7 +453,7 @@ export class ChildrenService {
   }
 
   async setBehaviorManyIsNew(studentGuid: string, behaviorIds: string[], isNew: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
     if (behaviorIds.length === 0) return { updated: 0 };
 
     if (userId) {
@@ -465,7 +465,7 @@ export class ChildrenService {
   }
 
   async setBehaviorArchived(studentGuid: string, behaviorId: string, isArchived: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
     if (!item || item.studentGuid !== studentGuid) {
@@ -485,7 +485,7 @@ export class ChildrenService {
   }
 
   async setBehaviorManyArchived(studentGuid: string, behaviorIds: string[], isArchived: boolean, userId?: string) {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
     if (behaviorIds.length === 0) return { updated: 0 };
 
     if (userId) {
@@ -745,8 +745,8 @@ export class ChildrenService {
     };
   }
 
-  private async requireStudent(studentGuid: string): Promise<void> {
-    await this.getStudentOrThrow(studentGuid);
+  private async requireStudent(studentGuid: string, userId?: string): Promise<void> {
+    await this.getStudentOrThrow(studentGuid, userId);
   }
 
   private async getUnreadChildActivityCounts(
@@ -815,20 +815,28 @@ export class ChildrenService {
     };
   }
 
-  private async getStudentOrThrow(studentGuid: string) {
+  private async getStudentOrThrow(studentGuid: string, userId?: string) {
     let student = await this.prisma.student.findUnique({
       where: { studentGuid },
     });
 
     if (!student) {
-      await this.sessionService.ensureStudentsAvailable();
+      // A child who was added to the family mid-year exists upstream before it
+      // exists here, so a miss is a reason to re-read the roster, not a 404.
+      await this.sessionService.ensureStudentsAvailable(userId);
       student = await this.prisma.student.findUnique({
         where: { studentGuid },
       });
     }
 
     if (!student) {
-      throw new NotFoundException(`Student not found: ${studentGuid}`);
+      throw new NotFoundException({
+        error: {
+          code: 'NOT_FOUND',
+          message: `Student not found: ${studentGuid}`,
+          details: [],
+        },
+      });
     }
     return student;
   }

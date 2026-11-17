@@ -13,6 +13,7 @@ import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
 import { TimetableTask } from './tasks/timetable.task';
+import { StudentsTask } from './tasks/students.task';
 
 function makeResult(status: 'success' | 'failed' = 'success'): SyncTaskRunResult {
   return {
@@ -34,7 +35,7 @@ function makeMockTask(result: SyncTaskRunResult) {
 }
 
 describe('SyncService', () => {
-  const EXPECTED_TASK_COUNT = 13;
+  const EXPECTED_TASK_COUNT = 14;
 
   function createService(overrides: Partial<Record<string, { execute: jest.Mock }>> = {}) {
     const notifications = overrides.notifications ?? makeMockTask(makeResult());
@@ -50,6 +51,7 @@ describe('SyncService', () => {
     const dailyBehave = overrides.dailyBehave ?? makeMockTask(makeResult());
     const outBehave = overrides.outBehave ?? makeMockTask(makeResult());
     const timetable = overrides.timetable ?? makeMockTask(makeResult());
+    const students = overrides.students ?? makeMockTask(makeResult());
 
     const service = new SyncService(
       notifications as unknown as NotificationsTask,
@@ -65,6 +67,7 @@ describe('SyncService', () => {
       dailyBehave as unknown as DailyBehaveTask,
       outBehave as unknown as OutBehaveTask,
       timetable as unknown as TimetableTask,
+      students as unknown as StudentsTask,
     );
 
     return {
@@ -83,6 +86,7 @@ describe('SyncService', () => {
         dailyBehave,
         outBehave,
         timetable,
+        students,
       },
     };
   }
@@ -121,6 +125,8 @@ describe('SyncService', () => {
 
     const first = service.refreshAll({ connectionId: 'conn-1' });
     const second = service.refreshAll({ connectionId: 'conn-1' });
+    // The roster lands before the rest, so the others start a tick later.
+    await new Promise((resolve) => setImmediate(resolve));
 
     expect(tasks.notifications.execute).toHaveBeenCalledTimes(1);
 
@@ -129,6 +135,38 @@ describe('SyncService', () => {
 
     expect(firstResult).toEqual(secondResult);
     expect(tasks.notifications.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the students task before every other task', async () => {
+    const order: string[] = [];
+    const students = {
+      execute: jest.fn().mockImplementation(async () => {
+        order.push('students');
+        return makeResult();
+      }),
+    };
+    const homework = {
+      execute: jest.fn().mockImplementation(async () => {
+        order.push('homework');
+        return makeResult();
+      }),
+    };
+    const { service } = createService({ students, homework });
+
+    await service.refreshAll();
+
+    expect(order).toEqual(['students', 'homework']);
+  });
+
+  it('still runs the remaining tasks when the roster refresh fails', async () => {
+    const { service, tasks } = createService({
+      students: makeMockTask(makeResult('failed')),
+    });
+
+    const result = await service.refreshAll();
+
+    expect(result.status).toBe('partial');
+    expect(tasks.homework.execute).toHaveBeenCalled();
   });
 
   it('does not join in-flight manual refresh requests across different connections', async () => {
