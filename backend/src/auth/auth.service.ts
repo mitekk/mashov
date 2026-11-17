@@ -288,6 +288,7 @@ export class AuthService {
           gender: child.gender,
           groupsRaw: child.groups as unknown as import('@prisma/client').Prisma.InputJsonValue,
           isActive: true,
+          lastSeenInRosterAt: new Date(),
           rawPayload: child as unknown as import('@prisma/client').Prisma.InputJsonValue,
         },
         update: {
@@ -299,6 +300,7 @@ export class AuthService {
           gender: child.gender,
           groupsRaw: child.groups as unknown as import('@prisma/client').Prisma.InputJsonValue,
           isActive: true,
+          lastSeenInRosterAt: new Date(),
           rawPayload: child as unknown as import('@prisma/client').Prisma.InputJsonValue,
         },
       });

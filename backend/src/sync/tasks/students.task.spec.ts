@@ -2,6 +2,7 @@ import { SyncRun } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { MashovSessionService } from '../../session/mashov-session.service';
+import { RosterPresenceService } from '../roster-presence.service';
 import { StudentsTask } from './students.task';
 
 function makeSyncRun(id: string): SyncRun {
@@ -24,6 +25,7 @@ describe('StudentsTask', () => {
   let mockPrisma: { householdConnection: { findMany: jest.Mock } };
   let mockSyncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
   let mockSessionService: { refreshRosterForConnection: jest.Mock };
+  let mockRosterPresence: { sweep: jest.Mock };
 
   beforeEach(() => {
     mockPrisma = {
@@ -44,10 +46,13 @@ describe('StudentsTask', () => {
         .mockResolvedValue({ created: 1, updated: 2, deactivated: 0, year: 2027 }),
     };
 
+    mockRosterPresence = { sweep: jest.fn().mockResolvedValue(0) };
+
     task = new StudentsTask(
       mockPrisma as unknown as PrismaService,
       mockSyncRunService as unknown as SyncRunService,
       mockSessionService as unknown as MashovSessionService,
+      mockRosterPresence as unknown as RosterPresenceService,
     );
   });
 
@@ -130,5 +135,62 @@ describe('StudentsTask', () => {
     expect(result.status).toBe('success');
     expect(result.summary.fetchedCount).toBe(0);
     expect(mockSyncRunService.openRun).not.toHaveBeenCalled();
+  });
+
+  describe('roster presence sweep', () => {
+    it('sweeps once every connection has refreshed successfully', async () => {
+      const result = await task.execute();
+
+      expect(mockRosterPresence.sweep).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('success');
+    });
+
+    it('counts swept children as deactivated', async () => {
+      mockRosterPresence.sweep.mockResolvedValue(2);
+
+      const result = await task.execute();
+
+      // created(1) + updated(2) per connection x2, plus 2 deactivated.
+      expect(result.summary.fetchedCount).toBe(8);
+    });
+
+    // A child at a second school is absent from the first school's roster, so
+    // a sweep on partial evidence would deactivate them wrongly.
+    it('does not sweep when any connection failed', async () => {
+      mockSessionService.refreshRosterForConnection
+        .mockResolvedValueOnce({ created: 1, updated: 2, deactivated: 0, year: 2027 })
+        .mockRejectedValueOnce(new Error('403 from Mashov'));
+
+      const result = await task.execute();
+
+      expect(mockRosterPresence.sweep).not.toHaveBeenCalled();
+      expect(result.status).toBe('failed');
+    });
+
+    it('does not sweep a connection-scoped run', async () => {
+      mockPrisma.householdConnection.findMany.mockResolvedValue([
+        { id: 'conn-2', schoolCode: 5678, schoolYear: 2027 },
+      ]);
+
+      await task.execute({ connectionId: 'conn-2' });
+
+      expect(mockRosterPresence.sweep).not.toHaveBeenCalled();
+    });
+
+    it('does not sweep when there are no connections at all', async () => {
+      mockPrisma.householdConnection.findMany.mockResolvedValue([]);
+
+      await task.execute();
+
+      expect(mockRosterPresence.sweep).not.toHaveBeenCalled();
+    });
+
+    it('still reports success when the sweep itself throws', async () => {
+      mockRosterPresence.sweep.mockRejectedValue(new Error('db gone'));
+
+      const result = await task.execute();
+
+      expect(result.status).toBe('success');
+    });
   });
 });
