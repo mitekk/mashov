@@ -349,6 +349,51 @@ describe('AuthService', () => {
       expect(mockHttp.post).toHaveBeenCalledTimes(2);
     });
 
+    it('keeps the first login when the reconcile re-login is rejected', async () => {
+      // The parent's password is correct — Mashov simply has no enrolment in
+      // the year it just named, or rate-limited two logins in one second.
+      // Failing the whole sign-in would send them off to retype a password
+      // that was right, which is the lie this file exists to avoid.
+      mockPrisma.appUser.findUnique.mockResolvedValue(null);
+      mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.create.mockResolvedValue({});
+      mockPrisma.student.upsert.mockResolvedValue({});
+      mockRedis.incr.mockResolvedValue(1);
+      mockSchoolYearService.reconcileFromLogin.mockReturnValue({
+        year: 2026,
+        changed: true,
+      });
+
+      const rejected = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+      rejected.response = { status: 401 } as AxiosError['response'];
+      mockHttp.post = jest
+        .fn()
+        .mockResolvedValueOnce({ data: mockLoginResponse })
+        .mockRejectedValueOnce(rejected);
+
+      const result = await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(result.sessionToken).toBe('session-token-abc');
+      // Falls back to the year that actually worked, not the rejected one.
+      expect(mockPrisma.householdConnection.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYear: 2027 }),
+        }),
+      );
+    });
+
+    it('still fails the sign-in when the FIRST login is rejected', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      const rejected = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+      rejected.response = { status: 401 } as AxiosError['response'];
+      mockHttp.post = jest.fn().mockRejectedValue(rejected);
+
+      await expect(
+        service.login(482273, 'user', 'badpass', '127.0.0.1'),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
     it('updates classCode and classNum for a child who moved up a grade', async () => {
       arrangeSuccessfulLogin({
         ...mockLoginResponse,

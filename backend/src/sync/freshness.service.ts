@@ -37,6 +37,19 @@ const SOURCE_THRESHOLDS: SourceThreshold[] = [
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/**
+ * How long after 1 September an empty year is still unremarkable.
+ *
+ * The year-start date test is what catches a dead school year, but in the first
+ * weeks of a *correct* new year the newest item is legitimately still from last
+ * June — teachers have not posted anything yet. Without this grace period a
+ * healthy system reports `stale_year` every September, which is when operators
+ * are watching the signal most closely. The `observedSchoolYear < expected`
+ * test is unaffected and still fires immediately: asking for the wrong year is
+ * a fault whatever the date.
+ */
+const NEW_YEAR_GRACE_DAYS = 45;
+
 export type ContentFreshnessStatus = 'current' | 'stale_year' | 'no_content';
 
 export interface ContentFreshness {
@@ -121,10 +134,14 @@ export class FreshnessService {
     // A Mashov year named N runs Sep (N-1) to Jun N, so nothing inside the
     // current year can predate 1 September of the year before it.
     const yearStart = new Date(Date.UTC(expectedSchoolYear - 1, 8, 1));
+    const graceEndsAt = yearStart.getTime() + NEW_YEAR_GRACE_DAYS * MS_PER_DAY;
+
+    const askingForTheWrongYear = observedSchoolYear < expectedSchoolYear;
+    const nothingFromThisYearYet =
+      newestContent < yearStart && Date.now() > graceEndsAt;
+
     const status: ContentFreshnessStatus =
-      observedSchoolYear < expectedSchoolYear || newestContent < yearStart
-        ? 'stale_year'
-        : 'current';
+      askingForTheWrongYear || nothingFromThisYearYet ? 'stale_year' : 'current';
 
     return {
       expectedSchoolYear,

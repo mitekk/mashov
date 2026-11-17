@@ -130,14 +130,27 @@ export class AuthService {
         this.logger.warn(
           `Mashov reports active year=${reconciled.year} for semel=${semel}, re-logging in (sent ${year})`,
         );
-        year = reconciled.year;
-        attempt = await this.postLogin(
-          Number(semel),
-          year,
-          username,
-          password,
-          existingConnBeforeLogin?.mashovUniqueId ?? null,
-        );
+        try {
+          const corrected = await this.postLogin(
+            Number(semel),
+            reconciled.year,
+            username,
+            password,
+            existingConnBeforeLogin?.mashovUniqueId ?? null,
+          );
+          year = reconciled.year;
+          attempt = corrected;
+        } catch (retryErr) {
+          // The first login already succeeded, so the credentials are good.
+          // Reporting this as INVALID_CREDENTIALS would send the parent off to
+          // retype a password that was correct — the same lie this method
+          // refuses to tell about an unreachable upstream.
+          this.logger.error(
+            `Re-login at year=${reconciled.year} failed for semel=${semel}; keeping the year ${year} session: ${
+              retryErr instanceof Error ? retryErr.message : 'unknown error'
+            }`,
+          );
+        }
       }
 
       loginData = attempt.data;

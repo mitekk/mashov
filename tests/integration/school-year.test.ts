@@ -28,6 +28,13 @@ import type { StudentsTask } from '../../backend/src/sync/tasks/students.task';
 const STUDENT_GUID = 'sy-student-1';
 const SEMEL = 998877;
 
+function migrationFile(): string {
+  return path.join(
+    __dirname,
+    '../../backend/prisma/migrations/20261117000000_school_year_scoping/migration.sql',
+  );
+}
+
 describe('School-year scoping & rollover', () => {
   let prisma: PrismaClient;
 
@@ -126,9 +133,18 @@ describe('School-year scoping & rollover', () => {
       },
     });
 
+    // Stands in for the real method, which logs in at the year it is handed,
+    // reconciles against Mashov's answer and writes the confirmed year down.
     const refreshRosterForConnection = jest
       .fn()
-      .mockResolvedValue({ created: 0, updated: 1, deactivated: 0, year: 2027 });
+      .mockImplementation(async (id: string, yearOverride?: number) => {
+        const year = yearOverride ?? 2026;
+        await prisma.householdConnection.update({
+          where: { id },
+          data: { schoolYear: year },
+        });
+        return { created: 0, updated: 1, deactivated: 0, year };
+      });
     const studentsExecute = jest.fn().mockResolvedValue({
       status: 'success',
       summary: { fetchedCount: 1, createdCount: 0, updatedCount: 1, failedCount: 0 },
@@ -141,6 +157,7 @@ describe('School-year scoping & rollover', () => {
         resolveForSchool: jest
           .fn()
           .mockResolvedValue({ year: 2027, source: 'schools-api' }),
+        invalidate: jest.fn(),
       } as unknown as SchoolYearService,
       { refreshRosterForConnection } as unknown as MashovSessionService,
       { execute: studentsExecute } as unknown as StudentsTask,
@@ -152,8 +169,53 @@ describe('School-year scoping & rollover', () => {
       where: { id: connection.id },
     });
     expect(after?.schoolYear).toBe(2027);
-    expect(refreshRosterForConnection).toHaveBeenCalledWith(connection.id);
+    // The candidate year is handed to the refresh so Mashov can veto it,
+    // rather than being written to the DB first and asked about afterwards.
+    expect(refreshRosterForConnection).toHaveBeenCalledWith(connection.id, 2027);
     expect(studentsExecute).toHaveBeenCalledWith({ connectionId: connection.id });
+    // One roster refresh per connection, not two.
+    expect(refreshRosterForConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not advance the connection when Mashov vetoes the candidate year', async () => {
+    // 1 Sep: the calendar says 2027 but Mashov has not opened that year yet.
+    // Writing 2027 anyway empties the family's lists, and the daily cron would
+    // re-apply it every morning after any sign-in corrected it.
+    const connection = await prisma.householdConnection.create({
+      data: {
+        schoolCode: SEMEL,
+        schoolYear: 2026,
+        username: 'sy-parent',
+        encryptedPassword: 'enc',
+        active: true,
+      },
+    });
+
+    const task = new SchoolYearRolloverTask(
+      prisma as unknown as PrismaService,
+      {
+        resolveForSchool: jest.fn().mockResolvedValue({ year: 2027, source: 'calendar' }),
+        invalidate: jest.fn(),
+      } as unknown as SchoolYearService,
+      {
+        // Mashov answers 2026 and the real method persists that.
+        refreshRosterForConnection: jest.fn().mockImplementation(async (id: string) => {
+          await prisma.householdConnection.update({
+            where: { id },
+            data: { schoolYear: 2026 },
+          });
+          return { created: 0, updated: 1, deactivated: 0, year: 2026 };
+        }),
+      } as unknown as MashovSessionService,
+      { execute: jest.fn() } as unknown as StudentsTask,
+    );
+
+    await task.run();
+
+    const after = await prisma.householdConnection.findUnique({
+      where: { id: connection.id },
+    });
+    expect(after?.schoolYear).toBe(2026);
   });
 
   it('leaves a connection already on the resolved year untouched', async () => {
@@ -172,6 +234,7 @@ describe('School-year scoping & rollover', () => {
       prisma as unknown as PrismaService,
       {
         resolveForSchool: jest.fn().mockResolvedValue({ year: 2027, source: 'calendar' }),
+        invalidate: jest.fn(),
       } as unknown as SchoolYearService,
       { refreshRosterForConnection } as unknown as MashovSessionService,
       { execute: jest.fn() } as unknown as StudentsTask,
@@ -184,6 +247,21 @@ describe('School-year scoping & rollover', () => {
     });
     expect(after?.schoolYear).toBe(2027);
     expect(refreshRosterForConnection).not.toHaveBeenCalled();
+  });
+
+  it('runs every statement of the migration twice without error', async () => {
+    // The file is executed on every container boot (backend/Dockerfile), so a
+    // non-idempotent statement would stop the app from ever starting again.
+    const statements = parseSqlStatements(
+      fs.readFileSync(migrationFile(), 'utf-8'),
+    );
+    expect(statements).toHaveLength(20);
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (const statement of statements) {
+        await prisma.$executeRawUnsafe(statement);
+      }
+    }
   });
 
   it('backfills schoolYear 2026 on pre-column rows without losing any', async () => {
@@ -204,15 +282,11 @@ describe('School-year scoping & rollover', () => {
 
     const before = await prisma.homeworkItem.count({ where: { studentGuid: STUDENT_GUID } });
 
-    const migrationPath = path.join(
-      __dirname,
-      '../../backend/prisma/migrations/20261117000000_school_year_scoping/migration.sql',
-    );
     // Reuses the backfill script's own parser on purpose, so the two cannot
     // drift: naive `;`-splitting of this file both hides statements behind
     // their comments and cuts prose comments mid-sentence.
     const updates = parseSqlStatements(
-      fs.readFileSync(migrationPath, 'utf-8'),
+      fs.readFileSync(migrationFile(), 'utf-8'),
     ).filter((statement) => statement.toUpperCase().startsWith('UPDATE '));
 
     // One per year-scoped table.

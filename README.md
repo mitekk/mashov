@@ -148,7 +148,7 @@ Copy `.env.example` to `.env`. The values you **must** set:
 |---|---|
 | `MASHOV_USERNAME` · `MASHOV_PASSWORD` | your Mashov login |
 | `MASHOV_SEMEL` | school ID (semel) |
-| `MASHOV_YEAR` | *optional.* Break-glass override for the school year, which is otherwise auto-detected from upstream and persisted on the connection. Leave it unset. See [ADR-0024](docs/adr/0024-school-year-resolution-and-rollover.md). |
+| `MASHOV_YEAR` | *optional, rarely useful.* Overrides only the **candidate** school year sent in the login body; Mashov's own answer is reconciled on top and persisted to the connection, which is what the sync tasks read. Leave it unset. To change the year the app actually uses, see [docs/ops/school-year-hotfix.md](docs/ops/school-year-hotfix.md) and [ADR-0024](docs/adr/0024-school-year-resolution-and-rollover.md). |
 | `ENCRYPTION_KEY` | 64-char hex key; encrypts stored credentials at rest |
 
 `DATABASE_URL`, `REDIS_URL`, the session/CORS settings, and the `FEATURE_*` flags all ship with

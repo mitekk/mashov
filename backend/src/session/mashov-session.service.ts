@@ -91,6 +91,8 @@ export class MashovSessionService {
   private readonly connectionSessions = new Map<string, ConnectionSession>();
   /** Last roster counts per connection, written by every connection login. */
   private readonly lastRosterByConnection = new Map<string, RosterResult>();
+  /** Last login payload per connection, so the year can be reconciled from it. */
+  private readonly lastLoginByConnection = new Map<string, LoginResponse>();
   /**
    * Dedupes concurrent self-heal refreshes. Without it a page-load storm fires
    * one upstream login per request.
@@ -292,8 +294,21 @@ export class MashovSessionService {
       return;
     }
 
+    // The connection is resolved BEFORE the TTL probe so the probe can be
+    // scoped to it. A global probe let one household's successful roster sync
+    // suppress another household's self-heal indefinitely — the same gating
+    // failure the `activeStudents > 0` short-circuit used to cause.
+    const connection = await this.prisma.householdConnection.findFirst({
+      where: { active: true, ...(userId ? { userId } : {}) },
+      orderBy: { lastLoginAt: "desc" },
+    });
+
     const lastRun = await this.prisma.syncRun.findFirst({
-      where: { source: STUDENTS_SOURCE, status: "success" },
+      where: {
+        source: STUDENTS_SOURCE,
+        status: "success",
+        ...(connection ? { householdConnectionId: connection.id } : {}),
+      },
       orderBy: { endedAt: "desc" },
       select: { endedAt: true },
     });
@@ -305,11 +320,6 @@ export class MashovSessionService {
     ) {
       return;
     }
-
-    const connection = await this.prisma.householdConnection.findFirst({
-      where: { active: true, ...(userId ? { userId } : {}) },
-      orderBy: { lastLoginAt: "desc" },
-    });
 
     const dedupeKey = connection?.id ?? "__env__";
     const existing = this.inFlightRosterRefresh.get(dedupeKey);
@@ -342,6 +352,7 @@ export class MashovSessionService {
    */
   async refreshRosterForConnection(
     connectionId: string,
+    yearOverride?: number,
   ): Promise<RosterRefreshResult> {
     const connection = await this.prisma.householdConnection.findUnique({
       where: { id: connectionId },
@@ -352,20 +363,55 @@ export class MashovSessionService {
     }
 
     const password = this.encryptionService.decrypt(connection.encryptedPassword);
-    const year = connection.schoolYear;
+    const attemptedYear = yearOverride ?? connection.schoolYear;
 
     await this.getAuthHeadersForConnection(
       connection.id,
       connection.schoolCode,
-      year,
+      attemptedYear,
       connection.username,
       password,
       true,
     );
 
+    const login = this.lastLoginByConnection.get(connection.id);
     const roster =
       this.lastRosterByConnection.get(connection.id) ??
       { created: 0, updated: 0, deactivated: 0 };
+
+    // Mashov is the authority on which year is active, on THIS path too — not
+    // only on interactive sign-in. Without the write-back, a rollover that
+    // advanced a connection on the calendar alone would be re-applied by the
+    // next daily cron even after Mashov said otherwise, and the family's data
+    // would flip-flop every morning until the year actually opened.
+    let year = attemptedYear;
+    if (login) {
+      const reconciled = this.schoolYearService.reconcileFromLogin(attemptedYear, login);
+      if (reconciled.year !== connection.schoolYear) {
+        this.logger.warn(
+          `Mashov reports active year=${reconciled.year} for connection ${connection.id} (asked for ${attemptedYear}, stored ${connection.schoolYear}); persisting it`,
+        );
+        await this.prisma.householdConnection.update({
+          where: { id: connection.id },
+          data: { schoolYear: reconciled.year },
+        });
+      }
+      year = reconciled.year;
+
+      // The cached cookies are scoped to the year we asked for, so a corrected
+      // year needs a fresh session or every later GET reads the wrong year.
+      if (reconciled.year !== attemptedYear) {
+        this.schoolYearService.invalidate(connection.schoolCode);
+        await this.getAuthHeadersForConnection(
+          connection.id,
+          connection.schoolCode,
+          reconciled.year,
+          connection.username,
+          password,
+          true,
+        );
+      }
+    }
 
     return { ...roster, year };
   }
@@ -718,6 +764,7 @@ export class MashovSessionService {
     const roster = await this.persistRoster(response.data, Number(semel), Number(year));
     if (connectionId) {
       this.lastRosterByConnection.set(connectionId, roster);
+      this.lastLoginByConnection.set(connectionId, response.data);
     }
 
     this.logger.debug(`Connection session established for semel=${semel} username=${username}`);

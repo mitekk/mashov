@@ -46,17 +46,34 @@ export class SchoolYearRolloverTask implements OnApplicationBootstrap {
         }
 
         this.logger.warn(
-          `School year rollover for connection ${connection.id}: ${connection.schoolYear} -> ${resolved.year} (source=${resolved.source})`,
+          `School year rollover candidate for connection ${connection.id}: ${connection.schoolYear} -> ${resolved.year} (source=${resolved.source})`,
         );
 
-        await this.prisma.householdConnection.update({
-          where: { id: connection.id },
-          data: { schoolYear: resolved.year },
-        });
+        // The candidate is *offered* to Mashov rather than written down first.
+        // `resolveForSchool` takes max(calendar, schools-api), so on 1 September
+        // it returns the new year whether or not Mashov has opened it; writing
+        // that straight to the connection empties every list, and because this
+        // task only ever advances, it would re-apply the bad year each morning
+        // after a sign-in corrected it. `refreshRosterForConnection` logs in at
+        // the candidate, reconciles against Mashov's own answer and persists
+        // whichever year Mashov confirms.
+        const result = await this.sessionService.refreshRosterForConnection(
+          connection.id,
+          resolved.year,
+        );
 
-        // The cached Mashov session is scoped to the old year, so it has to go
-        // before anything reads with the new one.
-        await this.sessionService.refreshRosterForConnection(connection.id);
+        if (result.year !== resolved.year) {
+          this.logger.warn(
+            `Mashov did not accept year=${resolved.year} for connection ${connection.id}; staying on ${result.year}`,
+          );
+        }
+
+        // Re-reads the roster at the year Mashov confirmed — which matters when
+        // it vetoed the candidate, since the read above happened at the vetoed
+        // year — and records the `syncRun` under `students`, which the freshness
+        // page and the self-heal TTL both read. One extra login per connection
+        // per day when the candidate was accepted; worth the simplicity of
+        // having exactly one place that records a roster sync.
         await this.studentsTask.execute({ connectionId: connection.id });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);

@@ -126,15 +126,22 @@ they are year-scoped upstream.
   detect the failure it was written for rather than only to compile
 
 **Negative Consequences / Risks**:
-- **`db push` is the real migration path.** Adding a *required* `Int` with no default to a
-  populated table under `--accept-data-loss` can drop and recreate the table. The column is
-  therefore declared `@default(0)` so the add is non-destructive, and
-  `backend/scripts/backfill-school-year.ts` is what stamps `0 → 2026` and swaps the unique
-  indexes in production; the committed migration exists for repo and CI parity. The script
-  asserts row counts are unchanged and never deletes. **Stage 4 must not be deployed without
-  running `db push` against a restored copy of the prod DB first and confirming the output says
-  *added column* and never *will be dropped*.** The `db push` vs `prisma migrate deploy` tension
-  deserves its own ADR and is out of scope here.
+- **`db push` is the real migration path, and the deploy ordering is load-bearing.** Adding a
+  *required* `Int` with no default to a populated table under `--accept-data-loss` can drop and
+  recreate the table, so the column is declared `@default(0)`. But `db push` also swaps the unique
+  keys in the same step, which opens a window that review caught: if the app starts before the
+  rows are stamped, its crons upsert on `(guid, <year>, …)`, miss every `(guid, 0, …)` row and
+  insert a **duplicate of the entire history** — the parent sees everything twice, and the
+  stamping `UPDATE` can then never run because it collides with the duplicates it caused.
+  `backend/Dockerfile` therefore runs the migration with `prisma db execute` *between* `db push`
+  and the app, every statement is idempotent so later boots are no-ops, and letting Postgres parse
+  the file keeps the fragile JS semicolon-splitter off the boot path.
+  `backend/scripts/backfill-school-year.ts` remains the ops path for a database migrated before
+  that ordering existed; it asserts row counts are unchanged, never deletes, and on a duplicate
+  key it stops and prints the query that shows the damage rather than skipping past it.
+  **Verified against a restored pre-change schema: `db push` reported only "a unique constraint …
+  will be added", never a drop, and all rows survived.** The `db push` vs `prisma migrate deploy`
+  tension deserves its own ADR and is out of scope here.
 - The shared read scope admits `schoolYear = 0` alongside the resolved year, so a database where
   `db push` has added the column but the backfill has not yet run serves stale data rather than a
   blank screen. That window ends when the backfill runs.
@@ -145,8 +152,28 @@ they are year-scoped upstream.
   fix and is pre-existing scope.
 - The element shape of `accessToken.inactiveChildren` is undocumented. It is parsed defensively
   (`childGuid ?? guid ?? studentGuid`, or a bare string) and the first raw sample is logged once.
-- Whether Mashov rejects or silently coerces an unavailable `year` is unmeasured. That determines
-  whether the single phase-2 re-login is load-bearing or merely defensive; it is cheap either way.
+- Whether Mashov rejects or silently coerces an unavailable `year` is unmeasured. Because
+  `resolveForSchool` takes `max(calendar, schools-api)`, on 1 September it proposes the new year
+  whether or not Mashov has opened it, so this matters: `SchoolYearRolloverTask` therefore
+  *offers* the candidate to `refreshRosterForConnection` rather than writing it to the connection
+  first, and whichever year Mashov confirms is what gets persisted — on the cron path as well as
+  on interactive sign-in. Without that, a rollover that advanced on the calendar alone would be
+  re-applied every morning after any sign-in corrected it, flip-flopping the family's data until
+  the year really opened.
+- The content-freshness date test has a 45-day grace period from 1 September, because in the first
+  weeks of a *correct* new year the newest item is legitimately still from last June. Without it a
+  healthy system reported `stale_year` every September — precisely when operators watch the signal.
+  The `observedSchoolYear < expected` test has no grace period: asking for the wrong year is a
+  fault whatever the date.
+- A stored `schoolYear` is clamped by the same `calendar + 1` ceiling as everything else, applied
+  last. An earlier ordering let a fat-fingered hotfix `UPDATE` pin every connection at a school to
+  an absurd year irreversibly, since the rollover task only ever advances.
+- There is **no end-to-end test of the user-visible symptom.** A spec was written and then removed:
+  it route-mocked `/api/v1/children` and asserted the card rendered the mocked class, so it
+  exercised nothing about year resolution, rollover or scoping and would have passed on the
+  unfixed code. Proving it honestly needs the stack seeded with a connection on the previous year
+  and the rollover driven for real. The `data-testid` it added
+  (`child-list-class-<guid>`) is kept so that test can be written.
 - `src/session/session.service.ts` is dead code (`SessionModule` is not imported by
   `app.module.ts`) yet carries a third copy of the children-persist logic. Only its hard
   requirement on `MASHOV_YEAR` was removed here, via the pure `calendarSchoolYear` helper, so the

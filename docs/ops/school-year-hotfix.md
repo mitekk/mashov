@@ -69,9 +69,11 @@ docker compose logs backend | grep "resolved year"
 # expect: resolved year=2027 source=schools-api semel=<semel>
 ```
 
-Setting `MASHOV_YEAR=2027` in the prod `.env` is the override path and is **not** normally
-needed — it exists for the case where auto-detection picks the wrong year. If you do set it,
-restart after the `UPDATE`, same ordering.
+`MASHOV_YEAR` is **not** a useful lever here, despite the name. It only overrides the *candidate*
+year that `SchoolYearService` puts in the login body; Mashov's own
+`accessToken.schoolSettings.schoolYear` is then reconciled on top and persisted to the
+connection, which is what the crons read. Setting it cannot make the app read a year Mashov
+disagrees with. Use step 2's `UPDATE` instead — and if the two disagree, Mashov is right.
 
 ## 4. Refresh the roster
 
@@ -103,7 +105,31 @@ curl -s .../api/v1/settings/source-health \
 Then in the browser: the child card shows the right class, recent counts draw only from the
 current year, and the freshness badge is recent.
 
-## 6. Rollback
+## 6. Deploying the schoolYear column
+
+Only relevant the first time the `schoolYear` work ships, or on a database that predates it.
+
+The ordering is already enforced in `backend/Dockerfile`: `prisma db push` adds the columns at 0
+and swaps the unique keys, then `prisma db execute` runs
+`prisma/migrations/20261117000000_school_year_scoping/migration.sql` to stamp them 2026, and only
+then does the app start. **Do not start the backend between those two steps.** `db push` swaps the
+unique keys immediately, so a cron that runs while rows are still at 0 upserts on the new key,
+misses every existing row and inserts a duplicate of the entire history — the parent then sees
+every homework item, behaviour event, subject, timetable slot and notice twice, and the stamping
+UPDATE can no longer run because it would collide with the duplicates it caused.
+
+If you suspect that happened:
+
+```sql
+SELECT "studentGuid", "lessonId", count(*), array_agg("schoolYear")
+FROM "homework_item" GROUP BY 1, 2 HAVING count(*) > 1;
+```
+
+Each pair is the same upstream item fetched twice; keep the row with the live year. Then
+`cd backend && npm run backfill:school-year`, which asserts row counts are unchanged and refuses
+to proceed on duplicates rather than skipping past them.
+
+## 7. Rollback
 
 Revert the `UPDATE` (and the env var, if set) to the previous year and restart the backend.
 Nothing else is mutated by this procedure.

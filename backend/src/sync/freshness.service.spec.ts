@@ -491,6 +491,44 @@ describe('FreshnessService.computeContentFreshness', () => {
     expect(result.newestContentAt).toBe('2026-11-15T00:00:00.000Z');
   });
 
+  it('does not cry stale_year in the first weeks of a new school year', async () => {
+    // 5 Sep 2026: the rollover has correctly advanced to 2027 and every sync
+    // succeeds, but teachers have posted nothing yet, so the newest item is
+    // still last June's. Reporting stale_year here would paint a healthy
+    // system red every September — exactly when operators watch this signal.
+    jest.setSystemTime(new Date('2026-09-05T12:00:00Z'));
+    const service = build({ newestHomeworkAt: new Date('2026-06-28T00:00:00Z') }, 2027);
+
+    const result = await service.computeContentFreshness();
+
+    expect(result.observedSchoolYear).toBe(2027);
+    expect(result.status).not.toBe('stale_year');
+  });
+
+  it('cries stale_year once the grace period after the year start has passed', async () => {
+    jest.setSystemTime(new Date('2026-10-20T12:00:00Z'));
+    const service = build({ newestHomeworkAt: new Date('2026-06-28T00:00:00Z') }, 2027);
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'stale_year',
+    });
+  });
+
+  it('cries stale_year immediately when the connection year itself is behind, grace or not', async () => {
+    jest.setSystemTime(new Date('2026-09-05T12:00:00Z'));
+    const service = build(
+      {
+        connection: { schoolCode: 1234, schoolYear: 2026 },
+        newestHomeworkAt: new Date('2026-06-28T00:00:00Z'),
+      },
+      2027,
+    );
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'stale_year',
+    });
+  });
+
   it('reports no_content when there is nothing to date', async () => {
     const service = build({});
 

@@ -91,18 +91,27 @@ export class SchoolYearService {
     let source: SchoolYearSource =
       apiYear !== null && apiYear >= calendarYear ? 'schools-api' : 'calendar';
 
-    // Nothing legitimate is ever more than one year ahead of the calendar.
-    const ceiling = calendarYear + 1;
-    if (year > ceiling) {
-      year = ceiling;
-      source = 'calendar';
-    }
-
     // Never regress: a connection already talking to a later year keeps it.
     const storedYear = await this.storedYearForSchool(semel);
     if (storedYear !== null && storedYear > year) {
       year = storedYear;
       source = 'stored';
+    }
+
+    // The ceiling is applied LAST so that it also bounds the stored year.
+    // Applying it before the stored clamp left a fat-fingered hotfix
+    // (`UPDATE household_connection SET "schoolYear" = 2072`) pinning every
+    // connection at that school to a year with no data, irreversibly: the
+    // rollover task never walks a stored year down.
+    const ceiling = calendarYear + 1;
+    if (year > ceiling) {
+      if (source === 'stored') {
+        this.logger.error(
+          `Stored schoolYear=${year} for semel=${semel} is beyond the plausible ceiling ${ceiling}; ignoring it. Check household_connection."schoolYear".`,
+        );
+      }
+      year = ceiling;
+      source = 'calendar';
     }
 
     const resolved: ResolvedSchoolYear = { year, source };

@@ -82,7 +82,13 @@ interface Harness {
   };
 }
 
-function makeHarness(options: { connection?: unknown; lastStudentsRunEndedAt?: Date | null } = {}): Harness {
+function makeHarness(
+  options: {
+    connection?: unknown;
+    lastStudentsRunEndedAt?: Date | null;
+    reconcile?: jest.Mock;
+  } = {},
+): Harness {
   const prisma = {
     student: {
       upsert: jest.fn().mockResolvedValue({}),
@@ -103,8 +109,12 @@ function makeHarness(options: { connection?: unknown; lastStudentsRunEndedAt?: D
       findMany: jest.fn().mockResolvedValue([]),
     },
     syncRun: {
-      findFirst: jest.fn().mockResolvedValue(
-        options.lastStudentsRunEndedAt
+      findFirst: jest.fn().mockImplementation(({ where }) =>
+        // Mirrors the real scoping: a run only counts for the connection it ran
+        // for, so another household's success cannot suppress this one.
+        options.lastStudentsRunEndedAt &&
+        (where.householdConnectionId === undefined ||
+          where.householdConnectionId === 'conn-1')
           ? { endedAt: options.lastStudentsRunEndedAt }
           : null,
       ),
@@ -128,7 +138,9 @@ function makeHarness(options: { connection?: unknown; lastStudentsRunEndedAt?: D
 
   const schoolYear = {
     resolveForSchool: jest.fn().mockResolvedValue({ year: 2027, source: 'calendar' }),
-    reconcileFromLogin: jest.fn((candidate: number) => ({ year: candidate, changed: false })),
+    reconcileFromLogin:
+      options.reconcile ??
+      jest.fn((candidate: number) => ({ year: candidate, changed: false })),
     invalidate: jest.fn(),
   } as unknown as SchoolYearService;
 
@@ -239,6 +251,53 @@ describe('MashovSessionService', () => {
       expect(mockHttp.post).toHaveBeenCalledTimes(2);
     });
 
+    it('persists the year Mashov confirms, not the one it was asked for', async () => {
+      // The rollover may advance a connection on the calendar alone. If Mashov
+      // has not opened that year, its answer has to win and be written down —
+      // otherwise the daily cron sets the bad year back every morning and the
+      // family's data flip-flops until the year really opens.
+      const { service, prisma } = makeHarness({
+        reconcile: jest.fn().mockReturnValue({ year: 2026, changed: true }),
+      });
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      const result = await service.refreshRosterForConnection('conn-1', 2027);
+
+      expect(result.year).toBe(2026);
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'conn-1' },
+          data: expect.objectContaining({ schoolYear: 2026 }),
+        }),
+      );
+    });
+
+    it('logs in at the year override rather than the stored one', async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.refreshRosterForConnection('conn-1', 2029);
+
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2029 }),
+        expect.anything(),
+      );
+    });
+
+    it('does not rewrite the connection when Mashov agrees', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.refreshRosterForConnection('conn-1');
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYear: expect.anything() }),
+        }),
+      );
+    });
+
     it('throws when the connection does not exist', async () => {
       const { service } = makeHarness({ connection: null });
 
@@ -279,6 +338,29 @@ describe('MashovSessionService', () => {
 
       await service.ensureStudentsAvailable('user-1');
 
+      expect(mockHttp.post).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not suppressed by another household's successful roster sync", async () => {
+      // Household A's roster sync fails every cycle (changed password) while
+      // B's succeeds. A global TTL probe would read B's fresh run and skip A's
+      // self-heal forever — the same gating failure this function replaced.
+      const { service, prisma } = makeHarness({
+        connection: {
+          ...CONNECTION,
+          id: 'conn-other',
+        },
+        lastStudentsRunEndedAt: new Date(Date.now() - 4 * 60 * 1000),
+      });
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.ensureStudentsAvailable('user-2');
+
+      expect(prisma.syncRun.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ householdConnectionId: 'conn-other' }),
+        }),
+      );
       expect(mockHttp.post).toHaveBeenCalledTimes(1);
     });
 

@@ -139,11 +139,27 @@ describe('SchoolYearService', () => {
       mockHttp.get.mockResolvedValue({
         data: [{ semel: 1234, name: 'Ours', years: [2024] }],
       });
-      const service = makeService({ storedYear: 2029 });
+      // 2028 is the ceiling (calendar 2027 + 1), so this is a legitimate
+      // connection already correctly on next year.
+      const service = makeService({ storedYear: 2028 });
 
       const resolved = await service.resolveForSchool(1234);
-      expect(resolved.year).toBe(2029);
+      expect(resolved.year).toBe(2028);
       expect(resolved.source).toBe('stored');
+    });
+
+    it('clamps a stored year that is itself absurd', async () => {
+      // A fat-fingered hotfix UPDATE (`schoolYear = 2072`) must not pin every
+      // connection at that school to a year with no data and no way back: the
+      // rollover task will not walk a stored year down, so an unclamped stored
+      // value is irreversible without a second manual UPDATE and a restart.
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 1234, name: 'Ours', years: [2027] }],
+      });
+      const service = makeService({ storedYear: 2072 });
+
+      const resolved = await service.resolveForSchool(1234);
+      expect(resolved.year).toBe(2028);
     });
 
     it('caches the resolution per semel within the TTL', async () => {
@@ -166,6 +182,19 @@ describe('SchoolYearService', () => {
 
       await service.resolveForSchool(1234);
       jest.setSystemTime(new Date(2026, 10, 17, 7));
+      await service.resolveForSchool(1234);
+
+      expect(mockHttp.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('forgets a cached resolution when invalidated', async () => {
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 1234, name: 'Ours', years: [2027] }],
+      });
+      const service = makeService({});
+
+      await service.resolveForSchool(1234);
+      service.invalidate(1234);
       await service.resolveForSchool(1234);
 
       expect(mockHttp.get).toHaveBeenCalledTimes(2);

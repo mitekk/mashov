@@ -8,6 +8,12 @@
  * `@default(0)`), and THIS script is what stamps the pre-existing rows and
  * swaps the unique indexes.
  *
+ * Normally you never run this by hand: `backend/Dockerfile` executes the same
+ * SQL with `prisma db execute` on every boot, between `db push` and the app, so
+ * there is no window in which a cron can see `schoolYear = 0` rows. This script
+ * is the ops path for a database that was migrated before that ordering
+ * existed, and it adds row-count assertions the boot path does not.
+ *
  * Usage:
  *   npx ts-node scripts/backfill-school-year.ts
  *
@@ -93,6 +99,33 @@ async function main() {
       await prisma.$executeRawUnsafe(statement);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('duplicate key value violates unique constraint')) {
+        // Only reachable on a database where the app was allowed to sync while
+        // rows were still at schoolYear = 0, so each item now exists twice:
+        // once at 0 and once at the live year. Stamping the 0 row would collide
+        // with its own duplicate. Say exactly that, and name the query that
+        // shows the damage — do NOT silently skip, and do not delete anything
+        // here: homework_item and behavior_item are the only copy of the
+        // family's history.
+        console.error(
+          [
+            '',
+            'Duplicate rows block the backfill.',
+            `Failed statement: ${statement.replace(/\s+/g, ' ').slice(0, 120)}`,
+            '',
+            'This database was synced while rows were still at schoolYear = 0,',
+            'so items exist twice. Inspect before doing anything:',
+            '',
+            '  SELECT "studentGuid", "lessonId", count(*), array_agg("schoolYear")',
+            '  FROM "homework_item" GROUP BY 1, 2 HAVING count(*) > 1;',
+            '',
+            'Each pair is the same upstream item fetched twice. Resolve it by',
+            'hand, keeping the row with the live year, then re-run this script.',
+            '',
+          ].join('\n'),
+        );
+        throw err;
+      }
       if (
         msg.includes('already exists') ||
         msg.includes('does not exist') ||
