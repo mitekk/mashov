@@ -3,9 +3,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 import { UserItemStateService } from '../common/user-item-state.service';
+import { ConfigService } from '@nestjs/config';
 import {
   currentSchoolYearFor,
-  schoolYearScope,
+  currentYearScope,
+  historyScope,
+  schoolYearWindowFor,
 } from '../common/school-year/school-year.scope';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
@@ -41,6 +44,7 @@ export class ChildrenService {
     private readonly sessionService: MashovSessionService,
     private readonly mashovClient: MashovHttpClient,
     private readonly userItemStateService: UserItemStateService,
+    private readonly configService: ConfigService,
   ) {}
 
   async getChildren(userId?: string) {
@@ -52,7 +56,9 @@ export class ChildrenService {
     });
 
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
+    // Current year only: these are activity counts and staleness signals, and
+    // the subject count would double for a groupId that recurs yearly.
+    const yearScope = currentYearScope(await currentSchoolYearFor(this.prisma, userId));
 
     const data = await Promise.all(
       students.map(async (student) => {
@@ -117,7 +123,8 @@ export class ChildrenService {
   async getChildWorkspace(studentGuid: string, userId?: string) {
     const student = await this.getStudentOrThrow(studentGuid, userId);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
+    // Current year only: counts, the subject total and the weekly-hours sum.
+    const yearScope = currentYearScope(await currentSchoolYearFor(this.prisma, userId));
 
     const [
       activityCounts,
@@ -184,10 +191,14 @@ export class ChildrenService {
     await this.requireStudent(studentGuid, userId);
 
     // Fetch all non-filtered items for state-based filtering
+    // A list, so it spans the configured history window; `pagination.total`
+    // grows with it by design.
     const allItems = await this.prisma.homeworkItem.findMany({
       where: {
         studentGuid,
-        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...historyScope(
+          await schoolYearWindowFor(this.prisma, this.configService, userId),
+        ),
       },
       orderBy: { lessonDate: 'desc' },
     });
@@ -254,7 +265,9 @@ export class ChildrenService {
       where: {
         studentGuid,
         ...(bucket !== 'all' ? { classification: bucket } : {}),
-        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...historyScope(
+          await schoolYearWindowFor(this.prisma, this.configService, userId),
+        ),
       },
       orderBy: { eventAt: 'desc' },
     });
@@ -520,7 +533,7 @@ export class ChildrenService {
     const entries = await this.prisma.timetableEntry.findMany({
       where: {
         studentGuid,
-        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
       },
       orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
     });
@@ -548,7 +561,7 @@ export class ChildrenService {
     const items = await this.prisma.subjectEnrollment.findMany({
       where: {
         studentGuid,
-        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
       },
       orderBy: { subjectName: 'asc' },
     });
@@ -657,7 +670,7 @@ export class ChildrenService {
       where: {
         studentGuid,
         expirationDate: { gt: now },
-        ...schoolYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
       },
       orderBy: { expirationDate: 'asc' },
     });

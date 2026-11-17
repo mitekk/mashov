@@ -470,6 +470,24 @@ describe('FreshnessService.computeContentFreshness', () => {
     });
   });
 
+  it('still reports stale_year when only prior-year content exists and the history window is open', async () => {
+    // The history window widens lists, never staleness. If MASHOV_YEAR could
+    // reach this verdict, a two-year window would make last June's homework
+    // count as this year's content and PR #8's only detection mechanism would
+    // be gone while its cause stayed fixed.
+    process.env.MASHOV_YEAR = '2025';
+    try {
+      const service = build({ newestHomeworkAt: new Date('2026-06-28T00:00:00Z') });
+
+      await expect(service.computeContentFreshness()).resolves.toMatchObject({
+        expectedSchoolYear: 2027,
+        status: 'stale_year',
+      });
+    } finally {
+      delete process.env.MASHOV_YEAR;
+    }
+  });
+
   it('reports stale_year when the newest content predates the school-year start', async () => {
     // Exactly production: the connection reads 2027 but the newest content is
     // the last school day of 2025/26.

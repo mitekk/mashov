@@ -1,5 +1,6 @@
 import { FeedService } from './feed.service';
 import { PrismaService } from '../prisma/prisma.service';
+import type { ConfigService } from '@nestjs/config';
 
 function makeMockPrisma(overrides: Partial<{
   studentFindMany: jest.Mock;
@@ -21,10 +22,25 @@ function makeMockPrisma(overrides: Partial<{
   } as unknown as jest.Mocked<PrismaService>;
 }
 
+function makeConfig(startYear?: string): ConfigService {
+  return {
+    get: jest.fn((key: string) => (key === 'MASHOV_YEAR' ? startYear : undefined)),
+  } as unknown as ConfigService;
+}
+
+function makeFeedService(prisma: PrismaService, startYear?: string): FeedService {
+  return new FeedService(prisma, makeConfig(startYear));
+}
+
+/** The window predicate the feed is expected to issue. */
+function windowWhere(start: number, current: number) {
+  return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
+}
+
 describe('FeedService', () => {
   describe('getFeed', () => {
     it('returns empty paginated result when all sources are empty', async () => {
-      const service = new FeedService(makeMockPrisma({}));
+      const service = makeFeedService(makeMockPrisma({}));
       const result = await service.getFeed(1, 20);
 
       expect(result.data).toEqual([]);
@@ -41,7 +57,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T05:00:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ homeworkFindMany: jest.fn().mockResolvedValue([hw]) }),
       );
 
@@ -72,7 +88,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T05:00:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ homeworkFindMany: jest.fn().mockResolvedValue([hw]) }),
       );
 
@@ -83,14 +99,14 @@ describe('FeedService', () => {
 
     it('queries homework items ordered by lessonDate desc (no isArchived filter — field lives in UserItemState)', async () => {
       const homeworkFindMany = jest.fn().mockResolvedValue([]);
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ homeworkFindMany }),
       );
 
       await service.getFeed(1, 20);
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { schoolYear: { in: [2027, 0] } },
+          where: windowWhere(2027, 2027),
           orderBy: { lessonDate: 'desc' },
         }),
       );
@@ -98,14 +114,14 @@ describe('FeedService', () => {
 
     it('queries behavior items ordered by eventAt desc (no isArchived filter — field lives in UserItemState)', async () => {
       const behaviorFindMany = jest.fn().mockResolvedValue([]);
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ behaviorFindMany }),
       );
 
       await service.getFeed(1, 20);
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { schoolYear: { in: [2027, 0] } },
+          where: windowWhere(2027, 2027),
           orderBy: { eventAt: 'desc' },
         }),
       );
@@ -122,7 +138,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ behaviorFindMany: jest.fn().mockResolvedValue([behavior]) }),
       );
 
@@ -148,7 +164,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T09:10:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ behaviorFindMany: jest.fn().mockResolvedValue([behavior]) }),
       );
 
@@ -174,7 +190,7 @@ describe('FeedService', () => {
         lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ mailFindMany: jest.fn().mockResolvedValue([conv]) }),
       );
 
@@ -203,7 +219,7 @@ describe('FeedService', () => {
         lastFetchedAt: new Date('2026-03-11T10:05:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ mailFindMany: jest.fn().mockResolvedValue([conv]) }),
       );
 
@@ -214,7 +230,7 @@ describe('FeedService', () => {
 
     it('requests mail conversations without archived label', async () => {
       const mailFindMany = jest.fn().mockResolvedValue([]);
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ mailFindMany }),
       );
 
@@ -241,7 +257,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T08:10:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({
           studentFindMany: jest.fn().mockResolvedValue(students),
           homeworkFindMany: jest.fn().mockResolvedValue([hw]),
@@ -274,7 +290,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({
           homeworkFindMany: jest.fn().mockResolvedValue([older, newer]),
         }),
@@ -295,7 +311,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({
           homeworkFindMany: jest.fn().mockResolvedValue([hw]),
         }),
@@ -315,7 +331,7 @@ describe('FeedService', () => {
         updatedAt: new Date('2026-03-11T08:30:00Z'),
       };
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({
           homeworkFindMany: jest.fn().mockResolvedValue([hw]),
         }),
@@ -323,6 +339,51 @@ describe('FeedService', () => {
 
       const result = await service.getFeed(1, 20);
       expect(result.data[0].isHandled).toBe(false);
+    });
+
+    it('spans the configured history window rather than the current year alone', async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([
+        {
+          id: 'hw-last-year',
+          studentGuid: 'student-1',
+          subjectName: 'History',
+          homeworkText: 'Chapter 4',
+          lessonDate: new Date('2026-05-02T08:00:00Z'),
+          updatedAt: new Date('2026-05-02T08:30:00Z'),
+        },
+      ]);
+      const service = makeFeedService(makeMockPrisma({ homeworkFindMany }), '2026');
+
+      const result = await service.getFeed(1, 20);
+
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: windowWhere(2026, 2027) }),
+      );
+      expect(result.data[0].id).toBe('hw-last-year');
+    });
+
+    it('excludes a year earlier than the configured start year', async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([]);
+      const service = makeFeedService(makeMockPrisma({ homeworkFindMany }), '2026');
+
+      await service.getFeed(1, 20);
+
+      const where = homeworkFindMany.mock.calls[0][0].where;
+      expect(where.OR[1].schoolYear.gte).toBe(2026);
+      expect(where.OR).not.toContainEqual(
+        expect.objectContaining({ schoolYear: expect.objectContaining({ gte: 2025 }) }),
+      );
+    });
+
+    it('keeps the window one year wide when MASHOV_YEAR is unset', async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([]);
+      const service = makeFeedService(makeMockPrisma({ homeworkFindMany }));
+
+      await service.getFeed(1, 20);
+
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: windowWhere(2027, 2027) }),
+      );
     });
 
     it('applies pagination correctly', async () => {
@@ -349,7 +410,7 @@ describe('FeedService', () => {
         },
       ];
 
-      const service = new FeedService(
+      const service = makeFeedService(
         makeMockPrisma({ homeworkFindMany: jest.fn().mockResolvedValue(items) }),
       );
 

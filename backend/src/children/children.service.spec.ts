@@ -1,4 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChildrenService } from './children.service';
 import { MashovSessionService } from '../session/mashov-session.service';
@@ -135,6 +136,17 @@ function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>> = {}
   } as unknown as jest.Mocked<MashovHttpClient>;
 }
 
+function makeMockConfig(startYear?: string): ConfigService {
+  return {
+    get: jest.fn((key: string) => (key === 'MASHOV_YEAR' ? startYear : undefined)),
+  } as unknown as ConfigService;
+}
+
+/** The window predicate a history-spanning read is expected to issue. */
+function windowWhere(start: number, current: number) {
+  return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
+}
+
 describe('ChildrenService', () => {
   describe('getChildren', () => {
     it('returns {data} with computed counts and latestUpdateAt', async () => {
@@ -159,6 +171,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getChildren();
@@ -206,6 +219,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         mockUserItemState,
+        makeMockConfig(),
       );
 
       const result = await service.getChildren('user-1');
@@ -240,6 +254,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -263,6 +278,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getChildWorkspace('missing-guid')).rejects.toThrow(
@@ -282,6 +298,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -306,6 +323,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       // No userId → defaults to isNew=true, isArchived=false → 'archived' filter returns 0
@@ -323,6 +341,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20, 'all');
@@ -343,6 +362,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -359,6 +379,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -379,6 +400,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -393,6 +415,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'missing-hw')).rejects.toThrow(
@@ -410,6 +433,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'hw-1')).rejects.toThrow(
@@ -429,6 +453,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', false);
@@ -447,6 +472,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.setHomeworkIsNew(TEST_GUID, 'hw-1', false)).rejects.toThrow(
@@ -470,6 +496,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         mockUserItemState,
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', true, 'user-1');
@@ -487,6 +514,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, ['hw-1', 'hw-2'], false);
@@ -503,6 +531,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, [], false);
@@ -519,6 +548,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(
@@ -538,6 +568,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', true);
@@ -557,6 +588,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', false);
@@ -575,6 +607,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.setHomeworkArchived(TEST_GUID, 'hw-1', true)).rejects.toThrow(
@@ -591,6 +624,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1', 'hw-2', 'hw-3'], true);
@@ -606,6 +640,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1'], false);
@@ -625,6 +660,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'new');
@@ -652,6 +688,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'all');
@@ -668,6 +705,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'all');
@@ -692,6 +730,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -714,6 +753,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -728,6 +768,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'missing-beh')).rejects.toThrow(
@@ -745,6 +786,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'beh-1')).rejects.toThrow(
@@ -764,6 +806,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', false);
@@ -781,6 +824,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.setBehaviorIsNew(TEST_GUID, 'beh-1', false)).rejects.toThrow(
@@ -804,6 +848,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         mockUserItemState,
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', true, 'user-1');
@@ -821,6 +866,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, ['beh-1', 'beh-2'], false);
@@ -836,6 +882,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, [], true);
@@ -856,6 +903,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', true);
@@ -874,6 +922,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', false);
@@ -892,6 +941,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.setBehaviorArchived(TEST_GUID, 'beh-1', true)).rejects.toThrow(
@@ -908,6 +958,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1', 'beh-2'], true);
@@ -923,6 +974,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1'], false);
@@ -964,6 +1016,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const subjects = await service.getSubjects(TEST_GUID);
@@ -1000,6 +1053,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getTimetable(TEST_GUID);
@@ -1034,6 +1088,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getTimetable(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -1065,6 +1120,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1105,6 +1161,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1118,6 +1175,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1145,6 +1203,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getStudentReleases(TEST_GUID);
@@ -1184,6 +1243,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ put }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.createStudentRelease(TEST_GUID, body);
@@ -1219,6 +1279,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ put }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.updateStudentRelease(TEST_GUID, 84, body);
@@ -1235,6 +1296,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ delete: remove }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.deleteStudentRelease(TEST_GUID, 84);
@@ -1259,6 +1321,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getSchoolActivities(TEST_GUID);
@@ -1285,6 +1348,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getChildren('user-1');
@@ -1305,6 +1369,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getChildren('user-1');
@@ -1321,6 +1386,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.getChildren('user-1');
@@ -1339,6 +1405,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.getChildren('user-1');
@@ -1357,6 +1424,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.getChildren('user-1');
@@ -1366,22 +1434,138 @@ describe('ChildrenService', () => {
       });
     });
 
-    it("scopes the homework list to the connection's year", async () => {
+    it('spans the history window on the homework list', async () => {
       const homeworkFindMany = jest.fn().mockResolvedValue([]);
       const service = new ChildrenService(
         makeMockPrisma({ homeworkFindMany }),
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
+          where: expect.objectContaining(windowWhere(2027, 2027)),
+        }),
+      );
+    });
+
+    it('returns a prior-year homework item once the window is open', async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([
+        {
+          id: 'hw-last-year',
+          studentGuid: TEST_GUID,
+          subjectName: 'History',
+          homeworkText: 'Chapter 4',
+          lessonDate: new Date('2026-05-02T08:00:00Z'),
+          updatedAt: new Date('2026-05-02T08:30:00Z'),
+          files: [],
+        },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
+      );
+
+      const result = await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
+
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining(windowWhere(2026, 2027)) }),
+      );
+      expect(result.data[0].id).toBe('hw-last-year');
+      expect(result.pagination.total).toBe(1);
+    });
+
+    it('keeps the timetable on the current year alone even with the window open', async () => {
+      // One row per (studentGuid, schoolYear, day, lesson). A range would
+      // return two subjects for the same slot, and the payload carries no year
+      // to tell them apart.
+      const timetableFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ timetableFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2025'),
+      );
+
+      await service.getTimetable(TEST_GUID, 'user-1');
+
+      expect(timetableFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
           where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
         }),
       );
+    });
+
+    it('does not double-count a recurring groupId in subjectCount', async () => {
+      // groupId recurs yearly, so a range doubles the subject list and count.
+      const subjectCount = jest.fn().mockResolvedValue(0);
+      const service = new ChildrenService(
+        makeMockPrisma({ subjectCount }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2025'),
+      );
+
+      await service.getChildren('user-1');
+
+      expect(subjectCount).toHaveBeenCalledWith({
+        where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+      });
+    });
+
+    it('sums weekly hours for the current year alone', async () => {
+      const subjectAggregate = jest
+        .fn()
+        .mockResolvedValue({ _sum: { weeklyHours: 30 } });
+      const service = new ChildrenService(
+        makeMockPrisma({ subjectAggregate }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2025'),
+      );
+
+      await service.getChildWorkspace(TEST_GUID, 'user-1');
+
+      expect(subjectAggregate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+    });
+
+    it('keeps latestUpdateAt on the current year alone even with the window open', async () => {
+      // A range here would let last June's homework report as this year's
+      // latest update — the blindness that hid the frozen year for months.
+      const homeworkFindFirst = jest.fn().mockResolvedValue(null);
+      const behaviorFindFirst = jest.fn().mockResolvedValue(null);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindFirst, behaviorFindFirst }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2025'),
+      );
+
+      const result = await service.getChildren('user-1');
+
+      for (const mock of [homeworkFindFirst, behaviorFindFirst]) {
+        expect(mock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+          }),
+        );
+      }
+      expect(result.data[0].latestUpdateAt).toBeNull();
     });
 
     it('falls back to the calendar year when there is no connection', async () => {
@@ -1394,6 +1578,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.getSubjects(TEST_GUID);
@@ -1417,6 +1602,7 @@ describe('ChildrenService', () => {
         makeMockSession({ ensureStudentsAvailable }),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -1433,6 +1619,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getSubjects(TEST_GUID)).rejects.toMatchObject({
@@ -1458,6 +1645,7 @@ describe('ChildrenService', () => {
         makeMockSession({ ensureStudentsAvailable }),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.getChildWorkspace(TEST_GUID, 'user-9');
@@ -1472,6 +1660,7 @@ describe('ChildrenService', () => {
         makeMockSession({ ensureStudentsAvailable }),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await service.getChildren('user-9');
@@ -1488,6 +1677,7 @@ describe('ChildrenService', () => {
         makeMockSession({ ensureStudentsAvailable }),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(service.getSubjects(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -1519,6 +1709,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ getResponse }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.downloadHomeworkAttachment(TEST_GUID, 'hw-1', 'hw-file-1');
@@ -1547,6 +1738,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(
@@ -1589,6 +1781,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient({ getResponse }),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       const result = await service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1');
@@ -1614,6 +1807,7 @@ describe('ChildrenService', () => {
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
+        makeMockConfig(),
       );
 
       await expect(

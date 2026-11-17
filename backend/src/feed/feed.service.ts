@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import {
-  currentSchoolYearFor,
-  schoolYearScope,
+  historyScope,
+  schoolYearWindowFor,
 } from '../common/school-year/school-year.scope';
 
 export interface FeedItem {
@@ -26,12 +27,20 @@ export interface FeedItem {
 
 @Injectable()
 export class FeedService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async getFeed(page: number, limit: number, userId?: string) {
-    // These two reads are unbounded `orderBy desc`, so without the year scope
-    // the feed mixes a finished school year into the current one.
-    const yearScope = schoolYearScope(await currentSchoolYearFor(this.prisma, userId));
+    // The feed is a list, so spanning the configured history window is the
+    // point: more data is the feature. It is bounded at both ends, so an
+    // unbounded `orderBy desc` still cannot reach a year nobody asked for.
+    // Mail is deliberately not year-scoped — mailConversation carries no
+    // schoolYear — and the backfill does not fetch it.
+    const yearScope = historyScope(
+      await schoolYearWindowFor(this.prisma, this.configService, userId),
+    );
 
     const students = await this.prisma.student.findMany({
       where: { isActive: true },

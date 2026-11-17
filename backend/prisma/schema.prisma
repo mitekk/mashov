@@ -180,6 +180,9 @@ model HomeworkItem {
   updatedAt    DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId])
+  // The feed filters on schoolYear with no studentGuid, so the compound
+  // uniques above (all leading on studentGuid) cannot serve a range predicate.
+  @@index([schoolYear, lessonDate])
   @@map("homework_item")
 }
 
@@ -205,6 +208,7 @@ model BehaviorItem {
   updatedAt      DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId, eventCode])
+  @@index([schoolYear, eventAt])
   @@map("behavior_item")
 }
 

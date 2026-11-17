@@ -4,6 +4,7 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { FreshnessService } from '../../src/sync/freshness.service';
 import { MashovSessionService } from '../../src/session/mashov-session.service';
 import { UserItemStateService } from '../../src/common/user-item-state.service';
+import { ConfigService } from '@nestjs/config';
 
 const mockPrisma = {
   mailConversation: {
@@ -54,6 +55,9 @@ describe('DashboardService', () => {
         { provide: FreshnessService, useValue: mockFreshness },
         { provide: MashovSessionService, useValue: mockSession },
         { provide: UserItemStateService, useValue: mockUserItemState },
+        // MASHOV_YEAR unset: the history window is one year wide, so these
+        // expectations are unchanged by the window's introduction.
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
       ],
     }).compile();
 
