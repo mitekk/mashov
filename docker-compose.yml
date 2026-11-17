@@ -85,6 +85,10 @@ services:
       BACKEND_URL: http://backend:3000
       # Wall-clock bound per backend call from the proxy route (default 15000).
       PROXY_TIMEOUT_MS: ${PROXY_TIMEOUT_MS:-}
+      # Larger bound for synchronous long-running paths (/api/v1/sync/*, default
+      # 90000): POST /sync/refresh runs every sync task before it responds, so the
+      # ordinary bound above would 504 a slow-but-successful refresh.
+      PROXY_SLOW_TIMEOUT_MS: ${PROXY_SLOW_TIMEOUT_MS:-}
       NEXT_PUBLIC_API_URL: /api/v1
       NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
       # Opt-in only. Set to 1 by the e2e test commands and CI; must stay 0
