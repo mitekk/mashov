@@ -42,9 +42,12 @@ function config(startYear?: string) {
 }
 
 function okResult(): SyncTaskRunResult {
+  // Non-zero: the backfill refuses to record a year complete when nothing
+  // came back, because a refused historical login looks exactly like an
+  // empty year.
   return {
     status: 'success',
-    summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 0 },
+    summary: { fetchedCount: 1, createdCount: 0, updatedCount: 1, failedCount: 0 },
     errorMessages: [],
   };
 }
@@ -190,7 +193,17 @@ describe('School-year history window', () => {
     expect(result.data[0].subjectName).toBe('Subject 2027');
   });
 
+  /**
+   * The coercion guard compares the newest row stamped with the backfilled
+   * year against that year's span (Sep year-1 .. Aug year). Seeding one row
+   * inside the span is what a real successful fetch would have left behind.
+   */
+  async function seedInSpanContent(year: number): Promise<void> {
+    await seedHomeworkYears([year]);
+  }
+
   it('is idempotent across two backfill runs', async () => {
+    await seedInSpanContent(2026);
     const executed: Array<{ connectionId?: string; schoolYear: number }> = [];
     const task = {
       execute: jest
@@ -237,6 +250,7 @@ describe('School-year history window', () => {
   });
 
   it('retries a year whose ledger row failed', async () => {
+    await seedInSpanContent(2026);
     const mineCalls: number[] = [];
     let run = 0;
     const task = {

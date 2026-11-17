@@ -157,6 +157,49 @@ describe('HomeworkTask', () => {
       expect.objectContaining({ orderBy: expect.anything() }),
     );
   });
+  describe('upstream failure reporting', () => {
+    it('reports failure when every connection fails for a student', async () => {
+      // Reporting success here is what lets the history backfill record a year
+      // permanently complete having fetched nothing at all.
+      mashovClient.getForConnection.mockRejectedValue(new Error('401 from Mashov'));
+
+      const result = await task.execute({ connectionId: 'conn-1' });
+
+      expect(result.status).toBe('failed');
+      expect(result.summary.failedCount).toBeGreaterThan(0);
+      expect(syncRunService.closeRun).toHaveBeenCalledWith(
+        'run-1',
+        'failed',
+        expect.objectContaining({ errorMessage: expect.stringContaining('stu-1') }),
+      );
+      expect(prisma.homeworkItem.upsert).not.toHaveBeenCalled();
+    });
+
+    it('reports failure when the named connection does not exist', async () => {
+      prisma.householdConnection.findMany.mockResolvedValue([]);
+
+      const result = await task.execute({ connectionId: 'ghost' });
+
+      expect(result.status).toBe('failed');
+      expect(mashovClient.get).not.toHaveBeenCalled();
+    });
+
+    it('still succeeds when a later connection answers after an earlier one fails', async () => {
+      prisma.householdConnection.findMany.mockResolvedValue([
+        { ...CONNECTION, id: 'conn-broken' },
+        { ...CONNECTION, id: 'conn-good' },
+      ]);
+      mashovClient.getForConnection
+        .mockRejectedValueOnce(new Error('401 from Mashov'))
+        .mockResolvedValueOnce([makeHomework()]);
+
+      const result = await task.execute();
+
+      expect(result.status).toBe('success');
+      expect(prisma.homeworkItem.upsert).toHaveBeenCalled();
+    });
+  });
+
   describe('historical year context', () => {
     it('stamps and fetches the context school year when given one', async () => {
       await task.execute({ connectionId: 'conn-1', schoolYear: 2026 });

@@ -21,10 +21,10 @@ const CONNECTION: {
   active: true,
 };
 
-function okResult(): SyncTaskRunResult {
+function okResult(fetchedCount = 1): SyncTaskRunResult {
   return {
     status: 'success',
-    summary: { fetchedCount: 1, createdCount: 0, updatedCount: 1, failedCount: 0 },
+    summary: { fetchedCount, createdCount: 0, updatedCount: fetchedCount, failedCount: 0 },
     errorMessages: [],
   };
 }
@@ -79,6 +79,12 @@ function makeHarness(
     connection?: Partial<typeof CONNECTION> | null;
     completeYears?: number[];
     failing?: (typeof TASK_KEYS)[number];
+    /** What each task reports fetching. 0 means "nothing came back". */
+    fetchedCount?: number;
+    /** The newest dated row found under the requested year, or null for none. */
+    newestContentAt?: Date | null;
+    /** Failed attempts already on the ledger, per year. */
+    failedAttempts?: Record<number, number>;
   } = {},
 ): Harness {
   const connection =
@@ -94,12 +100,27 @@ function makeHarness(
     return Promise.resolve(null);
   });
 
+  const failedAttempts = options.failedAttempts ?? {};
+  const syncRunCount = jest.fn().mockImplementation(({ where }) => {
+    const match = /^history:(\d+):complete$/.exec(String(where.source));
+    return Promise.resolve(match ? (failedAttempts[Number(match[1])] ?? 0) : 0);
+  });
+
+  const newestContentAt =
+    options.newestContentAt === undefined ? null : options.newestContentAt;
+
   const prisma = {
     householdConnection: {
       findMany: jest.fn().mockResolvedValue(connection ? [connection] : []),
       update: connectionUpdate,
     },
-    syncRun: { findFirst: syncRunFindFirst },
+    syncRun: { findFirst: syncRunFindFirst, count: syncRunCount },
+    homeworkItem: {
+      aggregate: jest.fn().mockResolvedValue({ _max: { lessonDate: newestContentAt } }),
+    },
+    behaviorItem: {
+      aggregate: jest.fn().mockResolvedValue({ _max: { eventAt: null } }),
+    },
   } as unknown as PrismaService;
 
   const openRun = jest
@@ -114,7 +135,9 @@ function makeHarness(
       {
         execute: jest
           .fn()
-          .mockResolvedValue(options.failing === key ? failResult() : okResult()),
+          .mockResolvedValue(
+            options.failing === key ? failResult() : okResult(options.fetchedCount ?? 1),
+          ),
       },
     ]),
   ) as Harness['tasks'];
@@ -244,6 +267,95 @@ describe('HistoryBackfillTask', () => {
       'failed',
       expect.objectContaining({ errorMessage: expect.stringContaining('timetable') }),
     );
+  });
+
+  it('does not record a year complete when nothing came back', async () => {
+    // The eight tasks can each report success having fetched nothing — a
+    // rejected historical login is caught per connection. Recording that as
+    // complete retires the year forever with no data and no way back.
+    const harness = makeHarness({ startYear: '2026', fetchedCount: 0 });
+
+    await harness.task.run();
+
+    expect(harness.closeRun).toHaveBeenCalledWith(
+      'run-1',
+      'failed',
+      expect.objectContaining({ errorMessage: expect.stringContaining('fetched nothing') }),
+    );
+  });
+
+  it('records on the ledger row how much it actually fetched', async () => {
+    // ADR-0025 says the first real run must be checked by confirming rows
+    // landed, not by trusting a success status. This is where an operator
+    // looks.
+    const harness = makeHarness({ startYear: '2026', fetchedCount: 3 });
+
+    await harness.task.run();
+
+    expect(harness.closeRun).toHaveBeenCalledWith(
+      'run-1',
+      'success',
+      expect.objectContaining({ fetchedCount: 24 }),
+    );
+  });
+
+  it('refuses the year when the rows that landed belong to a later one', async () => {
+    // If Mashov silently coerces a historical login to the current year, the
+    // rows get stamped 2026 while holding 2027 content, and every item then
+    // appears twice in the feed with nothing anywhere to notice.
+    const harness = makeHarness({
+      startYear: '2026',
+      newestContentAt: new Date('2027-05-02T00:00:00Z'),
+    });
+
+    await harness.task.run();
+
+    expect(harness.closeRun).toHaveBeenCalledWith(
+      'run-1',
+      'failed',
+      expect.objectContaining({
+        errorMessage: expect.stringContaining('outside school year 2026'),
+      }),
+    );
+  });
+
+  it('accepts content dated inside the requested year', async () => {
+    // Mashov year N runs Sep N-1 to Jun N.
+    const harness = makeHarness({
+      startYear: '2026',
+      newestContentAt: new Date('2026-06-10T00:00:00Z'),
+    });
+
+    await harness.task.run();
+
+    expect(harness.closeRun).toHaveBeenCalledWith('run-1', 'success', expect.anything());
+  });
+
+  it('moves on to the older year rather than retrying a year that keeps failing', async () => {
+    // One year per run, so without this a year that fails every night blocks
+    // the older one forever and the window is never filled.
+    const harness = makeHarness({
+      startYear: '2025',
+      failedAttempts: { 2026: 1 },
+    });
+
+    await harness.task.run();
+
+    expect(yearsAskedFor(harness)).toEqual([2025]);
+  });
+
+  it('gives up on a year after three failed attempts', async () => {
+    // Otherwise a year the child was never enrolled in costs eight fetches a
+    // night forever.
+    const harness = makeHarness({
+      startYear: '2026',
+      failedAttempts: { 2026: 3 },
+    });
+
+    await harness.task.run();
+
+    expect(yearsAskedFor(harness)).toEqual([]);
+    expect(harness.openRun).not.toHaveBeenCalled();
   });
 
   it('never updates the connection school year', async () => {

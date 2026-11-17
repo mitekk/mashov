@@ -1482,6 +1482,56 @@ describe('ChildrenService', () => {
       expect(result.pagination.total).toBe(1);
     });
 
+    it('spans the history window on the behaviour list', async () => {
+      // Without this the widening of getBehavior is asserted nowhere: the
+      // whole suite stayed green with it on currentYearScope.
+      const behaviorFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ behaviorFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
+      );
+
+      await service.getBehavior(TEST_GUID, 1, 20, 'all', 'all', 'user-1');
+
+      expect(behaviorFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining(windowWhere(2026, 2027)),
+        }),
+      );
+    });
+
+    it('returns a prior-year behaviour item once the window is open', async () => {
+      const behaviorFindMany = jest.fn().mockResolvedValue([
+        {
+          id: 'beh-last-year',
+          studentGuid: TEST_GUID,
+          achvaName: 'Late arrival',
+          remark: null,
+          classification: 'attention',
+          achvaCode: 1,
+          eventAt: new Date('2026-05-02T09:00:00Z'),
+          lessonDate: new Date('2026-05-02T09:00:00Z'),
+          updatedAt: new Date('2026-05-02T09:10:00Z'),
+          rawPayload: {},
+        },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({ behaviorFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
+      );
+
+      const result = await service.getBehavior(TEST_GUID, 1, 20, 'all', 'all', 'user-1');
+
+      expect(result.data[0].id).toBe('beh-last-year');
+      expect(result.pagination.total).toBe(1);
+    });
+
     it('keeps the timetable on the current year alone even with the window open', async () => {
       // One row per (studentGuid, schoolYear, day, lesson). A range would
       // return two subjects for the same slot, and the payload carries no year

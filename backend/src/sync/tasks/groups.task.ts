@@ -95,6 +95,7 @@ export class GroupsTask {
           );
         } else {
           groups = [];
+          let answered = false;
           for (const conn of connections) {
             try {
               const password = this.encryptionService.decrypt(conn.encryptedPassword);
@@ -113,11 +114,21 @@ export class GroupsTask {
                 },
               );
               schoolYear = connYear;
+              answered = true;
               break;
             } catch (connErr) {
               const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
               this.logger.warn(`Groups: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
             }
+          }
+          // Every connection failed. Reporting success here would let the
+          // history backfill record a year permanently complete having
+          // fetched nothing, and would hide a broken live sync behind a
+          // green run. The per-student catch below records the failure.
+          if (!answered) {
+            throw new Error(
+              `every connection failed for ${student.studentGuid} (tried ${connections.length})`,
+            );
           }
         }
 
