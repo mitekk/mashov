@@ -86,6 +86,7 @@ describe('MailInboxTask', () => {
       householdConnection: {
         findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(1),
         update: jest.fn().mockResolvedValue({ id: 'household-1' }),
       } as unknown as PrismaService['householdConnection'],
       mailConversation: {
@@ -357,6 +358,7 @@ describe('MailInboxTask', () => {
     });
 
     it('skips the sweep when more than one connection is active', async () => {
+      (mockPrisma.householdConnection.count as jest.Mock).mockResolvedValue(2);
       (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
         { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
         { id: 'conn-2', schoolCode: 2, schoolYear: 2026, username: 'b', encryptedPassword: 'y' },
@@ -368,11 +370,35 @@ describe('MailInboxTask', () => {
       expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
     });
 
-    it('skips the sweep on a run targeted at a single connection', async () => {
+    it('sweeps on a targeted run when only one connection is active', async () => {
+      // "refresh now" (sync.controller.ts) always targets the caller's connection, so on a
+      // single-connection deployment every user-triggered run is targeted. Skipping those
+      // meant pressing refresh never corrected the count.
+      (mockPrisma.householdConnection.count as jest.Mock).mockResolvedValue(1);
       (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
         { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
       ]);
-      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue([]);
+      (mockMashovClient.getForConnection as jest.Mock)
+        .mockResolvedValueOnce([makeConversation()])
+        .mockResolvedValueOnce([]);
+
+      await task.execute({ connectionId: 'conn-1' });
+
+      expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { isUnread: false } }),
+      );
+    });
+
+    it('skips the sweep on a targeted run when another connection is also active', async () => {
+      // context.connectionId narrows the findMany, so the walked list is no evidence of
+      // how many mailboxes feed the unscoped table. Count independently.
+      (mockPrisma.householdConnection.count as jest.Mock).mockResolvedValue(2);
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+        { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
+      ]);
+      (mockMashovClient.getForConnection as jest.Mock)
+        .mockResolvedValueOnce([makeConversation()])
+        .mockResolvedValueOnce([]);
 
       await task.execute({ connectionId: 'conn-1' });
 

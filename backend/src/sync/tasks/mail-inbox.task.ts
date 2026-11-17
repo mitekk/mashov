@@ -69,7 +69,6 @@ export class MailInboxTask {
     archivePageCount: number;
     maxPages: number;
     activeConnectionCount: number;
-    targeted: boolean;
   }): string | null {
     if (gates.failedCount > 0) return `${gates.failedCount} item failure(s) in this run`;
     // An empty inbox response is indistinguishable from a soft failure: a 2xx with `[]`
@@ -81,7 +80,6 @@ export class MailInboxTask {
     if (gates.pageCount === 0) return 'inbox walk returned no conversations';
     if (gates.pageCount >= gates.maxPages) return 'inbox walk hit the page cap';
     if (gates.archivePageCount >= gates.maxPages) return 'archive walk hit the page cap';
-    if (gates.targeted) return 'run targeted at a single connection';
     if (gates.activeConnectionCount > 1) {
       return `${gates.activeConnectionCount} active connections share one unscoped mail table`;
     }
@@ -106,7 +104,20 @@ export class MailInboxTask {
     // active corruption -- connection A's run would clear unread on B's rows every 7
     // minutes and back again -- so it is gated on there being exactly one mailbox. The
     // derivation itself is per-conversation and idempotent, and stays on regardless.
-    const activeConnectionCount = useSharedSession ? 1 : connections.length;
+    //
+    // Counted independently of context.connectionId rather than taken from `connections`
+    // above: that list is narrowed by the context, so a targeted run would read 1 however
+    // many mailboxes exist. This used to be handled by refusing to sweep on any targeted
+    // run at all, but `refreshAll({ connectionId })` (sync.controller.ts) means every
+    // user-triggered refresh is targeted -- so on a single-connection deployment pressing
+    // refresh never corrected the count, and only the 7-minute cron ever reconciled.
+    // A count of 0 is the shared-session case: no user-owned connection, one mailbox.
+    const activeConnectionCount = Math.max(
+      await this.prisma.householdConnection.count({
+        where: { userId: { not: null }, active: true },
+      }),
+      1,
+    );
 
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -371,7 +382,6 @@ export class MailInboxTask {
         archivePageCount,
         maxPages,
         activeConnectionCount,
-        targeted: Boolean(context.connectionId),
       });
       let sweptCount = 0;
       if (sweepSkipReason === null) {
