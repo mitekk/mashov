@@ -42,6 +42,7 @@ model AppUser {
   updatedAt     DateTime @updatedAt
   sessions      AppSession[]
   connections   HouseholdConnection[]
+  digestRecipients DigestRecipient[]
 
   @@map("app_user")
 }
@@ -184,9 +185,12 @@ model HomeworkItem {
   updatedAt    DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId])
-  // The feed filters on schoolYear with no studentGuid, so the compound
-  // uniques above (all leading on studentGuid) cannot serve a range predicate.
+  // Two readers, two shapes, and neither index serves the other. The feed
+  // filters on schoolYear with no studentGuid, so the compound uniques above
+  // (all leading on studentGuid) cannot serve its range predicate. The digest
+  // checker always has a studentGuid and scans a date range within it.
   @@index([schoolYear, lessonDate])
+  @@index([studentGuid, schoolYear, lessonDate])
   @@map("homework_item")
 }
 
@@ -212,7 +216,14 @@ model BehaviorItem {
   updatedAt      DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId, eventCode])
+  // As on homework_item: the feed's year-wide scan and the digest's per-child
+  // scan need different leading columns. Two dates as well -- lessonDate is
+  // when the event happened, eventAt when the teacher recorded it, and the
+  // digest windows on either, so a teacher entering yesterday's absence this
+  // afternoon is still today's news.
   @@index([schoolYear, eventAt])
+  @@index([studentGuid, schoolYear, lessonDate])
+  @@index([studentGuid, schoolYear, eventAt])
   @@map("behavior_item")
 }
 
@@ -277,6 +288,9 @@ model SyncRun {
   errorMessage          String?
   householdConnectionId String?
 
+  // FreshnessService.getAllSourceHealth() table-scanned this; it had no index at
+  // all and grows without bound.
+  @@index([source, startedAt])
   @@map("sync_run")
 }
 
@@ -310,4 +324,97 @@ model TimetableEntry {
   @@unique([studentGuid, schoolYear, day, lesson])
   @@index([studentGuid])
   @@map("timetable_entry")
+}
+
+// ---------------------------------------------------------------------------
+// Digest: per-child daily activity briefing pushed to a parent's messaging app.
+// ---------------------------------------------------------------------------
+
+/// Who receives a child's digest, and on which channel. These rows are also the
+/// de-facto child -> parent ownership mapping: `Student` has no userId FK (children
+/// are global and every cron iterates the whole active roster), so a child gets a
+/// digest only if an enabled recipient row exists for it. That makes delivery
+/// strictly opt-in, the right default for pushing a child's behavior data to a
+/// third party. See ADR-0025 for the trade-off this accepts.
+model DigestRecipient {
+  id          String   @id @default(cuid())
+  userId      String
+  studentGuid String
+  /// 'telegram' today; the DigestSender interface allows more.
+  channel     String
+  /// Telegram chat id.
+  address     String
+  displayName String?
+  enabled     Boolean  @default(true)
+  /// Items dated before this are never reported - stops the first run blasting a
+  /// backlog of the whole school year.
+  activeFrom  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([studentGuid, channel, address])
+  @@index([studentGuid, enabled])
+  @@index([userId])
+  @@map("digest_recipient")
+}
+
+/// One row per (item, reason) already reported to a parent. This is the dedup
+/// ledger; ADR-0017 forbids durable state in Redis, so the uniqueness of these rows
+/// is what makes the digest at-most-once.
+model DigestReportedItem {
+  id          String    @id @default(cuid())
+  studentGuid String
+  /// 'behavior' | 'homework_new' | 'homework_due' - the *reason* the item was
+  /// reported. Distinct types let one homework row be reported once as newly
+  /// assigned and later as estimated-due.
+  itemType    String
+  /// HomeworkItem.id or BehaviorItem.id.
+  itemId      String
+  /// sha256 of the fields actually shown to the parent. Part of the unique key on
+  /// purpose: a teacher editing homework text yields a new hash, hence a new row,
+  /// hence a legitimate re-report as changed. A stable hash means the row already
+  /// exists, i.e. already reported - so no separate "has it changed" bookkeeping.
+  /// Never derive novelty from `updatedAt`: the 12-minute sync tasks upsert
+  /// identical rows and churn it on every pass.
+  contentHash String
+  /// School day the report covered - retention and audit.
+  reportedFor DateTime  @db.Date
+  claimedAt   DateTime  @default(now())
+  /// Set only after a successful send. A row left unconfirmed past 30 minutes is a
+  /// crashed claim and is reclaimed by the checker.
+  confirmedAt DateTime?
+  deliveryId  String?
+
+  /// Named explicitly: the generated name would exceed Postgres's 63-character
+  /// identifier limit and be silently truncated, drifting `db push` from the
+  /// committed migration.
+  @@unique([studentGuid, itemType, itemId, contentHash], map: "digest_reported_item_dedup_key")
+  @@index([studentGuid, reportedFor])
+  @@map("digest_reported_item")
+}
+
+/// The digest's own run log. Deliberately NOT recorded in `sync_run`: a digest is
+/// not a sync source, and sync.controller.ts counts distinct successful sources
+/// against a hardcoded TOTAL_SYNC_SOURCES, so digest rows there would silently skew
+/// the freshness percentage the dashboard shows. Every run writes a row, including
+/// `skipped_empty` - it is the only way to tell a quiet day from a broken job.
+model DigestDelivery {
+  id             String   @id @default(cuid())
+  studentGuid    String
+  reportFor      DateTime @db.Date
+  runAt          DateTime @default(now())
+  /// 'sent' | 'skipped_empty' | 'failed' | 'dry_run'
+  status         String
+  itemCount      Int      @default(0)
+  recipientCount Int      @default(0)
+  channel        String?
+  /// What was actually sent, for support.
+  messageText    String?
+  usedLlm        Boolean  @default(false)
+  errorMessage   String?
+
+  @@index([studentGuid, reportFor])
+  @@map("digest_delivery")
 }
