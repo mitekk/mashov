@@ -1,7 +1,14 @@
 -- Tracks the last login roster a child appeared in. Mashov does not move a
 -- departed child to `inactiveChildren`; they simply stop appearing in
 -- `children[]`, which nothing recorded.
-ALTER TABLE "student" ADD COLUMN "lastSeenInRosterAt" TIMESTAMP(3);
+--
+-- Every statement here is idempotent, because this file is executed on every
+-- container boot by backend/Dockerfile, immediately after `prisma db push`.
+-- That is not belt-and-braces: production never runs `migrate deploy`, and
+-- `db push` reconciles schema only. It adds the column below for free and
+-- skips the backfill entirely, which left the column NULL for every row --
+-- and the sweep never touches NULL, so a departed child was never retired.
+ALTER TABLE "student" ADD COLUMN IF NOT EXISTS "lastSeenInRosterAt" TIMESTAMP(3);
 
 -- Backfill from updatedAt. Every write to this table is a roster upsert from a
 -- login payload (auth.service, session.service, mashov-session.service), so
