@@ -1278,6 +1278,41 @@ describe('ChildrenService', () => {
     });
   });
 
+  describe('latestUpdateAt', () => {
+    it('omits latestUpdateAt when there is no content, ignoring student.updatedAt', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getChildren('user-1');
+
+      expect(result.data[0].latestUpdateAt).toBeNull();
+    });
+
+    it('reports the newest content date, not the sign-in timestamp', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          homeworkFindFirst: jest
+            .fn()
+            .mockResolvedValue({ lessonDate: new Date('2026-11-14T00:00:00Z') }),
+          behaviorFindFirst: jest
+            .fn()
+            .mockResolvedValue({ eventAt: new Date('2026-11-10T00:00:00Z') }),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+      );
+
+      const result = await service.getChildren('user-1');
+
+      expect(result.data[0].latestUpdateAt).toBe('2026-11-14T00:00:00.000Z');
+    });
+  });
+
   describe('school year scoping', () => {
     it("excludes last year's homework from the recent count", async () => {
       const homeworkFindMany = jest.fn().mockResolvedValue([]);

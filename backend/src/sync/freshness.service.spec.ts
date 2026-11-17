@@ -1,6 +1,48 @@
 import { FreshnessService } from './freshness.service';
 import { SyncRunService } from './sync-run.service';
 import { SyncRun } from '@prisma/client';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { SchoolYearService } from '../common/school-year/school-year.service';
+
+/** 2026-11-17 is mid-2026/27; Mashov names that year 2027. */
+const NOW = new Date('2026-11-17T12:00:00Z');
+
+function makeMockPrisma(options: {
+  connection?: { schoolCode: number; schoolYear: number } | null;
+  newestHomeworkAt?: Date | null;
+  newestBehaviorAt?: Date | null;
+} = {}) {
+  return {
+    householdConnection: {
+      findFirst: jest.fn().mockResolvedValue(
+        options.connection === undefined
+          ? { schoolCode: 1234, schoolYear: 2027 }
+          : options.connection,
+      ),
+    },
+    student: {
+      findMany: jest.fn().mockResolvedValue([{ studentGuid: 'stu-1' }]),
+    },
+    homeworkItem: {
+      aggregate: jest.fn().mockResolvedValue({
+        _max: { lessonDate: options.newestHomeworkAt ?? null },
+      }),
+    },
+    behaviorItem: {
+      aggregate: jest.fn().mockResolvedValue({
+        _max: { eventAt: options.newestBehaviorAt ?? null },
+      }),
+    },
+  } as unknown as PrismaService;
+}
+
+function makeMockSchoolYear(resolvedYear = 2027) {
+  return {
+    resolveForSchool: jest
+      .fn()
+      .mockResolvedValue({ year: resolvedYear, source: 'calendar' }),
+  } as unknown as SchoolYearService;
+}
 
 // Helper to build a minimal SyncRun with an endedAt offset from now
 function makeSyncRun(
@@ -32,7 +74,11 @@ describe('FreshnessService', () => {
       getAllSourceHealth: jest.fn(),
     } as unknown as jest.Mocked<SyncRunService>;
 
-    service = new FreshnessService(mockSyncRunService);
+    service = new FreshnessService(
+      mockSyncRunService,
+      makeMockPrisma(),
+      makeMockSchoolYear(),
+    );
   });
 
   describe('computeFreshness', () => {
@@ -325,6 +371,38 @@ describe('FreshnessService', () => {
       expect(health?.status).toBe('fresh');
     });
 
+    it('reports students stale when the last roster sync is older than 24 hours', async () => {
+      const successRuns = new Map<string, SyncRun>([
+        ['students', makeSyncRun('students', 'success', 25 * 60)],
+      ]);
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+      const results = await service.getAllSourceHealth([]);
+      const health = results.find((r) => r.source === 'students');
+      expect(health?.status).toBe('stale');
+      expect(health?.staleThresholdMinutes).toBe(24 * 60);
+    });
+
+    it('reports students fresh inside 24 hours', async () => {
+      const successRuns = new Map<string, SyncRun>([
+        ['students', makeSyncRun('students', 'success', 30)],
+      ]);
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+      const results = await service.getAllSourceHealth([]);
+      expect(results.find((r) => r.source === 'students')?.status).toBe('fresh');
+    });
+
+    it('does not fan students out into per-student variants', async () => {
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
+
+      const results = await service.getAllSourceHealth(['stu-1', 'stu-2']);
+      expect(results.filter((r) => r.source.startsWith('students'))).toHaveLength(1);
+    });
+
     it('includes per-student sources when studentGuids are provided', async () => {
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
@@ -338,5 +416,148 @@ describe('FreshnessService', () => {
       expect(sources).toContain('behavior:student-abc');
       expect(sources).toContain('groups:student-xyz');
     });
+  });
+});
+
+describe('FreshnessService.computeContentFreshness', () => {
+  let mockSyncRunService: jest.Mocked<SyncRunService>;
+
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick'] });
+    jest.setSystemTime(NOW);
+    mockSyncRunService = {
+      getLatestSuccessfulRuns: jest.fn().mockResolvedValue(new Map()),
+      getAllSourceHealth: jest.fn().mockResolvedValue(new Map()),
+    } as unknown as jest.Mocked<SyncRunService>;
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function build(options: Parameters<typeof makeMockPrisma>[0], resolvedYear = 2027) {
+    return new FreshnessService(
+      mockSyncRunService,
+      makeMockPrisma(options),
+      makeMockSchoolYear(resolvedYear),
+    );
+  }
+
+  it('reports current when the connection is on the resolved year with recent content', async () => {
+    const service = build({ newestHomeworkAt: new Date('2026-11-14T00:00:00Z') });
+
+    const result = await service.computeContentFreshness();
+
+    expect(result).toMatchObject({
+      expectedSchoolYear: 2027,
+      observedSchoolYear: 2027,
+      status: 'current',
+      contentAgeDays: 3,
+    });
+    expect(result.newestContentAt).toBe('2026-11-14T00:00:00.000Z');
+  });
+
+  it('reports stale_year when the connection year is behind the resolved year', async () => {
+    const service = build({
+      connection: { schoolCode: 1234, schoolYear: 2026 },
+      newestHomeworkAt: new Date('2026-11-14T00:00:00Z'),
+    });
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      expectedSchoolYear: 2027,
+      observedSchoolYear: 2026,
+      status: 'stale_year',
+    });
+  });
+
+  it('reports stale_year when the newest content predates the school-year start', async () => {
+    // Exactly production: the connection reads 2027 but the newest content is
+    // the last school day of 2025/26.
+    const service = build({ newestHomeworkAt: new Date('2026-06-28T00:00:00Z') });
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'stale_year',
+      contentAgeDays: 142,
+    });
+  });
+
+  it('takes the newer of homework and behaviour as the newest content', async () => {
+    const service = build({
+      newestHomeworkAt: new Date('2026-11-01T00:00:00Z'),
+      newestBehaviorAt: new Date('2026-11-15T00:00:00Z'),
+    });
+
+    const result = await service.computeContentFreshness();
+    expect(result.newestContentAt).toBe('2026-11-15T00:00:00.000Z');
+  });
+
+  it('reports no_content when there is nothing to date', async () => {
+    const service = build({});
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'no_content',
+      newestContentAt: null,
+      contentAgeDays: null,
+    });
+  });
+
+  it('falls back to the calendar year when there is no connection', async () => {
+    const service = build({ connection: null });
+
+    const result = await service.computeContentFreshness();
+    expect(result.expectedSchoolYear).toBe(2027);
+    expect(result.observedSchoolYear).toBe(0);
+  });
+
+  it('degrades the overall state when the content year is stale even though every sync succeeded', async () => {
+    const successRuns = new Map<string, SyncRun>(
+      [
+        'notifications',
+        'mail_counts',
+        'mail_inbox',
+        'homework',
+        'behavior',
+        'achvas',
+        'groups',
+        'lessons_count',
+        'user_details',
+        'message_board',
+        'students',
+      ].map((source) => [source, makeSyncRun(source, 'success', 1)]),
+    );
+    mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+    mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+    const service = build({ newestHomeworkAt: new Date('2026-06-28T00:00:00Z') });
+
+    const result = await service.computeFreshness();
+
+    expect(result.contentFreshness.status).toBe('stale_year');
+    expect(result.state).toBe('degraded');
+  });
+
+  it('leaves the overall state alone when the content year is current', async () => {
+    const successRuns = new Map<string, SyncRun>(
+      [
+        'notifications',
+        'mail_counts',
+        'mail_inbox',
+        'homework',
+        'behavior',
+        'achvas',
+        'groups',
+        'lessons_count',
+        'user_details',
+        'message_board',
+        'students',
+      ].map((source) => [source, makeSyncRun(source, 'success', 1)]),
+    );
+    mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+    mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+    const service = build({ newestHomeworkAt: new Date('2026-11-14T00:00:00Z') });
+
+    const result = await service.computeFreshness();
+    expect(result.state).toBe('fresh');
   });
 });

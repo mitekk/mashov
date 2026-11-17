@@ -26,6 +26,9 @@ export class SettingsService {
       sources,
       overallState: freshness.state,
       lastFullSyncAt: freshness.lastSyncAt,
+      // The age of the content, not of the sync — the only field here that
+      // would have caught the frozen school year.
+      contentFreshness: freshness.contentFreshness,
     };
   }
 

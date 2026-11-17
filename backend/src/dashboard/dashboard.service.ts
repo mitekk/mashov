@@ -294,8 +294,9 @@ export class DashboardService {
           && this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
         ).length;
 
+        // Deliberately excludes student.updatedAt — it bumps on every sign-in
+        // and would report content as fresh that is a school year old.
         const latestUpdateAt = [
-          student.updatedAt,
           latestHomework?.lessonDate ?? null,
           latestBehavior?.eventAt ?? null,
         ]

@@ -374,10 +374,26 @@ export interface SourceHealth {
   staleThresholdMinutes: number;
 }
 
+/**
+ * The age of the *content*, not of the last sync. `stale_year` is the state
+ * that catches a dead school year — every source can read `fresh` while the
+ * newest homework in the database is from a school year that has ended.
+ */
+export type ContentFreshnessStatus = 'current' | 'stale_year' | 'no_content';
+
+export interface ContentFreshness {
+  expectedSchoolYear: number;
+  observedSchoolYear: number;
+  newestContentAt: string | null;
+  contentAgeDays: number | null;
+  status: ContentFreshnessStatus;
+}
+
 export interface SourceHealthResponse {
   sources: SourceHealth[];
   overallState: FreshnessState;
   lastFullSyncAt: string | null;
+  contentFreshness: ContentFreshness | null;
 }
 
 export interface ParentProfile {

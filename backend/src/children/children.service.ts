@@ -84,12 +84,11 @@ export class ChildrenService {
             }),
           ]);
 
+        // Deliberately excludes student.updatedAt: it bumps on every sign-in,
+        // which is exactly why this read "fresh" for five months while the
+        // content underneath was from a school year that had ended.
         const latestUpdateAt =
-          [
-            student.updatedAt,
-            latestHomework?.lessonDate ?? null,
-            latestBehavior?.eventAt ?? null,
-          ]
+          [latestHomework?.lessonDate ?? null, latestBehavior?.eventAt ?? null]
             .filter((value): value is Date => value instanceof Date)
             .sort((a, b) => b.getTime() - a.getTime())[0]
             ?.toISOString() ?? null;

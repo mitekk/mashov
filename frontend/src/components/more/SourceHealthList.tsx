@@ -19,6 +19,7 @@ const SOURCE_LABELS: Record<string, string> = {
   message_board: 'לוח הודעות',
   achvas: 'קודי התנהגות',
   user_details: 'פרטי משתמש',
+  students: 'רשימת תלמידים',
 };
 
 const STATUS_PRIORITY: Record<SourceStatus, number> = {
