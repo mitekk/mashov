@@ -23,7 +23,18 @@ const DEFAULT_TIMEZONE = 'Asia/Jerusalem';
  */
 const SYNC_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
-/** Sources whose freshness decides whether "nothing happened" is believable. */
+/** Mirrors DigestCheckerService's default; both read the same env var. */
+const DEFAULT_DUE_LOOKBACK_DAYS = 14;
+
+/**
+ * Sources whose freshness decides whether "nothing happened" is believable.
+ *
+ * These are base names. The sync tasks open their runs per child
+ * (`homework:<guid>` -- homework.task.ts:65, behavior.task.ts:74), so matching
+ * the base name alone finds no row ever and silently turns this whole guard
+ * into dead code. Both shapes are matched: the per-child name the tasks write
+ * today, and the bare base name, in case a future task runs household-wide.
+ */
 const SYNC_SOURCES_BEHIND_THE_DIGEST = ['homework', 'behavior'];
 
 export type DigestRunStatus = 'sent' | 'skipped_empty' | 'skipped_stale' | 'failed' | 'dry_run';
@@ -42,6 +53,13 @@ export interface DigestRunOptions {
   dryRun?: boolean;
   /** Run one child only -- used by the manual-run endpoint. */
   studentGuid?: string;
+  /**
+   * Scopes the run to children this user has a recipient row for. The cron
+   * leaves it unset and runs every opted-in child; the manual endpoint always
+   * sets it, because there is no child -> parent FK to validate a studentGuid
+   * against and a run both spends model tokens and sends real messages.
+   */
+  userId?: string;
 }
 
 /**
@@ -99,7 +117,7 @@ export class DigestService {
       const now = options.now ?? new Date();
       const dryRun = options.dryRun ?? this.isDryRunByDefault();
 
-      const allTargets = await this.recipients.listDeliveryTargets();
+      const allTargets = await this.recipients.listDeliveryTargets(options.userId);
       const targets = options.studentGuid
         ? allTargets.filter((target) => target.studentGuid === options.studentGuid)
         : allTargets;
@@ -178,7 +196,7 @@ export class DigestService {
 
       if (surviving.size === 0) {
         // Everything the checker widened in turned out not to be due tomorrow.
-        await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId);
+        await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId, tomorrowStart);
         return await this.recordEmpty(
           studentGuid,
           reportFor,
@@ -193,6 +211,17 @@ export class DigestService {
         where: { studentGuid, enabled: true },
         select: { channel: true, address: true },
       });
+
+      if (enabled.length === 0 && !dryRun) {
+        // Recipients are re-read here, per child, after the model call --
+        // minutes after the run enumerated its targets. A parent who disabled
+        // or deleted their last recipient in that window must not have the
+        // day's items confirmed as reported: confirming them would bury this
+        // behaviour and homework permanently, because the content hashes stay
+        // in the ledger and nothing ever re-reports an item already in it.
+        await this.releaseClaims(studentGuid, claimed, runId);
+        return await this.recordEmpty(studentGuid, reportFor, 'no enabled recipient left');
+      }
 
       const { delivered, failures } = await this.deliver(enabled, message, dryRun);
 
@@ -216,7 +245,7 @@ export class DigestService {
         });
       }
 
-      await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId);
+      await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId, tomorrowStart);
       await this.confirmClaims(studentGuid, [...surviving], runId);
 
       return await this.record(studentGuid, reportFor, {
@@ -345,6 +374,15 @@ export class DigestService {
    * nothing to defer to, and confirming it would bury it permanently: the
    * content hash does not include the estimate, so a later timetable sync that
    * finally gives its group a lesson tomorrow would never resurface it.
+   *
+   * So is an item whose date the deferral could never be collected on. A
+   * deferral is a promise to look again on a particular day, and the checker
+   * can only keep it while the row is still inside the due-candidate lookback
+   * (`lessonDate >= day - DIGEST_DUE_LOOKBACK_DAYS`). A date beyond that
+   * horizon, or one the model read as already past -- a wrong-year reading of
+   * Hebrew text that names no year is the ordinary way this happens -- is
+   * released, so the item is simply re-evaluated next run instead of being
+   * buried by a promise nobody can keep.
    */
   private async settleUnsent(
     studentGuid: string,
@@ -352,6 +390,7 @@ export class DigestService {
     surviving: Set<string>,
     resolutionByItemId: Map<string, Date | null>,
     runId: string,
+    tomorrowStart: Date,
   ): Promise<void> {
     const unsent = claimed.filter((candidate) => !surviving.has(candidate.contentHash));
     if (unsent.length === 0) return;
@@ -359,12 +398,14 @@ export class DigestService {
     const byDate = new Map<number, string[]>();
     const toRelease: DigestCandidate[] = [];
 
+    const lookbackDays = this.readDays('DIGEST_DUE_LOOKBACK_DAYS', DEFAULT_DUE_LOOKBACK_DAYS);
+
     for (const candidate of unsent) {
       const resolved =
         candidate.itemType === 'homework_due'
           ? resolutionByItemId.get(candidate.itemId) ?? candidate.estimatedDueDate ?? null
           : null;
-      if (resolved === null) {
+      if (resolved === null || !this.isReachableAgain(resolved, candidate, tomorrowStart, lookbackDays)) {
         toRelease.push(candidate);
         continue;
       }
@@ -382,6 +423,27 @@ export class DigestService {
     if (toRelease.length > 0) {
       await this.releaseClaims(studentGuid, toRelease, runId);
     }
+  }
+
+  /**
+   * Whether the checker will still re-query this row on the deferred day.
+   *
+   * The due-candidate query windows on `lessonDate`, so a row stays visible
+   * until `lessonDate + lookback`. A date past that, or a date not in the
+   * future at all, is a deferral that would never be collected.
+   */
+  private isReachableAgain(
+    resolved: Date,
+    candidate: DigestCandidate,
+    tomorrowStart: Date,
+    lookbackDays: number,
+  ): boolean {
+    if (resolved.getTime() < tomorrowStart.getTime()) return false;
+    const from = candidate.itemDate ?? tomorrowStart;
+    const horizon = new Date(
+      Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + lookbackDays),
+    );
+    return resolved.getTime() <= horizon.getTime();
   }
 
   private senderFor(channel: string): DigestSender {
@@ -433,7 +495,7 @@ export class DigestService {
     reportFor: Date,
     now: Date,
   ): Promise<DigestRunResult> {
-    const staleSince = await this.staleSyncSince(now);
+    const staleSince = await this.staleSyncSince(now, studentGuid);
     if (staleSince === null) {
       return this.recordEmpty(studentGuid, reportFor, 'nothing unreported');
     }
@@ -450,20 +512,29 @@ export class DigestService {
     });
   }
 
-  /** The oldest last-success among the sources the digest reads, if stale. */
-  private async staleSyncSince(now: Date): Promise<Date | null> {
+  /**
+   * The oldest last-success among the sources the digest reads, if stale.
+   *
+   * Scoped to the child being reported: the tasks sync each child under their
+   * own source name, so one child's dead session must not make another child's
+   * quiet day look stale, nor the reverse.
+   */
+  private async staleSyncSince(now: Date, studentGuid: string): Promise<Date | null> {
     const cutoff = new Date(now.getTime() - SYNC_STALE_AFTER_MS);
     let oldest: Date | null = null;
 
-    for (const source of SYNC_SOURCES_BEHIND_THE_DIGEST) {
+    for (const base of SYNC_SOURCES_BEHIND_THE_DIGEST) {
       const run = await this.prisma.syncRun.findFirst({
-        where: { source, status: 'success' },
+        where: {
+          status: 'success',
+          OR: [{ source: `${base}:${studentGuid}` }, { source: base }],
+        },
         orderBy: { startedAt: 'desc' },
         select: { startedAt: true, endedAt: true },
       });
       const at = run?.endedAt ?? run?.startedAt ?? null;
       // No successful run on record at all is not treated as stale: a brand-new
-      // deployment would otherwise报 every child as stale on day one.
+      // deployment would otherwise report every child as stale on day one.
       if (at === null) continue;
       if (oldest === null || at < oldest) oldest = at;
     }
@@ -527,6 +598,11 @@ export class DigestService {
     };
   }
 
+  private readDays(key: string, fallback: number): number {
+    const parsed = Number(this.config.get<string | number>(key));
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
   private timeZone(): string {
     return this.config.get<string>('DIGEST_TIMEZONE') ?? DEFAULT_TIMEZONE;
   }
@@ -561,7 +637,17 @@ function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPa
   if (after.homeworkDueTomorrow.length === before.homeworkDueTomorrow.length) {
     return summary.lines;
   }
-  return { ...summary.lines, dueTomorrowLine: deterministicLines(after).dueTomorrowLine };
+  // The headline is written from the un-narrowed payload too, and can state a
+  // count or name a subject the bullets no longer carry -- the same defect the
+  // dueTomorrowLine swap exists to fix. Once the set has changed underneath the
+  // model, every line it wrote about that set is suspect, so both lines fall
+  // back to the deterministic ones, which count what actually survived.
+  const fallback = deterministicLines(after);
+  return {
+    ...summary.lines,
+    headline: fallback.headline,
+    dueTomorrowLine: fallback.dueTomorrowLine,
+  };
 }
 
 /**

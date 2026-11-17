@@ -129,11 +129,16 @@ export class DigestController {
   @HttpCode(HttpStatus.CREATED)
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   async run(@Req() req: Request, @Body() body: RunDigestDto) {
-    requireUserId(req);
     return {
       data: await this.digest.runAll({
         studentGuid: body.studentGuid,
         dryRun: body.dryRun,
+        // Scoped to the caller's own children. There is no child -> parent FK
+        // to validate a studentGuid against (ADR-0025), so without this an
+        // authenticated user could post another household's guid and both send
+        // that family a real message and consume the claims their own 13:00
+        // run needed.
+        userId: requireUserId(req),
       }),
     };
   }

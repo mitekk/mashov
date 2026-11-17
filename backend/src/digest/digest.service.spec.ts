@@ -61,6 +61,7 @@ interface HarnessOptions {
   takeoverCount?: number;
   ownedHashes?: string[];
   latestSyncAt?: Date;
+  syncRuns?: { source: string; endedAt: Date; startedAt: Date }[];
   recipients?: { channel: string; address: string; enabled: boolean }[];
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
   dueTomorrowLine?: string;
@@ -94,11 +95,26 @@ function makeHarness(options: HarnessOptions = {}) {
 
   const prisma = {
     syncRun: {
-      findFirst: jest.fn().mockResolvedValue(
-        options.latestSyncAt === undefined
-          ? { endedAt: NOW, startedAt: NOW }
-          : { endedAt: options.latestSyncAt, startedAt: options.latestSyncAt },
-      ),
+      // Honours the where-clause, as Postgres would. This matters more than it
+      // looks: the sync tasks write per-child source names
+      // (`homework:<guid>`), so a mock that answers regardless of `where` will
+      // report a freshness guard as working when no row could ever match it.
+      findFirst: jest.fn().mockImplementation(({ where }) => {
+        const at = options.latestSyncAt === undefined ? NOW : options.latestSyncAt;
+        const rows =
+          options.syncRuns ??
+          ['homework', 'behavior'].flatMap((base) =>
+            targets.map((target) => ({
+              source: `${base}:${target.studentGuid}`,
+              endedAt: at,
+              startedAt: at,
+            })),
+          );
+        const wanted = (where?.OR ?? [{ source: where?.source }]).map(
+          (clause: { source?: string }) => clause.source,
+        );
+        return rows.find((row) => wanted.includes(row.source)) ?? null;
+      }),
     },
     digestReportedItem: { createMany, updateMany, deleteMany, findMany: reportedFindMany },
     digestDelivery: { create: deliveryCreate },
@@ -172,6 +188,7 @@ function makeHarness(options: HarnessOptions = {}) {
   return {
     service,
     prisma,
+    recipients,
     checker,
     collector,
     summarizer,
@@ -669,6 +686,125 @@ describe('DigestService.runAll', () => {
     });
 
     expect((await harness.service.runAll({ now: NOW }))[0].status).toBe('skipped_empty');
+  });
+
+  it('finds the stalled sync under the per-child source name the tasks write', async () => {
+    // homework.task.ts and behavior.task.ts open their runs as
+    // `homework:<guid>` / `behavior:<guid>`. A guard that matches the bare
+    // base name finds nothing, ever, and calls every stalled day quiet.
+    const long_ago = new Date(NOW.getTime() - 9 * 60 * 60 * 1000);
+    const harness = makeHarness({
+      candidates: [],
+      syncRuns: [
+        { source: 'homework:stu-1', endedAt: long_ago, startedAt: long_ago },
+        { source: 'behavior:stu-1', endedAt: long_ago, startedAt: long_ago },
+      ],
+    });
+
+    expect((await harness.service.runAll({ now: NOW }))[0].status).toBe('skipped_stale');
+  });
+
+  it('judges staleness per child, not across the whole household', async () => {
+    const fresh = NOW;
+    const long_ago = new Date(NOW.getTime() - 9 * 60 * 60 * 1000);
+    const harness = makeHarness({
+      candidates: [],
+      targets: [{ studentGuid: 'stu-2', activeFrom: new Date('2026-09-01T00:00:00Z'), recipientCount: 1 }],
+      syncRuns: [
+        { source: 'homework:stu-1', endedAt: long_ago, startedAt: long_ago },
+        { source: 'behavior:stu-1', endedAt: long_ago, startedAt: long_ago },
+        { source: 'homework:stu-2', endedAt: fresh, startedAt: fresh },
+        { source: 'behavior:stu-2', endedAt: fresh, startedAt: fresh },
+      ],
+    });
+
+    expect((await harness.service.runAll({ now: NOW }))[0].status).toBe('skipped_empty');
+  });
+
+  it('does not mark items reported when no recipient is enabled to receive them', async () => {
+    // Recipients are read per child, after the model call. A parent who
+    // disables their only recipient mid-run must not have the day's items
+    // confirmed as delivered to nobody.
+    const harness = makeHarness({
+      recipients: [{ channel: 'telegram', address: '12345', enabled: false }],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).not.toBe('sent');
+    expect(results[0].recipientCount).toBe(0);
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+    expect(harness.deliveryCreate.mock.calls[0][0].data.status).not.toBe('sent');
+  });
+
+  it('releases rather than defers a deadline that falls past the lookback horizon', async () => {
+    // Deferral only works if the checker will re-query the row on the day.
+    // The due-candidate query scans lessonDate back DIGEST_DUE_LOOKBACK_DAYS,
+    // so a date further out than that is a date the row never gets re-read on.
+    const harness = makeHarness({
+      candidates: [{ itemType: 'homework_due', itemId: 'hw-9', contentHash: 'hash-due' }],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-9', null)] }),
+      deadlineResolutions: [{ ref: 'hw-9', explicitDueDate: '2027-02-01' }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(deferralCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+  });
+
+  it('releases rather than defers a deadline the model read as already past', async () => {
+    const harness = makeHarness({
+      candidates: [{ itemType: 'homework_due', itemId: 'hw-9', contentHash: 'hash-due' }],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-9', null)] }),
+      // No year in the Hebrew text is the common case, so a wrong-year read is
+      // the common failure. Burying the item on it is the expensive outcome.
+      deadlineResolutions: [{ ref: 'hw-9', explicitDueDate: '2025-12-03' }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(deferralCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+  });
+
+  it('replaces the whole summary, headline included, when narrowing changed the set', async () => {
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-1' },
+        { itemType: 'homework_due', itemId: 'hw-2', contentHash: 'hash-2' },
+      ],
+      payload: makePayload({
+        behavior: [],
+        homeworkDueTomorrow: [duePayloadItem('hw-1', TOMORROW), duePayloadItem('hw-2', TOMORROW)],
+      }),
+      deadlineResolutions: [{ ref: 'hw-2', explicitDueDate: '2026-11-25' }],
+    });
+    (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
+      lines: {
+        headline: 'עדכון יומי: שתי מטלות למחר',
+        behaviorLine: '',
+        homeworkLine: '',
+        dueTomorrowLine: 'שתי מטלות',
+      },
+      deadlineResolutions: [{ ref: 'hw-2', explicitDueDate: '2026-11-25' }],
+      usedLlm: true,
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    // The model counted two because it was given two; only one survived.
+    expect(sent).not.toContain('שתי מטלות');
+  });
+
+  it('runs only the children the caller has a recipient row for', async () => {
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW, userId: 'user-1' });
+
+    expect(harness.recipients.listDeliveryTargets).toHaveBeenCalledWith('user-1');
   });
 
   it('marks the delivery as not having used the model when it fell back', async () => {

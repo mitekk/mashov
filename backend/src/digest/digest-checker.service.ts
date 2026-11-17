@@ -122,7 +122,7 @@ export class DigestCheckerService {
     );
 
     return {
-      candidates: unreported.map(({ itemDate: _itemDate, ...candidate }) => candidate),
+      candidates: unreported,
       reportFor,
     };
   }

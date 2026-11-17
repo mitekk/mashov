@@ -167,10 +167,15 @@ export class DigestRecipientService {
    * recipient. A child with none is never checked, collected for, or
    * summarized -- which is also what keeps the model bill at zero for families
    * who have not opted in.
+   *
+   * `userId` scopes the list to one user's own children. The cron omits it and
+   * runs every opted-in child; the manual-run endpoint always passes it,
+   * because a `studentGuid` in a request body cannot be validated against a
+   * child -> parent FK that does not exist (ADR-0025).
    */
-  async listDeliveryTargets(): Promise<DigestDeliveryTarget[]> {
+  async listDeliveryTargets(userId?: string): Promise<DigestDeliveryTarget[]> {
     const rows = await this.prisma.digestRecipient.findMany({
-      where: { enabled: true },
+      where: { enabled: true, ...(userId ? { userId } : {}) },
       select: { studentGuid: true, activeFrom: true },
     });
 

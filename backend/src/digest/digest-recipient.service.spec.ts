@@ -204,5 +204,19 @@ describe('DigestRecipientService', () => {
     expect(targets).toEqual([
       { studentGuid: 'stu-1', activeFrom: RECIPIENT.activeFrom, recipientCount: 1 },
     ]);
+    // The cron runs every opted-in child, so it must not filter by user.
+    expect(
+      (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where.userId,
+    ).toBeUndefined();
+  });
+
+  it('narrows the target list to one user when a manual run names them', async () => {
+    const harness = makeHarness();
+
+    await harness.service.listDeliveryTargets('user-1');
+
+    expect(
+      (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,
+    ).toMatchObject({ enabled: true, userId: 'user-1' });
   });
 });

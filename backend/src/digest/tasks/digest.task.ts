@@ -33,19 +33,32 @@ export class DigestTask {
   async run(): Promise<void> {
     if (!this.isEnabled()) return;
 
-    const results = await this.digest.runAll();
-    if (results.length === 0) return;
+    // runForChild isolates per-child failures, but runAll's own preamble --
+    // listing targets, resolving the school year -- is outside that guard, and
+    // a rejection out of a cron callback is an unhandled rejection, which Node
+    // treats as fatal by default. One transient database blip at 13:00 would
+    // take the whole process down with it.
+    try {
+      const results = await this.digest.runAll();
+      if (results.length === 0) return;
 
-    const summary = results.reduce<Record<string, number>>((counts, result) => {
-      counts[result.status] = (counts[result.status] ?? 0) + 1;
-      return counts;
-    }, {});
+      const summary = results.reduce<Record<string, number>>((counts, result) => {
+        counts[result.status] = (counts[result.status] ?? 0) + 1;
+        return counts;
+      }, {});
 
-    this.logger.log(
-      `Digest run complete: ${Object.entries(summary)
-        .map(([status, count]) => `${status}=${count}`)
-        .join(' ')}`,
-    );
+      this.logger.log(
+        `Digest run complete: ${Object.entries(summary)
+          .map(([status, count]) => `${status}=${count}`)
+          .join(' ')}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Digest run failed before reaching any child: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**
@@ -57,7 +70,13 @@ export class DigestTask {
    */
   @Cron('30 2 * * *', { timeZone: 'Asia/Jerusalem' })
   async pruneHistory(): Promise<void> {
-    await this.retention.prune();
+    try {
+      await this.retention.prune();
+    } catch (error) {
+      this.logger.error(
+        `Digest history prune failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /** Defaults to false: the cron stays off until it is deliberately enabled. */

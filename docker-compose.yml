@@ -62,6 +62,7 @@ services:
       DIGEST_DRY_RUN: ${DIGEST_DRY_RUN:-true}
       DIGEST_TIMEZONE: ${DIGEST_TIMEZONE:-Asia/Jerusalem}
       DIGEST_DUE_LOOKBACK_DAYS: ${DIGEST_DUE_LOOKBACK_DAYS:-14}
+      DIGEST_NEW_LOOKBACK_DAYS: ${DIGEST_NEW_LOOKBACK_DAYS:-3}
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-opus-5-5}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
       # Secrets. Never logged; see the note in ADR-0025 about ops/ having no

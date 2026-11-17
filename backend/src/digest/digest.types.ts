@@ -29,6 +29,14 @@ export interface DigestCandidate {
   estimatedDueDate?: Date | null;
   /** Whether the Hebrew text looked like it named a deadline of its own. */
   hasTextHint?: boolean;
+  /**
+   * The item's own date -- `lessonDate` for homework, the later of `eventAt`
+   * and `lessonDate` for behaviour. Carried out of the checker because it is
+   * what the re-query window is measured from: a deferral is only reachable
+   * again while this date is still inside the lookback (see
+   * DigestService.settleUnsent).
+   */
+  itemDate?: Date;
 }
 
 /** A behavior event as the parent will see it. */

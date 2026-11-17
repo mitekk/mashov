@@ -95,6 +95,14 @@ child, because there is no FK to validate against. The mitigations are what is a
 so every row is attributable. **A real ownership model is separate work and should be its
 own piece of work before this is exposed to more than one household.**
 
+What the missing FK does *not* excuse is the manual-run endpoint. `POST /digest/runs` takes a
+`studentGuid` in its body, and a run both spends model tokens and sends real messages — so a
+`studentGuid` that cannot be validated against an FK is instead validated against the caller's
+own recipient rows: `runAll` takes a `userId` and `listDeliveryTargets` filters by it. Without
+that scoping an authenticated user could name another household's child and get that family a
+real message, *and* consume the claims their own 13:00 run needed, since a delivered item is
+never re-reported. The cron omits the `userId` and still runs every opted-in child.
+
 ## Consequences
 
 **Good.** The feature is opt-in, off by default (`DIGEST_ENABLED=false`), and silent by default
