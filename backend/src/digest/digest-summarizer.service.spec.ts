@@ -218,6 +218,65 @@ describe('DigestSummarizerService.summarize', () => {
     expect(options.fetch).toBeUndefined();
   });
 
+
+  it('refuses to call the model when Node is told to honour proxy env vars', async () => {
+    // Node 24 added --use-env-proxy / NODE_USE_ENV_PROXY, which makes built-in
+    // fetch honour HTTPS_PROXY with no code change at all. The Dockerfile pins
+    // node:22-alpine today, but a routine base-image bump would silently route
+    // every prompt -- first name, subjects, behavior remarks -- through
+    // ADR-0023's residential Mashov box. Passing no agent is not enough to
+    // prevent that, so the call is refused outright.
+    const previousFlag = process.env.NODE_USE_ENV_PROXY;
+    const previousProxy = process.env.HTTPS_PROXY;
+    process.env.NODE_USE_ENV_PROXY = '1';
+    process.env.HTTPS_PROXY = 'http://residential-box:8888';
+
+    try {
+      const summary = await makeService().summarize(makePayload());
+
+      expect(createMock).not.toHaveBeenCalled();
+      expect(summary.usedLlm).toBe(false);
+    } finally {
+      if (previousFlag === undefined) delete process.env.NODE_USE_ENV_PROXY;
+      else process.env.NODE_USE_ENV_PROXY = previousFlag;
+      if (previousProxy === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = previousProxy;
+    }
+  });
+
+  it('still calls the model when env-proxy is on but no proxy is configured', async () => {
+    // Nothing to leak to.
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+    const previousFlag = process.env.NODE_USE_ENV_PROXY;
+    process.env.NODE_USE_ENV_PROXY = '1';
+
+    try {
+      expect((await makeService().summarize(makePayload())).usedLlm).toBe(true);
+    } finally {
+      if (previousFlag === undefined) delete process.env.NODE_USE_ENV_PROXY;
+      else process.env.NODE_USE_ENV_PROXY = previousFlag;
+    }
+  });
+
+  it('says so when the response was truncated, rather than leaving it to be inferred', async () => {
+    // max_tokens covers thinking plus text on this model, so a truncation is
+    // the realistic cause of malformed output and should be diagnosable.
+    createMock.mockResolvedValue({
+      stop_reason: 'max_tokens',
+      content: [{ type: 'text', text: '{"headline":"כות' }],
+    });
+    const service = makeService();
+    const warnings: string[] = [];
+    jest
+      .spyOn((service as unknown as { logger: { warn: (m: string) => void } }).logger, 'warn')
+      .mockImplementation((message: string) => warnings.push(String(message)));
+
+    const summary = await service.summarize(makePayload());
+
+    expect(summary.usedLlm).toBe(false);
+    expect(warnings.join('\n')).toContain('max_tokens');
+  });
+
   it('never logs the API key', async () => {
     respondWith(JSON.stringify(GOOD_OUTPUT));
     const service = makeService({ ANTHROPIC_API_KEY: 'sk-ant-secret-value' });

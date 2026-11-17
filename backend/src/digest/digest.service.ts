@@ -1,8 +1,9 @@
+import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
-import { DigestCheckerService } from './digest-checker.service';
+import { DigestCheckerService, STALE_CLAIM_MS } from './digest-checker.service';
 import { DigestCollectorService } from './digest-collector.service';
 import { DigestSummarizerService } from './digest-summarizer.service';
 import { DigestRecipientService, DigestDeliveryTarget } from './digest-recipient.service';
@@ -15,7 +16,17 @@ import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } fro
 
 const DEFAULT_TIMEZONE = 'Asia/Jerusalem';
 
-export type DigestRunStatus = 'sent' | 'skipped_empty' | 'failed' | 'dry_run';
+/**
+ * How stale the school data may be before a quiet day stops being reported as
+ * quiet. The sync tasks run every 12 minutes, so six hours means several dozen
+ * consecutive failures -- comfortably past a transient blip.
+ */
+const SYNC_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+
+/** Sources whose freshness decides whether "nothing happened" is believable. */
+const SYNC_SOURCES_BEHIND_THE_DIGEST = ['homework', 'behavior'];
+
+export type DigestRunStatus = 'sent' | 'skipped_empty' | 'skipped_stale' | 'failed' | 'dry_run';
 
 export interface DigestRunResult {
   studentGuid: string;
@@ -37,10 +48,13 @@ export interface DigestRunOptions {
  * Orchestrates one digest run: enumerate the opted-in children, check, claim,
  * collect, summarize, send, confirm.
  *
- * Correctness under concurrency comes from the Postgres unique constraint on
- * `digest_reported_item`, following the `fingerprint` precedent in
- * notifications.task.ts. RedisService has no SET NX, no Lua and no raw client,
- * and ADR-0017 forbids durable state there, so there is no lock to take.
+ * The claim protocol is the delicate part. `createMany({skipDuplicates})`
+ * reports how many rows it inserted but never which, so ownership is made
+ * readable instead of inferred: each run stamps `claimedBy` with its own id and
+ * then reads back its own rows. Everything downstream -- what to collect, what
+ * to confirm, what to release -- is scoped to those rows. Inferring ownership
+ * from the count is what allowed a run to send an item another run was already
+ * sending, and allowed a failing run to delete a claim a live run was holding.
  */
 @Injectable()
 export class DigestService {
@@ -50,7 +64,8 @@ export class DigestService {
    * In-process guard so a slow run never overlaps itself -- the hourly cron
    * would otherwise start a second pass over the same children while the first
    * is still waiting on a model or on Telegram. Precedent:
-   * inFlightManualRefreshByConnection in sync.service.ts.
+   * inFlightManualRefreshByConnection in sync.service.ts. It is a convenience,
+   * not the correctness mechanism; `claimedBy` is.
    */
   private running = false;
 
@@ -91,6 +106,14 @@ export class DigestService {
 
       if (targets.length === 0) return [];
 
+      if (dryRun && this.isEnabledByConfig()) {
+        // Worth saying out loud: this combination spends a model call per child
+        // per run and delivers nothing to anybody, indefinitely.
+        this.logger.warn(
+          'DIGEST_ENABLED is true but DIGEST_DRY_RUN is also true: digests are being rendered and discarded.',
+        );
+      }
+
       // Resolved once per run, not per child: currentSchoolYearFor is DB-only,
       // but it is still a query, and every child in a household shares it.
       // Never resolveForSchool() -- that calls /api/schools through the Mashov
@@ -116,8 +139,9 @@ export class DigestService {
     dryRun: boolean,
   ): Promise<DigestRunResult> {
     const { studentGuid } = target;
-    const { tomorrowStart } = jerusalemDayBounds(now, this.timeZone());
-    let reportFor = jerusalemDayBounds(now, this.timeZone()).reportFor;
+    const { tomorrowStart, reportFor: defaultReportFor } = jerusalemDayBounds(now, this.timeZone());
+    const runId = randomUUID();
+    let reportFor = defaultReportFor;
     let claimed: DigestCandidate[] = [];
 
     try {
@@ -130,44 +154,31 @@ export class DigestService {
       reportFor = check.reportFor;
 
       if (check.candidates.length === 0) {
-        return await this.recordEmpty(studentGuid, reportFor, 'nothing unreported');
+        return await this.recordQuiet(studentGuid, reportFor, now);
       }
 
-      // Claim first. The unique constraint is the lock: skipDuplicates means a
-      // row that already exists is someone else's, and a count of zero means
-      // every item is already spoken for.
-      const claimResult = await this.prisma.digestReportedItem.createMany({
-        data: check.candidates.map((candidate) => ({
-          studentGuid,
-          itemType: candidate.itemType,
-          itemId: candidate.itemId,
-          contentHash: candidate.contentHash,
-          reportedFor: reportFor,
-        })),
-        skipDuplicates: true,
-      });
-
-      if (claimResult.count === 0) {
+      claimed = await this.claim(studentGuid, check.candidates, reportFor, runId, now, tomorrowStart);
+      if (claimed.length === 0) {
         this.logger.log(
-          `Digest ${studentGuid}: another runner already owns every item; sending nothing.`,
+          `Digest ${studentGuid}: every item is owned by another run or already delivered; sending nothing.`,
         );
         return await this.recordEmpty(studentGuid, reportFor, 'already claimed elsewhere');
       }
-      claimed = check.candidates;
 
-      const payload = await this.collector.collect({
-        studentGuid,
-        candidates: check.candidates,
-        reportFor,
-      });
+      const payload = await this.collector.collect({ studentGuid, candidates: claimed, reportFor });
 
       const summary = await this.summarizer.summarize(payload);
-      const narrowed = narrowDueTomorrow(payload, summary, tomorrowStart);
+      const { payload: narrowed, resolutionByItemId } = narrowDueTomorrow(
+        payload,
+        summary,
+        tomorrowStart,
+      );
 
-      if (isEmptyReport(narrowed)) {
+      const surviving = survivingHashes(claimed, narrowed);
+
+      if (surviving.size === 0) {
         // Everything the checker widened in turned out not to be due tomorrow.
-        // Release the claims rather than confirm them -- see releaseClaims.
-        await this.releaseClaims(studentGuid, claimed);
+        await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId);
         return await this.recordEmpty(
           studentGuid,
           reportFor,
@@ -175,19 +186,18 @@ export class DigestService {
         );
       }
 
-      const lines = summary.usedLlm ? summary.lines : deterministicLines(narrowed);
+      const lines = linesFor(summary, payload, narrowed);
       const message = renderReport(narrowed, lines);
 
-      const enabled = (
-        await this.prisma.digestRecipient.findMany({
-          where: { studentGuid, enabled: true },
-          select: { channel: true, address: true, enabled: true },
-        })
-      ).filter((recipient) => recipient.enabled);
+      const enabled = await this.prisma.digestRecipient.findMany({
+        where: { studentGuid, enabled: true },
+        select: { channel: true, address: true },
+      });
 
-      for (const recipient of enabled) {
-        const sender = dryRun ? this.logSender : this.senderFor(recipient.channel);
-        await sender.send(recipient.address, message);
+      const { delivered, failures } = await this.deliver(enabled, message, dryRun);
+
+      if (delivered === 0 && enabled.length > 0) {
+        throw new Error(`no recipient could be reached (${failures.join('; ')})`);
       }
 
       const itemCount = countItems(narrowed);
@@ -195,7 +205,7 @@ export class DigestService {
       if (dryRun) {
         // A dry run must not mark anything reported, or the first real run
         // would find nothing left to say.
-        await this.releaseClaims(studentGuid, claimed);
+        await this.releaseClaims(studentGuid, claimed, runId);
         return await this.record(studentGuid, reportFor, {
           status: 'dry_run',
           itemCount,
@@ -206,25 +216,27 @@ export class DigestService {
         });
       }
 
-      await this.confirmClaims(studentGuid, claimed, reportFor);
+      await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId);
+      await this.confirmClaims(studentGuid, [...surviving], runId);
 
       return await this.record(studentGuid, reportFor, {
         status: 'sent',
         itemCount,
-        recipientCount: enabled.length,
+        recipientCount: delivered,
         usedLlm: summary.usedLlm,
         messageText: message,
         channel: enabled[0]?.channel ?? null,
+        // A partial failure is recorded but does not undo a real delivery.
+        errorMessage: failures.length > 0 ? failures.join('; ') : undefined,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Digest failed for ${studentGuid}: ${message}`);
 
-      // Roll the claim back so the next hourly run retries. A crash before
-      // this point leaves the rows unconfirmed, which the checker's 30-minute
-      // staleness rule reclaims, so nothing is silently lost either way.
+      // Roll our own claim back so the next hourly run retries. Scoped to this
+      // run's id so a concurrent run's claim is never deleted.
       if (claimed.length > 0) {
-        await this.releaseClaims(studentGuid, claimed).catch(() => undefined);
+        await this.releaseClaims(studentGuid, claimed, runId).catch(() => undefined);
       }
 
       return await this.record(studentGuid, reportFor, {
@@ -237,41 +249,226 @@ export class DigestService {
     }
   }
 
+  /**
+   * Claims candidates and returns only those this run actually owns.
+   *
+   * Three steps, because a claim can be in three states. A brand-new item is
+   * inserted. An item whose row exists but was abandoned -- unconfirmed past
+   * the staleness window, because the run holding it was killed between
+   * claiming and sending -- is taken over. An item previously deferred to a
+   * date that is now tomorrow is also taken over. Everything else belongs to
+   * someone else or is already delivered.
+   *
+   * The read-back is not redundant: the insert's count says how many rows were
+   * won, never which, and acting on the full candidate list instead is how an
+   * item gets sent twice.
+   */
+  private async claim(
+    studentGuid: string,
+    candidates: DigestCandidate[],
+    reportFor: Date,
+    runId: string,
+    now: Date,
+    tomorrowStart: Date,
+  ): Promise<DigestCandidate[]> {
+    const hashes = candidates.map((candidate) => candidate.contentHash);
+
+    await this.prisma.digestReportedItem.createMany({
+      data: candidates.map((candidate) => ({
+        studentGuid,
+        itemType: candidate.itemType,
+        itemId: candidate.itemId,
+        contentHash: candidate.contentHash,
+        reportedFor: reportFor,
+        claimedBy: runId,
+      })),
+      skipDuplicates: true,
+    });
+
+    await this.prisma.digestReportedItem.updateMany({
+      where: {
+        studentGuid,
+        contentHash: { in: hashes },
+        OR: [
+          // Abandoned by a run that died before sending.
+          { confirmedAt: null, claimedAt: { lt: new Date(now.getTime() - STALE_CLAIM_MS) } },
+          // Deferred to a deadline that has now arrived.
+          { confirmedAt: { not: null }, resolvedDueDate: tomorrowStart },
+        ],
+      },
+      data: { claimedBy: runId, claimedAt: now, confirmedAt: null, resolvedDueDate: null },
+    });
+
+    const owned = await this.prisma.digestReportedItem.findMany({
+      where: { studentGuid, claimedBy: runId },
+      select: { contentHash: true },
+    });
+    const ownedHashes = new Set(owned.map((row) => row.contentHash));
+
+    return candidates.filter((candidate) => ownedHashes.has(candidate.contentHash));
+  }
+
+  /** Sends to each recipient independently, so one bad address cannot undo the rest. */
+  private async deliver(
+    recipients: { channel: string; address: string }[],
+    message: string,
+    dryRun: boolean,
+  ): Promise<{ delivered: number; failures: string[] }> {
+    let delivered = 0;
+    const failures: string[] = [];
+
+    for (const recipient of recipients) {
+      try {
+        const sender = dryRun ? this.logSender : this.senderFor(recipient.channel);
+        await sender.send(recipient.address, message);
+        delivered += 1;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Digest delivery to ${recipient.channel} failed: ${reason}`);
+        failures.push(reason);
+      }
+    }
+
+    return { delivered, failures };
+  }
+
+  /**
+   * Decides what to do with claims that were not part of the sent report.
+   *
+   * A `homework_due` item the model dated to some later day is *deferred*: the
+   * row stays, confirmed, with that date recorded, so the model is not asked
+   * the same question on all seven of today's runs nor on every run for the
+   * fortnight the item stays in the lookback -- and the checker re-admits it on
+   * the day the date is tomorrow.
+   *
+   * An item with no resolvable date at all is released instead. There is
+   * nothing to defer to, and confirming it would bury it permanently: the
+   * content hash does not include the estimate, so a later timetable sync that
+   * finally gives its group a lesson tomorrow would never resurface it.
+   */
+  private async settleUnsent(
+    studentGuid: string,
+    claimed: DigestCandidate[],
+    surviving: Set<string>,
+    resolutionByItemId: Map<string, Date | null>,
+    runId: string,
+  ): Promise<void> {
+    const unsent = claimed.filter((candidate) => !surviving.has(candidate.contentHash));
+    if (unsent.length === 0) return;
+
+    const byDate = new Map<number, string[]>();
+    const toRelease: DigestCandidate[] = [];
+
+    for (const candidate of unsent) {
+      const resolved =
+        candidate.itemType === 'homework_due'
+          ? resolutionByItemId.get(candidate.itemId) ?? candidate.estimatedDueDate ?? null
+          : null;
+      if (resolved === null) {
+        toRelease.push(candidate);
+        continue;
+      }
+      const key = resolved.getTime();
+      byDate.set(key, [...(byDate.get(key) ?? []), candidate.contentHash]);
+    }
+
+    for (const [time, hashes] of byDate) {
+      await this.prisma.digestReportedItem.updateMany({
+        where: { studentGuid, claimedBy: runId, contentHash: { in: hashes } },
+        data: { confirmedAt: new Date(), resolvedDueDate: new Date(time), claimedBy: null },
+      });
+    }
+
+    if (toRelease.length > 0) {
+      await this.releaseClaims(studentGuid, toRelease, runId);
+    }
+  }
+
   private senderFor(channel: string): DigestSender {
     const sender = this.senders.find((candidate) => candidate.channel === channel);
     if (!sender) throw new Error(`No digest sender for channel "${channel}".`);
     return sender;
   }
 
+  /** Marks items as fully reported. `resolvedDueDate` null means exactly that. */
   private async confirmClaims(
     studentGuid: string,
-    claimed: DigestCandidate[],
-    reportFor: Date,
+    hashes: string[],
+    runId: string,
   ): Promise<void> {
     await this.prisma.digestReportedItem.updateMany({
-      where: { studentGuid, contentHash: { in: claimed.map((c) => c.contentHash) }, reportedFor: reportFor },
-      data: { confirmedAt: new Date() },
+      where: { studentGuid, claimedBy: runId, contentHash: { in: hashes } },
+      data: { confirmedAt: new Date(), resolvedDueDate: null, claimedBy: null },
     });
   }
 
   /**
-   * Deletes claims rather than confirming them.
-   *
-   * Used when nothing was delivered: a dry run, a failed send, or an item the
-   * model resolved to a deadline that is not tomorrow. Deleting is what lets a
-   * deferred deadline be reported on the day it is actually near -- a confirmed
-   * claim would mean that on Wednesday, when a Thursday deadline really is
-   * tomorrow, the item counts as already reported and the parent never hears
-   * about it.
+   * Deletes this run's own claims, so the next run sees the items as
+   * unreported. Scoped to `claimedBy` so a failing or dry run cannot delete a
+   * claim a concurrent run is holding.
    */
-  private async releaseClaims(studentGuid: string, claimed: DigestCandidate[]): Promise<void> {
+  private async releaseClaims(
+    studentGuid: string,
+    claimed: DigestCandidate[],
+    runId: string,
+  ): Promise<void> {
     await this.prisma.digestReportedItem.deleteMany({
       where: {
         studentGuid,
+        claimedBy: runId,
         contentHash: { in: claimed.map((candidate) => candidate.contentHash) },
-        confirmedAt: null,
       },
     });
+  }
+
+  /**
+   * A day with no candidates is only a quiet day if the school data is current.
+   * The digest reads local Postgres, so a dead session or a stalled sync task
+   * looks exactly like "nothing happened" -- and leaving a parent to read
+   * silence as reassurance is the wrong default when the truth is that we have
+   * not spoken to the school since Tuesday.
+   */
+  private async recordQuiet(
+    studentGuid: string,
+    reportFor: Date,
+    now: Date,
+  ): Promise<DigestRunResult> {
+    const staleSince = await this.staleSyncSince(now);
+    if (staleSince === null) {
+      return this.recordEmpty(studentGuid, reportFor, 'nothing unreported');
+    }
+
+    this.logger.warn(
+      `Digest ${studentGuid}: no items, but school data has not synced successfully since ${staleSince.toISOString()}.`,
+    );
+    return this.record(studentGuid, reportFor, {
+      status: 'skipped_stale',
+      itemCount: 0,
+      recipientCount: 0,
+      usedLlm: false,
+      errorMessage: `school data last synced ${staleSince.toISOString()}`,
+    });
+  }
+
+  /** The oldest last-success among the sources the digest reads, if stale. */
+  private async staleSyncSince(now: Date): Promise<Date | null> {
+    const cutoff = new Date(now.getTime() - SYNC_STALE_AFTER_MS);
+    let oldest: Date | null = null;
+
+    for (const source of SYNC_SOURCES_BEHIND_THE_DIGEST) {
+      const run = await this.prisma.syncRun.findFirst({
+        where: { source, status: 'success' },
+        orderBy: { startedAt: 'desc' },
+        select: { startedAt: true, endedAt: true },
+      });
+      const at = run?.endedAt ?? run?.startedAt ?? null;
+      // No successful run on record at all is not treated as stale: a brand-new
+      // deployment would otherwise报 every child as stale on day one.
+      if (at === null) continue;
+      if (oldest === null || at < oldest) oldest = at;
+    }
+
+    return oldest !== null && oldest < cutoff ? oldest : null;
   }
 
   private async recordEmpty(
@@ -334,6 +531,12 @@ export class DigestService {
     return this.config.get<string>('DIGEST_TIMEZONE') ?? DEFAULT_TIMEZONE;
   }
 
+  private isEnabledByConfig(): boolean {
+    return String(this.config.get<string | boolean>('DIGEST_ENABLED') ?? 'false')
+      .trim()
+      .toLowerCase() === 'true';
+  }
+
   /** Defaults to true: a first deploy must not message a parent by accident. */
   private isDryRunByDefault(): boolean {
     const raw = this.config.get<string | boolean>('DIGEST_DRY_RUN');
@@ -343,33 +546,79 @@ export class DigestService {
 }
 
 /**
+ * Which prose to render.
+ *
+ * The model writes its sentences from the un-narrowed payload, because the
+ * deadline resolution it returns is what *does* the narrowing. So when
+ * narrowing removes a due item, the model's `dueTomorrowLine` describes items
+ * the bullets no longer list -- "two assignments due tomorrow, in history and
+ * maths" above a single maths bullet -- and can even name a date for an item
+ * that was deliberately deferred. In that case only that line is replaced with
+ * the deterministic one, which counts what actually survived.
+ */
+function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPayload) {
+  if (!summary.usedLlm) return deterministicLines(after);
+  if (after.homeworkDueTomorrow.length === before.homeworkDueTomorrow.length) {
+    return summary.lines;
+  }
+  return { ...summary.lines, dueTomorrowLine: deterministicLines(after).dueTomorrowLine };
+}
+
+/**
  * Applies the model's deadline reading to the due-tomorrow section.
  *
  * Resolution order is explicit-from-text over timetable estimate (ADR-0026).
  * An item whose resolved deadline is not tomorrow leaves the section: the
  * checker deliberately over-collects on a text hint so the model can find a
  * deadline the timetable would have missed, and this is where that set is
- * narrowed again.
+ * narrowed again. The resolutions are returned so the caller can record them
+ * and avoid asking the same question again.
  */
 function narrowDueTomorrow(
   payload: DigestPayload,
   summary: DigestSummary,
   tomorrowStart: Date,
-): DigestPayload {
+): { payload: DigestPayload; resolutionByItemId: Map<string, Date | null> } {
   const explicitByRef = new Map(
     summary.deadlineResolutions.map((resolution) => [resolution.ref, resolution.explicitDueDate]),
   );
 
   const kept: DigestHomeworkFact[] = [];
+  const resolutionByItemId = new Map<string, Date | null>();
+
   for (const item of payload.homeworkDueTomorrow) {
     const explicit = parseIsoDate(explicitByRef.get(item.id) ?? null);
     const resolved = explicit ?? item.estimatedDueDate ?? null;
+    resolutionByItemId.set(item.id, resolved);
     if (resolved === null) continue;
     if (resolved.getTime() !== tomorrowStart.getTime()) continue;
     kept.push({ ...item, estimatedDueDate: resolved });
   }
 
-  return { ...payload, homeworkDueTomorrow: kept };
+  return { payload: { ...payload, homeworkDueTomorrow: kept }, resolutionByItemId };
+}
+
+/**
+ * The hashes of claims that made it into the rendered report.
+ *
+ * Keyed on itemType plus itemId rather than on the payload alone, because the
+ * same homework row can be claimed twice -- once as newly assigned and once as
+ * estimated-due -- and only one of those may have survived. It also drops
+ * claims whose underlying row vanished upstream between the check and the
+ * collect, which the collector silently omits from the payload.
+ */
+function survivingHashes(claimed: DigestCandidate[], narrowed: DigestPayload): Set<string> {
+  const alive = new Set<string>([
+    ...narrowed.behavior.map((fact) => `behavior:${fact.id}`),
+    ...narrowed.homeworkNew.map((fact) => `homework_new:${fact.id}`),
+    ...narrowed.homeworkDueTomorrow.map((fact) => `homework_due:${fact.id}`),
+  ]);
+
+  return new Set(
+    claimed
+      .filter((candidate) => alive.has(`${candidate.itemType}:${candidate.itemId}`))
+      .map((candidate) => candidate.contentHash),
+  );
 }
 
 /** Parses YYYY-MM-DD into UTC midnight, the digest's only date representation. */
@@ -382,12 +631,16 @@ function parseIsoDate(value: string | null): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/**
+ * Distinct items in the report. A homework row reported both as newly assigned
+ * and as estimated-due is one item to a parent reading the message, so it is
+ * counted once.
+ */
 function countItems(payload: DigestPayload): number {
-  return (
-    payload.behavior.length + payload.homeworkNew.length + payload.homeworkDueTomorrow.length
-  );
-}
-
-function isEmptyReport(payload: DigestPayload): boolean {
-  return countItems(payload) === 0;
+  const ids = new Set<string>([
+    ...payload.behavior.map((fact) => `behavior:${fact.id}`),
+    ...payload.homeworkNew.map((fact) => `homework:${fact.id}`),
+    ...payload.homeworkDueTomorrow.map((fact) => `homework:${fact.id}`),
+  ]);
+  return ids.size;
 }

@@ -58,8 +58,12 @@ interface HarnessOptions {
   candidates?: DigestCandidate[];
   payload?: DigestPayload;
   claimCount?: number;
+  takeoverCount?: number;
+  ownedHashes?: string[];
+  latestSyncAt?: Date;
   recipients?: { channel: string; address: string; enabled: boolean }[];
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
+  dueTomorrowLine?: string;
   sendImpl?: jest.Mock;
   checkImpl?: jest.Mock;
   dryRunEnv?: string;
@@ -74,17 +78,39 @@ function makeHarness(options: HarnessOptions = {}) {
   const createMany = jest
     .fn()
     .mockResolvedValue({ count: options.claimCount ?? candidates.length });
-  const updateMany = jest.fn().mockResolvedValue({ count: candidates.length });
+  const updateMany = jest.fn().mockResolvedValue({ count: options.takeoverCount ?? 0 });
   const deleteMany = jest.fn().mockResolvedValue({ count: candidates.length });
   const deliveryCreate = jest.fn().mockImplementation(({ data }) => ({ id: 'del-1', ...data }));
+  // The run reads back the rows it actually owns, because a createMany count
+  // says how many you won but never which.
+  const ownedHashes =
+    options.ownedHashes ??
+    ((options.claimCount ?? candidates.length) === 0 && (options.takeoverCount ?? 0) === 0
+      ? []
+      : candidates.map((candidate) => candidate.contentHash));
+  const reportedFindMany = jest
+    .fn()
+    .mockImplementation(() => ownedHashes.map((contentHash) => ({ contentHash })));
 
   const prisma = {
-    digestReportedItem: { createMany, updateMany, deleteMany },
+    syncRun: {
+      findFirst: jest.fn().mockResolvedValue(
+        options.latestSyncAt === undefined
+          ? { endedAt: NOW, startedAt: NOW }
+          : { endedAt: options.latestSyncAt, startedAt: options.latestSyncAt },
+      ),
+    },
+    digestReportedItem: { createMany, updateMany, deleteMany, findMany: reportedFindMany },
     digestDelivery: { create: deliveryCreate },
     digestRecipient: {
-      findMany: jest.fn().mockResolvedValue(
-        options.recipients ?? [{ channel: 'telegram', address: '12345', enabled: true }],
-      ),
+      // Honours the where-clause, as Postgres would: the service relies on
+      // `where: { enabled: true }` rather than filtering again in code.
+      findMany: jest.fn().mockImplementation(({ where }) => {
+        const all = options.recipients ?? [
+          { channel: 'telegram', address: '12345', enabled: true },
+        ];
+        return all.filter((r) => (where?.enabled === undefined ? true : r.enabled === where.enabled));
+      }),
     },
   } as unknown as PrismaService;
 
@@ -111,7 +137,7 @@ function makeHarness(options: HarnessOptions = {}) {
         headline: 'כותרת',
         behaviorLine: 'התנהגות',
         homeworkLine: '',
-        dueTomorrowLine: 'מחר',
+        dueTomorrowLine: options.dueTomorrowLine ?? 'מחר',
       },
       deadlineResolutions: options.deadlineResolutions ?? [],
       usedLlm: true,
@@ -155,7 +181,19 @@ function makeHarness(options: HarnessOptions = {}) {
     updateMany,
     deleteMany,
     deliveryCreate,
+    reportedFindMany,
   };
+}
+
+/** The claim step always issues a takeover updateMany; these name the rest. */
+function confirmCalls(updateMany: jest.Mock) {
+  return updateMany.mock.calls.filter(
+    (call) => call[0].data.confirmedAt instanceof Date && call[0].data.resolvedDueDate === null,
+  );
+}
+
+function deferralCalls(updateMany: jest.Mock) {
+  return updateMany.mock.calls.filter((call) => call[0].data.resolvedDueDate instanceof Date);
 }
 
 /** Yields to the event loop until `predicate` holds, or fails the test. */
@@ -176,9 +214,10 @@ describe('DigestService.runAll', () => {
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({ studentGuid: 'stu-1', status: 'sent' });
     expect(harness.send).toHaveBeenCalledTimes(1);
-    expect(harness.updateMany).toHaveBeenCalledTimes(1);
-    // confirmedAt is what distinguishes a delivered item from a crashed claim.
-    expect(harness.updateMany.mock.calls[0][0].data.confirmedAt).toBeInstanceOf(Date);
+    // confirmedAt is what distinguishes a delivered item from a crashed claim,
+    // and a null resolvedDueDate is what distinguishes it from a deferral.
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+    expect(confirmCalls(harness.updateMany)[0][0].where.contentHash.in).toEqual(['hash-beh']);
   });
 
   it('records a quiet day without calling the model or sending anything', async () => {
@@ -194,9 +233,9 @@ describe('DigestService.runAll', () => {
   });
 
   it('sends nothing when another runner already owns every item', async () => {
-    // createMany with skipDuplicates returning 0 means every claim row already
-    // existed, so someone else is sending or already sent.
-    const harness = makeHarness({ claimCount: 0 });
+    // Nothing inserted and nothing taken over means every row belongs to a run
+    // that is still working on it, or was already delivered.
+    const harness = makeHarness({ claimCount: 0, takeoverCount: 0, ownedHashes: [] });
 
     const results = await harness.service.runAll({ now: NOW });
 
@@ -214,7 +253,7 @@ describe('DigestService.runAll', () => {
 
     expect(results[0].status).toBe('failed');
     expect(harness.deleteMany).toHaveBeenCalledTimes(1);
-    expect(harness.updateMany).not.toHaveBeenCalled();
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
     expect(harness.deliveryCreate.mock.calls[0][0].data.status).toBe('failed');
   });
 
@@ -247,7 +286,8 @@ describe('DigestService.runAll', () => {
     expect(harness.logSend).toHaveBeenCalledTimes(1);
     // A dry run must not mark items as reported, or the real first run would
     // find nothing left to say.
-    expect(harness.updateMany).not.toHaveBeenCalled();
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(deferralCalls(harness.updateMany)).toHaveLength(0);
     expect(harness.deleteMany).toHaveBeenCalledTimes(1);
   });
 
@@ -297,10 +337,11 @@ describe('DigestService.runAll', () => {
   });
 
   it('re-evaluates a deferred deadline instead of burying it', async () => {
-    // The claim for a dropped item must NOT be confirmed. Confirming it would
-    // mean that on Wednesday -- when the Thursday deadline really is tomorrow
-    // -- the item is already "reported" and the parent never hears about it.
-    // That would silently defeat the half of the feature this exists for.
+    // The dropped item must not be marked fully reported. Marking it would mean
+    // that on Wednesday -- when the Thursday deadline really is tomorrow -- it
+    // counts as already reported and the parent never hears about it, silently
+    // defeating the half of the feature this exists for. Instead the resolved
+    // date is recorded, and the checker re-admits the item on that day.
     const harness = makeHarness({
       candidates: [
         { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
@@ -314,8 +355,11 @@ describe('DigestService.runAll', () => {
 
     await harness.service.runAll({ now: NOW });
 
-    expect(harness.updateMany).not.toHaveBeenCalled();
-    expect(harness.deleteMany).toHaveBeenCalledTimes(1);
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(deferralCalls(harness.updateMany)).toHaveLength(1);
+    expect(
+      (deferralCalls(harness.updateMany)[0][0].data.resolvedDueDate as Date).toISOString(),
+    ).toBe('2026-11-19T00:00:00.000Z');
   });
 
   it('keeps an item whose explicit deadline really is tomorrow', async () => {
@@ -425,6 +469,206 @@ describe('DigestService.runAll', () => {
     expect(row.messageText).toContain('אבי');
     expect(row.usedLlm).toBe(true);
     expect(row.reportFor).toEqual(TODAY);
+  });
+
+
+  it('takes over a claim an earlier run abandoned without sending', async () => {
+    // A container killed between claiming and sending leaves rows unconfirmed.
+    // The checker reclaims them, but the insert then conflicts and returns 0 --
+    // so without an explicit takeover the item is stuck for good and every run
+    // reports a quiet day.
+    const harness = makeHarness({
+      claimCount: 0,
+      takeoverCount: 1,
+      ownedHashes: ['hash-beh'],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    // The takeover must restamp ownership and clear the stale claim state.
+    const takeover = harness.updateMany.mock.calls[0][0];
+    expect(takeover.data.claimedBy).toBeDefined();
+    expect(takeover.data.confirmedAt).toBeNull();
+  });
+
+  it('acts only on the rows it actually owns, not on everything it asked for', async () => {
+    // Run A owns the behavior item; run B inserted the homework item a moment
+    // earlier. Reporting both would send the homework twice.
+    const harness = makeHarness({
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'homework_new', itemId: 'hw-1', contentHash: 'hash-hw' },
+      ],
+      claimCount: 1,
+      ownedHashes: ['hash-beh'],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const collected = (harness.collector.collect as jest.Mock).mock.calls[0][0].candidates;
+    expect(collected.map((c: { contentHash: string }) => c.contentHash)).toEqual(['hash-beh']);
+  });
+
+  it('does not confirm a deferred deadline just because the rest of the report sent', async () => {
+    // The burying case. A behavior event makes the report non-empty, so it
+    // sends -- and the homework whose deadline resolved to Thursday must not be
+    // marked reported, or on Wednesday the parent is never warned.
+    const harness = makeHarness({
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
+      ],
+      ownedHashes: ['hash-beh', 'hash-due'],
+      payload: makePayload({ homeworkDueTomorrow: [duePayloadItem('hw-1', null)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-11-19' }],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    const confirmed = harness.updateMany.mock.calls.filter(
+      (call) => call[0].data.confirmedAt instanceof Date && call[0].data.resolvedDueDate == null,
+    );
+    const confirmedHashes = confirmed.flatMap((call) => call[0].where.contentHash.in);
+    expect(confirmedHashes).toContain('hash-beh');
+    expect(confirmedHashes).not.toContain('hash-due');
+  });
+
+  it('records the resolved date on a deferred item so the model is not re-asked hourly', async () => {
+    const harness = makeHarness({
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
+      ],
+      ownedHashes: ['hash-beh', 'hash-due'],
+      payload: makePayload({ homeworkDueTomorrow: [duePayloadItem('hw-1', null)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-11-19' }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const deferral = harness.updateMany.mock.calls.find(
+      (call) => call[0].data.resolvedDueDate instanceof Date,
+    );
+    expect(deferral).toBeDefined();
+    expect(deferral![0].where.contentHash.in).toEqual(['hash-due']);
+    expect((deferral![0].data.resolvedDueDate as Date).toISOString()).toBe(
+      '2026-11-19T00:00:00.000Z',
+    );
+  });
+
+  it('releases a deferred item it could not date at all, rather than burying it', async () => {
+    // No explicit date and no timetable estimate: there is nothing to defer
+    // to, so the claim goes back and the item is looked at again.
+    const harness = makeHarness({
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
+      ],
+      ownedHashes: ['hash-beh', 'hash-due'],
+      payload: makePayload({ homeworkDueTomorrow: [duePayloadItem('hw-1', null)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: null }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const released = harness.deleteMany.mock.calls[0][0];
+    expect(released.where.contentHash.in).toEqual(['hash-due']);
+  });
+
+  it('still delivers to the working recipient when another one is unreachable', async () => {
+    // Dad blocked the bot. Rolling the whole claim back would re-send the same
+    // digest to Mum every hour, forever, with a fresh model call each time.
+    const send = jest
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('Telegram send failed: bot was blocked by the user'));
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true },
+        { channel: 'telegram', address: '222', enabled: true },
+      ],
+      sendImpl: send,
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    expect(results[0].recipientCount).toBe(1);
+    expect(results[0].error).toMatch(/blocked/);
+    // Confirmed, so Mum is not sent the same digest again next hour.
+    expect(harness.updateMany).toHaveBeenCalled();
+    expect(harness.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('fails and rolls back only when no recipient could be reached', async () => {
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true },
+        { channel: 'telegram', address: '222', enabled: true },
+      ],
+      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('failed');
+    expect(harness.deleteMany).toHaveBeenCalled();
+  });
+
+  it('does not let the model describe items that narrowing removed', async () => {
+    // The prose is written before narrowing. If narrowing drops an item, the
+    // model's sentence can promise a deadline the bullets do not list.
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-a' },
+        { itemType: 'homework_due', itemId: 'hw-2', contentHash: 'hash-b' },
+      ],
+      ownedHashes: ['hash-a', 'hash-b'],
+      payload: makePayload({
+        behavior: [],
+        homeworkDueTomorrow: [duePayloadItem('hw-1', TOMORROW), duePayloadItem('hw-2', TOMORROW)],
+      }),
+      deadlineResolutions: [
+        { ref: 'hw-1', explicitDueDate: '2026-11-18' },
+        { ref: 'hw-2', explicitDueDate: '2026-11-19' },
+      ],
+      dueTomorrowLine: 'שתי מטלות להגשה מחר, בהיסטוריה ובגאוגרפיה',
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    // The model described two items in two subjects; only one survived, so its
+    // sentence must not be the one that reaches the parent.
+    const sent = harness.send.mock.calls[0][1];
+    expect(sent).not.toContain('היסטוריה');
+    expect(sent).not.toContain('שתי מטלות');
+  });
+
+  it('flags a quiet day that is really a stalled sync', async () => {
+    // The digest reads only local Postgres. If the school data has not been
+    // refreshed for hours, "nothing happened today" is a wrong belief to leave
+    // a parent with, and it must at least be distinguishable in the history.
+    const harness = makeHarness({
+      candidates: [],
+      latestSyncAt: new Date(NOW.getTime() - 9 * 60 * 60 * 1000),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('skipped_stale');
+    expect(harness.deliveryCreate.mock.calls[0][0].data.status).toBe('skipped_stale');
+  });
+
+  it('calls a quiet day quiet when the sync is current', async () => {
+    const harness = makeHarness({
+      candidates: [],
+      latestSyncAt: new Date(NOW.getTime() - 20 * 60 * 1000),
+    });
+
+    expect((await harness.service.runAll({ now: NOW }))[0].status).toBe('skipped_empty');
   });
 
   it('marks the delivery as not having used the model when it fell back', async () => {

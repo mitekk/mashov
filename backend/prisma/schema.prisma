@@ -382,9 +382,22 @@ model DigestReportedItem {
   /// School day the report covered - retention and audit.
   reportedFor DateTime  @db.Date
   claimedAt   DateTime  @default(now())
+  /// Which run owns this claim. A count from `createMany` says how many rows you
+  /// won but never which, so ownership has to be readable back: the claimer
+  /// stamps its own run id and then reads its own rows. Without it, two runs can
+  /// each believe they own an item and send it twice, and a failing run can
+  /// delete a claim another run is holding.
+  claimedBy   String?
   /// Set only after a successful send. A row left unconfirmed past 30 minutes is a
-  /// crashed claim and is reclaimed by the checker.
+  /// crashed claim and is taken over by the next run.
   confirmedAt DateTime?
+  /// For a `homework_due` item the model resolved to a deadline that was not
+  /// tomorrow: the date it resolved to. The row stays (so the model is not asked
+  /// again every hour) and the checker re-admits the item on the day that date
+  /// *is* tomorrow. A confirmed row with this null means fully reported; with it
+  /// set, it means deferred to that date. Without this column the only options
+  /// are burying the deadline or re-resolving it on every run for a fortnight.
+  resolvedDueDate DateTime? @db.Date
   deliveryId  String?
 
   /// Named explicitly: the generated name would exceed Postgres's 63-character
@@ -392,6 +405,10 @@ model DigestReportedItem {
   /// committed migration.
   @@unique([studentGuid, itemType, itemId, contentHash], map: "digest_reported_item_dedup_key")
   @@index([studentGuid, reportedFor])
+  /// The checker's hottest query: one lookup per child per run against the
+  /// hashes it just computed. The dedup unique leads with studentGuid, so
+  /// without this Postgres scans every row that child has ever had.
+  @@index([studentGuid, contentHash])
   @@map("digest_reported_item")
 }
 

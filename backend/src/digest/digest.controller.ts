@@ -16,7 +16,6 @@ import { Throttle } from '@nestjs/throttler';
 import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min, MinLength } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request } from 'express';
-import { PrismaService } from '../prisma/prisma.service';
 import { DigestRecipientService } from './digest-recipient.service';
 import { DigestService } from './digest.service';
 
@@ -91,12 +90,12 @@ export class DigestController {
   constructor(
     private readonly recipients: DigestRecipientService,
     private readonly digest: DigestService,
-    private readonly prisma: PrismaService,
   ) {}
 
   @Get('recipients')
-  async listRecipients(@Query() query: RecipientQueryDto) {
-    return { data: await this.recipients.listFor(query.studentGuid) };
+  async listRecipients(@Req() req: Request, @Query() query: RecipientQueryDto) {
+    const userId = requireUserId(req);
+    return { data: await this.recipients.listFor(query.studentGuid, userId) };
   }
 
   @Post('recipients')
@@ -107,14 +106,19 @@ export class DigestController {
   }
 
   @Patch('recipients/:id')
-  async updateRecipient(@Param('id') id: string, @Body() body: UpdateRecipientDto) {
-    return { data: await this.recipients.update(id, body) };
+  async updateRecipient(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: UpdateRecipientDto,
+  ) {
+    const userId = requireUserId(req);
+    return { data: await this.recipients.update(id, body, userId) };
   }
 
   @Delete('recipients/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async deleteRecipient(@Param('id') id: string): Promise<void> {
-    await this.recipients.remove(id);
+  async deleteRecipient(@Req() req: Request, @Param('id') id: string): Promise<void> {
+    await this.recipients.remove(id, requireUserId(req));
   }
 
   /**
@@ -135,25 +139,8 @@ export class DigestController {
   }
 
   @Get('deliveries')
-  async listDeliveries(@Query() query: DeliveryQueryDto) {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
-    const where = query.studentGuid ? { studentGuid: query.studentGuid } : {};
-
-    const [rows, total] = await Promise.all([
-      this.prisma.digestDelivery.findMany({
-        where,
-        orderBy: { runAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.digestDelivery.count({ where }),
-    ]);
-
-    return {
-      data: rows,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    };
+  async listDeliveries(@Req() req: Request, @Query() query: DeliveryQueryDto) {
+    return this.recipients.listDeliveries(requireUserId(req), query);
   }
 }
 

@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { DigestRecipientService } from './digest-recipient.service';
 import type { PrismaService } from '../prisma/prisma.service';
 
@@ -34,6 +34,10 @@ function makeHarness(options: { roster?: string[]; existing?: unknown } = {}) {
       findUnique: jest.fn().mockResolvedValue(existing),
       update: jest.fn().mockResolvedValue({ ...RECIPIENT, enabled: false }),
       delete: jest.fn().mockResolvedValue(RECIPIENT),
+    },
+    digestDelivery: {
+      findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
     },
   } as unknown as PrismaService;
 
@@ -99,18 +103,18 @@ describe('DigestRecipientService', () => {
   it('lists the recipients for one child', async () => {
     const harness = makeHarness();
 
-    const listed = await harness.service.listFor('stu-1');
+    const listed = await harness.service.listFor('stu-1', 'user-1');
 
     expect(listed).toHaveLength(1);
     expect((harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where).toMatchObject(
-      { studentGuid: 'stu-1' },
+      { studentGuid: 'stu-1', userId: 'user-1' },
     );
   });
 
   it('updates the enabled flag', async () => {
     const harness = makeHarness();
 
-    const updated = await harness.service.update('rec-1', { enabled: false });
+    const updated = await harness.service.update('rec-1', { enabled: false }, 'user-1');
 
     expect(updated.enabled).toBe(false);
   });
@@ -118,7 +122,7 @@ describe('DigestRecipientService', () => {
   it('reports a missing recipient rather than updating nothing', async () => {
     const harness = makeHarness({ existing: null });
 
-    await expect(harness.service.update('rec-404', { enabled: false })).rejects.toThrow(
+    await expect(harness.service.update('rec-404', { enabled: false }, 'user-1')).rejects.toThrow(
       NotFoundException,
     );
   });
@@ -126,7 +130,7 @@ describe('DigestRecipientService', () => {
   it('deletes a recipient', async () => {
     const harness = makeHarness();
 
-    await harness.service.remove('rec-1');
+    await harness.service.remove('rec-1', 'user-1');
 
     expect(harness.prisma.digestRecipient.delete).toHaveBeenCalledWith({ where: { id: 'rec-1' } });
   });
@@ -134,7 +138,60 @@ describe('DigestRecipientService', () => {
   it('reports a missing recipient rather than deleting nothing', async () => {
     const harness = makeHarness({ existing: null });
 
-    await expect(harness.service.remove('rec-404')).rejects.toThrow(NotFoundException);
+    await expect(harness.service.remove('rec-404', 'user-1')).rejects.toThrow(NotFoundException);
+  });
+
+
+  it('refuses to change a recipient another user created', async () => {
+    // There is no child -> parent FK to validate against, but every row records
+    // who created it, so at least one household cannot silently disable
+    // another household's digest.
+    const harness = makeHarness({ existing: { ...RECIPIENT, userId: 'someone-else' } });
+
+    await expect(harness.service.update('rec-1', { enabled: false }, 'user-1')).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(harness.prisma.digestRecipient.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses to delete a recipient another user created', async () => {
+    const harness = makeHarness({ existing: { ...RECIPIENT, userId: 'someone-else' } });
+
+    await expect(harness.service.remove('rec-1', 'user-1')).rejects.toThrow(ForbiddenException);
+    expect(harness.prisma.digestRecipient.delete).not.toHaveBeenCalled();
+  });
+
+  it('lists only the recipients the caller created for that child', async () => {
+    const harness = makeHarness();
+
+    await harness.service.listFor('stu-1', 'user-1');
+
+    expect(
+      (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,
+    ).toMatchObject({ studentGuid: 'stu-1', userId: 'user-1' });
+  });
+
+  it('scopes delivery history to children the caller actually receives digests for', async () => {
+    // A delivery row holds messageText -- the rendered behavior remarks that
+    // were sent to a parent. It must not be readable for another family's child
+    // just because the reader is authenticated.
+    const harness = makeHarness();
+
+    await harness.service.listDeliveries('user-1', {});
+
+    const where = (harness.prisma.digestDelivery.findMany as jest.Mock).mock.calls[0][0].where;
+    expect(where.studentGuid).toEqual({ in: ['stu-1'] });
+  });
+
+  it('returns no history at all for a user with no recipients', async () => {
+    const harness = makeHarness();
+    (harness.prisma.digestRecipient.findMany as jest.Mock).mockResolvedValue([]);
+
+    const page = await harness.service.listDeliveries('user-1', {});
+
+    expect(page.data).toEqual([]);
+    expect(page.pagination.total).toBe(0);
+    expect(harness.prisma.digestDelivery.findMany).not.toHaveBeenCalled();
   });
 
   it('lists the children that have at least one enabled recipient', async () => {

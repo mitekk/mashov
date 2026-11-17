@@ -1,5 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { DigestRecipient } from '@prisma/client';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { DigestDelivery, DigestRecipient } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 /** Channels a sender exists for. A row for anything else could never deliver. */
@@ -80,15 +85,20 @@ export class DigestRecipientService {
     });
   }
 
-  async listFor(studentGuid: string): Promise<DigestRecipient[]> {
+  /** The caller's own recipients for a child, not every household's. */
+  async listFor(studentGuid: string, userId: string): Promise<DigestRecipient[]> {
     return this.prisma.digestRecipient.findMany({
-      where: { studentGuid },
+      where: { studentGuid, userId },
       orderBy: { createdAt: 'asc' },
     });
   }
 
-  async update(id: string, input: UpdateRecipientInput): Promise<DigestRecipient> {
-    await this.requireExisting(id);
+  async update(
+    id: string,
+    input: UpdateRecipientInput,
+    userId: string,
+  ): Promise<DigestRecipient> {
+    await this.requireOwned(id, userId);
 
     return this.prisma.digestRecipient.update({
       where: { id },
@@ -101,9 +111,55 @@ export class DigestRecipientService {
     });
   }
 
-  async remove(id: string): Promise<void> {
-    await this.requireExisting(id);
+  async remove(id: string, userId: string): Promise<void> {
+    await this.requireOwned(id, userId);
     await this.prisma.digestRecipient.delete({ where: { id } });
+  }
+
+  /**
+   * Delivery history for the children this user actually receives digests for.
+   *
+   * Scoped deliberately, even though the app's child model is otherwise global:
+   * a delivery row carries `messageText`, the rendered behavior remarks that
+   * were sent to a parent, and that is a new class of content to expose. An
+   * authenticated user from another household has no business reading it.
+   */
+  async listDeliveries(
+    userId: string,
+    options: { studentGuid?: string; page?: number; limit?: number },
+  ): Promise<{
+    data: DigestDelivery[];
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }> {
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 20;
+
+    const own = await this.prisma.digestRecipient.findMany({
+      where: { userId },
+      select: { studentGuid: true },
+      distinct: ['studentGuid'],
+    });
+    let guids = own.map((row) => row.studentGuid);
+    if (options.studentGuid) {
+      guids = guids.filter((guid) => guid === options.studentGuid);
+    }
+
+    if (guids.length === 0) {
+      return { data: [], pagination: { page, limit, total: 0, totalPages: 0 } };
+    }
+
+    const where = { studentGuid: { in: guids } };
+    const [data, total] = await Promise.all([
+      this.prisma.digestDelivery.findMany({
+        where,
+        orderBy: { runAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.digestDelivery.count({ where }),
+    ]);
+
+    return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
   /**
@@ -138,8 +194,16 @@ export class DigestRecipientService {
     return [...byChild.values()];
   }
 
-  private async requireExisting(id: string): Promise<void> {
+  /**
+   * There is no child -> parent FK to validate against, but every row records
+   * who created it, so a user cannot silently disable or delete another
+   * household's digest. See ADR-0025 for what this does and does not cover.
+   */
+  private async requireOwned(id: string, userId: string): Promise<void> {
     const existing = await this.prisma.digestRecipient.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException(`No digest recipient with id "${id}".`);
+    if (existing.userId !== userId) {
+      throw new ForbiddenException('This digest recipient belongs to another user.');
+    }
   }
 }

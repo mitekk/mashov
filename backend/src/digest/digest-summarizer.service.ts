@@ -143,11 +143,24 @@ export class DigestSummarizerService {
       return this.fallback(payload);
     }
 
+    const envProxyRisk = envProxyWouldCaptureFetch();
+    if (envProxyRisk !== null) {
+      // Refusing is the safe direction: a plainer message still reaches the
+      // parent, whereas a prompt carrying a child's first name and a teacher's
+      // remarks must not traverse a residential box provisioned for Mashov.
+      this.logger.error(
+        `Refusing to call the model: ${envProxyRisk} would route the prompt through the Mashov egress proxy. ` +
+          'Rendering the digest without the model.',
+      );
+      return this.fallback(payload);
+    }
+
     try {
       // No proxy, agent, or custom fetch is ever passed. The SDK is
-      // fetch-based and Node's fetch ignores HTTPS_PROXY, so the LLM call
-      // cannot inherit ADR-0023's residential Mashov egress hop -- and nothing
-      // here reintroduces it by hand.
+      // fetch-based, so on Node 22 (what the Dockerfile pins) HTTPS_PROXY is
+      // ignored and the LLM call cannot inherit ADR-0023's residential Mashov
+      // egress hop. The guard above covers the Node >= 24 case where that
+      // stopped being true.
       const client = new Anthropic({
         apiKey,
         timeout: this.readTimeoutMs(),
@@ -172,7 +185,13 @@ export class DigestSummarizerService {
 
       const parsed = parseOutput(response.content);
       if (parsed === null) {
-        this.logger.warn('The model returned output the template cannot use; using the fallback renderer.');
+        // Naming the stop reason matters: thinking counts against max_tokens on
+        // this model and cannot be turned off, so truncation is the likeliest
+        // cause of unusable output and is worth being able to see directly
+        // rather than infer from a run of usedLlm=false rows.
+        this.logger.warn(
+          `The model returned output the template cannot use (stop_reason=${response.stop_reason}); using the fallback renderer.`,
+        );
         return this.fallback(payload);
       }
 
@@ -248,4 +267,32 @@ function isResolution(value: unknown): value is DigestDeadlineResolution {
     typeof entry.ref === 'string' &&
     (entry.explicitDueDate === null || typeof entry.explicitDueDate === 'string')
   );
+}
+
+/**
+ * Whether this process would send `fetch` traffic through the proxy named in
+ * the environment.
+ *
+ * Node 24 added `--use-env-proxy` and `NODE_USE_ENV_PROXY`, which make built-in
+ * fetch honour `HTTPS_PROXY`/`HTTP_PROXY` with no code change. The Anthropic
+ * SDK takes no proxy option, so passing none is normally enough -- but under
+ * that flag "none" stops meaning "direct". Returns the name of what triggered
+ * it, or null when there is nothing to worry about.
+ */
+function envProxyWouldCaptureFetch(): string | null {
+  const proxy =
+    process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy;
+  if (!proxy || proxy.trim().length === 0) return null;
+
+  const flag = process.env.NODE_USE_ENV_PROXY;
+  if (flag !== undefined && flag !== '' && flag !== '0' && flag.toLowerCase() !== 'false') {
+    return 'NODE_USE_ENV_PROXY';
+  }
+  if (
+    process.execArgv.some((arg) => arg === '--use-env-proxy') ||
+    (process.env.NODE_OPTIONS ?? '').includes('--use-env-proxy')
+  ) {
+    return '--use-env-proxy';
+  }
+  return null;
 }

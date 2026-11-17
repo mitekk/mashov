@@ -49,11 +49,25 @@ interface MockOptions {
 }
 
 function makeHarness(options: MockOptions = {}) {
-  const homeworkFindMany = jest
-    .fn()
-    // First call is "assigned today", second is the due-tomorrow lookback.
-    .mockResolvedValueOnce(options.homeworkToday ?? [])
-    .mockResolvedValueOnce(options.homeworkLookback ?? []);
+  // Honours the lessonDate window, as Postgres would, so a test about which
+  // rows the window admits cannot pass against a mock that ignores it.
+  const inWindow = (
+    rows: Record<string, unknown>[],
+    where: { lessonDate?: { gte?: Date; lt?: Date } } | undefined,
+  ) =>
+    rows.filter((row) => {
+      const date = row.lessonDate as Date;
+      const range = where?.lessonDate ?? {};
+      return (!range.gte || date >= range.gte) && (!range.lt || date < range.lt);
+    });
+
+  let homeworkCall = 0;
+  const homeworkFindMany = jest.fn().mockImplementation(({ where }) => {
+    // First call is "assigned recently", second is the due-tomorrow lookback.
+    homeworkCall += 1;
+    const rows = homeworkCall === 1 ? options.homeworkToday ?? [] : options.homeworkLookback ?? [];
+    return Promise.resolve(inWindow(rows, where));
+  });
 
   const prisma = {
     behaviorItem: {
@@ -199,7 +213,7 @@ describe('DigestCheckerService.check', () => {
     const second = await check(
       makeHarness({
         behavior: [behaviorRow()],
-        reported: [{ contentHash: hash, confirmedAt: new Date('2026-11-17T12:30:00Z'), claimedAt: new Date('2026-11-17T12:30:00Z') }],
+        reported: [{ contentHash: hash, confirmedAt: new Date('2026-11-17T12:30:00Z'), claimedAt: new Date('2026-11-17T12:30:00Z'), resolvedDueDate: null }],
       }),
     );
 
@@ -215,7 +229,7 @@ describe('DigestCheckerService.check', () => {
     const edited = await check(
       makeHarness({
         homeworkToday: [homeworkRow({ homeworkText: 'לקרוא פרק 4 במקום פרק 3' })],
-        reported: [{ contentHash: originalHash, confirmedAt: new Date('2026-11-17T12:30:00Z'), claimedAt: new Date('2026-11-17T12:30:00Z') }],
+        reported: [{ contentHash: originalHash, confirmedAt: new Date('2026-11-17T12:30:00Z'), claimedAt: new Date('2026-11-17T12:30:00Z'), resolvedDueDate: null }],
       }),
     );
 
@@ -269,6 +283,118 @@ describe('DigestCheckerService.check', () => {
     });
 
     expect(result.candidates).toEqual([]);
+  });
+
+
+  it('re-admits a deferred item on the day its resolved deadline is tomorrow', async () => {
+    // Recorded as deferred to 18/11 on an earlier day. Today is the 17th, so
+    // tomorrow is the 18th and the parent must now be told.
+    const harness = makeHarness({
+      homeworkLookback: [homeworkRow({ id: 'hw-defer', homeworkText: 'להגיש עד יום רביעי' })],
+      timetableDays: [1],
+      reported: [
+        {
+          contentHash: 'will-be-matched',
+          confirmedAt: new Date('2026-11-15T13:00:00Z'),
+          claimedAt: new Date('2026-11-15T13:00:00Z'),
+          resolvedDueDate: TOMORROW,
+        },
+      ],
+    });
+
+    // Match the hash the checker computes for this row so the ledger row applies.
+    const probe = await check(
+      makeHarness({
+        homeworkLookback: [homeworkRow({ id: 'hw-defer', homeworkText: 'להגיש עד יום רביעי' })],
+        timetableDays: [1],
+      }),
+    );
+    const hash = probe.candidates[0].contentHash;
+    (harness.prisma.digestReportedItem.findMany as jest.Mock).mockResolvedValue([
+      {
+        contentHash: hash,
+        confirmedAt: new Date('2026-11-15T13:00:00Z'),
+        claimedAt: new Date('2026-11-15T13:00:00Z'),
+        resolvedDueDate: TOMORROW,
+      },
+    ]);
+
+    const result = await check(harness);
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0].itemId).toBe('hw-defer');
+  });
+
+  it('keeps a deferred item hidden until its deadline comes round', async () => {
+    const harness = makeHarness({
+      homeworkLookback: [homeworkRow({ id: 'hw-defer', homeworkText: 'להגיש עד יום חמישי' })],
+      timetableDays: [1],
+    });
+    const probe = await check(harness);
+    const hash = probe.candidates[0].contentHash;
+
+    const later = makeHarness({
+      homeworkLookback: [homeworkRow({ id: 'hw-defer', homeworkText: 'להגיש עד יום חמישי' })],
+      timetableDays: [1],
+      reported: [
+        {
+          contentHash: hash,
+          confirmedAt: new Date('2026-11-17T12:00:00Z'),
+          claimedAt: new Date('2026-11-17T12:00:00Z'),
+          // Thursday, not tomorrow.
+          resolvedDueDate: new Date('2026-11-19T00:00:00Z'),
+        },
+      ],
+    });
+
+    expect((await check(later)).candidates).toEqual([]);
+  });
+
+  it('still reports homework a teacher entered after the last run of the day', async () => {
+    // lessonDate is yesterday because the teacher filled it in at 20:00, after
+    // the 19:00 run. A today-only window loses it for good: tomorrow's window
+    // is tomorrow, and a plain assignment trips no deadline hint.
+    const harness = makeHarness({
+      homeworkToday: [
+        homeworkRow({
+          id: 'hw-late',
+          homeworkText: 'שאלות על הלוח',
+          lessonDate: new Date('2026-11-16T00:00:00Z'),
+        }),
+      ],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ itemType: 'homework_new', itemId: 'hw-late' });
+  });
+
+  it('bounds how far back it will look for late homework', async () => {
+    const harness = makeHarness({ homeworkToday: [] });
+    await check(harness);
+
+    const where = (harness.prisma.homeworkItem.findMany as jest.Mock).mock.calls[0][0].where;
+    // Three days back, not fourteen: enough for an evening entry and a weekend,
+    // without re-reading the term on every run.
+    expect(where.lessonDate.gte).toEqual(new Date('2026-11-14T00:00:00Z'));
+    expect(where.lessonDate.lt).toEqual(TOMORROW);
+  });
+
+  it('includes items from the whole day a recipient opted in', async () => {
+    // activeFrom is a timestamp (now()), lessonDate is a date at UTC midnight.
+    // Comparing them directly suppressed every homework item on the sign-up
+    // day while still reporting that day's behavior, whose eventAt is later.
+    const harness = makeHarness({ homeworkToday: [homeworkRow()] });
+
+    const result = await harness.service.check({
+      studentGuid: 'stu-1',
+      schoolYear: 2027,
+      now: NOW,
+      activeFrom: new Date('2026-11-17T06:00:00Z'),
+    });
+
+    expect(result.candidates).toHaveLength(1);
   });
 
   it('scopes every item query to the child and school year', async () => {

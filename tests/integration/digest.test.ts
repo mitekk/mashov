@@ -44,6 +44,11 @@ const TIMEZONE = 'Asia/Jerusalem';
 const NOW = new Date();
 const { todayStart } = jerusalemDayBounds(NOW, TIMEZONE);
 
+/** How many times `needle` appears in `haystack`. */
+function occurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
 /** Captures what would have been delivered, so assertions can read the text. */
 class CapturingSender implements DigestSender {
   readonly channel = 'telegram';
@@ -264,25 +269,128 @@ describe('Per-child daily digest', () => {
     }
   });
 
-  it('sends one message when two runners race the same child', async () => {
-    // The unique constraint on digest_reported_item is the only thing holding
-    // this line: RedisService has no SET NX and ADR-0017 forbids durable state
-    // there, so two instances cannot take a lock. Separate service instances,
-    // because the in-process guard only covers one.
+  it('delivers each item exactly once when two runners race the same child', async () => {
+    // The unique constraint plus `claimedBy` is the whole mechanism:
+    // RedisService has no SET NX and ADR-0017 forbids durable state there, so
+    // two instances cannot take a lock. Separate service instances, because the
+    // in-process guard only covers one.
+    //
+    // The guarantee is per *item*, not per message. Each run claims rows,
+    // reads back the ones it actually won, and reports only those -- so an
+    // interleaving where one run wins the behavior row and the other wins the
+    // homework row produces two messages between them, and still tells the
+    // parent each thing exactly once. Asserting "one message" would be
+    // asserting an accident of timing.
     const senderA = new CapturingSender();
     const senderB = new CapturingSender();
 
-    const [resultsA, resultsB] = await Promise.all([
+    await Promise.all([
       makeService(prisma, senderA).runAll({ now: NOW }),
       makeService(prisma, senderB).runAll({ now: NOW }),
     ]);
 
-    const statuses = [...resultsA, ...resultsB]
-      .filter((result) => result.studentGuid === CHILD_WITH_NEWS)
-      .map((result) => result.status);
+    const everythingSent = [...senderA.sent, ...senderB.sent].map((m) => m.text).join('\n');
+    // Counted on the remark and the homework text, not on the event name:
+    // 'איחור' is a substring of 'באיחור' inside the remark, so it occurs twice
+    // in a single correct message.
+    expect(occurrences(everythingSent, 'הגיע באיחור של 10 דקות')).toBe(1);
+    expect(occurrences(everythingSent, 'לפתור עמוד 42')).toBe(1);
 
-    expect(statuses.filter((status) => status === 'sent')).toHaveLength(1);
-    expect(senderA.sent.length + senderB.sent.length).toBe(1);
+    // And every claim ends up owned by nobody and marked delivered.
+    const claims = await prisma.digestReportedItem.findMany({
+      where: { studentGuid: CHILD_WITH_NEWS },
+    });
+    expect(claims).toHaveLength(2);
+    for (const claim of claims) {
+      expect(claim.confirmedAt).not.toBeNull();
+      expect(claim.claimedBy).toBeNull();
+    }
+  });
+
+  it('takes over a claim left behind by a run that died before sending', async () => {
+    // Simulates a container killed between claiming and sending: rows exist,
+    // unconfirmed, older than the staleness window. Without an explicit
+    // takeover these items are stuck forever and every run reports a quiet day.
+    const first = new CapturingSender();
+    const service = makeService(prisma, first);
+
+    // Claim everything, then abandon it.
+    await service.runAll({ now: NOW });
+    await prisma.digestReportedItem.updateMany({
+      where: { studentGuid: CHILD_WITH_NEWS },
+      data: {
+        confirmedAt: null,
+        claimedBy: 'a-run-that-died',
+        claimedAt: new Date(NOW.getTime() - 45 * 60 * 1000),
+      },
+    });
+
+    const second = new CapturingSender();
+    const results = await makeService(prisma, second).runAll({ now: NOW });
+
+    expect(results.find((r) => r.studentGuid === CHILD_WITH_NEWS)?.status).toBe('sent');
+    expect(second.sent).toHaveLength(1);
+  });
+
+  it('defers a deadline that is not tomorrow instead of burying or re-asking', async () => {
+    // The burying case, end to end. A hint-matched homework whose next lesson
+    // is not tomorrow must not be marked fully reported -- that is what would
+    // mean the parent is never warned on the day it really is due. Instead the
+    // resolved date is written to the ledger row, so the model is not asked
+    // again every hour and the checker re-admits the item on that day.
+    const tomorrowDayOfWeek = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000).getUTCDay();
+    // Any school weekday that is not tomorrow. Saturday (Mashov 7) is skipped
+    // because no lesson can ever fall on it.
+    let chosen = (tomorrowDayOfWeek + 2) % 7;
+    if (chosen === 6) chosen = 0;
+    const mashovDay = chosen + 1;
+
+    await prisma.timetableEntry.create({
+      data: {
+        studentGuid: QUIET_CHILD,
+        schoolYear: SCHOOL_YEAR,
+        groupId: 80,
+        day: mashovDay,
+        lesson: 4,
+        groupName: 'היסטוריה 80',
+        subjectName: 'היסטוריה',
+      },
+    });
+
+    await prisma.homeworkItem.create({
+      data: {
+        studentGuid: QUIET_CHILD,
+        schoolYear: SCHOOL_YEAR,
+        lessonId: 6100,
+        groupId: 80,
+        // Old enough to be out of the "newly assigned" window, so it can only
+        // arrive as a due-tomorrow candidate.
+        lessonDate: new Date(todayStart.getTime() - 7 * 24 * 60 * 60 * 1000),
+        lesson: 4,
+        subjectName: 'היסטוריה',
+        homeworkText: 'יש להגיש את העבודה',
+      },
+    });
+
+    const sender = new CapturingSender();
+    // Scoped to this child: the other one has real news in every test, and this
+    // assertion is about what the deferred item does, not about the roster.
+    const results = await makeService(prisma, sender).runAll({
+      now: NOW,
+      studentGuid: QUIET_CHILD,
+    });
+
+    expect(results.find((r) => r.studentGuid === QUIET_CHILD)?.status).toBe('skipped_empty');
+    expect(sender.sent).toHaveLength(0);
+
+    const row = await prisma.digestReportedItem.findFirst({
+      where: { studentGuid: QUIET_CHILD, itemType: 'homework_due' },
+    });
+    expect(row).not.toBeNull();
+    // Deferred, not fully reported: a recorded date is what distinguishes the two.
+    expect(row!.resolvedDueDate).not.toBeNull();
+    expect(row!.confirmedAt).not.toBeNull();
+    expect(row!.claimedBy).toBeNull();
   });
 
   it('re-reports homework whose text a teacher has edited', async () => {

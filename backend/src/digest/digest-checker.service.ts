@@ -13,10 +13,27 @@ import { DigestCandidate, DigestItemType } from './digest.types';
  * item must come back rather than be lost. Long enough that a slow LLM call
  * plus a slow Telegram call cannot trip it.
  */
-const STALE_CLAIM_MS = 30 * 60 * 1000;
+export const STALE_CLAIM_MS = 30 * 60 * 1000;
 
 const DEFAULT_TIMEZONE = 'Asia/Jerusalem';
 const DEFAULT_DUE_LOOKBACK_DAYS = 14;
+
+/**
+ * How far back to look for homework to report as newly assigned.
+ *
+ * Not today-only. Israeli teachers routinely enter homework in the evening,
+ * after the 19:00 run, and `lessonDate` is the lesson's date -- so a
+ * today-only window loses that assignment permanently: tomorrow's window is
+ * tomorrow, and a plain assignment ("שאלות על הלוח") trips no deadline hint
+ * either, so nothing else picks it up. There is no `firstSeenAt` column to key
+ * off, since `updatedAt` is churned by the 12-minute sync upserts.
+ *
+ * Widening is safe because dedup is by content hash: anything already reported
+ * stays reported, and only genuinely unreported late arrivals come through,
+ * bounded further by the recipient's activeFrom. Three days covers an evening
+ * entry plus a weekend.
+ */
+const DEFAULT_NEW_LOOKBACK_DAYS = 3;
 
 export interface DigestCheckInput {
   studentGuid: string;
@@ -81,7 +98,7 @@ export class DigestCheckerService {
 
     const candidates: InternalCandidate[] = [
       ...(await this.behaviorToday(studentGuid, yearScope, todayStart, tomorrowStart)),
-      ...(await this.homeworkAssignedToday(studentGuid, yearScope, todayStart, tomorrowStart)),
+      ...(await this.homeworkAssignedRecently(studentGuid, yearScope, todayStart, tomorrowStart)),
       ...(await this.homeworkDueTomorrow(
         studentGuid,
         schoolYear,
@@ -89,9 +106,20 @@ export class DigestCheckerService {
         todayStart,
         tomorrowStart,
       )),
-    ].filter((candidate) => candidate.itemDate >= activeFrom);
+      // activeFrom is a timestamp (now() when the recipient was created) while
+      // lessonDate is a date at UTC midnight. Comparing them directly
+      // suppressed every homework item on the sign-up day while still
+      // reporting that day's behavior, whose eventAt is later in the day.
+    ].filter(
+      (candidate) => candidate.itemDate >= jerusalemDayBounds(activeFrom, timeZone).todayStart,
+    );
 
-    const unreported = await this.dropAlreadyReported(studentGuid, candidates, now);
+    const unreported = await this.dropAlreadyReported(
+      studentGuid,
+      candidates,
+      now,
+      tomorrowStart,
+    );
 
     return {
       candidates: unreported.map(({ itemDate: _itemDate, ...candidate }) => candidate),
@@ -153,7 +181,7 @@ export class DigestCheckerService {
     }));
   }
 
-  private async homeworkAssignedToday(
+  private async homeworkAssignedRecently(
     studentGuid: string,
     yearScope: ReturnType<typeof schoolYearScope>,
     todayStart: Date,
@@ -163,7 +191,10 @@ export class DigestCheckerService {
       where: {
         studentGuid,
         ...yearScope,
-        lessonDate: { gte: todayStart, lt: tomorrowStart },
+        lessonDate: {
+          gte: daysBefore(todayStart, this.readDays('DIGEST_NEW_LOOKBACK_DAYS', DEFAULT_NEW_LOOKBACK_DAYS)),
+          lt: tomorrowStart,
+        },
       },
       select: HOMEWORK_SELECT,
     })) as HomeworkCandidateRow[];
@@ -192,13 +223,9 @@ export class DigestCheckerService {
     todayStart: Date,
     tomorrowStart: Date,
   ): Promise<InternalCandidate[]> {
-    const lookbackDays = this.readLookbackDays();
-    const lookbackStart = new Date(
-      Date.UTC(
-        todayStart.getUTCFullYear(),
-        todayStart.getUTCMonth(),
-        todayStart.getUTCDate() - lookbackDays,
-      ),
+    const lookbackStart = daysBefore(
+      todayStart,
+      this.readDays('DIGEST_DUE_LOOKBACK_DAYS', DEFAULT_DUE_LOOKBACK_DAYS),
     );
 
     const rows = (await this.prisma.homeworkItem.findMany({
@@ -256,6 +283,7 @@ export class DigestCheckerService {
     studentGuid: string,
     candidates: InternalCandidate[],
     now: Date,
+    tomorrowStart: Date,
   ): Promise<InternalCandidate[]> {
     if (candidates.length === 0) return [];
 
@@ -264,23 +292,25 @@ export class DigestCheckerService {
         studentGuid,
         contentHash: { in: candidates.map((candidate) => candidate.contentHash) },
       },
-      select: { contentHash: true, confirmedAt: true, claimedAt: true },
+      select: {
+        contentHash: true,
+        confirmedAt: true,
+        claimedAt: true,
+        resolvedDueDate: true,
+      },
     });
 
     const staleBefore = new Date(now.getTime() - STALE_CLAIM_MS);
     const spokenFor = new Set(
-      rows
-        .filter((row) => row.confirmedAt !== null || row.claimedAt > staleBefore)
-        .map((row) => row.contentHash),
+      rows.filter((row) => isSpokenFor(row, staleBefore, tomorrowStart)).map((r) => r.contentHash),
     );
 
     return candidates.filter((candidate) => !spokenFor.has(candidate.contentHash));
   }
 
-  private readLookbackDays(): number {
-    const raw = this.config.get<string | number>('DIGEST_DUE_LOOKBACK_DAYS');
-    const parsed = Number(raw);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_DUE_LOOKBACK_DAYS;
+  private readDays(key: string, fallback: number): number {
+    const parsed = Number(this.config.get<string | number>(key));
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 }
 
@@ -318,4 +348,37 @@ function hashHomework(itemType: DigestItemType, row: HomeworkCandidateRow): stri
     row.remark ?? '',
     row.lessonDate.toISOString(),
   ]);
+}
+
+/**
+ * Whether a ledger row means "do not report this again, for now".
+ *
+ * A confirmed row with no `resolvedDueDate` is fully reported. A confirmed row
+ * *with* one was deferred by the orchestrator to that date, and must come back
+ * on the day that date is tomorrow -- otherwise a homework item whose text said
+ * "hand in Thursday" is silently buried on Wednesday, which is exactly the day
+ * the parent needed to hear about it.
+ *
+ * An unconfirmed row belongs to a run that is still working, unless it has sat
+ * there past the staleness window, in which case that run died before sending
+ * and the item has to be picked up again.
+ */
+function isSpokenFor(
+  row: { confirmedAt: Date | null; claimedAt: Date; resolvedDueDate?: Date | null },
+  staleBefore: Date,
+  tomorrowStart: Date,
+): boolean {
+  if (row.confirmedAt !== null) {
+    // Absent and null both mean "not deferred, fully reported".
+    if (!row.resolvedDueDate) return true;
+    return row.resolvedDueDate.getTime() !== tomorrowStart.getTime();
+  }
+  return row.claimedAt > staleBefore;
+}
+
+/** UTC-midnight date `days` before `from`. Date.UTC normalises the underflow. */
+function daysBefore(from: Date, days: number): Date {
+  return new Date(
+    Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() - days),
+  );
 }
