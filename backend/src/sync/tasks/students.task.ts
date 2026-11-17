@@ -39,6 +39,7 @@ export class StudentsTask {
         active: true,
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
+      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
 
     let created = 0;

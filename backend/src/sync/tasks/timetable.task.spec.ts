@@ -66,6 +66,9 @@ describe('TimetableTask', () => {
       } as unknown as PrismaService['timetableEntry'],
       householdConnection: {
         findMany: jest.fn().mockResolvedValue([]),
+        // The shared-session path takes its year from the stored connection,
+        // which is the same year the year-scoped reads use.
+        findFirst: jest.fn().mockResolvedValue({ schoolYear: FALLBACK_YEAR }),
       } as unknown as PrismaService['householdConnection'],
     } as unknown as jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry' | 'householdConnection'>>;
     mockSyncRunService = {

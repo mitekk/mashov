@@ -6,7 +6,7 @@ import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import * as crypto from 'crypto';
-import { calendarSchoolYear } from '../../common/school-year/school-year.service';
+import { currentSchoolYearFor } from '../../common/school-year/school-year.scope';
 
 interface MashovHomework {
   lessonId: number;
@@ -44,6 +44,7 @@ export class HomeworkTask {
         active: true,
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
+      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
 
     const students = await this.prisma.student.findMany({ where: { isActive: true } });
@@ -56,9 +57,11 @@ export class HomeworkTask {
     const useSharedSession = !context.connectionId && connections.length === 0;
 
     // The year the row belongs to. Scoped per student because the connection
-    // that answers is picked per student below; the calendar is the fallback
-    // for the legacy shared-session path, which has no connection at all.
-    const fallbackSchoolYear = calendarSchoolYear(new Date());
+    // that answers is picked per student below; a stored year is the fallback
+    // for the shared-session path, which has no user-owned connection: it
+    // resolves the SAME stored year the year-scoped reads use, so writes and
+    // reads cannot drift apart when the schools API runs ahead of the calendar.
+    const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
 
     for (const student of students) {
       let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;

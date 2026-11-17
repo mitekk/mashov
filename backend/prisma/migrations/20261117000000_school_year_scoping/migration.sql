@@ -58,3 +58,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS "timetable_entry_studentGuid_schoolYear_day_le
 DROP INDEX IF EXISTS "message_board_item_studentGuid_eventId_key";
 CREATE UNIQUE INDEX IF NOT EXISTS "message_board_item_studentGuid_schoolYear_eventId_key"
   ON "message_board_item"("studentGuid", "schoolYear", "eventId");
+
+-- Collapse duplicate household connections.
+--
+-- The connection identity key moved from (schoolCode, schoolYear) to
+-- (schoolCode, username): that is what lets an existing connection advance to
+-- a new year instead of being stranded on the one it was created with. But the
+-- OLD per-year keying is exactly what produced more than one row per
+-- (schoolCode, username) in the first place, and with several of them still
+-- active the sync tasks and the year-scoped reads can settle on different
+-- rows -- so writes land under one year while reads filter on another.
+--
+-- Deactivating, not deleting: the row still holds the encrypted credentials
+-- and the sync history references its id. Keeping the most recently used row
+-- per pair makes `active = true` effectively unique without a constraint that
+-- `prisma db push` would hard-fail the whole boot on. Idempotent -- a second
+-- run finds exactly one active row per pair and changes nothing.
+UPDATE "household_connection" AS stale
+SET "active" = false
+WHERE stale."active" = true
+  AND EXISTS (
+    SELECT 1
+    FROM "household_connection" AS keep
+    WHERE keep."schoolCode" = stale."schoolCode"
+      AND keep."username" = stale."username"
+      AND keep."active" = true
+      AND (
+        COALESCE(keep."lastLoginAt", keep."updatedAt"),
+        keep."updatedAt",
+        keep."id"
+      ) > (
+        COALESCE(stale."lastLoginAt", stale."updatedAt"),
+        stale."updatedAt",
+        stale."id"
+      )
+  );

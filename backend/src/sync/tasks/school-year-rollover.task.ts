@@ -24,11 +24,26 @@ export class SchoolYearRolloverTask implements OnApplicationBootstrap {
     private readonly studentsTask: StudentsTask,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  /**
+   * Deliberately NOT awaited. Nest awaits this hook before `app.listen()`, and
+   * `run()` performs one HTTP GET plus up to three logins per connection, each
+   * bounded only by the 10s upstream timeout. Awaiting it means an unreachable
+   * Mashov keeps `/health` from ever answering, the container is marked
+   * unhealthy, and everything with `depends_on: service_healthy` is blocked.
+   * Boot must not depend on upstream availability.
+   */
+  onApplicationBootstrap(): void {
     if (process.env.NODE_ENV === 'test') {
       return;
     }
-    await this.run();
+
+    const timer = setTimeout(() => {
+      void this.run().catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.error(`School year rollover failed on boot: ${msg}`);
+      });
+    }, 0);
+    timer.unref();
   }
 
   @Cron('0 4 * * *')

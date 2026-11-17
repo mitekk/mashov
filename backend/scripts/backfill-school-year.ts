@@ -29,7 +29,17 @@ import { PrismaClient } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const prisma = new PrismaClient();
+/**
+ * Created on first use, not at import. The pure SQL helpers below are unit
+ * tested, and instantiating the client at module scope made importing them
+ * load the query engine — which is generated for linux-musl in this repo and
+ * so cannot initialise on a developer's machine at all.
+ */
+let prismaInstance: PrismaClient | null = null;
+function db(): PrismaClient {
+  prismaInstance ??= new PrismaClient();
+  return prismaInstance;
+}
 
 const MIGRATION_NAME = '20261117000000_school_year_scoping';
 
@@ -70,7 +80,7 @@ export function parseSqlStatements(sql: string): string[] {
 async function rowCounts(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {};
   for (const table of COUNTED_TABLES) {
-    const result = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+    const result = await db().$queryRawUnsafe<Array<{ count: bigint }>>(
       `SELECT count(*)::bigint AS count FROM "${table}"`,
     );
     counts[table] = Number(result[0]?.count ?? 0);
@@ -96,7 +106,7 @@ async function main() {
 
   for (const statement of statements) {
     try {
-      await prisma.$executeRawUnsafe(statement);
+      await db().$executeRawUnsafe(statement);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('duplicate key value violates unique constraint')) {
@@ -159,28 +169,36 @@ async function main() {
   // has no `_prisma_migrations` table at all, which is production's situation.
   // Letting this throw would exit(1) after the backfill had already succeeded.
   try {
-    await prisma.$executeRaw`
-      INSERT INTO "_prisma_migrations" (id, checksum, finished_at, migration_name, logs, rolled_back_at, started_at, applied_steps_count)
-      VALUES (
-        gen_random_uuid()::text,
-        'manual-school-year-scoping',
-        NOW(),
-        '20261117000000_school_year_scoping',
-        NULL,
-        NULL,
-        NOW(),
-        1
-      )
-      ON CONFLICT (migration_name) DO NOTHING
-    `;
+    await db().$executeRawUnsafe(migrationRecordStatement(MIGRATION_NAME));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `Could not record the migration in _prisma_migrations (this is expected on a db push-managed database): ${msg.split('\n').filter(Boolean).slice(-1)[0]}`,
+      `Could not record the migration in _prisma_migrations: ${msg.split('\n').filter(Boolean).slice(-1)[0]}`,
     );
   }
 
   console.log('School-year backfill complete.');
+}
+
+/**
+ * `_prisma_migrations` has its primary key on `id`, with NO unique constraint
+ * on `migration_name`. `ON CONFLICT (migration_name)` therefore always raises
+ * "there is no unique or exclusion constraint matching the ON CONFLICT
+ * specification" — on a `prisma migrate`-managed database too — so the row was
+ * never written and the swallowed error blamed `db push` for it. A NOT EXISTS
+ * guard is what actually makes the insert idempotent here.
+ */
+export function migrationRecordStatement(migrationName: string): string {
+  const name = migrationName.replace(/'/g, "''");
+  return `
+    INSERT INTO "_prisma_migrations" (
+      id, checksum, finished_at, migration_name, logs, rolled_back_at, started_at, applied_steps_count
+    )
+    SELECT gen_random_uuid()::text, 'manual-school-year-scoping', NOW(), '${name}', NULL, NULL, NOW(), 1
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "_prisma_migrations" WHERE migration_name = '${name}'
+    )
+  `;
 }
 
 // Guarded so the file can be imported for its `parseSqlStatements` parser
@@ -191,5 +209,5 @@ if (require.main === module) {
       console.error('Backfill failed:', err);
       process.exit(1);
     })
-    .finally(() => prisma.$disconnect());
+    .finally(() => prismaInstance?.$disconnect());
 }

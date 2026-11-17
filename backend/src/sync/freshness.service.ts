@@ -136,9 +136,17 @@ export class FreshnessService {
     const yearStart = new Date(Date.UTC(expectedSchoolYear - 1, 8, 1));
     const graceEndsAt = yearStart.getTime() + NEW_YEAR_GRACE_DAYS * MS_PER_DAY;
 
-    const askingForTheWrongYear = observedSchoolYear < expectedSchoolYear;
+    // Inside the grace window a lagging connection year is the CORRECT state,
+    // not a fault: `resolveForSchool` jumps on 1 September while Mashov may not
+    // open the year for weeks, and reconciliation deliberately keeps the
+    // connection on the old year until it does. Degrading the whole dashboard
+    // every September is exactly the false positive the grace exists to avoid.
+    const withinNewYearGrace = Date.now() <= graceEndsAt;
+
+    const askingForTheWrongYear =
+      observedSchoolYear < expectedSchoolYear && !withinNewYearGrace;
     const nothingFromThisYearYet =
-      newestContent < yearStart && Date.now() > graceEndsAt;
+      newestContent < yearStart && !withinNewYearGrace;
 
     const status: ContentFreshnessStatus =
       askingForTheWrongYear || nothingFromThisYearYet ? 'stale_year' : 'current';

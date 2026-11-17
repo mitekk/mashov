@@ -322,6 +322,18 @@ describe('AuthService', () => {
       );
     });
 
+    it('invalidates the cached resolved year when Mashov vetoes it', async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockSchoolYearService.reconcileFromLogin
+        .mockReturnValueOnce({ year: 2026, changed: true })
+        .mockReturnValue({ year: 2026, changed: false });
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockSchoolYearService.invalidate).toHaveBeenCalledWith(482273);
+    });
+
     it('re-logs in once when Mashov reports a different active year', async () => {
       arrangeSuccessfulLogin();
       mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
@@ -477,4 +489,5 @@ describe('AuthService', () => {
       expect(result.connectedSchool).toBeNull();
     });
   });
+
 });

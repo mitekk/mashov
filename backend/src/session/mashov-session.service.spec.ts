@@ -78,7 +78,7 @@ interface Harness {
       create: jest.Mock;
       findMany: jest.Mock;
     };
-    syncRun: { findFirst: jest.Mock };
+    syncRun: { findFirst: jest.Mock; create: jest.Mock };
   };
 }
 
@@ -118,6 +118,7 @@ function makeHarness(
           ? { endedAt: options.lastStudentsRunEndedAt }
           : null,
       ),
+      create: jest.fn().mockResolvedValue({}),
     },
   };
 
@@ -418,6 +419,78 @@ describe('MashovSessionService', () => {
       mockHttp.post.mockRejectedValue(new Error('upstream down'));
 
       await expect(service.ensureStudentsAvailable('user-1')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('login (shared env session)', () => {
+    it('persists the year Mashov confirms, not the candidate it was asked for', async () => {
+      const reconcile = jest.fn(() => ({ year: 2026, changed: true }));
+      const { service, prisma } = makeHarness({ reconcile });
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.login();
+
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYear: 2026 }),
+        }),
+      );
+    });
+
+    it('re-logs in once at the year Mashov confirms', async () => {
+      const reconcile = jest.fn(() => ({ year: 2026, changed: true }));
+      const { service } = makeHarness({ reconcile });
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.login();
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+      expect(mockHttp.post).toHaveBeenLastCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2026 }),
+        expect.anything(),
+      );
+    });
+
+    it('does not re-login when Mashov agrees with the candidate year', async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.login();
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('ensureStudentsAvailable syncRun bookkeeping', () => {
+    it('records a successful students run so the TTL gate is satisfied next time', async () => {
+      const { service, prisma } = makeHarness({ lastStudentsRunEndedAt: null });
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.ensureStudentsAvailable('user-1');
+
+      expect(prisma.syncRun.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            source: 'students',
+            status: 'success',
+            householdConnectionId: 'conn-1',
+          }),
+        }),
+      );
+    });
+
+    it('records a failed students run when the refresh throws', async () => {
+      const { service, prisma } = makeHarness({ lastStudentsRunEndedAt: null });
+      mockHttp.post.mockRejectedValue(new Error('upstream down'));
+
+      await service.ensureStudentsAvailable('user-1');
+
+      expect(prisma.syncRun.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ source: 'students', status: 'failed' }),
+        }),
+      );
     });
   });
 });

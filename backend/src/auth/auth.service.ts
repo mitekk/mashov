@@ -130,6 +130,10 @@ export class AuthService {
         this.logger.warn(
           `Mashov reports active year=${reconciled.year} for semel=${semel}, re-logging in (sent ${year})`,
         );
+        // The resolver caches per semel for 6h. Leaving the vetoed candidate in
+        // the cache makes every sign-in for the rest of that window pay two
+        // full logins against a rate-limited upstream.
+        this.schoolYearService.invalidate(Number(semel));
         try {
           const corrected = await this.postLogin(
             Number(semel),

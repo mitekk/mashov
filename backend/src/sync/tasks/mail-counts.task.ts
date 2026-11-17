@@ -34,6 +34,7 @@ export class MailCountsTask {
         active: true,
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
+      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
     const useSharedSession = !context.connectionId && connections.length === 0;
     const connectionList = useSharedSession ? [null] : connections;

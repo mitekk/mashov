@@ -18,7 +18,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PrismaClient } from '../../backend/node_modules/@prisma/client';
-import { parseSqlStatements } from '../../backend/scripts/backfill-school-year';
+import {
+  parseSqlStatements,
+  migrationRecordStatement,
+} from '../../backend/scripts/backfill-school-year';
 import { SchoolYearRolloverTask } from '../../backend/src/sync/tasks/school-year-rollover.task';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { SchoolYearService } from '../../backend/src/common/school-year/school-year.service';
@@ -255,7 +258,7 @@ describe('School-year scoping & rollover', () => {
     const statements = parseSqlStatements(
       fs.readFileSync(migrationFile(), 'utf-8'),
     );
-    expect(statements).toHaveLength(20);
+    expect(statements).toHaveLength(21);
 
     for (let pass = 0; pass < 2; pass += 1) {
       for (const statement of statements) {
@@ -287,9 +290,11 @@ describe('School-year scoping & rollover', () => {
     // their comments and cuts prose comments mid-sentence.
     const updates = parseSqlStatements(
       fs.readFileSync(migrationFile(), 'utf-8'),
-    ).filter((statement) => statement.toUpperCase().startsWith('UPDATE '));
+    ).filter((statement) => /^UPDATE "\w+" SET "schoolYear"/.test(statement));
 
-    // One per year-scoped table.
+    // One per year-scoped table. Deliberately matched on the year-stamping
+    // shape rather than on "UPDATE", so the connection-dedupe statement in the
+    // same file does not silently become part of this assertion.
     expect(updates).toHaveLength(5);
     for (const statement of updates) {
       await prisma.$executeRawUnsafe(statement);
@@ -299,5 +304,69 @@ describe('School-year scoping & rollover', () => {
     expect(rows).toHaveLength(before);
     expect(rows[0].schoolYear).toBe(2026);
     expect(rows[0].homeworkText).toBe('pre-column row');
+  });
+
+  it('deactivates all but the most recently used duplicate household connection', async () => {
+    // The identity key moved from (schoolCode, schoolYear) to
+    // (schoolCode, username), and the OLD per-year keying is what produced
+    // more than one row per pair. With several active, reads and writes can
+    // settle on different years.
+    const dedupe = parseSqlStatements(fs.readFileSync(migrationFile(), 'utf-8')).filter(
+      (statement) => statement.includes('AS stale'),
+    );
+    expect(dedupe).toHaveLength(1);
+
+    const base = {
+      schoolCode: 999001,
+      username: 'dedupe-parent',
+      encryptedPassword: 'enc',
+      active: true,
+    };
+    const older = await prisma.householdConnection.create({
+      data: { ...base, schoolYear: 2026, lastLoginAt: new Date('2026-01-01T00:00:00Z') },
+    });
+    const newer = await prisma.householdConnection.create({
+      data: { ...base, schoolYear: 2027, lastLoginAt: new Date('2026-11-01T00:00:00Z') },
+    });
+    // A different household must not be touched.
+    const other = await prisma.householdConnection.create({
+      data: { ...base, username: 'other-parent', schoolYear: 2026 },
+    });
+
+    // Run it twice: it executes on every container boot.
+    await prisma.$executeRawUnsafe(dedupe[0]);
+    await prisma.$executeRawUnsafe(dedupe[0]);
+
+    const rows = await prisma.householdConnection.findMany({
+      where: { id: { in: [older.id, newer.id, other.id] } },
+      select: { id: true, active: true },
+    });
+    const activeById = new Map(rows.map((row) => [row.id, row.active]));
+
+    expect(activeById.get(newer.id)).toBe(true);
+    expect(activeById.get(older.id)).toBe(false);
+    expect(activeById.get(other.id)).toBe(true);
+  });
+
+  it('records the migration in _prisma_migrations without an ON CONFLICT clause', async () => {
+    // `_prisma_migrations` has no unique constraint on migration_name, so
+    // ON CONFLICT (migration_name) raises rather than deduplicating. Running
+    // the guarded statement twice must leave exactly one row.
+    await prisma.$executeRawUnsafe(
+      'CREATE TABLE IF NOT EXISTS "_prisma_migrations" (' +
+        'id text PRIMARY KEY, checksum text NOT NULL, finished_at timestamptz, ' +
+        'migration_name text NOT NULL, logs text, rolled_back_at timestamptz, ' +
+        'started_at timestamptz NOT NULL DEFAULT now(), applied_steps_count integer NOT NULL DEFAULT 0)',
+    );
+    await prisma.$executeRawUnsafe('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+
+    const statement = migrationRecordStatement('20261117000000_school_year_scoping');
+    await prisma.$executeRawUnsafe(statement);
+    await prisma.$executeRawUnsafe(statement);
+
+    const rows = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+      `SELECT count(*) AS count FROM "_prisma_migrations" WHERE migration_name = '20261117000000_school_year_scoping'`,
+    );
+    expect(Number(rows[0].count)).toBe(1);
   });
 });

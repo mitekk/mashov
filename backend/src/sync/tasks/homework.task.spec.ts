@@ -54,7 +54,7 @@ describe('HomeworkTask', () => {
   let mashovClient: { get: jest.Mock; getForConnection: jest.Mock };
   let prisma: {
     student: { findMany: jest.Mock };
-    householdConnection: { findMany: jest.Mock };
+    householdConnection: { findMany: jest.Mock; findFirst: jest.Mock };
     homeworkItem: { upsert: jest.Mock };
   };
   let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
@@ -66,7 +66,10 @@ describe('HomeworkTask', () => {
     };
     prisma = {
       student: { findMany: jest.fn().mockResolvedValue([STUDENT]) },
-      householdConnection: { findMany: jest.fn().mockResolvedValue([CONNECTION]) },
+      householdConnection: {
+        findMany: jest.fn().mockResolvedValue([CONNECTION]),
+        findFirst: jest.fn().mockResolvedValue({ schoolYear: 2027 }),
+      },
       homeworkItem: { upsert: jest.fn().mockResolvedValue({}) },
     };
     syncRunService = {
@@ -126,6 +129,32 @@ describe('HomeworkTask', () => {
       'run-1',
       'success',
       expect.objectContaining({ fetchedCount: 1, updatedCount: 1 }),
+    );
+  });
+
+  it('stamps shared-session rows with the stored connection year, not the calendar year', async () => {
+    // The shared-session path has no user-owned connection, but reads are still
+    // scoped to the stored year. Stamping writes from the calendar instead lets
+    // the two diverge whenever the schools API publishes ahead of the calendar,
+    // and the synced rows are then written but never displayed.
+    prisma.householdConnection.findMany.mockResolvedValue([]);
+    prisma.householdConnection.findFirst.mockResolvedValue({ schoolYear: 2028 });
+    mashovClient.get.mockResolvedValue([makeHomework()]);
+
+    await task.execute();
+
+    expect(prisma.homeworkItem.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ schoolYear: 2028 }),
+      }),
+    );
+  });
+
+  it('resolves connections in a deterministic order', async () => {
+    await task.execute();
+
+    expect(prisma.householdConnection.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ orderBy: expect.anything() }),
     );
   });
 });

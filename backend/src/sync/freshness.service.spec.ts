@@ -514,7 +514,12 @@ describe('FreshnessService.computeContentFreshness', () => {
     });
   });
 
-  it('cries stale_year immediately when the connection year itself is behind, grace or not', async () => {
+  it('holds off on stale_year while the grace window is open, even with the year behind', async () => {
+    // Revised: a connection behind the *candidate* year inside the grace window
+    // is the correct state, not a fault. `resolveForSchool` jumps on 1
+    // September while Mashov may not open the year for weeks, and
+    // reconciliation deliberately keeps the connection where Mashov is. The
+    // original expectation here degraded the whole dashboard every September.
     jest.setSystemTime(new Date('2026-09-05T12:00:00Z'));
     const service = build(
       {
@@ -525,7 +530,7 @@ describe('FreshnessService.computeContentFreshness', () => {
     );
 
     await expect(service.computeContentFreshness()).resolves.toMatchObject({
-      status: 'stale_year',
+      status: 'current',
     });
   });
 
@@ -597,5 +602,35 @@ describe('FreshnessService.computeContentFreshness', () => {
 
     const result = await service.computeFreshness();
     expect(result.state).toBe('fresh');
+  });
+
+  it('reports current when the connection year lags inside the new-year grace window', async () => {
+    // 20 September: the new school year has started on the calendar but Mashov
+    // has not opened it yet, so the connection correctly still sits on the old
+    // year. Reporting stale_year here degrades the whole dashboard every
+    // September for no reason the family can act on.
+    jest.setSystemTime(new Date('2026-09-20T00:00:00Z'));
+    const service = build({
+      connection: { schoolCode: 1234, schoolYear: 2026 },
+      newestHomeworkAt: new Date('2026-06-28T00:00:00Z'),
+    });
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      expectedSchoolYear: 2027,
+      observedSchoolYear: 2026,
+      status: 'current',
+    });
+  });
+
+  it('reports stale_year once the new-year grace window has closed', async () => {
+    jest.setSystemTime(new Date('2026-10-20T00:00:00Z'));
+    const service = build({
+      connection: { schoolCode: 1234, schoolYear: 2026 },
+      newestHomeworkAt: new Date('2026-06-28T00:00:00Z'),
+    });
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'stale_year',
+    });
   });
 });

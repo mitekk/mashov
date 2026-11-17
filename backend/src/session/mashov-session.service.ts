@@ -149,52 +149,47 @@ export class MashovSessionService {
       );
     }
 
-    const year = (await this.schoolYearService.resolveForSchool(Number(semel))).year;
+    const candidate = (await this.schoolYearService.resolveForSchool(Number(semel))).year;
 
     const stored = await this.prisma.householdConnection.findFirst({
       where: { schoolCode: Number(semel), username },
+      orderBy: [{ lastLoginAt: "desc" }, { updatedAt: "desc" }],
       select: { mashovUniqueId: true },
     });
     const storedUniqueId = stored?.mashovUniqueId ?? null;
 
-    const loginBody = {
-      semel: Number(semel),
-      year: Number(year),
+    let year = candidate;
+    let response = await this.postSharedLogin(
+      Number(semel),
+      year,
       username,
       password,
-      IsBiometric: false,
-      appName: "info.mashov.students",
-      apiVersion: "3.20210425",
-      appVersion: 3.20210425,
-      appBuild: 3.20210425,
-      deviceUuid: "chrome",
-      devicePlatform: "chrome",
-      deviceManufacturer: "mac",
-      deviceModel: "desktop",
-      deviceVersion: "145.0.0.0",
-    };
-
-    const extraHeaders: Record<string, string> = {};
-    if (storedUniqueId) {
-      extraHeaders["Cookie"] = `uniquId=${storedUniqueId}`;
-    }
-
-    const response: AxiosResponse<LoginResponse> = await this.httpClient.post(
-      "/api/login",
-      loginBody,
-      {
-        headers: {
-          "X-Csrf-Token": csrfToken,
-          "Content-Type": "application/json",
-          Referer: `${this.baseUrl}/students/login`,
-          "sec-ch-ua-platform": '"macOS"',
-          "sec-ch-ua":
-            '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-          "sec-ch-ua-mobile": "?0",
-          ...extraHeaders,
-        },
-      },
+      storedUniqueId,
+      csrfToken,
     );
+
+    // Phase 2 applies on this path too. Without it the shared session persists
+    // the *candidate* year, so on 1 September it stamps the connection with a
+    // year Mashov is not serving yet: every year-scoped read then filters on
+    // that year and finds nothing, and it silently overwrites a year that
+    // `refreshRosterForConnection` had already corrected. Capped at one retry,
+    // because the session cookies are year-scoped.
+    const reconciled = this.schoolYearService.reconcileFromLogin(year, response.data);
+    if (reconciled.changed) {
+      this.logger.warn(
+        `Mashov reports active year=${reconciled.year} for semel=${semel} (sent ${year}); re-logging in`,
+      );
+      this.schoolYearService.invalidate(Number(semel));
+      year = reconciled.year;
+      response = await this.postSharedLogin(
+        Number(semel),
+        year,
+        username,
+        password,
+        storedUniqueId,
+        csrfToken,
+      );
+    }
 
     this.extractAndStoreCookies(
       response.headers as Record<string, string | string[]>,
@@ -217,6 +212,54 @@ export class MashovSessionService {
     }
 
     this.logger.log("Mashov session established successfully");
+  }
+
+  /**
+   * One shared-session `POST /api/login`. Extracted so the year Mashov vetoes
+   * can be retried exactly once without duplicating the body.
+   */
+  private async postSharedLogin(
+    semel: number,
+    year: number,
+    username: string,
+    password: string,
+    storedUniqueId: string | null,
+    csrfToken: string,
+  ): Promise<AxiosResponse<LoginResponse>> {
+    const loginBody = {
+      semel,
+      year: Number(year),
+      username,
+      password,
+      IsBiometric: false,
+      appName: "info.mashov.students",
+      apiVersion: "3.20210425",
+      appVersion: 3.20210425,
+      appBuild: 3.20210425,
+      deviceUuid: "chrome",
+      devicePlatform: "chrome",
+      deviceManufacturer: "mac",
+      deviceModel: "desktop",
+      deviceVersion: "145.0.0.0",
+    };
+
+    const extraHeaders: Record<string, string> = {};
+    if (storedUniqueId) {
+      extraHeaders["Cookie"] = `uniquId=${storedUniqueId}`;
+    }
+
+    return this.httpClient.post("/api/login", loginBody, {
+      headers: {
+        "X-Csrf-Token": csrfToken,
+        "Content-Type": "application/json",
+        Referer: `${this.baseUrl}/students/login`,
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-ch-ua":
+          '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+        "sec-ch-ua-mobile": "?0",
+        ...extraHeaders,
+      },
+    });
   }
 
   private extractAndStoreCookies(
@@ -327,14 +370,22 @@ export class MashovSessionService {
       return existing;
     }
 
+    // The TTL gate above reads `syncRun` rows under `students`, but this path
+    // is not `StudentsTask` and so opened none of its own. Without recording
+    // one, a failing roster cron leaves the gate permanently unsatisfied and
+    // every request that reaches here performs a full upstream login — an
+    // unbounded login amplifier on the request path.
+    const startedAt = new Date();
     const refresh = (
       connection
         ? this.refreshRosterForConnection(connection.id).then(() => undefined)
         : this.ensureAuthenticated(true)
     )
-      .catch((error) => {
+      .then(() => this.recordRosterRun(connection?.id ?? null, startedAt, null))
+      .catch(async (error) => {
         const msg = error instanceof Error ? error.message : String(error);
         this.logger.error(`Failed to refresh student roster: ${msg}`);
+        await this.recordRosterRun(connection?.id ?? null, startedAt, msg);
       })
       .finally(() => {
         this.inFlightRosterRefresh.delete(dedupeKey);
@@ -342,6 +393,35 @@ export class MashovSessionService {
 
     this.inFlightRosterRefresh.set(dedupeKey, refresh);
     return refresh;
+  }
+
+  /**
+   * Records the self-heal roster refresh as a `students` sync run. Written
+   * with Prisma directly rather than through `SyncRunService`, which lives in
+   * `SyncModule` — and `SyncModule` already imports this one, so injecting it
+   * would close an import cycle.
+   */
+  private async recordRosterRun(
+    connectionId: string | null,
+    startedAt: Date,
+    errorMessage: string | null,
+  ): Promise<void> {
+    try {
+      await this.prisma.syncRun.create({
+        data: {
+          source: STUDENTS_SOURCE,
+          status: errorMessage ? "failed" : "success",
+          startedAt,
+          endedAt: new Date(),
+          errorMessage,
+          householdConnectionId: connectionId,
+        },
+      });
+    } catch (error) {
+      // Bookkeeping must never fail the self-heal it is recording.
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Could not record the students sync run: ${msg}`);
+    }
   }
 
   /**
