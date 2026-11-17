@@ -18,6 +18,9 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
 
 function makeMockFreshnessService(overrides: Partial<Record<string, jest.Mock>>) {
   return {
+    loadSyncRuns:
+      overrides.loadSyncRuns ??
+      jest.fn().mockResolvedValue({ allRuns: new Map(), successRuns: new Map() }),
     getAllSourceHealth:
       overrides.getAllSourceHealth ?? jest.fn().mockResolvedValue([]),
     computeFreshness:
@@ -122,6 +125,48 @@ describe('SettingsService', () => {
 
       const result = await service.getProfile();
       expect(result).toBeNull();
+    });
+  });
+
+  describe('getSourceHealth connection use', () => {
+    // Each of these maps was formerly fetched twice -- once here and again
+    // inside computeFreshness -- so one response made four full reads of an
+    // unbounded table, held four pool connections, and timed out the request.
+    it('loads the sync_run maps once and shares them with both reads', async () => {
+      const loadSyncRuns = jest
+        .fn()
+        .mockResolvedValue({ allRuns: new Map(), successRuns: new Map() });
+      const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const computeFreshness = jest.fn().mockResolvedValue({
+        state: 'fresh',
+        lastSyncAt: null,
+        staleSources: [],
+        contentFreshness: {
+          expectedSchoolYear: 2027,
+          observedSchoolYear: 2027,
+          newestContentAt: null,
+          contentAgeDays: null,
+          status: 'no_content',
+        },
+      });
+
+      const service = new SettingsService(
+        makeMockPrisma({
+          studentFindMany: jest.fn().mockResolvedValue([{ studentGuid: 'guid-1' }]),
+        }),
+        makeMockFreshnessService({
+          loadSyncRuns,
+          getAllSourceHealth,
+          computeFreshness,
+        }) as never,
+      );
+
+      await service.getSourceHealth();
+
+      expect(loadSyncRuns).toHaveBeenCalledTimes(1);
+      const snapshot = await loadSyncRuns.mock.results[0].value;
+      expect(getAllSourceHealth).toHaveBeenCalledWith(['guid-1'], snapshot);
+      expect(computeFreshness).toHaveBeenCalledWith(snapshot);
     });
   });
 });

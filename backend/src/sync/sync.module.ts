@@ -6,6 +6,7 @@ import { SchoolYearModule } from '../common/school-year/school-year.module';
 import { SyncRunService } from './sync-run.service';
 import { BehaviorClassifierService } from './behavior-classifier.service';
 import { FreshnessService } from './freshness.service';
+import { SyncRunRetentionService } from './sync-run-retention.service';
 import { SyncService } from './sync.service';
 import { SyncController } from './sync.controller';
 import { NotificationsTask } from './tasks/notifications.task';
@@ -26,12 +27,14 @@ import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
 import { SchoolYearRolloverTask } from './tasks/school-year-rollover.task';
 import { HistoryBackfillTask } from './tasks/history-backfill.task';
+import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
 
 @Module({
   imports: [ConfigModule, PrismaModule, MashovSessionModule, SchoolYearModule],
   controllers: [SyncController],
   providers: [
     SyncRunService,
+    SyncRunRetentionService,
     BehaviorClassifierService,
     FreshnessService,
     SyncService,
@@ -53,7 +56,14 @@ import { HistoryBackfillTask } from './tasks/history-backfill.task';
     StudentsTask,
     SchoolYearRolloverTask,
     HistoryBackfillTask,
+    SyncRunRetentionTask,
   ],
-  exports: [SyncRunService, BehaviorClassifierService, FreshnessService, SyncService],
+  exports: [
+    SyncRunService,
+    SyncRunRetentionService,
+    BehaviorClassifierService,
+    FreshnessService,
+    SyncService,
+  ],
 })
 export class SyncModule {}

@@ -23,6 +23,7 @@ function makeMockPrisma(overrides: Partial<{
   syncRunUpdate: jest.Mock;
   syncRunFindFirst: jest.Mock;
   syncRunFindMany: jest.Mock;
+  queryRaw: jest.Mock;
 }>): jest.Mocked<PrismaService> {
   return {
     syncRun: {
@@ -31,7 +32,14 @@ function makeMockPrisma(overrides: Partial<{
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
       findMany: overrides.syncRunFindMany ?? jest.fn().mockResolvedValue([]),
     },
+    $queryRaw: overrides.queryRaw ?? jest.fn().mockResolvedValue([]),
   } as unknown as jest.Mocked<PrismaService>;
+}
+
+/** The SQL text of a tagged-template $queryRaw call, whitespace-collapsed. */
+function sqlOf(mock: jest.Mock): string {
+  const strings = mock.mock.calls[0][0] as string[];
+  return strings.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 describe('SyncRunService', () => {
@@ -139,45 +147,81 @@ describe('SyncRunService', () => {
   describe('getAllSourceHealth', () => {
     it('returns an empty Map when there are no sync runs', async () => {
       const service = new SyncRunService(
-        makeMockPrisma({ syncRunFindMany: jest.fn().mockResolvedValue([]) }),
+        makeMockPrisma({ queryRaw: jest.fn().mockResolvedValue([]) }),
       );
 
       const result = await service.getAllSourceHealth();
       expect(result.size).toBe(0);
     });
 
-    it('returns only the latest run per source (deduplication by source)', async () => {
+    it('keys the latest run per source', async () => {
       const runs = [
-        makeSyncRun({ id: 'run-2', source: 'notifications', status: 'success', startedAt: new Date('2026-03-11T10:00:00Z') }),
-        makeSyncRun({ id: 'run-1', source: 'notifications', status: 'failed', startedAt: new Date('2026-03-11T09:00:00Z') }),
-        makeSyncRun({ id: 'run-3', source: 'mail_inbox', status: 'success', startedAt: new Date('2026-03-11T10:00:00Z') }),
+        makeSyncRun({ id: 'run-2', source: 'notifications', status: 'success' }),
+        makeSyncRun({ id: 'run-3', source: 'mail_inbox', status: 'success' }),
       ];
-
       const service = new SyncRunService(
-        makeMockPrisma({ syncRunFindMany: jest.fn().mockResolvedValue(runs) }),
+        makeMockPrisma({ queryRaw: jest.fn().mockResolvedValue(runs) }),
       );
 
       const result = await service.getAllSourceHealth();
       expect(result.size).toBe(2);
-      // First occurrence in the ordered array wins
       expect(result.get('notifications')?.id).toBe('run-2');
+    });
+
+    // The regression this method exists to prevent: sync_run grows without
+    // bound, so the dedup must happen in the database, not over every row.
+    it('bounds the result set in SQL rather than loading the table', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(
+        makeMockPrisma({ queryRaw, syncRunFindMany: findMany }),
+      );
+
+      await service.getAllSourceHealth();
+
+      expect(findMany).not.toHaveBeenCalled();
+      expect(sqlOf(queryRaw)).toContain('DISTINCT ON (source)');
     });
   });
 
   describe('getLatestSuccessfulRuns', () => {
-    it('returns only successful runs, deduplicated by source', async () => {
+    it('keys the latest successful run per source', async () => {
       const runs = [
-        makeSyncRun({ id: 'run-2', source: 'notifications', status: 'success', endedAt: new Date('2026-03-11T10:00:00Z') }),
-        makeSyncRun({ id: 'run-1', source: 'notifications', status: 'success', endedAt: new Date('2026-03-10T10:00:00Z') }),
+        makeSyncRun({ id: 'run-2', source: 'notifications', status: 'success', endedAt: new Date() }),
       ];
-
       const service = new SyncRunService(
-        makeMockPrisma({ syncRunFindMany: jest.fn().mockResolvedValue(runs) }),
+        makeMockPrisma({ queryRaw: jest.fn().mockResolvedValue(runs) }),
       );
 
       const result = await service.getLatestSuccessfulRuns();
       expect(result.size).toBe(1);
       expect(result.get('notifications')?.id).toBe('run-2');
+    });
+
+    it('bounds the result set in SQL and filters to successful runs', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const findMany = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(
+        makeMockPrisma({ queryRaw, syncRunFindMany: findMany }),
+      );
+
+      await service.getLatestSuccessfulRuns();
+
+      expect(findMany).not.toHaveBeenCalled();
+      const sql = sqlOf(queryRaw);
+      expect(sql).toContain('DISTINCT ON (source)');
+      expect(sql).toContain("status = 'success'");
+    });
+
+    // A running row carries endedAt=null; DESC defaults to NULLS FIRST, which
+    // would hide the newest usable run behind it.
+    it('orders endedAt NULLS LAST so an unfinished run cannot win', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(makeMockPrisma({ queryRaw }));
+
+      await service.getLatestSuccessfulRuns();
+
+      expect(sqlOf(queryRaw)).toContain('"endedAt" DESC NULLS LAST');
     });
   });
 });

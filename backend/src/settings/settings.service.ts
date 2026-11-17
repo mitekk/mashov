@@ -17,9 +17,13 @@ export class SettingsService {
       })
     ).map((student) => student.studentGuid);
 
+    // One load of the sync_run maps, shared by both reads below. Fetching them
+    // per call meant four round trips for this one response.
+    const snapshot = await this.freshnessService.loadSyncRuns();
+
     const [sources, freshness] = await Promise.all([
-      this.freshnessService.getAllSourceHealth(studentGuids),
-      this.freshnessService.computeFreshness(),
+      this.freshnessService.getAllSourceHealth(studentGuids, snapshot),
+      this.freshnessService.computeFreshness(snapshot),
     ]);
 
     return {

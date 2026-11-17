@@ -60,6 +60,19 @@ export interface ContentFreshness {
   status: ContentFreshnessStatus;
 }
 
+/**
+ * The two per-source maps every freshness read needs.
+ *
+ * Exists so one HTTP request loads them once. `getSourceHealth` used to call
+ * `getAllSourceHealth` and `computeFreshness` in parallel, and the latter
+ * fetched both maps again -- four database round trips, each formerly a full
+ * scan of an unbounded table, for one response.
+ */
+export interface SyncRunSnapshot {
+  allRuns: Map<string, SyncRun>;
+  successRuns: Map<string, SyncRun>;
+}
+
 export interface SourceHealth {
   source: string;
   status: 'fresh' | 'stale' | 'failed' | 'never_synced';
@@ -77,6 +90,15 @@ export class FreshnessService {
     private readonly prisma: PrismaService,
     private readonly schoolYearService: SchoolYearService,
   ) {}
+
+  /** Loads both per-source maps once, for callers that need more than one read. */
+  async loadSyncRuns(): Promise<SyncRunSnapshot> {
+    const [allRuns, successRuns] = await Promise.all([
+      this.syncRunService.getAllSourceHealth(),
+      this.syncRunService.getLatestSuccessfulRuns(),
+    ]);
+    return { allRuns, successRuns };
+  }
 
   /**
    * Measures the age of the *content*, not of the sync.
@@ -160,14 +182,13 @@ export class FreshnessService {
     };
   }
 
-  async computeFreshness(): Promise<{
+  async computeFreshness(snapshot?: SyncRunSnapshot): Promise<{
     state: FreshnessState;
     lastSyncAt: string | null;
     staleSources: string[];
     contentFreshness: ContentFreshness;
   }> {
-    const successRuns = await this.syncRunService.getLatestSuccessfulRuns();
-    const allRuns = await this.syncRunService.getAllSourceHealth();
+    const { successRuns, allRuns } = snapshot ?? (await this.loadSyncRuns());
     const contentFreshness = await this.computeContentFreshness();
     const now = new Date();
 
@@ -254,9 +275,11 @@ export class FreshnessService {
     };
   }
 
-  async getAllSourceHealth(studentGuids: string[]): Promise<SourceHealth[]> {
-    const allRuns = await this.syncRunService.getAllSourceHealth();
-    const successRuns = await this.syncRunService.getLatestSuccessfulRuns();
+  async getAllSourceHealth(
+    studentGuids: string[],
+    snapshot?: SyncRunSnapshot,
+  ): Promise<SourceHealth[]> {
+    const { allRuns, successRuns } = snapshot ?? (await this.loadSyncRuns());
     const now = new Date();
     const results: SourceHealth[] = [];
 

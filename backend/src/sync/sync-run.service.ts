@@ -51,32 +51,44 @@ export class SyncRunService {
     });
   }
 
+  /**
+   * The latest run per source, resolved in the database.
+   *
+   * This and `getLatestSuccessfulRuns` below used to `findMany()` the entire
+   * table and dedupe in JS. `sync_run` has no upper bound -- the crons in
+   * ./tasks open roughly 1,600 rows a day between them, several of those per
+   * student -- and `SettingsService.getSourceHealth` triggered four such loads
+   * per request. That is what pushed `GET /api/v1/settings/source-health` past
+   * the frontend proxy's 15s budget and, by blocking the event loop while it
+   * materialised every row, dragged neighbouring requests over it too.
+   *
+   * `DISTINCT ON` returns one row per source, so the result set is now the
+   * number of sources rather than the size of the table.
+   */
   async getAllSourceHealth(): Promise<Map<string, SyncRun>> {
-    const runs = await this.prisma.syncRun.findMany({
-      orderBy: { startedAt: 'desc' },
-    });
-
-    const latest = new Map<string, SyncRun>();
-    for (const run of runs) {
-      if (!latest.has(run.source)) {
-        latest.set(run.source, run);
-      }
-    }
-    return latest;
+    const runs = await this.prisma.$queryRaw<SyncRun[]>`
+      SELECT DISTINCT ON (source) *
+      FROM sync_run
+      ORDER BY source, "startedAt" DESC
+    `;
+    return new Map(runs.map((run) => [run.source, run]));
   }
 
+  /**
+   * `NULLS LAST` is deliberate, and a behaviour fix rather than a port.
+   *
+   * Postgres sorts DESC with NULLS FIRST, so the old `orderBy: { endedAt:
+   * 'desc' }` preferred a `success` row whose `endedAt` was still null -- and
+   * every consumer then skipped it (`if (!run?.endedAt) continue`), reporting
+   * the source as never synced while a perfectly good older run sat behind it.
+   */
   async getLatestSuccessfulRuns(): Promise<Map<string, SyncRun>> {
-    const runs = await this.prisma.syncRun.findMany({
-      where: { status: 'success' },
-      orderBy: { endedAt: 'desc' },
-    });
-
-    const latest = new Map<string, SyncRun>();
-    for (const run of runs) {
-      if (!latest.has(run.source)) {
-        latest.set(run.source, run);
-      }
-    }
-    return latest;
+    const runs = await this.prisma.$queryRaw<SyncRun[]>`
+      SELECT DISTINCT ON (source) *
+      FROM sync_run
+      WHERE status = 'success'
+      ORDER BY source, "endedAt" DESC NULLS LAST
+    `;
+    return new Map(runs.map((run) => [run.source, run]));
   }
 }

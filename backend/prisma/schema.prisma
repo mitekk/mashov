@@ -290,6 +290,9 @@ model SyncRun {
   // FreshnessService.getAllSourceHealth() table-scanned this; it had no index at
   // all and grows without bound.
   @@index([source, startedAt])
+  // getLatestSuccessfulRuns() filters on status and orders by endedAt, which
+  // the index above cannot serve.
+  @@index([status, endedAt])
   @@map("sync_run")
 }
 
