@@ -39,9 +39,21 @@ candidates *in*, and the model narrows them again afterwards. Over-collecting is
 dedup is by content hash; under-collecting would be invisible.
 
 **The label is the whole point.** The report says `צפי הגשה` ("estimated submission"), never
-`תאריך הגשה` ("due date"), and a section carrying an estimate is followed by a caveat stating
-outright that Mashov supplies no due date and how the estimate was derived. The template owns
-that string, so no model output can reword it.
+`תאריך הגשה` ("due date"). The template owns that string, so no model output can reword it.
+
+A standing caveat used to follow any section carrying an estimate, stating outright that Mashov
+supplies no due date and how the estimate was derived. **It has been removed.** It ran to a full
+line, repeated verbatim in every message, and said the same thing every day — in a short
+Telegram message it read as boilerplate, which is how a disclaimer stops being read at all. The
+honesty now rests entirely on the `צפי` label in front of the date, plus the system prompt's
+standing instruction never to promise a submission date.
+
+That is a deliberate reduction in how loudly this departure is disclosed, and it is worth being
+clear about the exposure: a parent who never reads the label could take `צפי הגשה: 18/11/2026`
+for a date the school published. The word `צפי` ("estimate"/"forecast") is doing that work on its
+own. If a parent ever acts on one of these as though it were official, the caveat is the first
+thing to bring back — or, better, a one-time explanation when a recipient is first added, which
+is read once rather than skipped daily.
 
 It originally lived on each item bullet. The bullets were later removed — they repeated, line for
 line, the facts the prose above them already gave, which made the message read like a record
@@ -49,8 +61,7 @@ rather than something written to a person. The label did **not** move into the p
 it is appended by the template to the section's line as `(צפי הגשה: DD/MM/YYYY)`, because this is
 the one factual claim in the report that a model must not be trusted to carry. The date is safe
 to state once there because narrowing has already reduced the section to items whose estimate is
-tomorrow. A unit test asserts that the section line never contains the due-date phrasing, scoped
-to that line because the caveat beneath it uses the phrase precisely to deny it.
+tomorrow. A unit test asserts that the section line never contains the due-date phrasing.
 
 ## Consequences
 

@@ -125,7 +125,10 @@ describe('renderReport', () => {
     expect(sectionLine).not.toContain('תאריך הגשה');
   });
 
-  it('carries a standing caveat whenever an estimate is shown', () => {
+  it('carries no standing caveat under an estimate', () => {
+    // The explanatory sentence was removed: it ran to a full line, repeated
+    // every day, and said the same thing in every message. The `צפי` label on
+    // the date is what marks the date as derived now -- see ADR-0026.
     const text = renderReport(
       makePayload({
         homeworkDueTomorrow: [
@@ -135,9 +138,10 @@ describe('renderReport', () => {
       LINES,
     );
 
-    expect(text).toContain('צפי בלבד');
-    // The caveat states outright that Mashov supplies no due date.
-    expect(text).toContain('אינו מספק תאריך הגשה');
+    expect(text).not.toContain('צפי בלבד');
+    expect(text).not.toContain('אינו מספק תאריך הגשה');
+    // What remains, and must: the word "צפי" in front of the date.
+    expect(text).toContain('צפי הגשה: 18/11/2026');
   });
 
   it('does not show a caveat when no estimate is in the report', () => {
@@ -322,10 +326,11 @@ describe('renderReport without item bullets', () => {
     expect(text).toContain('צפי הגשה: 18/11/2026');
   });
 
-  it('keeps the standing caveat whenever an estimate is shown', () => {
+  it('ends on the last section, with no trailing explanatory line', () => {
     const text = renderReport(FULL, LINES);
 
-    expect(text).toContain('צפי בלבד');
+    expect(text.trimEnd().endsWith('.)')).toBe(false);
+    expect(text).not.toContain('צפי בלבד');
   });
 
   it('no longer repeats the child name through the release remark', () => {

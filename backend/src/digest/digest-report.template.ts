@@ -11,7 +11,7 @@ import {
  * The fixed Hebrew report.
  *
  * The template owns every structural decision -- which sections exist, which
- * appear, the estimate label and its caveat -- and the prose inside them is
+ * appear, and the estimate label -- and the prose inside them is
  * written per section. Hand it `deterministicLines(payload)` instead and the
  * same message renders with no model involved at all.
  *
@@ -23,9 +23,6 @@ import {
  * rather than counts, and why `DigestService.linesFor` refuses a blank line
  * for a section that has items.
  */
-
-const CAVEAT =
-  'המועד הוא צפי בלבד: מאשוב אינו מספק תאריך הגשה, והצפי מחושב לפי השיעור הבא או לפי מה שנכתב במטלה.';
 
 /** Israeli date order, read from UTC fields -- every digest date is UTC midnight. */
 export function formatSchoolDate(date: Date): string {
@@ -68,7 +65,9 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
   }
 
   if (payload.homeworkDueTomorrow.length > 0) {
-    // The one fact the model is not trusted to carry. ADR-0026 is a promise
+    // The one fact the model is not trusted to carry, and now the *only* thing
+    // marking this date as derived: the explanatory caveat that used to follow
+    // the section was removed as a daily wall of text. ADR-0026 is a promise
     // that a derived deadline is always labelled as derived, so the label and
     // the date are appended by the template rather than hoped for in the prose
     // -- and the date is safe to state once, because narrowing has already
@@ -76,7 +75,6 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
     const estimate = payload.homeworkDueTomorrow[0].estimatedDueDate;
     const label = estimate ? `צפי הגשה: ${formatSchoolDate(estimate)}` : 'צפי הגשה: מחר';
     blocks.push(section('צפי הגשה למחר', `${lines.dueTomorrowLine.trim()} (${label})`.trim()));
-    blocks.push(CAVEAT);
   }
 
   return blocks.filter((block) => block.length > 0).join('\n\n');

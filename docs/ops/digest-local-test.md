@@ -94,8 +94,10 @@ docker compose exec -T db psql -U postgres -d mashov -At \
 
 Check, specifically:
 
-- the deadline line reads `צפי הגשה`, never `תאריך הגשה`, and the standing
-  caveat is present;
+- the deadline line reads `צפי הגשה`, never `תאריך הגשה` — that label is now
+  the only thing marking the date as derived (ADR-0026);
+- every section says what actually happened, since there is no item list under
+  the prose to fall back on;
 - no family name, no GUID, no teacher name anywhere in the text;
 - dates render `DD/MM/YYYY`.
 
