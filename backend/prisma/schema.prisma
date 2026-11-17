@@ -17,6 +17,10 @@ model HouseholdConnection {
   upstreamUserId   String?
   cachedNewCount   Int       @default(0)
   mashovUniqueId   String?
+  /// accessToken.userSchoolYears from the last login: the years this household
+  /// actually has records for. Json rather than Int[] to match every other
+  /// list in this schema and to stay additive for `prisma db push`.
+  schoolYears      Json      @default("[]")
   lastLoginAt      DateTime?
   active           Boolean   @default(true)
   userId           String?

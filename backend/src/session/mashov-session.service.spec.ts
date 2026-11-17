@@ -462,6 +462,56 @@ describe('MashovSessionService', () => {
     });
   });
 
+  describe('enrolled school years', () => {
+    it('persists the enrolled school years from the login body', async () => {
+      // The backfill needs to know which years a child actually has, or it
+      // spends a login per year on years with no records at all.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(
+        loginPayload([CHILD], { userSchoolYears: [2025, 2026, 2027] }),
+      );
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'conn-1' },
+          data: expect.objectContaining({ schoolYears: [2025, 2026, 2027] }),
+        }),
+      );
+    });
+
+    it('leaves the enrolled years untouched when the login omits them', async () => {
+      // Overwriting with [] would make the backfill skip every year rather
+      // than fall back to the capped window.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYears: expect.anything() }),
+        }),
+      );
+    });
+
+    it('ignores a non-numeric entry rather than writing it', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(
+        loginPayload([CHILD], { userSchoolYears: [2026, 'nope', null, 2027] }),
+      );
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYears: [2026, 2027] }),
+        }),
+      );
+    });
+  });
+
   describe('per-year session cache', () => {
     it('does not reuse a session cached for a different year on the same connection', async () => {
       // The backfill and the live crons hold one connection between them. A

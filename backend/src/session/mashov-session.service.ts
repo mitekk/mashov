@@ -653,6 +653,20 @@ export class MashovSessionService {
       .filter((guid): guid is string => Boolean(guid));
   }
 
+  /**
+   * The years this household has records for, or null when the login did not
+   * say. `apis/post-api-login.md` documents the field as always present, but
+   * an empty or junk array is treated as "did not say" rather than "none".
+   */
+  private enrolledSchoolYears(data: LoginResponse): number[] | null {
+    const raw = data.accessToken?.userSchoolYears;
+    if (!Array.isArray(raw)) return null;
+    const years = raw
+      .map((entry) => Number(entry))
+      .filter((year) => Number.isInteger(year) && year > 0);
+    return years.length > 0 ? years : null;
+  }
+
   private async parseAndPersistHousehold(
     data: LoginResponse,
     semel: number,
@@ -663,6 +677,7 @@ export class MashovSessionService {
     const schoolSettings = data.accessToken?.schoolSettings;
     const credential = data.credential;
     const encryptedPassword = this.encryptionService.encrypt(password);
+    const enrolledYears = this.enrolledSchoolYears(data);
 
     const existing = await this.prisma.householdConnection.findFirst({
       where: { schoolCode: semel, username },
@@ -679,6 +694,7 @@ export class MashovSessionService {
           upstreamUserId: credential?.userId,
           lastLoginAt: new Date(),
           active: true,
+          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
         },
       });
     } else {
@@ -692,6 +708,7 @@ export class MashovSessionService {
           upstreamUserId: credential?.userId,
           lastLoginAt: new Date(),
           active: true,
+          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
         },
       });
     }
@@ -855,9 +872,16 @@ export class MashovSessionService {
     }
 
     if (connectionId && parsed.uniquId) {
+      const enrolledYears = this.enrolledSchoolYears(response.data);
       await this.prisma.householdConnection.update({
         where: { id: connectionId },
-        data: { mashovUniqueId: parsed.uniquId },
+        data: {
+          mashovUniqueId: parsed.uniquId,
+          // Only when Mashov actually sent them: writing [] over a known list
+          // would make the backfill skip every year instead of falling back to
+          // the capped window.
+          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
+        },
       });
     }
 
