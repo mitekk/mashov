@@ -1,29 +1,37 @@
 /**
  * The single definition of "unread" for a mail conversation.
  *
- * Mashov exposes two read-state flags and they do not agree. The
- * conversation-level `isNew` is sticky: `apis/get-api-mail-inbox-conversations.md`
- * captures a conversation flagged `isNew: true` whose only message is
- * `isNew: false`, which is impossible under the documented meaning ("whether the
- * conversation has unread messages"). Storing that flag as `isUnread` is what made
- * the local unread count read more than twice Mashov's own `unreadConversations`,
- * and because the inbox list's `new` filter shares the predicate, it inflated the
- * list as well.
+ * ## What the production data showed
  *
- * `messages[].isNew` is the flag that actually tracks read state, so it is the one
- * we derive from. A conversation is unread iff it holds at least one message that
- * is unread and not deleted — the same rule `unreadConversations` appears to apply,
- * and therefore the number the parent sees in the Mashov UI they compare against.
+ * The badge read 39 where Mashov's own `unreadConversations` read 16. The suspected
+ * cause was that `conv.isNew` is a sticky conversation-level flag and that
+ * `messages[].isNew` is what really tracks read state. Measured against production,
+ * that is **wrong**, and the measurement is worth keeping because the mistake is easy
+ * to make twice:
  *
- * Note deliberately absent from the rule: `folder`. The detail sample in
- * `apis/get-api-mail-conversations-conversationId.md` has a live conversation whose
- * message sits in `folder: 2`, so folder is not a reliable inbox marker. Archived
- * conversations are excluded by their label at the call site, not here.
+ *   local_unread = 39   genuinely_unread = 0   stale_orphans = 23
+ *
+ * Every message of all 39 locally-unread conversations came back `isNew: false` --
+ * including the 16 that Mashov itself counts as unread. So `messages[].isNew` is not a
+ * read-state signal in the inbox *list* payload (it appears to carry real state only
+ * on the conversation-detail endpoint), and deriving from it would have set the badge
+ * to **0**: the failure direction that hides mail rather than over-reporting it.
+ *
+ * `conv.isNew` is correct. The 39 was 16 conversations upstream still returns, plus 23
+ * rows upstream had stopped returning and nothing ever cleared -- 16 + 23 = 39, and the
+ * 16 matches `unreadConversations` exactly. The over-count was never about which flag
+ * to read; it was the absence of reconciliation, which `MailInboxTask`'s sweep now does.
+ *
+ * ## What this function is for
+ *
+ * Two jobs remain. Read `conv.isNew`, and honour the local read override -- the one
+ * thing Mashov cannot tell us, because it documents no `markAsRead` endpoint, so
+ * upstream keeps reporting a conversation unread after the user has read it here.
+ * `messages[].sendTime` is used for that, and only for that: it is a timestamp rather
+ * than a flag, and nothing in the data casts doubt on it.
  */
 
 export interface DerivableMessage {
-  isNew?: boolean | null;
-  isDeleted?: boolean | null;
   sendTime?: string | Date | null;
 }
 
@@ -35,7 +43,7 @@ export interface DerivableConversation {
 /**
  * Parse a Mashov timestamp, which arrives naive (`"2026-03-09T18:49:43"`) and so is
  * interpreted in the process's zone. That is only safe because both sides of the
- * comparison below are message `sendTime`s that went through this same function —
+ * comparison below are message `sendTime`s that went through this same function --
  * never `Date.now()`, which would sit in a different parsing domain and clear read
  * overrides for any mail read within a few hours of arriving.
  */
@@ -48,33 +56,28 @@ function parseSendTime(value: string | Date | null | undefined): Date | null {
 /**
  * @param conv upstream conversation payload (inbox walk or detail hydration)
  * @param locallyReadThrough the conversation's `locallyReadThroughAt` watermark: the
- *   `sendTime` of the newest message the user had when they marked it read locally,
- *   or `null` if they never did. Mashov documents no `markAsRead` endpoint, so
- *   without this the next walk would restore `isUnread: true` and the badge would
- *   visibly bounce back within 7 minutes of the user acting.
+ *   `sendTime` of the newest message the user had when they marked it read locally, or
+ *   `null` if they never did. Without it the next walk restores `isUnread: true` from
+ *   an upstream flag that never learned about the user's action, and the badge visibly
+ *   bounces back within 7 minutes.
  */
 export function deriveIsUnread(
   conv: DerivableConversation,
   locallyReadThrough: Date | null,
 ): boolean {
-  const messages = Array.isArray(conv.messages) ? conv.messages : null;
-
-  // Degenerate payload: keep today's behaviour rather than silently zeroing the
-  // badge if the upstream shape ever changes. The local override still wins — the
-  // user's explicit "I read this" outranks a flag we already know to be unreliable.
-  if (!messages || messages.length === 0) {
-    if (locallyReadThrough !== null) return false;
-    return conv.isNew ?? false;
-  }
-
-  const unread = messages.filter((msg) => msg.isNew === true && msg.isDeleted !== true);
-  if (unread.length === 0) return false;
+  if (conv.isNew !== true) return false;
   if (locallyReadThrough === null) return true;
 
-  // Unread only if something arrived after the user marked the conversation read. A
-  // message whose sendTime we cannot parse is treated as newer: showing mail that
-  // may already be read is recoverable, hiding mail is not.
-  return unread.some((msg) => {
+  const messages = Array.isArray(conv.messages) ? conv.messages : [];
+  // Nothing to compare against: honour the user's explicit read rather than an upstream
+  // flag that cannot know about it. A payload that carries no messages is the degenerate
+  // case; the next walk that returns a full one re-evaluates this.
+  if (messages.length === 0) return false;
+
+  // Unread again only if something arrived after the user marked it read. A message whose
+  // sendTime cannot be parsed counts as newer: showing mail that may already be read is
+  // recoverable, hiding mail is not.
+  return messages.some((msg) => {
     const sendTime = parseSendTime(msg.sendTime);
     return sendTime === null || sendTime.getTime() > locallyReadThrough.getTime();
   });

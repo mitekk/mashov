@@ -180,7 +180,8 @@ export class MailInboxTask {
           try {
             const senderName = conv.messages[0]?.senderName ?? null;
             const sendTime = new Date(conv.sendTime);
-            // conv.isNew is sticky and does not mean "unread" -- see src/mail/unread.ts.
+            // conv.isNew is the read state; the derivation only adds the local read
+            // override, which upstream cannot know about. See src/mail/unread.ts.
             const isUnread = deriveIsUnread(
               conv,
               readThroughByConversationId.get(conv.conversationId) ?? null,

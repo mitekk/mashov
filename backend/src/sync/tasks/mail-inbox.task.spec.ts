@@ -237,21 +237,12 @@ describe('MailInboxTask', () => {
       );
     }
 
-    it('derives isUnread from messages when the conversation flag is stale', async () => {
+    it('stores the conversation flag even though the list payload reports every message read', async () => {
+      // Measured against production: all 39 locally-unread conversations came back with
+      // every message isNew=false, including the 16 Mashov counts as unread. Deriving
+      // from messages[].isNew here would set the badge to 0.
       (mockMashovClient.get as jest.Mock)
         .mockResolvedValueOnce([makeConversation({ isNew: true, messages: [{ isNew: false }] })])
-        .mockResolvedValueOnce([]);
-
-      await task.execute();
-
-      expectUpsertedIsUnread(false);
-    });
-
-    it('keeps isUnread true when any message is unread', async () => {
-      (mockMashovClient.get as jest.Mock)
-        .mockResolvedValueOnce([
-          makeConversation({ isNew: false, messages: [{ isNew: false }, { isNew: true }] }),
-        ])
         .mockResolvedValueOnce([]);
 
       await task.execute();
@@ -259,10 +250,10 @@ describe('MailInboxTask', () => {
       expectUpsertedIsUnread(true);
     });
 
-    it('treats a deleted unread message as read', async () => {
+    it('stores read when the conversation flag is clear, whatever the messages say', async () => {
       (mockMashovClient.get as jest.Mock)
         .mockResolvedValueOnce([
-          makeConversation({ isNew: true, messages: [{ isNew: true, isDeleted: true }] }),
+          makeConversation({ isNew: false, messages: [{ isNew: true }] }),
         ])
         .mockResolvedValueOnce([]);
 
@@ -271,7 +262,7 @@ describe('MailInboxTask', () => {
       expectUpsertedIsUnread(false);
     });
 
-    it('falls back to the conversation flag when messages is empty', async () => {
+    it('trusts the conversation flag when messages is empty', async () => {
       (mockMashovClient.get as jest.Mock)
         .mockResolvedValueOnce([makeConversation({ isNew: true, messages: [] })])
         .mockResolvedValueOnce([]);

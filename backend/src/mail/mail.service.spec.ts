@@ -739,15 +739,15 @@ describe('MailService', () => {
       return conversationUpdate;
     }
 
-    it('does not re-inflate a conversation the sync just corrected', async () => {
-      const conversationUpdate = await hydrate(makeUpstreamDetail({}, { isNew: false }));
+    it('writes read when upstream reports the conversation read', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail({ isNew: false }));
       expect(conversationUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ isUnread: false }) }),
       );
     });
 
-    it('keeps isUnread true when the hydrated message is unread', async () => {
-      const conversationUpdate = await hydrate(makeUpstreamDetail({ isNew: false }));
+    it('keeps isUnread true when upstream still reports the conversation unread', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail({}, { isNew: false }));
       expect(conversationUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ isUnread: true }) }),
       );

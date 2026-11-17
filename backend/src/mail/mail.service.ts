@@ -387,9 +387,9 @@ export class MailService {
         subject: upstream.subject ?? fallbackConversation.subject,
         senderNamePreview: upstream.messages?.[0]?.senderName ?? fallbackConversation.senderNamePreview,
         sendTime: upstream.sendTime ? new Date(upstream.sendTime) : fallbackConversation.sendTime,
-        // Opening a conversation must not re-inflate a row the sync just corrected:
-        // the same derivation runs here, with upstream.isNew kept only as the
-        // fallback for a payload that carries no messages. See src/mail/unread.ts.
+        // The same derivation as the sync walk, so opening a conversation honours the
+        // local read override instead of restoring unread from an upstream flag that
+        // never learned the user read it. See src/mail/unread.ts.
         isUnread: deriveIsUnread(
           { isNew: upstream.isNew ?? fallbackConversation.isUnread, messages: upstream.messages },
           fallbackConversation.locallyReadThroughAt,
