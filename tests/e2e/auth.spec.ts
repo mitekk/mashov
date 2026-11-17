@@ -229,6 +229,11 @@ test.describe('Auth — sign-in flow', () => {
       await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
     });
 
+    // The mocked login cannot issue the Set-Cookie the real backend sends, and
+    // this test walks past /auth/* into the guarded "/" route — so stand in for
+    // the session the real login would have established.
+    await seedAuthenticatedCookie(page);
+
     await mockAuthenticatedSession(page);
 
     const authPage = new AuthPage(page);
@@ -321,6 +326,9 @@ test.describe('Auth — sign-in flow', () => {
     });
 
     await mockAuthenticatedSession(page);
+    // See above: the mocked login issues no cookie, and this test ends on the
+    // guarded "/" route.
+    await seedAuthenticatedCookie(page);
 
     const authPage = new AuthPage(page);
     await authPage.navigate();
@@ -332,6 +340,19 @@ test.describe('Auth — sign-in flow', () => {
     await page.waitForURL('**/', { timeout: 20_000 });
     expect(page.url()).toMatch(/\/$/);
   });
+});
+
+test.describe('Auth — crawler and asset paths stay public', () => {
+  // These run in the unauthenticated project: no session cookie and no e2e
+  // bypass, which is the only configuration that catches the guard swallowing
+  // them. seo.spec.ts cannot catch it — it runs with a cookie.
+  for (const path of ['/robots.txt', '/sitemap.xml', '/favicon.svg', '/manifest.json']) {
+    test(`${path} is served without a session cookie`, async ({ request }) => {
+      const response = await request.get(path, { maxRedirects: 0 });
+
+      expect(response.status(), `${path} must not redirect to sign-in`).toBe(200);
+    });
+  }
 });
 
 test.describe('Auth — sign-in error', () => {

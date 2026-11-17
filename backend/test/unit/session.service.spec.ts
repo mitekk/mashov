@@ -71,6 +71,7 @@ describe('SessionService', () => {
       get: jest.fn(),
       post: jest.fn(),
       put: jest.fn(),
+      interceptors: { request: { use: jest.fn() } },
     } as unknown as jest.Mocked<ReturnType<typeof axios.create>>;
 
     mockedAxios.create = jest.fn().mockReturnValue(mockHttpInstance);

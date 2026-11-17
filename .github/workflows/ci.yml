@@ -159,6 +159,7 @@ jobs:
           CORS_ORIGIN=http://localhost:3000
           FEATURE_DAILY_BEHAVE=false
           FEATURE_OUT_BEHAVE=false
+          ENABLE_E2E_AUTH_BYPASS=1
           EOF
 
       - name: Run Playwright E2E tests

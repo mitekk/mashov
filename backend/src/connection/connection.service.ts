@@ -1,10 +1,17 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
-import axios from 'axios';
+import {
+  BadGatewayException,
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { AxiosInstance } from 'axios';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../session/encryption.service';
 import {
-  getMashovProxyConfig,
+  createMashovAxios,
+  isUpstreamUnreachable,
   resolveMashovBaseUrl,
 } from '../common/http/mashov-http';
 
@@ -18,7 +25,8 @@ interface MashovLoginResponse {
 export class ConnectionService {
   private readonly logger = new Logger(ConnectionService.name);
   private readonly mashovBaseUrl: string;
-  private readonly mashovProxyConfig: ReturnType<typeof getMashovProxyConfig>;
+  /** Shared Mashov client: applies the egress proxy and the abort-signal timeout. */
+  private readonly http: AxiosInstance;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -28,7 +36,7 @@ export class ConnectionService {
     this.mashovBaseUrl = resolveMashovBaseUrl(
       this.configService.get<string>('MASHOV_BASE_URL'),
     );
-    this.mashovProxyConfig = getMashovProxyConfig(this.mashovBaseUrl);
+    this.http = createMashovAxios(this.mashovBaseUrl);
   }
 
   async updateConnection(
@@ -83,21 +91,16 @@ export class ConnectionService {
         extraHeaders['Cookie'] = `uniquId=${connection.mashovUniqueId}`;
       }
 
-      const validationResponse = await axios.post<MashovLoginResponse>(
-        `${this.mashovBaseUrl}/api/login`,
+      const validationResponse = await this.http.post<MashovLoginResponse>(
+        '/api/login',
         loginBody,
         {
           headers: {
             'X-Csrf-Token': csrfToken,
             'Content-Type': 'application/json',
             Referer: `${this.mashovBaseUrl}/students/login`,
-            Accept: 'application/json',
-            'User-Agent':
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
             ...extraHeaders,
           },
-          timeout: 30000,
-          ...this.mashovProxyConfig,
         },
       );
 
@@ -113,7 +116,24 @@ export class ConnectionService {
           }
         }
       }
-    } catch {
+    } catch (err) {
+      // An unreachable upstream is not a rejected password; saying otherwise
+      // tells the user their new credentials are wrong during an outage.
+      if (isUpstreamUnreachable(err)) {
+        this.logger.error(
+          `Mashov validation unreachable for connection ${connection.id}: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        );
+        throw new BadGatewayException({
+          error: {
+            code: 'UPSTREAM_ERROR',
+            message:
+              'Could not reach Mashov to validate the credentials. Please try again shortly.',
+            details: [],
+          },
+        });
+      }
       throw new BadRequestException({
         error: {
           code: 'INVALID_CREDENTIALS',

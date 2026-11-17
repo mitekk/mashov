@@ -1,7 +1,7 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { BadGatewayException, UnauthorizedException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
+import axios, { AxiosError, CanceledError } from 'axios';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -10,6 +10,14 @@ import { EncryptionService } from '../session/encryption.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
+
+// AuthService talks to Mashov through createMashovAxios(), so the assertions
+// target the axios *instance* rather than the module-level helpers.
+const mockHttp = {
+  get: jest.fn(),
+  post: jest.fn(),
+  interceptors: { request: { use: jest.fn() } },
+};
 
 const mockPrisma = {
   appUser: {
@@ -62,6 +70,7 @@ describe('AuthService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -105,7 +114,7 @@ describe('AuthService', () => {
 
   describe('login', () => {
     it('returns sessionToken and isFirstLogin=true for new user', async () => {
-      mockedAxios.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
+      mockHttp.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
       mockPrisma.appUser.findUnique.mockResolvedValue(null);
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1', mashovUserId: 'mashov-uid-1', username: 'test', displayName: 'Test' });
       mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
@@ -119,7 +128,7 @@ describe('AuthService', () => {
     });
 
     it('returns isFirstLogin=false for existing user', async () => {
-      mockedAxios.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
+      mockHttp.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
       mockPrisma.appUser.findUnique.mockResolvedValue({ id: 'existing-user' });
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'existing-user', mashovUserId: 'mashov-uid-1', username: 'test', displayName: 'Test' });
       mockPrisma.householdConnection.findFirst.mockResolvedValue({ id: 'conn-1' });
@@ -135,21 +144,58 @@ describe('AuthService', () => {
       mockRedis.incr.mockResolvedValue(1);
       const err = Object.assign(new Error('Unauthorized'), { response: { status: 401 } });
       jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
-      mockedAxios.post = jest.fn().mockRejectedValue(err);
+      mockHttp.post = jest.fn().mockRejectedValue(err);
 
       await expect(service.login(482273, 'baduser', 'badpass', '127.0.0.1')).rejects.toThrow(
         UnauthorizedException,
       );
     });
 
-    it('throws 401 on network error', async () => {
+    it('throws 401 on an error it cannot classify', async () => {
       mockRedis.incr.mockResolvedValue(1);
       jest.spyOn(axios, 'isAxiosError').mockReturnValue(false);
-      mockedAxios.post = jest.fn().mockRejectedValue(new Error('Network error'));
+      jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+      mockHttp.post = jest.fn().mockRejectedValue(new Error('Network error'));
 
       await expect(service.login(482273, 'user', 'pass', '127.0.0.1')).rejects.toThrow(
         UnauthorizedException,
       );
+    });
+
+    it('throws 502, not 401, when the request is aborted by the timeout signal', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      jest.spyOn(axios, 'isCancel').mockReturnValue(true);
+      mockHttp.post = jest.fn().mockRejectedValue(new CanceledError('canceled'));
+
+      await expect(
+        service.login(482273, 'user', 'pass', '127.0.0.1'),
+      ).rejects.toThrow(BadGatewayException);
+    });
+
+    it('throws 502, not 401, when Mashov never responds', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+      jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+      mockHttp.post = jest
+        .fn()
+        .mockRejectedValue(new AxiosError('connect ECONNREFUSED', 'ECONNREFUSED'));
+
+      await expect(
+        service.login(482273, 'user', 'pass', '127.0.0.1'),
+      ).rejects.toThrow(BadGatewayException);
+    });
+
+    it('still reports invalid credentials when Mashov answers 401', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+      jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+      const rejected = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+      rejected.response = { status: 401 } as AxiosError['response'];
+      mockHttp.post = jest.fn().mockRejectedValue(rejected);
+
+      await expect(
+        service.login(482273, 'user', 'pass', '127.0.0.1'),
+      ).rejects.toThrow(UnauthorizedException);
     });
 
     it('persists children from login response', async () => {
@@ -170,7 +216,7 @@ describe('AuthService', () => {
           ],
         },
       };
-      mockedAxios.post = jest.fn().mockResolvedValue({ data: loginWithChildren });
+      mockHttp.post = jest.fn().mockResolvedValue({ data: loginWithChildren });
       mockPrisma.appUser.findUnique.mockResolvedValue(null);
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
       mockPrisma.householdConnection.findFirst.mockResolvedValue(null);

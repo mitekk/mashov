@@ -1,12 +1,18 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
 import {
-  getMashovProxyConfig,
+  createMashovAxios,
+  isUpstreamUnreachable,
   resolveMashovBaseUrl,
 } from '../common/http/mashov-http';
 
@@ -43,7 +49,8 @@ interface MashovLoginResponse {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly mashovBaseUrl: string;
-  private readonly mashovProxyConfig: ReturnType<typeof getMashovProxyConfig>;
+  /** Shared Mashov client: applies the egress proxy and the abort-signal timeout. */
+  private readonly http: AxiosInstance;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -55,22 +62,11 @@ export class AuthService {
     this.mashovBaseUrl = resolveMashovBaseUrl(
       this.configService.get<string>('MASHOV_BASE_URL'),
     );
-    this.mashovProxyConfig = getMashovProxyConfig(this.mashovBaseUrl);
+    this.http = createMashovAxios(this.mashovBaseUrl);
   }
 
   async getSchools(): Promise<unknown[]> {
-    const response = await axios.get<unknown[]>(
-      `${this.mashovBaseUrl}/api/schools`,
-      {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent':
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        },
-        timeout: 10000,
-        ...this.mashovProxyConfig,
-      },
-    );
+    const response = await this.http.get<unknown[]>('/api/schools');
     return response.data;
   }
 
@@ -128,21 +124,16 @@ export class AuthService {
         extraHeaders['Cookie'] = `uniquId=${storedUniqueId}`;
       }
 
-      const response = await axios.post<MashovLoginResponse>(
-        `${this.mashovBaseUrl}/api/login`,
+      const response = await this.http.post<MashovLoginResponse>(
+        '/api/login',
         loginBody,
         {
           headers: {
             'X-Csrf-Token': csrfToken,
             'Content-Type': 'application/json',
             Referer: `${this.mashovBaseUrl}/students/login`,
-            Accept: 'application/json',
-            'User-Agent':
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
             ...extraHeaders,
           },
-          timeout: 30000,
-          ...this.mashovProxyConfig,
         },
       );
       loginData = response.data;
@@ -160,6 +151,22 @@ export class AuthService {
         }
       }
     } catch (err) {
+      // Never report an upstream outage as bad credentials — the user would be
+      // sent off to retype a password that was correct all along.
+      if (isUpstreamUnreachable(err)) {
+        this.logger.error(
+          `Mashov login unreachable for semel=${semel}: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        );
+        throw new BadGatewayException({
+          error: {
+            code: 'UPSTREAM_ERROR',
+            message: 'Mashov is not reachable right now. Please try again shortly.',
+            details: [],
+          },
+        });
+      }
       if (axios.isAxiosError(err) && err.response?.status === 401) {
         throw new UnauthorizedException({
           error: {

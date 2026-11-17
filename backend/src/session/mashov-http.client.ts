@@ -68,6 +68,11 @@ export class MashovHttpClient {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
         const isAuthError = status === 401 || status === 403;
+        // Deliberately does NOT match the shared AbortSignal bound from
+        // createMashovAxios, which rejects with ERR_CANCELED / "canceled":
+        // that abort means the egress path is stalled, and retrying into a
+        // blackholed proxy only doubles the stall. Do not "fix" this by
+        // adding axios.isCancel() here. See ADR-0023.
         const isTimeout = error.code === 'ECONNABORTED' || error.message.includes('timeout');
         if ((isAuthError || isTimeout) && !isRetry) {
           this.logger.debug(
