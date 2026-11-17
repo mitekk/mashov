@@ -143,6 +143,22 @@ model MailConversation {
   labels            Json     @default("[]")
   rawPayload        Json?
   lastFetchedAt     DateTime @default(now())
+  // The sendTime of the newest message the user had when they marked this
+  // conversation read locally, or null if they never did. Mashov documents no
+  // markAsRead endpoint, so upstream keeps reporting the message unread and the
+  // next inbox walk would restore isUnread: true -- the badge bouncing back within
+  // 7 minutes of the user acting. Stored as a message sendTime rather than now():
+  // Mashov timestamps are naive and parsed in the container's zone, so a UTC now()
+  // would sit 2-3h behind the instants it is compared against and clear the
+  // override for any mail read soon after it arrived.
+  locallyReadThroughAt DateTime?
+  // Set when the user explicitly marks the conversation unread, cleared when they mark
+  // it read or archive it. MailInboxTask's reconciliation sweep skips these rows: for a
+  // conversation upstream has stopped returning, the local row is the only record of
+  // what the user wanted, and without this the sweep would flip it back to read every
+  // 7 minutes -- the same bouncing state locallyReadThroughAt exists to prevent, in the
+  // opposite direction.
+  locallyMarkedUnreadAt DateTime?
 
   messages MailMessage[]
 
@@ -291,6 +307,11 @@ model SyncRun {
   fetchedCount          Int?
   createdCount          Int?
   updatedCount          Int?
+  // mail_counts only: the two numbers whose disagreement is the whole bug, kept
+  // queryable without container logs. fetchedCount is not repurposed for them --
+  // it carries the constant 1 for that task and honest column names beat a comment.
+  upstreamCount         Int?
+  localCount            Int?
   errorMessage          String?
   householdConnectionId String?
 

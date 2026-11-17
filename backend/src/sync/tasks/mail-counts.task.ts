@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { MailInboxTask } from './mail-inbox.task';
 
 interface MailCountsResponse {
   unreadConversations: number;
@@ -25,6 +26,51 @@ export class MailCountsTask {
   @Cron('*/5 * * * *')
   async run(): Promise<void> {
     await this.execute();
+  }
+
+  /**
+   * The three populations that can make the local unread count disagree with Mashov's.
+   * `orphans` is derived from the last successful inbox run rather than a fixed
+   * interval: both of that task's walks refresh lastFetchedAt on every row upstream
+   * still returns, so anything older is a conversation upstream has stopped returning.
+   */
+  private async describeDrift(connectionId?: string): Promise<{
+    archived: number;
+    orphans: number | 'unknown';
+    locallyOverridden: number;
+  }> {
+    const lastInboxRun = await this.prisma.syncRun.findFirst({
+      // The exact source this connection's walk writes, not a prefix match: under two
+      // connections a prefix would pick up the other one's run, and then every row of
+      // this mailbox reads as an orphan. It would also match a future
+      // `mail_inbox_<something>` source.
+      where: {
+        source: connectionId ? `${MailInboxTask.SOURCE}:${connectionId}` : MailInboxTask.SOURCE,
+        status: 'success',
+      },
+      orderBy: { startedAt: 'desc' },
+      select: { startedAt: true },
+    });
+
+    const [archived, orphans, locallyOverridden] = await Promise.all([
+      this.prisma.mailConversation.count({
+        where: { labels: { array_contains: ['archived'] } },
+      }),
+      lastInboxRun
+        ? this.prisma.mailConversation.count({
+            where: {
+              isUnread: true,
+              NOT: { labels: { array_contains: ['archived'] } },
+              lastFetchedAt: { lt: lastInboxRun.startedAt },
+            },
+          })
+        : Promise.resolve<number | 'unknown'>('unknown'),
+      this.prisma.mailConversation.count({
+        where: { locallyReadThroughAt: { not: null } },
+      }),
+    ]);
+
+    return { archived, orphans, locallyOverridden };
   }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
@@ -69,8 +115,6 @@ export class MailCountsTask {
 
         const unreadCount = data?.unreadConversations ?? 0;
 
-        // Compute local unread count excluding archived — upstream counts unread across all
-        // folders (including archive), which would inflate the badge. Use local DB as source of truth.
         const localUnreadCount = await this.prisma.mailConversation.count({
           where: {
             isUnread: true,
@@ -88,8 +132,32 @@ export class MailCountsTask {
           updatedCount = 1;
         }
 
-        await this.syncRunService.closeRun(syncRun.id, 'success', { fetchedCount: 1 });
-        this.logger.debug(`Mail counts sync (conn=${conn?.id ?? 'shared'}): upstream=${unreadCount} local=${localUnreadCount}`);
+        // Deliberately 'success', never 'partial', even when the two numbers disagree:
+        // FreshnessService derives source health from the latest *successful* run, so a
+        // permanently-partial mail_counts would read as stale forever and conflate
+        // "the numbers disagree" with "the cron is dead".
+        await this.syncRunService.closeRun(syncRun.id, 'success', {
+          fetchedCount: 1,
+          upstreamCount: unreadCount,
+          localCount: localUnreadCount,
+        });
+
+        const label = `conn=${conn?.id ?? 'shared'}`;
+        if (unreadCount === localUnreadCount) {
+          this.logger.debug(
+            `Mail counts sync (${label}): upstream=${unreadCount} local=${localUnreadCount}`,
+          );
+        } else {
+          // Drift means the badge is lying to the user, so it is a warning, and it
+          // carries the breakdown that tells an operator which cause is live. The extra
+          // queries run only when drifting.
+          const breakdown = await this.describeDrift(conn?.id);
+          this.logger.warn(
+            `Mail counts drift (${label}): upstream=${unreadCount} local=${localUnreadCount} ` +
+              `archived=${breakdown.archived} orphans=${breakdown.orphans} ` +
+              `locallyOverridden=${breakdown.locallyOverridden}`,
+          );
+        }
         totalUpdatedCount += updatedCount;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);

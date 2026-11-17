@@ -15,6 +15,8 @@ function makeSyncRun(id: string): SyncRun {
     fetchedCount: null,
     createdCount: null,
     updatedCount: null,
+    upstreamCount: null,
+    localCount: null,
     errorMessage: null,
     householdConnectionId: null,
   };

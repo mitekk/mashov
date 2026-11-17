@@ -28,6 +28,8 @@ describe('NotificationsTask — deduplication fingerprint', () => {
     fetchedCount: null,
     createdCount: null,
     updatedCount: null,
+    upstreamCount: null,
+    localCount: null,
     errorMessage: null,
     householdConnectionId: null,
   } as unknown as SyncRun;

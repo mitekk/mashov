@@ -19,6 +19,7 @@ function makeConversation(overrides?: object) {
     labels: [],
     rawPayload: {},
     lastFetchedAt: NOW,
+    locallyReadThroughAt: null,
     ...overrides,
   };
 }
@@ -685,6 +686,294 @@ describe('MailService', () => {
         expect.objectContaining({
           where: expect.objectContaining({ id: 'household-1' }),
           data: expect.objectContaining({ cachedNewCount: 7 }),
+        }),
+      );
+    });
+  });
+  describe('hydration unread derivation', () => {
+    function makeUpstreamDetail(overrides: object = {}, messageOverrides: object = {}) {
+      return {
+        conversationId: 'conv-upstream-1',
+        subject: 'Updated Subject',
+        sendTime: NOW.toISOString(),
+        isNew: true,
+        hasDrafts: false,
+        hasAttachments: false,
+        preventReply: false,
+        labels: [],
+        messages: [
+          {
+            messageId: 'msg-upstream-1',
+            conversationId: 'conv-upstream-1',
+            senderId: 'sender-1',
+            senderName: 'Teacher',
+            subject: 'Subject',
+            body: '<p>Body</p>',
+            sendTime: NOW.toISOString(),
+            isNew: true,
+            recipients: [],
+            files: [],
+            preventReply: false,
+            sentViaEmail: false,
+            sentViaSms: false,
+            ...messageOverrides,
+          },
+        ],
+        ...overrides,
+      };
+    }
+
+    async function hydrate(detail: object, conversationOverrides: object = {}) {
+      const conversationUpdate = jest.fn().mockResolvedValue(makeConversation());
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindUnique: jest
+            .fn()
+            .mockResolvedValue(makeConversation(conversationOverrides)),
+          conversationUpdate,
+          messageFindMany: jest.fn().mockResolvedValue([]),
+        }),
+        makeMockMashovClient({ get: jest.fn().mockResolvedValue(detail) }),
+      );
+      await service.getConversationDetail('conv-upstream-1');
+      return conversationUpdate;
+    }
+
+    it('writes read when upstream reports the conversation read', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail({ isNew: false }));
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: false }) }),
+      );
+    });
+
+    it('keeps isUnread true when upstream still reports the conversation unread', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail({}, { isNew: false }));
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: true }) }),
+      );
+    });
+
+    it('respects a local read override when hydrating', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail(), {
+        locallyReadThroughAt: NOW,
+      });
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: false }) }),
+      );
+    });
+
+    it('falls back to the stored flag when upstream sends no messages', async () => {
+      const conversationUpdate = await hydrate(
+        makeUpstreamDetail({ isNew: undefined, messages: [] }),
+        { isUnread: true },
+      );
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: true }) }),
+      );
+    });
+  });
+  describe('local read override', () => {
+    const OLDER = new Date('2026-03-10T09:00:00Z');
+    const NEWER = new Date('2026-03-11T09:00:00Z');
+
+    it('records a read watermark from the newest message in each conversation', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 2 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany,
+          messageFindMany: jest.fn().mockResolvedValue([
+            { conversationId: 'conv-1', sendTime: OLDER },
+            { conversationId: 'conv-1', sendTime: NEWER },
+            { conversationId: 'conv-2', sendTime: OLDER },
+          ]),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markConversationsRead(['conv-1', 'conv-2']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith({
+        where: { conversationId: 'conv-1' },
+        data: { locallyReadThroughAt: NEWER },
+      });
+      expect(conversationUpdateMany).toHaveBeenCalledWith({
+        where: { conversationId: 'conv-2' },
+        data: { locallyReadThroughAt: OLDER },
+      });
+    });
+
+    it('falls back to the conversation sendTime when no messages are stored yet', async () => {
+      // Without a watermark the next walk would restore isUnread from a payload whose
+      // messages are unread -- the bounce-back this whole mechanism exists to stop. The
+      // conversation's own sendTime is a Mashov-parsed timestamp from the same parsing
+      // domain as MailMessage.sendTime, so it is a safe substitute for their max.
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany,
+          messageFindMany: jest.fn().mockResolvedValue([]),
+          conversationFindMany: jest
+            .fn()
+            .mockResolvedValue([{ conversationId: 'conv-1', sendTime: OLDER }]),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markConversationsRead(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith({
+        where: { conversationId: 'conv-1' },
+        data: { locallyReadThroughAt: OLDER },
+      });
+    });
+
+    it('prefers the newest message sendTime over the conversation sendTime', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany,
+          messageFindMany: jest
+            .fn()
+            .mockResolvedValue([{ conversationId: 'conv-1', sendTime: NEWER }]),
+          conversationFindMany: jest
+            .fn()
+            .mockResolvedValue([{ conversationId: 'conv-1', sendTime: OLDER }]),
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markConversationsRead(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith({
+        where: { conversationId: 'conv-1' },
+        data: { locallyReadThroughAt: NEWER },
+      });
+    });
+
+    it('markUnread records that the user asked for unread, so the sweep cannot undo it', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindMany: jest.fn().mockResolvedValue([{ conversationId: 'conv-1' }]),
+          conversationUpdateMany,
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markUnread(['conv-1']);
+
+      const marked = conversationUpdateMany.mock.calls
+        .map((call) => call[0].data.locallyMarkedUnreadAt)
+        .find((value) => value instanceof Date);
+      expect(marked).toBeInstanceOf(Date);
+    });
+
+    it('markConversationsRead clears the explicit-unread marker', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markConversationsRead(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isUnread: false, locallyMarkedUnreadAt: null }),
+        }),
+      );
+    });
+
+    it('archive clears the explicit-unread marker', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({}),
+      );
+
+      await service.archive(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isUnread: false, locallyMarkedUnreadAt: null }),
+        }),
+      );
+    });
+
+    it('markUnread clears the read watermark', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindMany: jest.fn().mockResolvedValue([{ conversationId: 'conv-1' }]),
+          conversationUpdateMany,
+        }),
+        makeMockMashovClient({}),
+      );
+
+      await service.markUnread(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isUnread: true, locallyReadThroughAt: null }),
+        }),
+      );
+    });
+
+    it('unarchive does not invent unread state when the upstream mark-unread fails', async () => {
+      // conv.isNew is the read-state authority. Claiming unread for a conversation
+      // upstream still considers read is what inflated the badge in the first place;
+      // the next walk settles it within 7 minutes either way.
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: jest.fn().mockRejectedValue(new Error('upstream down')) }),
+      );
+
+      await service.unarchive(['conv-1']);
+
+      const data = conversationUpdateMany.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty('isUnread');
+      expect(data.labels).toEqual([]);
+    });
+
+    it('unarchive does not invent unread state when upstream marked nothing', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: jest.fn().mockResolvedValue(0) }),
+      );
+
+      await service.unarchive(['conv-1']);
+
+      expect(conversationUpdateMany.mock.calls[0][0].data).not.toHaveProperty('isUnread');
+    });
+
+    it('unarchive shields a confirmed unread from the reconciliation sweep', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: jest.fn().mockResolvedValue(1) }),
+      );
+
+      await service.unarchive(['conv-1']);
+
+      const data = conversationUpdateMany.mock.calls[0][0].data;
+      expect(data.isUnread).toBe(true);
+      expect(data.locallyMarkedUnreadAt).toBeInstanceOf(Date);
+    });
+
+    it('unarchive clears the read watermark', async () => {
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({}),
+      );
+
+      await service.unarchive(['conv-1']);
+
+      expect(conversationUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isUnread: true, locallyReadThroughAt: null }),
         }),
       );
     });

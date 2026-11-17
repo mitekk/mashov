@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { deriveIsUnread } from '../../mail/unread';
 
 interface MashovMessage {
   messageId: string;
@@ -58,6 +59,35 @@ export class MailInboxTask {
     await this.execute();
   }
 
+  /**
+   * Why each gate: a sweep that fires on an incomplete walk clears unread on rows the
+   * walk simply never reached.
+   */
+  private sweepSkipReason(gates: {
+    failedCount: number;
+    pageCount: number;
+    archivePageCount: number;
+    maxPages: number;
+    activeConnectionCount: number;
+    targeted: boolean;
+  }): string | null {
+    if (gates.failedCount > 0) return `${gates.failedCount} item failure(s) in this run`;
+    // An empty inbox response is indistinguishable from a soft failure: a 2xx with `[]`
+    // is also what a referer-gated endpoint, an expired session, or a schoolYear with no
+    // mail returns. A hard failure throws and never reaches here, but this does, and
+    // sweeping on it would clear isUnread on every row in the table because none was
+    // refreshed. The cost of skipping is that a genuinely empty inbox leaves its orphans
+    // unreconciled for one cycle; the cost of not skipping is a badge that reads zero.
+    if (gates.pageCount === 0) return 'inbox walk returned no conversations';
+    if (gates.pageCount >= gates.maxPages) return 'inbox walk hit the page cap';
+    if (gates.archivePageCount >= gates.maxPages) return 'archive walk hit the page cap';
+    if (gates.targeted) return 'run targeted at a single connection';
+    if (gates.activeConnectionCount > 1) {
+      return `${gates.activeConnectionCount} active connections share one unscoped mail table`;
+    }
+    return null;
+  }
+
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({
       where: {
@@ -71,6 +101,12 @@ export class MailInboxTask {
 
     // Determine which connections to sync: all user-owned ones, or fall back to shared session
     const connectionList = useSharedSession ? [null] : connections;
+    // MailConversation has no connectionId and conversationId is globally unique, so the
+    // table is the union of every mailbox. Under two active connections a sweep would be
+    // active corruption -- connection A's run would clear unread on B's rows every 7
+    // minutes and back again -- so it is gated on there being exactly one mailbox. The
+    // derivation itself is per-conversation and idempotent, and stays on regardless.
+    const activeConnectionCount = useSharedSession ? 1 : connections.length;
 
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -84,7 +120,11 @@ export class MailInboxTask {
       let upsertCount = 0;
       let failedCount = 0;
       let pageCount = 0;
+      let archivePageCount = 0;
       const errorMessages: string[] = [];
+      // The sweep below compares against the run's start, not a hardcoded interval:
+      // both walks refresh lastFetchedAt on every row upstream still returns.
+      const runStartedAt = syncRun.startedAt;
       const pageSize = 50;
       const maxPages = 200;
 
@@ -125,10 +165,27 @@ export class MailInboxTask {
         pageCount++;
         fetchedCount += conversations.length;
 
+        // One query per page for the page's local read overrides, rather than one per
+        // conversation. deriveIsUnread needs them to avoid undoing a mark-read that
+        // upstream never learned about.
+        const overrideRows = await this.prisma.mailConversation.findMany({
+          where: { conversationId: { in: conversations.map((conv) => conv.conversationId) } },
+          select: { conversationId: true, locallyReadThroughAt: true },
+        });
+        const readThroughByConversationId = new Map(
+          overrideRows.map((row) => [row.conversationId, row.locallyReadThroughAt]),
+        );
+
         for (const conv of conversations) {
           try {
             const senderName = conv.messages[0]?.senderName ?? null;
             const sendTime = new Date(conv.sendTime);
+            // conv.isNew is the read state; the derivation only adds the local read
+            // override, which upstream cannot know about. See src/mail/unread.ts.
+            const isUnread = deriveIsUnread(
+              conv,
+              readThroughByConversationId.get(conv.conversationId) ?? null,
+            );
 
             await this.prisma.mailConversation.upsert({
               where: { conversationId: conv.conversationId },
@@ -137,7 +194,7 @@ export class MailInboxTask {
                 subject: conv.subject,
                 senderNamePreview: senderName,
                 sendTime,
-                isUnread: conv.isNew,
+                isUnread,
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,
@@ -149,7 +206,7 @@ export class MailInboxTask {
                 subject: conv.subject,
                 senderNamePreview: senderName,
                 sendTime,
-                isUnread: conv.isNew,
+                isUnread,
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,
@@ -223,6 +280,7 @@ export class MailInboxTask {
             );
 
         if (archivedConversations.length === 0) break;
+        archivePageCount++;
         fetchedCount += archivedConversations.length;
 
         for (const conv of archivedConversations) {
@@ -300,6 +358,54 @@ export class MailInboxTask {
         if (archivedConversations.length < pageSize) break;
       }
 
+      // Reconciliation. Nothing else ever clears a MailConversation, so a conversation
+      // deleted upstream -- or moved to a folder that is neither inbox nor archive --
+      // keeps isUnread: true and is counted forever. Derivation cannot fix those: their
+      // rawPayload is frozen at whatever upstream last said, so the derived value is
+      // frozen with it. Anything not refreshed by this run is such an orphan by
+      // definition. Clear isUnread, never delete the row: MailMessage.conversationId
+      // has a foreign key to it, and clearing is enough for both the badge and the list.
+      const sweepSkipReason = this.sweepSkipReason({
+        failedCount,
+        pageCount,
+        archivePageCount,
+        maxPages,
+        activeConnectionCount,
+        targeted: Boolean(context.connectionId),
+      });
+      let sweptCount = 0;
+      if (sweepSkipReason === null) {
+        const swept = await this.prisma.mailConversation.updateMany({
+          where: {
+            isUnread: true,
+            lastFetchedAt: { lt: runStartedAt },
+            // An orphan the user explicitly marked unread is their decision, not drift.
+            locallyMarkedUnreadAt: null,
+          },
+          data: { isUnread: false },
+        });
+        sweptCount = swept.count;
+      }
+
+      // MailCountsTask only writes cachedNewCount every 5 minutes, so without this the
+      // badge would lag the rows this run just corrected. Same query and same target
+      // selection as that task.
+      const refreshTarget = conn
+        ?? await this.prisma.householdConnection.findFirst({ where: { active: true } });
+      if (refreshTarget) {
+        await this.prisma.householdConnection.update({
+          where: { id: refreshTarget.id },
+          data: {
+            cachedNewCount: await this.prisma.mailConversation.count({
+              where: {
+                isUnread: true,
+                NOT: { labels: { array_contains: ['archived'] } },
+              },
+            }),
+          },
+        });
+      }
+
       await this.syncRunService.closeRun(syncRun.id, 'success', {
         fetchedCount,
         updatedCount: upsertCount,
@@ -310,7 +416,11 @@ export class MailInboxTask {
         );
       }
       this.logger.debug(
-        `Mail inbox sync (conn=${conn?.id ?? 'shared'}): pages=${pageCount} fetched=${fetchedCount} upserted=${upsertCount}`,
+        `Mail inbox sync (conn=${conn?.id ?? 'shared'}): pages=${pageCount} fetched=${fetchedCount} ` +
+          `upserted=${upsertCount} ` +
+          (sweepSkipReason === null
+            ? `swept=${sweptCount}`
+            : `sweep skipped (${sweepSkipReason})`),
       );
       totalFetchedCount += fetchedCount;
       totalUpsertCount += upsertCount;

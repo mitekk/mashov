@@ -3,6 +3,7 @@ import sanitizeHtml = require('sanitize-html');
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
   messageId: string;
@@ -339,6 +340,7 @@ export class MailService {
       hasDrafts: boolean;
       hasAttachments: boolean;
       preventReply: boolean;
+      locallyReadThroughAt: Date | null;
     },
   ): Promise<boolean> {
     try {
@@ -375,6 +377,7 @@ export class MailService {
       hasDrafts: boolean;
       hasAttachments: boolean;
       preventReply: boolean;
+      locallyReadThroughAt: Date | null;
     },
     upstream: UpstreamConversationDetail,
   ): Promise<void> {
@@ -384,7 +387,13 @@ export class MailService {
         subject: upstream.subject ?? fallbackConversation.subject,
         senderNamePreview: upstream.messages?.[0]?.senderName ?? fallbackConversation.senderNamePreview,
         sendTime: upstream.sendTime ? new Date(upstream.sendTime) : fallbackConversation.sendTime,
-        isUnread: upstream.isNew ?? fallbackConversation.isUnread,
+        // The same derivation as the sync walk, so opening a conversation honours the
+        // local read override instead of restoring unread from an upstream flag that
+        // never learned the user read it. See src/mail/unread.ts.
+        isUnread: deriveIsUnread(
+          { isNew: upstream.isNew ?? fallbackConversation.isUnread, messages: upstream.messages },
+          fallbackConversation.locallyReadThroughAt,
+        ),
         hasDrafts: upstream.hasDrafts ?? fallbackConversation.hasDrafts,
         hasAttachments: upstream.hasAttachments ?? fallbackConversation.hasAttachments,
         preventReply: upstream.preventReply ?? fallbackConversation.preventReply,
@@ -666,8 +675,50 @@ export class MailService {
   async markConversationsRead(conversationIds: string[]) {
     await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isUnread: false },
+      data: { isUnread: false, locallyMarkedUnreadAt: null },
     });
+
+    // This is the only mail mutation with no upstream call -- markUnread, archive and
+    // unarchive all PUT to Mashov, but no markAsRead endpoint is documented. Upstream
+    // therefore keeps reporting the message unread, and without a record of the user's
+    // action the next inbox walk would restore isUnread: true and the badge would
+    // visibly bounce back within 7 minutes.
+    //
+    // The watermark is a stored message sendTime, never now(): Mashov timestamps are
+    // naive and parsed in the container's zone, so a UTC now() would sit behind the
+    // instants it is compared against and clear the override for mail read within
+    // hours of arriving -- the common case. Comparing sendTimes against sendTimes
+    // keeps both sides in one parsing domain.
+    const [conversations, messages] = await Promise.all([
+      this.prisma.mailConversation.findMany({
+        where: { conversationId: { in: conversationIds } },
+        select: { conversationId: true, sendTime: true },
+      }),
+      this.prisma.mailMessage.findMany({
+        where: { conversationId: { in: conversationIds } },
+        select: { conversationId: true, sendTime: true },
+      }),
+    ]);
+    const newestByConversationId = new Map<string, Date>();
+    // Seed from the conversation's own sendTime so a conversation whose messages are not
+    // stored yet still gets a watermark -- otherwise mark-read bounces back on exactly
+    // those rows. It is a Mashov-parsed timestamp like the message sendTimes that
+    // override it below, so both stay in one parsing domain.
+    for (const conversation of conversations) {
+      newestByConversationId.set(conversation.conversationId, conversation.sendTime);
+    }
+    for (const message of messages) {
+      const current = newestByConversationId.get(message.conversationId);
+      if (!current || message.sendTime.getTime() > current.getTime()) {
+        newestByConversationId.set(message.conversationId, message.sendTime);
+      }
+    }
+    for (const [conversationId, locallyReadThroughAt] of newestByConversationId) {
+      await this.prisma.mailConversation.updateMany({
+        where: { conversationId },
+        data: { locallyReadThroughAt },
+      });
+    }
 
     await this.updateCachedNewCount();
 
@@ -706,7 +757,10 @@ export class MailService {
         conversationId: { in: eligibleConversationIds },
         NOT: { labels: { array_contains: ['archived'] } },
       },
-      data: { isUnread: true },
+      // Clear the local read override: the user is explicitly undoing it. Record the
+      // request so the reconciliation sweep leaves this row alone -- for a conversation
+      // upstream no longer returns, this row is the only record of what the user wanted.
+      data: { isUnread: true, locallyReadThroughAt: null, locallyMarkedUnreadAt: new Date() },
     });
 
     await this.updateCachedNewCount();
@@ -730,7 +784,11 @@ export class MailService {
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isUnread: false, labels: ['archived'] as unknown as Prisma.InputJsonValue },
+      data: {
+        isUnread: false,
+        labels: ['archived'] as unknown as Prisma.InputJsonValue,
+        locallyMarkedUnreadAt: null,
+      },
     });
 
     await this.updateCachedNewCount();
@@ -739,14 +797,20 @@ export class MailService {
   }
 
   async unarchive(conversationIds: string[]) {
+    // No unarchive endpoint is documented in apis/; markAsUnread is the closest upstream
+    // lever we have. It answers with the number of conversations it actually marked
+    // (apis/put-api-mail-conversations-markAsUnread.md), which is what tells us whether
+    // the unread state we are about to store locally is real.
+    let markedUnreadUpstream = false;
     try {
-      await this.mashovClient.put(
+      const marked = await this.mashovClient.put<unknown>(
         '/api/mail/conversations/markAsUnread',
         conversationIds,
         {
           headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
         },
       );
+      markedUnreadUpstream = typeof marked === 'number' ? marked > 0 : true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Upstream unarchive(markAsUnread) failed: ${msg}; updating DB only`);
@@ -754,7 +818,17 @@ export class MailService {
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
-      data: { isUnread: true, labels: [] as unknown as Prisma.InputJsonValue },
+      data: {
+        labels: [] as unknown as Prisma.InputJsonValue,
+        locallyReadThroughAt: null,
+        // Only claim unread when upstream confirms it. conv.isNew is the read-state
+        // authority, and a conversation archived while read is read -- inventing unread
+        // here would inflate the badge, which is the bug this branch exists to fix. If
+        // the call failed, the next walk settles the real state within 7 minutes.
+        ...(markedUnreadUpstream
+          ? { isUnread: true, locallyMarkedUnreadAt: new Date() }
+          : {}),
+      },
     });
 
     await this.updateCachedNewCount();
