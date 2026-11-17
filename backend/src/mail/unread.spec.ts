@@ -89,4 +89,42 @@ describe('deriveIsUnread', () => {
       expect(deriveIsUnread({ isNew: true, messages: [] }, null)).toBe(true);
     });
   });
+
+  // Every case above uses a Z-suffixed string; production never does. Mashov sends
+  // naive timestamps and every ingest site parses them with a bare `new Date(...)`,
+  // so these are the only strings deriveIsUnread actually sees. They are also the
+  // cases that invert if the process zone moves: east of UTC a naive sendTime parses
+  // earlier, a stored watermark lands ahead of genuinely newer mail, and the new-mail
+  // case below flips to `false` -- mail silently stops showing as unread. The zone is
+  // pinned by test/set-tz.ts, backend/Dockerfile and src/common/process-zone.ts.
+  describe('naive Mashov timestamps', () => {
+    const NAIVE_READ_THROUGH = new Date('2026-03-09T18:49:43');
+
+    it('suppresses unread for a message at the watermark sendTime', () => {
+      expect(
+        deriveIsUnread(
+          { isNew: true, messages: [{ sendTime: '2026-03-09T18:49:43' }] },
+          NAIVE_READ_THROUGH,
+        ),
+      ).toBe(false);
+    });
+
+    it('re-opens unread for a message an hour after the watermark', () => {
+      expect(
+        deriveIsUnread(
+          { isNew: true, messages: [{ sendTime: '2026-03-09T19:49:43' }] },
+          NAIVE_READ_THROUGH,
+        ),
+      ).toBe(true);
+    });
+
+    it('stays read for a message an hour before the watermark', () => {
+      expect(
+        deriveIsUnread(
+          { isNew: true, messages: [{ sendTime: '2026-03-09T17:49:43' }] },
+          NAIVE_READ_THROUGH,
+        ),
+      ).toBe(false);
+    });
+  });
 });

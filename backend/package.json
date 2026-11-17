@@ -74,6 +74,7 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "globalSetup": "<rootDir>/test/set-tz.ts",
     "collectCoverageFrom": [
       "src/**/*.(t|j)s",
       "!src/main.ts",

@@ -48,9 +48,10 @@ describe('DigestTask', () => {
   });
 
   it('fires hourly from 13:00 to 19:00 in Asia/Jerusalem', () => {
-    // No other cron in this repo sets timeZone and there is no TZ env, so
-    // without it the job would run 10:00-16:00 Israel time in winter and
-    // drift with DST.
+    // No other cron in this repo sets timeZone, and the process zone is pinned to
+    // UTC (backend/Dockerfile, src/common/process-zone.ts), so without an explicit
+    // timeZone the job would run 10:00-16:00 Israel time in winter and drift with
+    // DST. The pin does not substitute for it -- it is what makes it necessary.
     const options = Reflect.getMetadata('SCHEDULE_CRON_OPTIONS', DigestTask.prototype.run);
 
     expect(options).toMatchObject({ timeZone: 'Asia/Jerusalem' });

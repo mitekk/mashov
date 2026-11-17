@@ -1,5 +1,9 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
+# Pinned because mail read-state correctness depends on it: naive Mashov
+# sendTimes and the stored locallyReadThroughAt watermarks they are compared
+# against must parse in one zone. See src/common/process-zone.ts.
+ENV TZ=UTC
 RUN apk add --no-cache openssl
 COPY package*.json ./
 RUN npm ci
@@ -9,6 +13,10 @@ RUN npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
+# Pinned because mail read-state correctness depends on it: naive Mashov
+# sendTimes and the stored locallyReadThroughAt watermarks they are compared
+# against must parse in one zone. See src/common/process-zone.ts.
+ENV TZ=UTC
 RUN apk add --no-cache openssl
 RUN addgroup -S app && adduser -S app -G app
 COPY --from=builder /app/dist ./dist
