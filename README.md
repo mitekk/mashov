@@ -199,6 +199,11 @@ timeout, refusal, malformed output — falls back to deterministic Hebrew and st
 > teacher's text, else the group's next lesson, and labels it as an estimate.
 > See [ADR-0026](docs/adr/0026-derived-homework-deadlines.md).
 
+To try it on your own machine — including the Telegram RTL check, which no test can make —
+follow [docs/ops/digest-local-test.md](docs/ops/digest-local-test.md). It seeds a synthetic
+child with today's data, because the digest reports only today and a quiet school day proves
+nothing.
+
 Neither the Telegram client nor the Anthropic client uses `HTTPS_PROXY`: that hop is a single
 residential box provisioned for Mashov only. See
 [ADR-0025](docs/adr/0025-outbound-digest-delivery-and-llm-egress.md), which also records what

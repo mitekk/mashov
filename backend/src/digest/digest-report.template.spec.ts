@@ -155,6 +155,17 @@ describe('deterministicLines', () => {
     expect(lines.behaviorLine).toContain('2');
   });
 
+  it('writes the single-event behavior count as Hebrew words, not a numeral', () => {
+    // The other two fallback lines already do this ("מטלה אחת"); a plural verb
+    // in front of a bare "1" is what a translated string looks like, and this
+    // one goes to a parent whenever the model is unavailable.
+    const lines = deterministicLines(makePayload({ behavior: [BEHAVIOR] }));
+
+    expect(lines.behaviorLine).not.toContain('1');
+    expect(lines.behaviorLine).not.toContain('נרשמו');
+    expect(lines.behaviorLine).toContain('אחת');
+  });
+
   it('renders a complete message when every line is a fallback', () => {
     const payload = makePayload({ behavior: [BEHAVIOR], homeworkNew: [HOMEWORK] });
 

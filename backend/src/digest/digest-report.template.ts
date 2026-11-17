@@ -104,7 +104,9 @@ export function deterministicLines(payload: DigestPayload): DigestLines {
     behaviorLine:
       behaviorCount === 0
         ? ''
-        : `נרשמו ${behaviorCount} ${behaviorCount === 1 ? 'הערת התנהגות' : 'הערות התנהגות'} היום.`,
+        : behaviorCount === 1
+          ? 'נרשמה הערת התנהגות אחת היום.'
+          : `נרשמו ${behaviorCount} הערות התנהגות היום.`,
     homeworkLine:
       newCount === 0
         ? ''
