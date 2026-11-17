@@ -19,7 +19,9 @@ const PROXY_TIMEOUT_MS = Number(process.env.PROXY_TIMEOUT_MS) || 15000;
  * looking at stale data with the spinner stopped and no error shown.
  */
 const SLOW_PATH_TIMEOUT_MS = Number(process.env.PROXY_SLOW_TIMEOUT_MS) || 90000;
-const SLOW_PATH_PREFIXES = ['/api/v1/sync/'];
+// POST /api/v1/digest/runs makes a model call and sends messages, so it needs
+// the same longer bound as a manual sync rather than the 15s default.
+const SLOW_PATH_PREFIXES = ['/api/v1/sync/', '/api/v1/digest/runs'];
 
 function timeoutForPath(pathname: string): number {
   return SLOW_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))

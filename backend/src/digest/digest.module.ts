@@ -10,6 +10,7 @@ import { DigestRecipientService } from './digest-recipient.service';
 import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
 import { DigestTask } from './tasks/digest.task';
+import { DigestController } from './digest.controller';
 
 /**
  * A sibling of SyncModule, not a task inside it. A digest is not a sync
@@ -28,6 +29,7 @@ import { DigestTask } from './tasks/digest.task';
  */
 @Module({
   imports: [PrismaModule, SchoolYearModule],
+  controllers: [DigestController],
   providers: [
     DigestService,
     DigestCheckerService,
