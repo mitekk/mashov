@@ -80,7 +80,12 @@ export async function schoolYearWindowFor(
   return { start: historyStartYear(current, config), current };
 }
 
-function historyStartYear(current: number, config: ConfigService): number {
+/**
+ * The earliest year to fetch, given the current one. Exported because the
+ * backfill resolves it per connection from that connection's own current
+ * year, rather than from a user's resolved year.
+ */
+export function historyStartYear(current: number, config: ConfigService): number {
   const configured = readStartYear(config);
   if (configured === null) return current;
 

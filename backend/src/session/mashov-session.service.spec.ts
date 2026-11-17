@@ -462,6 +462,75 @@ describe('MashovSessionService', () => {
     });
   });
 
+  describe('historical logins', () => {
+    it('does not persist the roster on a login for an earlier year', async () => {
+      // persistRoster writes classCode/classNum and isActive, and Student has
+      // no schoolYear — identity is stable across years. A 2026 login would
+      // therefore stamp the live roster with 2026's classes and resurrect
+      // children who have since left.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(prisma.student.upsert).not.toHaveBeenCalled();
+      expect(prisma.student.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not write the connection back on a login for an earlier year', async () => {
+      // The replayed uniquId may evict the live session upstream, and the
+      // enrolled-years list from a dead year is not news.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(
+        loginPayload([CHILD], { userSchoolYears: [2024, 2025] }),
+      );
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalled();
+    });
+
+    it('still returns usable headers for the earlier year', async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      const headers = await service.getAuthHeadersForConnection(
+        'conn-1',
+        1234,
+        2026,
+        'parent',
+        'pw',
+      );
+
+      expect(headers['X-Csrf-Token']).toBe('csrf-1');
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2026 }),
+        expect.anything(),
+      );
+    });
+
+    it('still persists the roster at the connection year', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.student.upsert).toHaveBeenCalled();
+    });
+
+    it('still persists the roster when probing a later year', async () => {
+      // The rollover offers a candidate year ahead of the stored one and needs
+      // the roster read at it; only reaching backwards is suppressed.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2028, 'parent', 'pw');
+
+      expect(prisma.student.upsert).toHaveBeenCalled();
+    });
+  });
+
   describe('enrolled school years', () => {
     it('persists the enrolled school years from the login body', async () => {
       // The backfill needs to know which years a child actually has, or it

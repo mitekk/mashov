@@ -760,11 +760,25 @@ export class MashovSessionService {
 
     const connRecord = await this.prisma.householdConnection.findUnique({
       where: { id: connectionId },
-      select: { mashovUniqueId: true },
+      select: { mashovUniqueId: true, schoolYear: true },
     });
     const storedUniqueId = connRecord?.mashovUniqueId ?? undefined;
 
-    const authPromise = this.loginWithCredentials(semel, year, username, password, connectionId, storedUniqueId);
+    // A login reaching BACKWARDS is a history backfill, and must not touch
+    // anything that describes the present. Reaching forwards is the rollover
+    // offering a candidate year, which does need the roster read at it.
+    const isHistorical =
+      connRecord?.schoolYear !== undefined && Number(year) < connRecord.schoolYear;
+
+    const authPromise = this.loginWithCredentials(
+      semel,
+      year,
+      username,
+      password,
+      connectionId,
+      storedUniqueId,
+      isHistorical,
+    );
     placeholder.authPromise = authPromise;
 
     try {
@@ -804,6 +818,15 @@ export class MashovSessionService {
     password: string,
     connectionId?: string,
     storedUniqueId?: string,
+    /**
+     * A login for a year earlier than the connection's own. `Student` has no
+     * `schoolYear` — identity is stable across years — so persisting a roster
+     * read at a dead year would stamp the live children with that year's
+     * `classCode`/`classNum` and set `isActive: true` on children who have
+     * since left. Writing `mashovUniqueId` back may also evict the live
+     * session upstream. So a historical login reads data and nothing else.
+     */
+    isHistorical = false,
   ): Promise<ConnectionLogin> {
     const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
 
@@ -871,7 +894,7 @@ export class MashovSessionService {
       );
     }
 
-    if (connectionId && parsed.uniquId) {
+    if (connectionId && parsed.uniquId && !isHistorical) {
       const enrolledYears = this.enrolledSchoolYears(response.data);
       await this.prisma.householdConnection.update({
         where: { id: connectionId },
@@ -885,10 +908,13 @@ export class MashovSessionService {
       });
     }
 
-    // Always persist the roster. The old version read `response.headers` and
-    // discarded `response.data`, throwing `accessToken.children[]` away — the
-    // single reason a child's class never updated.
-    const roster = await this.persistRoster(response.data, Number(semel), Number(year));
+    // Persist the roster on every login EXCEPT a historical one. The old
+    // version read `response.headers` and discarded `response.data`, throwing
+    // `accessToken.children[]` away — the single reason a child's class never
+    // updated. See `isHistorical` for why the backfill is the one exception.
+    const roster = isHistorical
+      ? { created: 0, updated: 0, deactivated: 0 }
+      : await this.persistRoster(response.data, Number(semel), Number(year));
     if (connectionId) {
       const key = this.sessionKey(connectionId, Number(year));
       this.lastRosterByConnection.set(key, roster);
