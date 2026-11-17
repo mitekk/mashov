@@ -46,6 +46,9 @@ interface MockOptions {
   homeworkLookback?: Record<string, unknown>[];
   reported?: Record<string, unknown>[];
   timetableDays?: number[];
+  releases?: Record<string, unknown>[];
+  activities?: Record<string, unknown>[];
+  userId?: string | null;
 }
 
 function makeHarness(options: MockOptions = {}) {
@@ -82,6 +85,31 @@ function makeHarness(options: MockOptions = {}) {
         .fn()
         .mockResolvedValue((options.timetableDays ?? [4]).map((day) => ({ day }))),
     },
+    // Both honour their date windows, as Postgres would.
+    studentRelease: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          (options.releases ?? []).filter((row) => {
+            const date = row.releaseDate as Date;
+            const range = (where?.releaseDate ?? {}) as { gte?: Date; lt?: Date };
+            return (!range.gte || date >= range.gte) && (!range.lt || date < range.lt);
+          }),
+        ),
+      ),
+    },
+    schoolActivity: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          (options.activities ?? []).filter((row) => {
+            const date = row.endAnswerDate as Date;
+            const range = (where?.endAnswerDate ?? {}) as { gte?: Date; lt?: Date };
+            const answered = where?.isAnswered;
+            if (answered !== undefined && row.isAnswered !== answered) return false;
+            return (!range.gte || date >= range.gte) && (!range.lt || date < range.lt);
+          }),
+        ),
+      ),
+    },
   } as unknown as PrismaService;
 
   const config = {
@@ -91,6 +119,7 @@ function makeHarness(options: MockOptions = {}) {
       return undefined;
     }),
   } as unknown as ConfigService;
+  void options.userId;
 
   const service = new DigestCheckerService(
     prisma,
@@ -101,13 +130,41 @@ function makeHarness(options: MockOptions = {}) {
   return { service, prisma };
 }
 
-function check(harness: ReturnType<typeof makeHarness>) {
+function check(
+  harness: ReturnType<typeof makeHarness>,
+  overrides: { userId?: string | null } = {},
+) {
   return harness.service.check({
     studentGuid: 'stu-1',
     schoolYear: 2027,
     now: NOW,
     activeFrom: ACTIVE_FROM,
+    userId: overrides.userId === undefined ? 'user-1' : overrides.userId,
   });
+}
+
+function releaseRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'rel-1',
+    releaseId: 64,
+    releaseDate: TOMORROW,
+    startHour: '11:30:00',
+    remark: 'אבקש לשחרר את יונתן, יש לו תור לרופא',
+    status: 1,
+    ...overrides,
+  };
+}
+
+function activityRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'act-1',
+    activityId: 7,
+    title: 'טיול שנתי לגליל',
+    activityStartDate: new Date('2026-11-25T00:00:00Z'),
+    endAnswerDate: new Date('2026-11-20T00:00:00Z'),
+    isAnswered: false,
+    ...overrides,
+  };
 }
 
 describe('DigestCheckerService.check', () => {
@@ -417,5 +474,100 @@ describe('DigestCheckerService.check', () => {
     await check(harness);
 
     expect(harness.prisma.digestReportedItem.findMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('DigestCheckerService releases', () => {
+  it('reports a release scheduled for tomorrow', async () => {
+    const result = await check(makeHarness({ releases: [releaseRow()] }));
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ itemType: 'release', itemId: '64' });
+  });
+
+  it('reports a release scheduled for today', async () => {
+    const result = await check(makeHarness({ releases: [releaseRow({ releaseDate: TODAY })] }));
+
+    expect(result.candidates).toHaveLength(1);
+  });
+
+  it('ignores a release further out than tomorrow', async () => {
+    // The parent filed it, so it is a day-of reminder, not news. Reporting it
+    // a fortnight early would be an echo of their own form.
+    const result = await check(
+      makeHarness({ releases: [releaseRow({ releaseDate: new Date('2026-11-25T00:00:00Z') })] }),
+    );
+
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('ignores a release the parent deleted', async () => {
+    const harness = makeHarness({ releases: [releaseRow({ isDeleted: true })] });
+
+    await check(harness);
+
+    const where = (harness.prisma.studentRelease.findMany as jest.Mock).mock.calls[0][0].where;
+    expect(where.isDeleted).toBe(false);
+  });
+});
+
+describe('DigestCheckerService school activities', () => {
+  it('reports a consent form still unanswered with its deadline near', async () => {
+    const result = await check(makeHarness({ activities: [activityRow()] }));
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ itemType: 'activity', itemId: '7' });
+  });
+
+  it('asks only for the unanswered ones', async () => {
+    const harness = makeHarness({ activities: [activityRow()] });
+
+    await check(harness);
+
+    const where = (harness.prisma.schoolActivity.findMany as jest.Mock).mock.calls[0][0].where;
+    expect(where.isAnswered).toBe(false);
+    expect(where.userId).toBe('user-1');
+  });
+
+  it('ignores a deadline too far out to act on yet', async () => {
+    const result = await check(
+      makeHarness({
+        activities: [activityRow({ endAnswerDate: new Date('2027-03-01T00:00:00Z') })],
+      }),
+    );
+
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('does not look for activities at all when the child has no owning user', async () => {
+    // Activities are household-scoped; with no userId there is no list to read.
+    const harness = makeHarness({ activities: [activityRow()] });
+
+    const result = await check(harness, { userId: null });
+
+    expect(harness.prisma.schoolActivity.findMany).not.toHaveBeenCalled();
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('suppresses an activity a sibling run already reported', async () => {
+    // The form belongs to the household, not the child. Two children must not
+    // each get the same letter, so the dedup lookup for an activity is not
+    // scoped to one studentGuid.
+    const harness = makeHarness({ activities: [activityRow()] });
+    const first = await check(harness);
+    const hash = first.candidates[0].contentHash;
+
+    const second = makeHarness({ activities: [activityRow()] });
+    (second.prisma.digestReportedItem.findMany as jest.Mock).mockImplementation(({ where }) =>
+      Promise.resolve(
+        where.studentGuid === undefined && where.contentHash.in.includes(hash)
+          ? [{ contentHash: hash, confirmedAt: new Date(), claimedAt: new Date(), resolvedDueDate: null }]
+          : [],
+      ),
+    );
+
+    const result = await check(second, { userId: 'user-1' });
+
+    expect(result.candidates).toEqual([]);
   });
 });

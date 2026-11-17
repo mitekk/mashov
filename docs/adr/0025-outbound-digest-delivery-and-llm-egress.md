@@ -67,6 +67,49 @@ rather than forwarded, because the API answers a bad effort with a 400, and this
 every failure into the deterministic fallback — so a typo would silently degrade every message
 and look exactly like an outage.
 
+**Early releases and consent forms are reported, and both needed a sync task first.**
+
+`/api/students/{guid}/studentReleases` and `/api/schoolActivities/permitted` existed only as
+live proxy calls through `MashovHttpClient` (`children.service.ts`). The digest cannot use that
+client — that is this ADR's central constraint — so reporting them meant giving each one a table
+and a sync task, as the other thirteen inputs have. `TOTAL_SYNC_SOURCES` in
+`sync.controller.ts` moves 14 → 16 with them; leaving it would have understated the freshness
+percentage the dashboard shows.
+
+Two shaping decisions came out of what the data actually is:
+
+- **A release is reported only for today or tomorrow.** The parent filed it themselves
+  (`contactGuid` upstream is the parent), so a request three weeks out is their own form read
+  back to them. What has value is the reminder on the day, and the second parent who never saw
+  the request. Cancelled requests are excluded in the query, so one can never be announced.
+- **A consent form is household-scoped, and reported under one child.**
+  `/schoolActivities/permitted` takes no `studentGuid` and `isAnswered` belongs to the parent
+  whose session asked, so `school_activity` is keyed by `userId`. In a two-child household the
+  same letter would otherwise arrive twice, so the `userId` is folded into the content hash and
+  the dedup lookup for an activity is **not** scoped to one `studentGuid`: whichever child's run
+  claims it first reports it, and the sibling's run sees it as already said. The same form for a
+  *different* parent hashes differently and still reaches them. Which parent owns the section in
+  a two-parent household is decided by the earliest `activeFrom` among the child's recipients —
+  stable, and deliberately not row order.
+- **Only the unanswered ones, and only while the deadline is ahead**
+  (`DIGEST_ACTIVITY_WINDOW_DAYS`, default 7). A passed deadline is not actionable, and nagging
+  about it would otherwise be the only content in every message for the rest of the year.
+
+**Two free-text fields are rendered but never sent to the model.** A release `remark` is the
+parent's own words and routinely names the child (`אבקש לשחרר את יונתן`), which would put the
+name back into the prompt by the side door immediately after it was removed from the front; the
+report still shows it, because showing a parent their own words back costs nothing and never
+leaves the host. An activity's `description` is the full consent letter — long, HTML, and it
+names staff and other families' children — so the prompt gets the title and the dates only. The
+letter is stored with its markup stripped for a future UI.
+
+**A Hebrew voice note was considered and deferred.** It would read the prose lines — not the
+bullets, which are unreadable aloud — and Telegram's `sendVoice` wants OGG/Opus, which Google
+Cloud TTS emits natively while ElevenLabs returns mp3 and would need ffmpeg in the image. It is
+deferred not on cost (pennies a year at this volume) but because it adds a **third** external
+service receiving a child's school data, and the egress reasoning in this ADR would have to be
+extended to cover it.
+
 **Both new clients bypass the Mashov egress proxy, by different means.**
 
 `HTTPS_PROXY` is process-wide and plain axios honours it. ADR-0023's hop is a single

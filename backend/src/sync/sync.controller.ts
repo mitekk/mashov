@@ -13,7 +13,7 @@ import type { Request } from 'express';
 import { SyncService } from './sync.service';
 import { PrismaService } from '../prisma/prisma.service';
 
-const TOTAL_SYNC_SOURCES = 14; // approximate total sources
+const TOTAL_SYNC_SOURCES = 16; // approximate total sources
 
 @Controller('sync')
 export class SyncController {

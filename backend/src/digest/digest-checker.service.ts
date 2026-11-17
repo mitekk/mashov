@@ -35,6 +35,16 @@ const DEFAULT_DUE_LOOKBACK_DAYS = 14;
  */
 const DEFAULT_NEW_LOOKBACK_DAYS = 3;
 
+/**
+ * How far ahead an unanswered consent deadline becomes worth mentioning.
+ *
+ * Long enough that a parent has time to act, short enough that a form due in
+ * March is not in today's message. A form stays reportable until it is
+ * answered or the deadline passes, but the content hash covers `isAnswered`,
+ * so answering it is what stops it coming back.
+ */
+const DEFAULT_ACTIVITY_WINDOW_DAYS = 7;
+
 export interface DigestCheckInput {
   studentGuid: string;
   schoolYear: number;
@@ -45,6 +55,13 @@ export interface DigestCheckInput {
    * parent signs up blasting the whole school year at them.
    */
   activeFrom: Date;
+  /**
+   * The household this child's digest belongs to, for the one input class that
+   * is not per child: consent forms. `/api/schoolActivities/permitted` takes no
+   * studentGuid and `isAnswered` belongs to a parent, so activities are keyed
+   * by user. Null means no owning user is known and activities are skipped.
+   */
+  userId?: string | null;
 }
 
 export interface DigestCheckResult {
@@ -64,6 +81,21 @@ interface BehaviorCandidateRow {
   remark: string | null;
   lessonDate: Date;
   eventAt: Date;
+}
+
+interface ReleaseCandidateRow {
+  releaseId: number;
+  releaseDate: Date;
+  startHour: string;
+  remark: string | null;
+  status: number;
+}
+
+interface ActivityCandidateRow {
+  activityId: number;
+  title: string;
+  activityStartDate: Date;
+  endAnswerDate: Date;
 }
 
 interface HomeworkCandidateRow {
@@ -91,7 +123,7 @@ export class DigestCheckerService {
   ) {}
 
   async check(input: DigestCheckInput): Promise<DigestCheckResult> {
-    const { studentGuid, schoolYear, now, activeFrom } = input;
+    const { studentGuid, schoolYear, now, activeFrom, userId } = input;
     const timeZone = this.config.get<string>('DIGEST_TIMEZONE') ?? DEFAULT_TIMEZONE;
     const { todayStart, tomorrowStart, reportFor } = jerusalemDayBounds(now, timeZone);
     const yearScope = schoolYearScope(schoolYear);
@@ -106,6 +138,8 @@ export class DigestCheckerService {
         todayStart,
         tomorrowStart,
       )),
+      ...(await this.releasesSoon(studentGuid, yearScope, todayStart, tomorrowStart)),
+      ...(await this.activitiesAwaitingAnswer(userId ?? null, yearScope, todayStart)),
       // activeFrom is a timestamp (now() when the recipient was created) while
       // lessonDate is a date at UTC midnight. Comparing them directly
       // suppressed every homework item on the sign-up day while still
@@ -216,6 +250,111 @@ export class DigestCheckerService {
    * Mashov has no due-date field, so this is an estimate throughout; the report
    * labels it as one. See ADR-0026.
    */
+  /**
+   * Early releases scheduled for today or tomorrow.
+   *
+   * Deliberately narrow. The parent filed these themselves, so a release three
+   * weeks out is not news -- it is their own form read back to them. What has
+   * value is the reminder on the day, and the second parent who never saw the
+   * request. Deleted requests are excluded in the query rather than filtered
+   * after, so a cancelled release can never be announced.
+   */
+  private async releasesSoon(
+    studentGuid: string,
+    yearScope: ReturnType<typeof schoolYearScope>,
+    todayStart: Date,
+    tomorrowStart: Date,
+  ): Promise<InternalCandidate[]> {
+    const dayAfterTomorrow = new Date(tomorrowStart.getTime() + 24 * 60 * 60 * 1000);
+
+    const rows = (await this.prisma.studentRelease.findMany({
+      where: {
+        studentGuid,
+        ...yearScope,
+        isDeleted: false,
+        releaseDate: { gte: todayStart, lt: dayAfterTomorrow },
+      },
+      select: {
+        releaseId: true,
+        releaseDate: true,
+        startHour: true,
+        remark: true,
+        status: true,
+      },
+    })) as ReleaseCandidateRow[];
+
+    return rows.map((row) => ({
+      itemType: 'release' as DigestItemType,
+      itemId: String(row.releaseId),
+      contentHash: hashFields('release', [
+        String(row.releaseId),
+        row.releaseDate.toISOString(),
+        row.startHour,
+        row.remark ?? '',
+        String(row.status),
+      ]),
+      itemDate: row.releaseDate,
+    }));
+  }
+
+  /**
+   * Consent forms this household has not answered, with the deadline near.
+   *
+   * The only household-scoped input the digest has. The hash covers the
+   * `userId`, which is what makes the cross-child dedup in
+   * `dropAlreadyReported` household-wide rather than school-wide: two children
+   * of the same parent share a hash and the form is reported once, while the
+   * same form for a different parent hashes differently and is still reported
+   * to them.
+   */
+  private async activitiesAwaitingAnswer(
+    userId: string | null,
+    yearScope: ReturnType<typeof schoolYearScope>,
+    todayStart: Date,
+  ): Promise<InternalCandidate[]> {
+    if (!userId) return [];
+
+    const horizon = new Date(
+      Date.UTC(
+        todayStart.getUTCFullYear(),
+        todayStart.getUTCMonth(),
+        todayStart.getUTCDate() +
+          this.readDays('DIGEST_ACTIVITY_WINDOW_DAYS', DEFAULT_ACTIVITY_WINDOW_DAYS),
+      ),
+    );
+
+    const rows = (await this.prisma.schoolActivity.findMany({
+      where: {
+        userId,
+        ...yearScope,
+        isAnswered: false,
+        // A deadline that has already passed is not actionable, and nagging
+        // about it would be the only thing in the message every single day.
+        endAnswerDate: { gte: todayStart, lt: horizon },
+      },
+      select: {
+        activityId: true,
+        title: true,
+        activityStartDate: true,
+        endAnswerDate: true,
+      },
+    })) as ActivityCandidateRow[];
+
+    return rows.map((row) => ({
+      itemType: 'activity' as DigestItemType,
+      itemId: String(row.activityId),
+      contentHash: hashFields('activity', [
+        userId,
+        String(row.activityId),
+        row.title,
+        row.endAnswerDate.toISOString(),
+      ]),
+      // Future-dated by definition, so the activeFrom cutoff never excludes a
+      // form -- which is right: a deadline is a deadline whenever you signed up.
+      itemDate: row.endAnswerDate,
+    }));
+  }
+
   private async homeworkDueTomorrow(
     studentGuid: string,
     schoolYear: number,
@@ -287,18 +426,39 @@ export class DigestCheckerService {
   ): Promise<InternalCandidate[]> {
     if (candidates.length === 0) return [];
 
-    const rows = await this.prisma.digestReportedItem.findMany({
-      where: {
-        studentGuid,
-        contentHash: { in: candidates.map((candidate) => candidate.contentHash) },
-      },
-      select: {
-        contentHash: true,
-        confirmedAt: true,
-        claimedAt: true,
-        resolvedDueDate: true,
-      },
-    });
+    const SELECT = {
+      contentHash: true,
+      confirmedAt: true,
+      claimedAt: true,
+      resolvedDueDate: true,
+    } as const;
+
+    // Per-child inputs are deduped per child. Consent forms belong to the
+    // household, so theirs is looked up across children: the form was already
+    // sent to this parent if *any* of their children's runs reported it, and
+    // the userId inside the hash is what keeps that from reaching across
+    // households.
+    const childHashes = candidates
+      .filter((candidate) => candidate.itemType !== 'activity')
+      .map((candidate) => candidate.contentHash);
+    const householdHashes = candidates
+      .filter((candidate) => candidate.itemType === 'activity')
+      .map((candidate) => candidate.contentHash);
+
+    const rows = [
+      ...(childHashes.length > 0
+        ? await this.prisma.digestReportedItem.findMany({
+            where: { studentGuid, contentHash: { in: childHashes } },
+            select: SELECT,
+          })
+        : []),
+      ...(householdHashes.length > 0
+        ? await this.prisma.digestReportedItem.findMany({
+            where: { contentHash: { in: householdHashes } },
+            select: SELECT,
+          })
+        : []),
+    ];
 
     const staleBefore = new Date(now.getTime() - STALE_CLAIM_MS);
     const spokenFor = new Set(

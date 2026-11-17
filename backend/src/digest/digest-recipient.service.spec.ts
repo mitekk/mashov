@@ -202,7 +202,14 @@ describe('DigestRecipientService', () => {
     const targets = await harness.service.listDeliveryTargets();
 
     expect(targets).toEqual([
-      { studentGuid: 'stu-1', activeFrom: RECIPIENT.activeFrom, recipientCount: 1 },
+      {
+        studentGuid: 'stu-1',
+        activeFrom: RECIPIENT.activeFrom,
+        recipientCount: 1,
+        // Carried so the digest knows whose consent forms to report: they are
+        // household-scoped, unlike everything else in the message.
+        userId: RECIPIENT.userId,
+      },
     ]);
     // The cron runs every opted-in child, so it must not filter by user.
     expect(

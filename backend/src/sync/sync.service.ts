@@ -11,6 +11,8 @@ import { MessageBoardTask } from './tasks/message-board.task';
 import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
+import { ReleasesTask } from './tasks/releases.task';
+import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
 import type {
@@ -38,6 +40,8 @@ export class SyncService {
     private readonly userDetailsTask: UserDetailsTask,
     private readonly dailyBehaveTask: DailyBehaveTask,
     private readonly outBehaveTask: OutBehaveTask,
+    private readonly releasesTask: ReleasesTask,
+    private readonly schoolActivitiesTask: SchoolActivitiesTask,
     private readonly timetableTask: TimetableTask,
     private readonly studentsTask: StudentsTask,
   ) {}
@@ -84,6 +88,8 @@ export class SyncService {
       { name: 'userDetails', fn: () => this.userDetailsTask.execute(context) },
       { name: 'dailyBehave', fn: () => this.dailyBehaveTask.execute(context) },
       { name: 'outBehave', fn: () => this.outBehaveTask.execute(context) },
+      { name: 'releases', fn: () => this.releasesTask.execute(context) },
+      { name: 'schoolActivities', fn: () => this.schoolActivitiesTask.execute(context) },
       { name: 'timetable', fn: () => this.timetableTask.execute(context) },
     ];
 

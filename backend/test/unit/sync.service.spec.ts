@@ -12,6 +12,8 @@ import { MessageBoardTask } from '../../src/sync/tasks/message-board.task';
 import { UserDetailsTask } from '../../src/sync/tasks/user-details.task';
 import { DailyBehaveTask } from '../../src/sync/tasks/daily-behave.task';
 import { OutBehaveTask } from '../../src/sync/tasks/out-behave.task';
+import { ReleasesTask } from '../../src/sync/tasks/releases.task';
+import { SchoolActivitiesTask } from '../../src/sync/tasks/school-activities.task';
 import { TimetableTask } from '../../src/sync/tasks/timetable.task';
 import { StudentsTask } from '../../src/sync/tasks/students.task';
 
@@ -29,7 +31,7 @@ const createMockTask = () => ({
 });
 
 describe('SyncService', () => {
-  const EXPECTED_TASK_COUNT = 14;
+  const EXPECTED_TASK_COUNT = 16;
 
   let service: SyncService;
   let notificationsTask: ReturnType<typeof createMockTask>;
@@ -42,6 +44,8 @@ describe('SyncService', () => {
   let lessonsCountTask: ReturnType<typeof createMockTask>;
   let messageBoardTask: ReturnType<typeof createMockTask>;
   let userDetailsTask: ReturnType<typeof createMockTask>;
+  let releasesTask: ReturnType<typeof createMockTask>;
+  let schoolActivitiesTask: ReturnType<typeof createMockTask>;
   let dailyBehaveTask: ReturnType<typeof createMockTask>;
   let outBehaveTask: ReturnType<typeof createMockTask>;
   let timetableTask: ReturnType<typeof createMockTask>;
@@ -60,6 +64,8 @@ describe('SyncService', () => {
     userDetailsTask = createMockTask();
     dailyBehaveTask = createMockTask();
     outBehaveTask = createMockTask();
+    releasesTask = createMockTask();
+    schoolActivitiesTask = createMockTask();
     timetableTask = createMockTask();
     studentsTask = createMockTask();
 
@@ -78,6 +84,8 @@ describe('SyncService', () => {
         { provide: UserDetailsTask, useValue: userDetailsTask },
         { provide: DailyBehaveTask, useValue: dailyBehaveTask },
         { provide: OutBehaveTask, useValue: outBehaveTask },
+        { provide: ReleasesTask, useValue: releasesTask },
+        { provide: SchoolActivitiesTask, useValue: schoolActivitiesTask },
         { provide: TimetableTask, useValue: timetableTask },
         { provide: StudentsTask, useValue: studentsTask },
       ],
@@ -148,6 +156,8 @@ describe('SyncService', () => {
       outBehaveTask.execute.mockRejectedValue(error);
       timetableTask.execute.mockRejectedValue(error);
       studentsTask.execute.mockRejectedValue(error);
+      releasesTask.execute.mockRejectedValue(error);
+      schoolActivitiesTask.execute.mockRejectedValue(error);
 
       const result = await service.refreshAll();
       expect(result.status).toBe('partial');

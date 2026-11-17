@@ -50,6 +50,8 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     ],
     homeworkNew: [],
     homeworkDueTomorrow: [],
+    releases: [],
+    activities: [],
     ...overrides,
   };
 }

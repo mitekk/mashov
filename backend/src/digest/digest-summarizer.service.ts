@@ -3,11 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { deterministicLines, formatSchoolDate } from './digest-report.template';
 import {
+  DigestActivityFact,
   DigestBehaviorFact,
   DigestDeadlineResolution,
   DigestHomeworkFact,
   DigestLines,
   DigestPayload,
+  DigestReleaseFact,
   DigestSummary,
 } from './digest.types';
 
@@ -42,15 +44,28 @@ type DigestEffort = (typeof EFFORT_LEVELS)[number];
 const MAX_TOKENS = 2000;
 
 /** The structured output the model must return. */
-const OUTPUT_SCHEMA = {
+export const OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['headline', 'behaviorLine', 'homeworkLine', 'dueTomorrowLine', 'deadlineResolutions'],
+  required: [
+    'headline',
+    'behaviorLine',
+    'homeworkLine',
+    'dueTomorrowLine',
+    'releaseLine',
+    'activityLine',
+    'deadlineResolutions',
+  ],
   properties: {
     headline: { type: 'string', description: 'שורה אחת קצרה בעברית' },
     behaviorLine: { type: 'string', description: 'משפט או שניים בעברית על ההתנהגות' },
     homeworkLine: { type: 'string', description: 'משפט או שניים בעברית על המטלות החדשות' },
     dueTomorrowLine: { type: 'string', description: 'משפט או שניים בעברית על מה שצפוי מחר' },
+    releaseLine: { type: 'string', description: 'משפט בעברית על שחרור מוקדם שכבר אושר' },
+    activityLine: {
+      type: 'string',
+      description: 'משפט בעברית על אישור שממתין לתשובת ההורה, כולל דחיפות לפי התאריך',
+    },
     deadlineResolutions: {
       type: 'array',
       description:
@@ -80,6 +95,8 @@ const SYSTEM_PROMPT = [
   'אם בטקסט של מטלה נכתב מועד מפורש, החזר אותו ב-deadlineResolutions בפורמט YYYY-MM-DD; אחרת null.',
   'אם אין מה לומר בסעיף מסוים, החזר מחרוזת ריקה לאותו שדה.',
   'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
+  'שחרור מוקדם הוא בקשה שההורה עצמו הגיש ואושרה: כתוב עליו כתזכורת, לא כחדשות.',
+  'אישור שממתין לתשובה הוא הדבר היחיד שדורש פעולה מההורה. ציין עד מתי צריך להשיב.',
 ].join('\n');
 
 /**
@@ -128,6 +145,21 @@ export function buildPrompt(payload: DigestPayload): string {
     );
   }
 
+  if (payload.releases.length > 0) {
+    sections.push(
+      ['שחרורים מוקדמים שההורה ביקש:', ...payload.releases.map(releaseForPrompt)].join('\n'),
+    );
+  }
+
+  if (payload.activities.length > 0) {
+    sections.push(
+      [
+        'אישורים שממתינים לתשובת ההורה:',
+        ...payload.activities.map(activityForPrompt),
+      ].join('\n'),
+    );
+  }
+
   return sections.join('\n\n');
 }
 
@@ -141,6 +173,31 @@ function behaviorForPrompt(fact: DigestBehaviorFact): string {
   const remark = fact.remark?.trim();
   if (remark) fields.push(`הערה: ${remark}`);
   return `- ${fields.join(' | ')}`;
+}
+
+/**
+ * Date, time, nothing else.
+ *
+ * `remark` is the parent's own text and is deliberately absent: it routinely
+ * names the child ("אבקש לשחרר את אבי"), which would put the name back into
+ * the prompt by the side door right after it was removed from the front. The
+ * template still renders it, because showing a parent their own words back
+ * costs nothing and never leaves the host.
+ */
+function releaseForPrompt(fact: DigestReleaseFact): string {
+  return `- תאריך: ${formatSchoolDate(fact.releaseDate)} | שעה: ${fact.startHour.slice(0, 5)}`;
+}
+
+/**
+ * Title and dates. The consent letter itself never goes: it is long, it is
+ * HTML, and it names staff and other families' children.
+ */
+function activityForPrompt(fact: DigestActivityFact): string {
+  return [
+    `- נושא: ${fact.title}`,
+    `מועד האירוע: ${formatSchoolDate(fact.activityStartDate)}`,
+    `יש להשיב עד: ${formatSchoolDate(fact.endAnswerDate)}`,
+  ].join(' | ');
 }
 
 function homeworkForPrompt(fact: DigestHomeworkFact): string {
@@ -294,7 +351,14 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const candidate = raw as Record<string, unknown>;
 
-  const lineKeys = ['headline', 'behaviorLine', 'homeworkLine', 'dueTomorrowLine'] as const;
+  const lineKeys = [
+    'headline',
+    'behaviorLine',
+    'homeworkLine',
+    'dueTomorrowLine',
+    'releaseLine',
+    'activityLine',
+  ] as const;
   if (!lineKeys.every((key) => typeof candidate[key] === 'string')) return null;
 
   const resolutions = Array.isArray(candidate.deadlineResolutions)
@@ -307,6 +371,8 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
       behaviorLine: candidate.behaviorLine as string,
       homeworkLine: candidate.homeworkLine as string,
       dueTomorrowLine: candidate.dueTomorrowLine as string,
+      releaseLine: candidate.releaseLine as string,
+      activityLine: candidate.activityLine as string,
     },
     deadlineResolutions: resolutions,
   };

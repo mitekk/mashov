@@ -156,14 +156,47 @@ FROM local_digest_day, local_digest_year
 ON CONFLICT ("studentGuid", "schoolYear", day, lesson) DO UPDATE
   SET "groupId" = 7102, "updatedAt" = now();
 
+-- 4. An early release the parent filed for tomorrow. Their own remark is here
+--    on purpose: the report shows it back to them, and it is the one free-text
+--    field that never goes to the model (it names the child).
+DELETE FROM student_release WHERE "studentGuid" = 'local-digest-guid';
+INSERT INTO student_release (
+  id, "studentGuid", "releaseId", "schoolYear", "releaseDate", "startHour",
+  remark, status, "isDeleted", "requestEditTime", "updatedAt"
+)
+SELECT
+  'local-digest-release', 'local-digest-guid', 64, school_year,
+  today + interval '1 day', '11:30:00',
+  'אבקש לשחרר את יונתן מחר ב-11:30, יש לו תור לרופא. תודה',
+  1, false, now(), now()
+FROM local_digest_day, local_digest_year;
+
+-- 5. A consent form nobody has answered, due in three days. Household-scoped,
+--    so it hangs off the user rather than the child.
+DELETE FROM school_activity WHERE "userId" = 'local-digest-user';
+INSERT INTO school_activity (
+  id, "userId", "activityId", "schoolYear", "activityType", title,
+  "descriptionText", "activityStartDate", "activityEndDate", "endAnswerDate",
+  "isAnswered", "createTime", "updatedAt"
+)
+SELECT
+  'local-digest-activity', 'local-digest-user', 7, school_year, 1,
+  'טיול שנתי לגליל התחתון',
+  'מכתב ההסכמה המלא, לאחר הסרת ה-HTML.',
+  today + interval '8 days', today + interval '9 days', today + interval '3 days',
+  false, now(), now()
+FROM local_digest_day, local_digest_year;
+
 -- A fresh successful sync for this child, under the per-child source name the
 -- sync tasks actually write (`homework:<guid>`). Without it the digest treats
 -- a quiet day as a stalled sync and reports skipped_stale instead.
-DELETE FROM sync_run WHERE source IN ('homework:local-digest-guid', 'behavior:local-digest-guid');
+DELETE FROM sync_run WHERE source LIKE '%:local-digest-guid' OR source LIKE '%:local-digest-user';
 INSERT INTO sync_run (id, source, status, "startedAt", "endedAt", "fetchedCount", "createdCount", "updatedCount")
 VALUES
   ('local-digest-sync-hw', 'homework:local-digest-guid', 'success', now(), now(), 2, 2, 0),
-  ('local-digest-sync-beh', 'behavior:local-digest-guid', 'success', now(), now(), 1, 1, 0);
+  ('local-digest-sync-beh', 'behavior:local-digest-guid', 'success', now(), now(), 1, 1, 0),
+  ('local-digest-sync-rel', 'releases:local-digest-guid', 'success', now(), now(), 1, 1, 0),
+  ('local-digest-sync-act', 'schoolActivities:local-digest-user', 'success', now(), now(), 1, 1, 0);
 
 COMMIT;
 
@@ -171,4 +204,6 @@ SELECT
   (SELECT count(*) FROM homework_item WHERE "studentGuid" = 'local-digest-guid') AS homework,
   (SELECT count(*) FROM behavior_item WHERE "studentGuid" = 'local-digest-guid') AS behavior,
   (SELECT count(*) FROM timetable_entry WHERE "studentGuid" = 'local-digest-guid') AS timetable,
+  (SELECT count(*) FROM student_release WHERE "studentGuid" = 'local-digest-guid') AS releases,
+  (SELECT count(*) FROM school_activity WHERE "userId" = 'local-digest-user') AS activities,
   (SELECT count(*) FROM digest_reported_item WHERE "studentGuid" = 'local-digest-guid') AS already_reported;

@@ -113,6 +113,8 @@ describe('Per-child daily digest', () => {
     await prisma.digestRecipient.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.behaviorItem.deleteMany({ where: { studentGuid: { in: guids } } });
+    await prisma.studentRelease.deleteMany({ where: { studentGuid: { in: guids } } });
+    await prisma.schoolActivity.deleteMany({ where: { userId: USER_ID } });
     await prisma.student.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.appUser.deleteMany({ where: { id: USER_ID } });
 
@@ -488,5 +490,203 @@ describe('Per-child daily digest', () => {
       where: { studentGuid: CHILD_WITH_NEWS },
     });
     expect(remaining.every((row) => row.reportFor >= todayStart)).toBe(true);
+  });
+});
+
+/**
+ * Releases and consent forms, against real Postgres.
+ *
+ * The household-wide dedup for a consent form is the thing a unit test with a
+ * mocked Prisma cannot honestly show: it depends on a query that deliberately
+ * does *not* filter by studentGuid, so what proves it is two children of one
+ * parent and one letter.
+ */
+describe('Digest releases and school activities', () => {
+  let prisma: PrismaClient;
+
+  beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    await prisma.$connect();
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  const GUIDS = [CHILD_WITH_NEWS, QUIET_CHILD];
+
+  beforeEach(async () => {
+    await prisma.studentRelease.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.schoolActivity.deleteMany({ where: { userId: USER_ID } });
+    await prisma.digestReportedItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.digestDelivery.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.digestRecipient.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.behaviorItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.student.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.appUser.deleteMany({ where: { id: USER_ID } });
+
+    // Both children opted in under one parent, and nothing else to report --
+    // so whatever these tests assert comes from releases and consent forms
+    // alone. Hooks do not cross describe blocks, so this household is built
+    // here rather than inherited.
+    await prisma.appUser.create({
+      data: {
+        id: USER_ID,
+        mashovUserId: MASHOV_USER_ID,
+        semel: 998877,
+        username: 'digest-test',
+        displayName: 'Digest Test',
+      },
+    });
+
+    for (const [guid, privateName] of [
+      [CHILD_WITH_NEWS, 'אבי'],
+      [QUIET_CHILD, 'נועה'],
+    ]) {
+      await prisma.student.create({
+        data: {
+          studentGuid: guid,
+          privateName,
+          familyName: 'כהן',
+          fullName: `${privateName} כהן`,
+          classCode: 'ג',
+          classNum: 3,
+          gender: privateName === 'נועה' ? 'נ' : 'ז',
+          isActive: true,
+        },
+      });
+
+      await prisma.digestRecipient.create({
+        data: {
+          userId: USER_ID,
+          studentGuid: guid,
+          channel: 'telegram',
+          address: `chat-${guid}`,
+          enabled: true,
+          activeFrom: new Date(todayStart.getTime() - 30 * 24 * 60 * 60 * 1000),
+        },
+      });
+    }
+  });
+
+  it('reminds about a release scheduled for tomorrow and shows the remark', async () => {
+    await prisma.studentRelease.create({
+      data: {
+        studentGuid: CHILD_WITH_NEWS,
+        releaseId: 64,
+        schoolYear: SCHOOL_YEAR,
+        releaseDate: new Date(todayStart.getTime() + 24 * 60 * 60 * 1000),
+        startHour: '11:30:00',
+        remark: 'אבקש לשחרר את אבי, יש לו תור לרופא',
+        status: 1,
+      },
+    });
+
+    const sender = new CapturingSender();
+    const results = await makeService(prisma, sender).runAll({
+      now: NOW,
+      studentGuid: CHILD_WITH_NEWS,
+    });
+
+    expect(results[0].status).toBe('sent');
+    const message = sender.sent[0].text;
+    expect(message).toContain('שחרור מוקדם');
+    expect(message).toContain('11:30');
+    expect(message).toContain('תור לרופא');
+  });
+
+  it('never reports a release the parent cancelled', async () => {
+    await prisma.studentRelease.create({
+      data: {
+        studentGuid: CHILD_WITH_NEWS,
+        releaseId: 65,
+        schoolYear: SCHOOL_YEAR,
+        releaseDate: new Date(todayStart.getTime() + 24 * 60 * 60 * 1000),
+        startHour: '09:00:00',
+        status: 1,
+        isDeleted: true,
+      },
+    });
+
+    const sender = new CapturingSender();
+    const results = await makeService(prisma, sender).runAll({
+      now: NOW,
+      studentGuid: CHILD_WITH_NEWS,
+    });
+
+    expect(results[0].status).toBe('skipped_empty');
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  it('reports a consent form to one child only, not once per sibling', async () => {
+    await prisma.schoolActivity.create({
+      data: {
+        userId: USER_ID,
+        activityId: 7,
+        schoolYear: SCHOOL_YEAR,
+        activityType: 1,
+        title: 'טיול שנתי לגליל',
+        activityStartDate: new Date(todayStart.getTime() + 8 * 24 * 60 * 60 * 1000),
+        activityEndDate: new Date(todayStart.getTime() + 8 * 24 * 60 * 60 * 1000),
+        endAnswerDate: new Date(todayStart.getTime() + 3 * 24 * 60 * 60 * 1000),
+        isAnswered: false,
+      },
+    });
+
+    const sender = new CapturingSender();
+    const results = await makeService(prisma, sender).runAll({ now: NOW });
+
+    // Both children are opted in and share the parent, so the letter must be
+    // claimed by whichever child's run reached it first and by nobody else.
+    const withForm = sender.sent.filter((message) => message.text.includes('טיול שנתי לגליל'));
+    expect(withForm).toHaveLength(1);
+
+    const rows = await prisma.digestReportedItem.findMany({ where: { itemType: 'activity' } });
+    expect(rows).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'sent')).toHaveLength(1);
+  });
+
+  it('stops reporting a consent form once it has been answered', async () => {
+    await prisma.schoolActivity.create({
+      data: {
+        userId: USER_ID,
+        activityId: 8,
+        schoolYear: SCHOOL_YEAR,
+        activityType: 1,
+        title: 'הצגה בתיאטרון',
+        activityStartDate: new Date(todayStart.getTime() + 5 * 24 * 60 * 60 * 1000),
+        activityEndDate: new Date(todayStart.getTime() + 5 * 24 * 60 * 60 * 1000),
+        endAnswerDate: new Date(todayStart.getTime() + 2 * 24 * 60 * 60 * 1000),
+        isAnswered: true,
+      },
+    });
+
+    const sender = new CapturingSender();
+    const results = await makeService(prisma, sender).runAll({ now: NOW });
+
+    expect(results.every((result) => result.status === 'skipped_empty')).toBe(true);
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  it('ignores a consent deadline beyond the window', async () => {
+    await prisma.schoolActivity.create({
+      data: {
+        userId: USER_ID,
+        activityId: 9,
+        schoolYear: SCHOOL_YEAR,
+        activityType: 2,
+        title: 'חווה חקלאית',
+        activityStartDate: new Date(todayStart.getTime() + 90 * 24 * 60 * 60 * 1000),
+        activityEndDate: new Date(todayStart.getTime() + 90 * 24 * 60 * 60 * 1000),
+        endAnswerDate: new Date(todayStart.getTime() + 60 * 24 * 60 * 60 * 1000),
+        isAnswered: false,
+      },
+    });
+
+    const sender = new CapturingSender();
+    const results = await makeService(prisma, sender).runAll({ now: NOW });
+
+    expect(results.every((result) => result.status === 'skipped_empty')).toBe(true);
   });
 });

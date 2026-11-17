@@ -8,6 +8,8 @@ const LINES: DigestLines = {
   behaviorLine: 'היה איחור אחד בשיעור מתמטיקה.',
   homeworkLine: 'ניתנה מטלה אחת בחשבון.',
   dueTomorrowLine: 'מטלה אחת צפויה להיבדק מחר.',
+  releaseLine: 'שחרור מוקדם מחר.',
+  activityLine: 'טופס אישור ממתין לחתימה.',
 };
 
 function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
@@ -18,6 +20,8 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     behavior: [],
     homeworkNew: [],
     homeworkDueTomorrow: [],
+    releases: [],
+    activities: [],
     ...overrides,
   };
 }
@@ -186,5 +190,69 @@ describe('deterministicLines', () => {
     expect(text).toContain('אבי');
     expect(text).toContain('איחור');
     expect(text).toContain('לפתור עמוד 42');
+  });
+});
+
+const RELEASE = {
+  id: '64',
+  releaseDate: new Date('2026-11-18T00:00:00Z'),
+  startHour: '11:30:00',
+  remark: 'אבקש לשחרר את אבי, יש לו תור לרופא',
+};
+
+const ACTIVITY = {
+  id: '7',
+  title: 'טיול שנתי לגליל',
+  activityStartDate: new Date('2026-11-25T00:00:00Z'),
+  endAnswerDate: new Date('2026-11-20T00:00:00Z'),
+};
+
+describe('renderReport releases and activities', () => {
+  it('renders an early release with its day and a readable time', () => {
+    const text = renderReport(makePayload({ releases: [RELEASE] }), LINES);
+
+    expect(text).toContain('שחרור מוקדם');
+    expect(text).toContain('18/11/2026');
+    // "11:30:00" is a database value, not something to put in front of a parent.
+    expect(text).toContain('11:30');
+    expect(text).not.toContain('11:30:00');
+  });
+
+  it("shows the parent's own words back to them on a release", () => {
+    // Their text, their child, their message -- and it never went to the model.
+    const text = renderReport(makePayload({ releases: [RELEASE] }), LINES);
+
+    expect(text).toContain('תור לרופא');
+  });
+
+  it('renders a consent form with the deadline to answer by', () => {
+    const text = renderReport(makePayload({ activities: [ACTIVITY] }), LINES);
+
+    expect(text).toContain('טיול שנתי לגליל');
+    expect(text).toContain('20/11/2026');
+  });
+
+  it('omits both sections when there is nothing in them', () => {
+    const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES);
+
+    expect(text).not.toContain('שחרור מוקדם');
+    expect(text).not.toContain('אישור');
+  });
+
+  it('counts releases and forms in the deterministic fallback', () => {
+    const lines = deterministicLines(
+      makePayload({ releases: [RELEASE], activities: [ACTIVITY] }),
+    );
+
+    expect(lines.releaseLine).not.toBe('');
+    expect(lines.activityLine).not.toBe('');
+    expect(lines.releaseLine).toContain('אחד');
+  });
+
+  it('leaves the new fallback lines empty when there is nothing to count', () => {
+    const lines = deterministicLines(makePayload());
+
+    expect(lines.releaseLine).toBe('');
+    expect(lines.activityLine).toBe('');
   });
 });

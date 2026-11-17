@@ -31,6 +31,15 @@ export interface DigestDeliveryTarget {
    */
   activeFrom: Date;
   recipientCount: number;
+  /**
+   * The household whose consent forms this child's digest reports. Taken from
+   * the recipient row that set `activeFrom` -- the first parent to opt in. In
+   * a two-parent household each parent has their own `/permitted` list and
+   * their own `isAnswered`, so one of them has to own that section; picking the
+   * earliest keeps it stable rather than dependent on row order. Null only if
+   * the row somehow has no user.
+   */
+  userId: string | null;
 }
 
 /**
@@ -176,7 +185,7 @@ export class DigestRecipientService {
   async listDeliveryTargets(userId?: string): Promise<DigestDeliveryTarget[]> {
     const rows = await this.prisma.digestRecipient.findMany({
       where: { enabled: true, ...(userId ? { userId } : {}) },
-      select: { studentGuid: true, activeFrom: true },
+      select: { studentGuid: true, activeFrom: true, userId: true },
     });
 
     const byChild = new Map<string, DigestDeliveryTarget>();
@@ -187,13 +196,18 @@ export class DigestRecipientService {
           studentGuid: row.studentGuid,
           activeFrom: row.activeFrom,
           recipientCount: 1,
+          userId: row.userId,
         });
         continue;
       }
       existing.recipientCount += 1;
       // The earliest activeFrom wins: a parent who opted in first should not
-      // lose items because a second recipient was added later.
-      if (row.activeFrom < existing.activeFrom) existing.activeFrom = row.activeFrom;
+      // lose items because a second recipient was added later. The consent-form
+      // owner moves with it, so both come from the same recipient row.
+      if (row.activeFrom < existing.activeFrom) {
+        existing.activeFrom = row.activeFrom;
+        existing.userId = row.userId;
+      }
     }
 
     return [...byChild.values()];

@@ -168,6 +168,7 @@ export class DigestService {
         schoolYear,
         now,
         activeFrom: target.activeFrom,
+        userId: target.userId,
       });
       reportFor = check.reportFor;
 
@@ -183,7 +184,12 @@ export class DigestService {
         return await this.recordEmpty(studentGuid, reportFor, 'already claimed elsewhere');
       }
 
-      const payload = await this.collector.collect({ studentGuid, candidates: claimed, reportFor });
+      const payload = await this.collector.collect({
+        studentGuid,
+        candidates: claimed,
+        reportFor,
+        userId: target.userId,
+      });
 
       const summary = await this.summarizer.summarize(payload);
       const { payload: narrowed, resolutionByItemId } = narrowDueTomorrow(
@@ -698,6 +704,8 @@ function survivingHashes(claimed: DigestCandidate[], narrowed: DigestPayload): S
     ...narrowed.behavior.map((fact) => `behavior:${fact.id}`),
     ...narrowed.homeworkNew.map((fact) => `homework_new:${fact.id}`),
     ...narrowed.homeworkDueTomorrow.map((fact) => `homework_due:${fact.id}`),
+    ...narrowed.releases.map((fact) => `release:${fact.id}`),
+    ...narrowed.activities.map((fact) => `activity:${fact.id}`),
   ]);
 
   return new Set(
@@ -727,6 +735,8 @@ function countItems(payload: DigestPayload): number {
     ...payload.behavior.map((fact) => `behavior:${fact.id}`),
     ...payload.homeworkNew.map((fact) => `homework:${fact.id}`),
     ...payload.homeworkDueTomorrow.map((fact) => `homework:${fact.id}`),
+    ...payload.releases.map((fact) => `release:${fact.id}`),
+    ...payload.activities.map((fact) => `activity:${fact.id}`),
   ]);
   return ids.size;
 }

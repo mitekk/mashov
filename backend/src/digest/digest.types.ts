@@ -11,7 +11,12 @@
  * The *reason* an item was reported, not its table. Distinct types let one
  * homework row be reported once as newly assigned and later as estimated-due.
  */
-export type DigestItemType = 'behavior' | 'homework_new' | 'homework_due';
+export type DigestItemType =
+  | 'behavior'
+  | 'homework_new'
+  | 'homework_due'
+  | 'release'
+  | 'activity';
 
 /** An item the checker believes has not yet been reported to this child's parents. */
 export interface DigestCandidate {
@@ -37,6 +42,38 @@ export interface DigestCandidate {
    * DigestService.settleUnsent).
    */
   itemDate?: Date;
+}
+
+/**
+ * An early release scheduled for today or tomorrow.
+ *
+ * The parent filed this themselves, so it is a reminder rather than news --
+ * which is why only the imminent ones are reported, and why `remark` (their
+ * own words) is rendered back to them but never put in the prompt: it
+ * routinely names the child, and no part of the child's name goes to the
+ * model.
+ */
+export interface DigestReleaseFact {
+  id: string;
+  releaseDate: Date;
+  /** "11:30:00" as Mashov sends it; the template trims it to "11:30". */
+  startHour: string;
+  remark: string | null;
+}
+
+/**
+ * A consent form the parent has not answered yet, with its deadline near.
+ *
+ * Household-scoped upstream, so it is reported under one child only -- see
+ * `DigestCheckerService.activitiesAwaitingAnswer`. The consent letter itself
+ * is not here: it names staff and other children, and the title plus the
+ * deadline is the whole actionable content.
+ */
+export interface DigestActivityFact {
+  id: string;
+  title: string;
+  activityStartDate: Date;
+  endAnswerDate: Date;
 }
 
 /** A behavior event as the parent will see it. */
@@ -84,6 +121,8 @@ export interface DigestPayload {
   behavior: DigestBehaviorFact[];
   homeworkNew: DigestHomeworkFact[];
   homeworkDueTomorrow: DigestHomeworkFact[];
+  releases: DigestReleaseFact[];
+  activities: DigestActivityFact[];
 }
 
 /**
@@ -96,6 +135,8 @@ export interface DigestLines {
   behaviorLine: string;
   homeworkLine: string;
   dueTomorrowLine: string;
+  releaseLine: string;
+  activityLine: string;
 }
 
 /** Per-candidate deadline the LLM claims to have found written in the text. */

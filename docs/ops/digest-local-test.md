@@ -62,7 +62,9 @@ What it creates, and why each row is there:
 | `homework_item` (today) | Plain text, no deadline language — the "newly assigned" path. |
 | `homework_item` (5 days ago) | Text naming a deadline (`עד מחר`). Five days puts it outside the 3-day new window and inside the 14-day due window, so it arrives purely as a due-tomorrow candidate. |
 | `timetable_entry` | Puts that group's next lesson on tomorrow, so the fallback estimate has something to resolve to when no API key is set. |
-| `sync_run` × 2 | Fresh successes under the per-child source names (`homework:<guid>`). Without them a quiet day is reported as `skipped_stale` rather than quiet. |
+| `student_release` | An early release the parent filed for tomorrow at 11:30, with their own remark. The remark is rendered in the message and never sent to the model. |
+| `school_activity` | An unanswered consent form due in three days. Household-scoped, so it hangs off the user, not the child. |
+| `sync_run` × 4 | Fresh successes under the per-child source names (`homework:<guid>`, `releases:<guid>`, `schoolActivities:<userId>`). Without them a quiet day is reported as `skipped_stale` rather than quiet. |
 
 ## 3. Dry run
 
@@ -77,7 +79,7 @@ curl -s -X POST http://localhost:3001/api/v1/digest/runs \
   -d '{"dryRun":true}'
 ```
 
-Expect `{"status":"dry_run","itemCount":3,"recipientCount":1,"usedLlm":false}`.
+Expect `{"status":"dry_run","itemCount":5,"recipientCount":1,"usedLlm":false}`.
 `usedLlm: false` is correct with no `ANTHROPIC_API_KEY` — the deterministic
 Hebrew fallback ran.
 
@@ -157,7 +159,9 @@ DELETE FROM homework_item WHERE "studentGuid" = 'local-digest-guid';
 DELETE FROM behavior_item WHERE "studentGuid" = 'local-digest-guid';
 DELETE FROM timetable_entry WHERE "studentGuid" = 'local-digest-guid';
 DELETE FROM student WHERE "studentGuid" = 'local-digest-guid';
-DELETE FROM sync_run WHERE source LIKE '%local-digest-guid';
+DELETE FROM school_activity WHERE "userId" = 'local-digest-user';
+DELETE FROM student_release WHERE "studentGuid" = 'local-digest-guid';
+DELETE FROM sync_run WHERE source LIKE '%local-digest-guid' OR source LIKE '%local-digest-user';
 DELETE FROM app_session WHERE "userId" = 'local-digest-user';
 DELETE FROM app_user WHERE id = 'local-digest-user';
 SQL

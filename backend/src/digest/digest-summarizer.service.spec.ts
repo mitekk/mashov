@@ -11,7 +11,7 @@ jest.mock('@anthropic-ai/sdk', () => ({
   },
 }));
 
-import { DigestSummarizerService, buildPrompt } from './digest-summarizer.service';
+import { DigestSummarizerService, buildPrompt, OUTPUT_SCHEMA } from './digest-summarizer.service';
 import { deterministicLines } from './digest-report.template';
 import type { ConfigService } from '@nestjs/config';
 import type { DigestPayload } from './digest.types';
@@ -46,6 +46,8 @@ function makePayload(): DigestPayload {
       },
     ],
     homeworkDueTomorrow: [],
+    releases: [],
+    activities: [],
   };
 }
 
@@ -54,6 +56,8 @@ const GOOD_OUTPUT = {
   behaviorLine: 'נרשם איחור בשיעור מתמטיקה.',
   homeworkLine: 'ניתנה מטלה בחשבון.',
   dueTomorrowLine: '',
+  releaseLine: '',
+  activityLine: '',
   deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: null }],
 };
 
@@ -351,5 +355,53 @@ describe('DigestSummarizerService.summarize', () => {
     await service.summarize(makePayload());
 
     expect(logged.join('\n')).not.toContain('sk-ant-secret-value');
+  });
+});
+
+describe('buildPrompt with releases and activities', () => {
+  const RELEASE = {
+    id: '64',
+    releaseDate: new Date('2026-11-18T00:00:00Z'),
+    startHour: '11:30:00',
+    remark: 'אבקש לשחרר את אבי, יש לו תור לרופא',
+  };
+
+  const ACTIVITY = {
+    id: '7',
+    title: 'טיול שנתי לגליל',
+    activityStartDate: new Date('2026-11-25T00:00:00Z'),
+    endAnswerDate: new Date('2026-11-20T00:00:00Z'),
+  };
+
+  it('tells the model when and at what time a release happens', () => {
+    const prompt = buildPrompt({ ...makePayload(), releases: [RELEASE] });
+
+    expect(prompt).toContain('18/11/2026');
+    expect(prompt).toContain('11:30');
+  });
+
+  it("never sends the parent's release remark", () => {
+    // It is the one field the report renders but the prompt must not: a release
+    // remark routinely names the child ("אבקש לשחרר את אבי"), and sending it
+    // would put the name back in the prompt through the side door.
+    const prompt = buildPrompt({ ...makePayload(), releases: [RELEASE] });
+
+    expect(prompt).not.toContain('תור לרופא');
+    expect(prompt).not.toContain('אבי');
+  });
+
+  it('tells the model the consent form title and its deadline', () => {
+    const prompt = buildPrompt({ ...makePayload(), activities: [ACTIVITY] });
+
+    expect(prompt).toContain('טיול שנתי לגליל');
+    expect(prompt).toContain('20/11/2026');
+  });
+
+  it('asks for a line about each of the two new sections', () => {
+    // Without these the schema would reject nothing and the template would
+    // render the sections with no prose at all.
+    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
+      expect.arrayContaining(['releaseLine', 'activityLine']),
+    );
   });
 });

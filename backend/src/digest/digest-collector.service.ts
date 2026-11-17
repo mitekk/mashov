@@ -3,9 +3,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   DigestBehaviorFact,
   DigestCandidate,
+  DigestActivityFact,
   DigestGender,
   DigestHomeworkFact,
   DigestPayload,
+  DigestReleaseFact,
 } from './digest.types';
 
 export interface DigestCollectInput {
@@ -13,6 +15,8 @@ export interface DigestCollectInput {
   /** The candidates this run has claimed. Nothing outside them is reported. */
   candidates: DigestCandidate[];
   reportFor: Date;
+  /** Needed for consent forms, which are keyed by household, not by child. */
+  userId?: string | null;
 }
 
 /**
@@ -29,7 +33,7 @@ export class DigestCollectorService {
   constructor(private readonly prisma: PrismaService) {}
 
   async collect(input: DigestCollectInput): Promise<DigestPayload> {
-    const { studentGuid, candidates, reportFor } = input;
+    const { studentGuid, candidates, reportFor, userId } = input;
 
     const behaviorIds = idsOf(candidates, 'behavior');
     const newIds = idsOf(candidates, 'homework_new');
@@ -40,7 +44,13 @@ export class DigestCollectorService {
       select: { privateName: true, gender: true },
     });
 
+    const releaseIds = idsOf(candidates, 'release').map((id) => Number(id));
+    const activityIds = idsOf(candidates, 'activity').map((id) => Number(id));
+
     const behavior = behaviorIds.length > 0 ? await this.readBehavior(behaviorIds) : [];
+    const releases = releaseIds.length > 0 ? await this.readReleases(studentGuid, releaseIds) : [];
+    const activities =
+      activityIds.length > 0 && userId ? await this.readActivities(userId, activityIds) : [];
     // One query for both homework sections: the same row can legitimately appear
     // in each, once as newly assigned and once as estimated-due.
     const homeworkIds = unique([...newIds, ...dueIds]);
@@ -57,6 +67,8 @@ export class DigestCollectorService {
       childFirstName: student?.privateName ?? '',
       childGender: normalizeGender(student?.gender),
       reportFor,
+      releases,
+      activities,
       behavior,
       homeworkNew: newIds
         .map((id) => homeworkById.get(id))
@@ -83,6 +95,45 @@ export class DigestCollectorService {
       },
       orderBy: { eventAt: 'asc' },
     })) as DigestBehaviorFact[];
+  }
+
+  /**
+   * Keyed by `releaseId`, Mashov's own id, because that is what the candidate
+   * carries -- the checker hashes the upstream id, not our row's cuid.
+   */
+  private async readReleases(studentGuid: string, releaseIds: number[]): Promise<DigestReleaseFact[]> {
+    const rows = await this.prisma.studentRelease.findMany({
+      where: { studentGuid, releaseId: { in: releaseIds } },
+      select: { releaseId: true, releaseDate: true, startHour: true, remark: true },
+      orderBy: [{ releaseDate: 'asc' }, { startHour: 'asc' }],
+    });
+
+    return rows.map((row) => ({
+      id: String(row.releaseId),
+      releaseDate: row.releaseDate,
+      startHour: row.startHour,
+      remark: row.remark,
+    }));
+  }
+
+  /**
+   * The consent letter (`descriptionText`) is deliberately not selected. The
+   * title and the deadline are the whole actionable content, and the letter
+   * names staff and other children.
+   */
+  private async readActivities(userId: string, activityIds: number[]): Promise<DigestActivityFact[]> {
+    const rows = await this.prisma.schoolActivity.findMany({
+      where: { userId, activityId: { in: activityIds } },
+      select: { activityId: true, title: true, activityStartDate: true, endAnswerDate: true },
+      orderBy: { endAnswerDate: 'asc' },
+    });
+
+    return rows.map((row) => ({
+      id: String(row.activityId),
+      title: row.title,
+      activityStartDate: row.activityStartDate,
+      endAnswerDate: row.endAnswerDate,
+    }));
   }
 
   private async readHomework(ids: string[]): Promise<DigestHomeworkFact[]> {

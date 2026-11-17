@@ -1,4 +1,11 @@
-import { DigestBehaviorFact, DigestHomeworkFact, DigestLines, DigestPayload } from './digest.types';
+import {
+  DigestActivityFact,
+  DigestBehaviorFact,
+  DigestHomeworkFact,
+  DigestLines,
+  DigestPayload,
+  DigestReleaseFact,
+} from './digest.types';
 
 /**
  * The fixed Hebrew report. The template owns every structural decision --
@@ -34,6 +41,18 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
 
   if (payload.homeworkNew.length > 0) {
     blocks.push(section('שיעורי בית חדשים', lines.homeworkLine, payload.homeworkNew.map(homeworkBullet)));
+  }
+
+  // Before homework: a child leaving at 11:30 changes the shape of the day in a
+  // way that an exercise on page 42 does not.
+  if (payload.releases.length > 0) {
+    blocks.push(section('שחרור מוקדם', lines.releaseLine, payload.releases.map(releaseBullet)));
+  }
+
+  if (payload.activities.length > 0) {
+    blocks.push(
+      section('אישורים שממתינים לך', lines.activityLine, payload.activities.map(activityBullet)),
+    );
   }
 
   if (payload.homeworkDueTomorrow.length > 0) {
@@ -81,6 +100,29 @@ function homeworkBullet(fact: DigestHomeworkFact): string {
 }
 
 /**
+ * The parent filed this request, so their own `remark` is shown back to them --
+ * it is the reason they will recognise the row by. It is the one free-text
+ * field the report renders but the prompt never carries: it routinely names
+ * the child, and no part of the child's name goes to the model.
+ */
+function releaseBullet(fact: DigestReleaseFact): string {
+  const head = `${formatSchoolDate(fact.releaseDate)} בשעה ${formatTimeOfDay(fact.startHour)}`;
+  const remark = fact.remark?.trim();
+  return remark ? `${head} — ${remark}` : head;
+}
+
+function activityBullet(fact: DigestActivityFact): string {
+  return `${fact.title} — יש להשיב עד ${formatSchoolDate(fact.endAnswerDate)}`;
+}
+
+/** "11:30:00" is a column value; a parent reads "11:30". */
+function formatTimeOfDay(raw: string): string {
+  const match = /^(\d{1,2}):(\d{2})/.exec(raw.trim());
+  if (!match) return raw.trim();
+  return `${match[1].padStart(2, '0')}:${match[2]}`;
+}
+
+/**
  * Deliberately says "צפי הגשה" (estimated) and never "תאריך הגשה" (due date).
  * Mashov exposes only lessonDate, when the work was given; there is no due-date
  * field to promise. See ADR-0026.
@@ -102,6 +144,8 @@ export function deterministicLines(payload: DigestPayload): DigestLines {
   const behaviorCount = payload.behavior.length;
   const newCount = payload.homeworkNew.length;
   const dueCount = payload.homeworkDueTomorrow.length;
+  const releaseCount = payload.releases.length;
+  const activityCount = payload.activities.length;
 
   return {
     headline: 'עדכון יומי מבית הספר',
@@ -119,5 +163,17 @@ export function deterministicLines(payload: DigestPayload): DigestLines {
       dueCount === 0
         ? ''
         : `${dueCount === 1 ? 'מטלה אחת' : `${dueCount} מטלות`} בצפי הגשה למחר.`,
+    releaseLine:
+      releaseCount === 0
+        ? ''
+        : releaseCount === 1
+          ? 'יש שחרור מוקדם אחד בתוקף.'
+          : `יש ${releaseCount} שחרורים מוקדמים בתוקף.`,
+    activityLine:
+      activityCount === 0
+        ? ''
+        : activityCount === 1
+          ? 'יש אישור אחד שממתין לתשובה שלך.'
+          : `יש ${activityCount} אישורים שממתינים לתשובה שלך.`,
   };
 }
