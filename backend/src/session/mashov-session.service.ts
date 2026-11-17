@@ -87,11 +87,19 @@ export class MashovSessionService {
   private isAuthenticating = false;
   private authPromise: Promise<void> | null = null;
   private readonly httpClient: AxiosInstance;
-  /** Per-connection session cache keyed by householdConnection.id */
+  /**
+   * Per-connection session cache keyed by `connectionId:year`.
+   *
+   * The year is part of the key because Mashov scopes a whole session to the
+   * year in the login body. Keyed on the connection alone, a caller asking for
+   * one year is handed another caller's cookies and reads that year's data
+   * while stamping its own — and the wrong-year response is a valid 200, so
+   * neither the 401/403 retry nor any error path can notice.
+   */
   private readonly connectionSessions = new Map<string, ConnectionSession>();
-  /** Last roster counts per connection, written by every connection login. */
+  /** Last roster counts per `connectionId:year`, written by every login. */
   private readonly lastRosterByConnection = new Map<string, RosterResult>();
-  /** Last login payload per connection, so the year can be reconciled from it. */
+  /** Last login payload per `connectionId:year`, for year reconciliation. */
   private readonly lastLoginByConnection = new Map<string, LoginResponse>();
   /**
    * Dedupes concurrent self-heal refreshes. Without it a page-load storm fires
@@ -454,9 +462,10 @@ export class MashovSessionService {
       true,
     );
 
-    const login = this.lastLoginByConnection.get(connection.id);
+    const attemptedKey = this.sessionKey(connection.id, attemptedYear);
+    const login = this.lastLoginByConnection.get(attemptedKey);
     const roster =
-      this.lastRosterByConnection.get(connection.id) ??
+      this.lastRosterByConnection.get(attemptedKey) ??
       { created: 0, updated: 0, deactivated: 0 };
 
     // Mashov is the authority on which year is active, on THIS path too — not
@@ -482,6 +491,13 @@ export class MashovSessionService {
       // year needs a fresh session or every later GET reads the wrong year.
       if (reconciled.year !== attemptedYear) {
         this.schoolYearService.invalidate(connection.schoolCode);
+        // forceRefresh below only evicts the corrected year's key, so the
+        // superseded year's cookies have to go explicitly. Leaving them would
+        // let a later caller asking for the year Mashov rejected be served a
+        // session it already said was wrong.
+        this.connectionSessions.delete(attemptedKey);
+        this.lastLoginByConnection.delete(attemptedKey);
+        this.lastRosterByConnection.delete(attemptedKey);
         await this.getAuthHeadersForConnection(
           connection.id,
           connection.schoolCode,
@@ -700,11 +716,13 @@ export class MashovSessionService {
     password: string,
     forceRefresh = false,
   ): Promise<Record<string, string>> {
+    const sessionKey = this.sessionKey(connectionId, year);
+
     if (forceRefresh) {
-      this.connectionSessions.delete(connectionId);
+      this.connectionSessions.delete(sessionKey);
     }
 
-    const cached = this.connectionSessions.get(connectionId);
+    const cached = this.connectionSessions.get(sessionKey);
     if (cached && !cached.isAuthenticating) {
       return this.buildHeaders(cached.cookies, cached.csrfToken);
     }
@@ -721,7 +739,7 @@ export class MashovSessionService {
       isAuthenticating: true,
       authPromise: null,
     };
-    this.connectionSessions.set(connectionId, placeholder);
+    this.connectionSessions.set(sessionKey, placeholder);
 
     const connRecord = await this.prisma.householdConnection.findUnique({
       where: { id: connectionId },
@@ -735,7 +753,7 @@ export class MashovSessionService {
     try {
       const { cookies } = await authPromise;
       const csrfToken = cookies.csrfToken;
-      this.connectionSessions.set(connectionId, {
+      this.connectionSessions.set(sessionKey, {
         csrfToken,
         cookies,
         isAuthenticating: false,
@@ -743,9 +761,14 @@ export class MashovSessionService {
       });
       return this.buildHeaders(cookies, csrfToken);
     } catch (err) {
-      this.connectionSessions.delete(connectionId);
+      this.connectionSessions.delete(sessionKey);
       throw err;
     }
+  }
+
+  /** Cache key for everything a connection login produces: both ends matter. */
+  private sessionKey(connectionId: string, year: number): string {
+    return `${connectionId}:${Number(year)}`;
   }
 
   private buildHeaders(cookies: SessionCookies, csrfToken: string): Record<string, string> {
@@ -843,8 +866,9 @@ export class MashovSessionService {
     // single reason a child's class never updated.
     const roster = await this.persistRoster(response.data, Number(semel), Number(year));
     if (connectionId) {
-      this.lastRosterByConnection.set(connectionId, roster);
-      this.lastLoginByConnection.set(connectionId, response.data);
+      const key = this.sessionKey(connectionId, Number(year));
+      this.lastRosterByConnection.set(key, roster);
+      this.lastLoginByConnection.set(key, response.data);
     }
 
     this.logger.debug(`Connection session established for semel=${semel} username=${username}`);

@@ -462,6 +462,67 @@ describe('MashovSessionService', () => {
     });
   });
 
+  describe('per-year session cache', () => {
+    it('does not reuse a session cached for a different year on the same connection', async () => {
+      // The backfill and the live crons hold one connection between them. A
+      // cache keyed on connectionId alone hands the second caller the first
+      // caller's year-scoped cookies, and the wrong-year response is a valid
+      // 200 that no retry can detect.
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+      expect(mockHttp.post).toHaveBeenLastCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2026 }),
+        expect.anything(),
+      );
+    });
+
+    it("keeps two years' sessions concurrently", async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('evicts only the year asked for on forceRefresh', async () => {
+      const { service } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw');
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2026, 'parent', 'pw', true);
+      expect(mockHttp.post).toHaveBeenCalledTimes(3);
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(3);
+    });
+
+    it("still evicts the superseded year's session after a year correction", async () => {
+      const { service } = makeHarness({
+        reconcile: jest.fn().mockReturnValue({ year: 2026, changed: true }),
+      });
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.refreshRosterForConnection('conn-1', 2027);
+      const afterCorrection = mockHttp.post.mock.calls.length;
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(mockHttp.post.mock.calls.length).toBe(afterCorrection + 1);
+    });
+  });
+
   describe('ensureStudentsAvailable syncRun bookkeeping', () => {
     it('records a successful students run so the TTL gate is satisfied next time', async () => {
       const { service, prisma } = makeHarness({ lastStudentsRunEndedAt: null });
