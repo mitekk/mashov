@@ -45,6 +45,13 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/mashov}
+      # Prisma pool sizing. Kept out of DATABASE_URL on purpose: as query
+      # parameters on the URL they live inside a masked secret, which is how
+      # the default limit of 9 went unnoticed until sixteen cron tasks and the
+      # request path started timing out against it. Defaults (25 / 20s) are in
+      # src/prisma/prisma-pool.ts; a value pinned in the URL still wins.
+      DATABASE_CONNECTION_LIMIT: ${DATABASE_CONNECTION_LIMIT:-}
+      DATABASE_POOL_TIMEOUT: ${DATABASE_POOL_TIMEOUT:-}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       MASHOV_SEMEL: ${MASHOV_SEMEL}
       MASHOV_YEAR: ${MASHOV_YEAR}
