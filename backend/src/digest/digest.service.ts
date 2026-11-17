@@ -639,21 +639,42 @@ export class DigestService {
  * the deterministic one, which counts what actually survived.
  */
 function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPayload) {
-  if (!summary.usedLlm) return deterministicLines(after);
-  if (after.homeworkDueTomorrow.length === before.homeworkDueTomorrow.length) {
-    return summary.lines;
-  }
-  // The headline is written from the un-narrowed payload too, and can state a
-  // count or name a subject the bullets no longer carry -- the same defect the
-  // dueTomorrowLine swap exists to fix. Once the set has changed underneath the
-  // model, every line it wrote about that set is suspect, so both lines fall
-  // back to the deterministic ones, which count what actually survived.
   const fallback = deterministicLines(after);
-  return {
-    ...summary.lines,
-    headline: fallback.headline,
-    dueTomorrowLine: fallback.dueTomorrowLine,
-  };
+  if (!summary.usedLlm) return fallback;
+
+  const lines = { ...summary.lines };
+
+  // The headline is written from the un-narrowed payload too, and can state a
+  // count or name a subject that no longer survived -- the same defect the
+  // dueTomorrowLine swap exists to fix. Once the set has changed underneath the
+  // model, every line it wrote about that set is suspect.
+  if (after.homeworkDueTomorrow.length !== before.homeworkDueTomorrow.length) {
+    lines.headline = fallback.headline;
+    lines.dueTomorrowLine = fallback.dueTomorrowLine;
+  }
+
+  // The report has no item bullets, so a section's prose is the only place its
+  // facts appear. A blank line for a section that *has* items would drop that
+  // news from the message while the ledger still recorded it as reported --
+  // meaning it would never be mentioned again. The deterministic sentence is
+  // plainer than the model's and complete, which is the right trade here.
+  const sections = [
+    ['behaviorLine', after.behavior.length],
+    ['homeworkLine', after.homeworkNew.length],
+    ['dueTomorrowLine', after.homeworkDueTomorrow.length],
+    ['releaseLine', after.releases.length],
+    ['activityLine', after.activities.length],
+  ] as const;
+
+  for (const [key, itemCount] of sections) {
+    if (itemCount > 0 && lines[key].trim().length === 0) {
+      lines[key] = fallback[key];
+    }
+  }
+
+  if (lines.headline.trim().length === 0) lines.headline = fallback.headline;
+
+  return lines;
 }
 
 /**

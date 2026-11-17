@@ -103,6 +103,11 @@ A dry run deliberately **releases** its claims, so running it again produces
 the same message. That is what keeps a dry run from silencing the first real
 send.
 
+> **An integration run wipes this.** `tests/integration` runs
+> `prisma db push --force-reset`, which drops and recreates the database — so a
+> real chat id you set below is gone afterwards and the seed restores the
+> placeholder. Re-point `digest_recipient.address` after any integration run.
+
 ## 4. Real Telegram send
 
 Get a bot token from BotFather, then message your bot once and read your chat

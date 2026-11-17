@@ -72,12 +72,13 @@ describe('renderReport', () => {
     expect(text.split('אבי').length - 1).toBe(1);
   });
 
-  it('renders a behavior section with the event and its remark', () => {
+  it('renders a behavior section as a header and its prose', () => {
+    // The facts live in the prose now, not in a list beneath it. What the
+    // template still owns is that the section appears at all and carries its
+    // header -- see the deterministicLines tests for the facts themselves.
     const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES);
 
-    expect(text).toContain('איחור');
-    expect(text).toContain('מתמטיקה');
-    expect(text).toContain('הגיע באיחור של 10 דקות');
+    expect(text).toContain('התנהגות ונוכחות');
     expect(text).toContain(LINES.behaviorLine);
   });
 
@@ -90,11 +91,10 @@ describe('renderReport', () => {
     expect(text).not.toContain(LINES.dueTomorrowLine);
   });
 
-  it('renders newly assigned homework', () => {
+  it('renders newly assigned homework as a header and its prose', () => {
     const text = renderReport(makePayload({ homeworkNew: [HOMEWORK] }), LINES);
 
-    expect(text).toContain('חשבון');
-    expect(text).toContain('לפתור עמוד 42');
+    expect(text).toContain('שיעורי בית חדשים');
     expect(text).toContain(LINES.homeworkLine);
   });
 
@@ -110,14 +110,19 @@ describe('renderReport', () => {
       LINES,
     );
 
-    const bullets = text.split('\n').filter((line) => line.startsWith('•'));
-    expect(bullets.some((line) => line.includes('צפי הגשה'))).toBe(true);
-    expect(text).toContain('18/11/2026');
-    // No bullet may label the date "תאריך הגשה" -- that would assert a real
+    // Appended by the template, not left to the model: the label and the date
+    // are the one factual claim in this section that must never be wrong.
+    expect(text).toContain('צפי הגשה: 18/11/2026');
+
+    // Nothing may label the date "תאריך הגשה" -- that would assert a real
     // deadline the data cannot support. The caveat below the section uses the
-    // phrase too, but only to say Mashov supplies no such date, so the
-    // assertion is scoped to the bullets where the claim would be made.
-    expect(bullets.every((line) => !line.includes('תאריך הגשה'))).toBe(true);
+    // phrase, but only to say Mashov supplies no such date, so the assertion is
+    // scoped to the section line where the claim would be made.
+    const sectionLine = text
+      .split('\n')
+      .find((line) => line.includes('צפי הגשה: '));
+    expect(sectionLine).toBeDefined();
+    expect(sectionLine).not.toContain('תאריך הגשה');
   });
 
   it('carries a standing caveat whenever an estimate is shown', () => {
@@ -163,23 +168,29 @@ describe('deterministicLines', () => {
     expect(lines.headline).toMatch(/[֐-׿]/);
   });
 
-  it('counts what happened rather than inventing prose', () => {
+  it('describes every event rather than counting them', () => {
+    // It used to count, which only worked because the bullets underneath said
+    // what the events were. Now the line is the whole report of them, so two
+    // events must produce two statements.
     const lines = deterministicLines(
-      makePayload({ behavior: [BEHAVIOR, { ...BEHAVIOR, id: 'beh-2' }] }),
+      makePayload({
+        behavior: [BEHAVIOR, { ...BEHAVIOR, id: 'beh-2', achvaName: 'הפרעה', subject: 'אנגלית' }],
+      }),
     );
 
-    expect(lines.behaviorLine).toContain('2');
+    expect(lines.behaviorLine).toContain('איחור');
+    expect(lines.behaviorLine).toContain('הפרעה');
+    expect(lines.behaviorLine).toContain('אנגלית');
   });
 
-  it('writes the single-event behavior count as Hebrew words, not a numeral', () => {
-    // The other two fallback lines already do this ("מטלה אחת"); a plural verb
-    // in front of a bare "1" is what a translated string looks like, and this
-    // one goes to a parent whenever the model is unavailable.
+  it('reads as a sentence for a single event, with no count in front of it', () => {
+    // This replaces an older guard against "נרשמו 1 הערת התנהגות" -- a plural
+    // verb in front of a bare numeral. Describing the event removes the
+    // question entirely, so what matters now is that no count is stated.
     const lines = deterministicLines(makePayload({ behavior: [BEHAVIOR] }));
 
-    expect(lines.behaviorLine).not.toContain('1');
     expect(lines.behaviorLine).not.toContain('נרשמו');
-    expect(lines.behaviorLine).toContain('אחת');
+    expect(lines.behaviorLine).toMatch(/^נרשם /);
   });
 
   it('renders a complete message when every line is a fallback', () => {
@@ -209,7 +220,9 @@ const ACTIVITY = {
 
 describe('renderReport releases and activities', () => {
   it('renders an early release with its day and a readable time', () => {
-    const text = renderReport(makePayload({ releases: [RELEASE] }), LINES);
+    const payload = makePayload({ releases: [RELEASE] });
+
+    const text = renderReport(payload, deterministicLines(payload));
 
     expect(text).toContain('שחרור מוקדם');
     expect(text).toContain('18/11/2026');
@@ -218,15 +231,21 @@ describe('renderReport releases and activities', () => {
     expect(text).not.toContain('11:30:00');
   });
 
-  it("shows the parent's own words back to them on a release", () => {
-    // Their text, their child, their message -- and it never went to the model.
-    const text = renderReport(makePayload({ releases: [RELEASE] }), LINES);
+  it("drops the parent's own remark from a release", () => {
+    // It went with the bullets. It was the parent's own text and the one other
+    // place the child's name appeared in the message, so nothing they did not
+    // already know is lost -- and the name now appears exactly once.
+    const payload = makePayload({ releases: [RELEASE] });
 
-    expect(text).toContain('תור לרופא');
+    const text = renderReport(payload, deterministicLines(payload));
+
+    expect(text).not.toContain('תור לרופא');
   });
 
   it('renders a consent form with the deadline to answer by', () => {
-    const text = renderReport(makePayload({ activities: [ACTIVITY] }), LINES);
+    const payload = makePayload({ activities: [ACTIVITY] });
+
+    const text = renderReport(payload, deterministicLines(payload));
 
     expect(text).toContain('טיול שנתי לגליל');
     expect(text).toContain('20/11/2026');
@@ -239,14 +258,13 @@ describe('renderReport releases and activities', () => {
     expect(text).not.toContain('אישור');
   });
 
-  it('counts releases and forms in the deterministic fallback', () => {
+  it('states releases and forms in the deterministic fallback', () => {
     const lines = deterministicLines(
       makePayload({ releases: [RELEASE], activities: [ACTIVITY] }),
     );
 
-    expect(lines.releaseLine).not.toBe('');
-    expect(lines.activityLine).not.toBe('');
-    expect(lines.releaseLine).toContain('אחד');
+    expect(lines.releaseLine).toContain('18/11/2026');
+    expect(lines.activityLine).toContain('טיול שנתי לגליל');
   });
 
   it('leaves the new fallback lines empty when there is nothing to count', () => {
@@ -254,5 +272,122 @@ describe('renderReport releases and activities', () => {
 
     expect(lines.releaseLine).toBe('');
     expect(lines.activityLine).toBe('');
+  });
+});
+
+describe('renderReport without item bullets', () => {
+  const FULL = makePayload({
+    behavior: [BEHAVIOR],
+    homeworkNew: [HOMEWORK],
+    homeworkDueTomorrow: [{ ...HOMEWORK, id: 'hw-due', estimatedDueDate: new Date('2026-11-18T00:00:00Z') }],
+    releases: [
+      {
+        id: '64',
+        releaseDate: new Date('2026-11-18T00:00:00Z'),
+        startHour: '11:30:00',
+        remark: 'אבקש לשחרר את אבי, יש לו תור לרופא',
+      },
+    ],
+    activities: [
+      {
+        id: '7',
+        title: 'טיול שנתי לגליל',
+        activityStartDate: new Date('2026-11-25T00:00:00Z'),
+        endAnswerDate: new Date('2026-11-20T00:00:00Z'),
+      },
+    ],
+  });
+
+  it('writes no bullet lines at all', () => {
+    // The prose above each section already says it. A list repeating the same
+    // facts underneath is the raw record, not a message to a person.
+    const text = renderReport(FULL, LINES);
+
+    expect(text).not.toContain('•');
+  });
+
+  it('keeps the section headers and the prose', () => {
+    const text = renderReport(FULL, LINES);
+
+    expect(text).toContain('התנהגות ונוכחות');
+    expect(text).toContain('היה איחור אחד בשיעור מתמטיקה.');
+    expect(text).toContain('שחרור מוקדם');
+  });
+
+  it('still labels the estimated deadline, from the template and not the model', () => {
+    // ADR-0026 promises this label is never left to the model. With the
+    // bullets gone it is a parenthetical on the section's prose instead.
+    const text = renderReport(FULL, LINES);
+
+    expect(text).toContain('צפי הגשה: 18/11/2026');
+  });
+
+  it('keeps the standing caveat whenever an estimate is shown', () => {
+    const text = renderReport(FULL, LINES);
+
+    expect(text).toContain('צפי בלבד');
+  });
+
+  it('no longer repeats the child name through the release remark', () => {
+    // The remark was the only other place the name appeared. It was the
+    // parent's own text, written by them, so nothing they need is lost.
+    const text = renderReport(FULL, LINES);
+
+    expect(text.split('אבי').length - 1).toBe(1);
+  });
+});
+
+describe('deterministicLines must carry the facts now', () => {
+  it('names the behavior event and its remark, not just a count', () => {
+    // With no bullets, a counting fallback would tell a parent that "one note
+    // was recorded" and never what it was.
+    const lines = deterministicLines(makePayload({ behavior: [BEHAVIOR] }));
+
+    expect(lines.behaviorLine).toContain('איחור');
+    expect(lines.behaviorLine).toContain('מתמטיקה');
+    expect(lines.behaviorLine).toContain('הגיע באיחור של 10 דקות');
+  });
+
+  it('quotes the homework text as the teacher wrote it', () => {
+    const lines = deterministicLines(makePayload({ homeworkNew: [HOMEWORK] }));
+
+    expect(lines.homeworkLine).toContain('חשבון');
+    expect(lines.homeworkLine).toContain('לפתור עמוד 42');
+  });
+
+  it('gives the release day and time', () => {
+    const lines = deterministicLines(
+      makePayload({
+        releases: [
+          {
+            id: '64',
+            releaseDate: new Date('2026-11-18T00:00:00Z'),
+            startHour: '11:30:00',
+            remark: null,
+          },
+        ],
+      }),
+    );
+
+    expect(lines.releaseLine).toContain('18/11/2026');
+    expect(lines.releaseLine).toContain('11:30');
+  });
+
+  it('gives the consent form title and its answer deadline', () => {
+    const lines = deterministicLines(
+      makePayload({
+        activities: [
+          {
+            id: '7',
+            title: 'טיול שנתי לגליל',
+            activityStartDate: new Date('2026-11-25T00:00:00Z'),
+            endAnswerDate: new Date('2026-11-20T00:00:00Z'),
+          },
+        ],
+      }),
+    );
+
+    expect(lines.activityLine).toContain('טיול שנתי לגליל');
+    expect(lines.activityLine).toContain('20/11/2026');
   });
 });

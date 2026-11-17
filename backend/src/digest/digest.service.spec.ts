@@ -810,6 +810,41 @@ describe('DigestService.runAll', () => {
     expect(harness.recipients.listDeliveryTargets).toHaveBeenCalledWith('user-1');
   });
 
+  it('fills in a section the model left blank, rather than dropping the news', async () => {
+    // With the item bullets gone the prose is the only place the facts appear,
+    // so an empty line for a section that has items would silently lose it --
+    // and the ledger would still mark it reported, so it would never come back.
+    const harness = makeHarness();
+    (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
+      lines: {
+        headline: 'עדכון',
+        behaviorLine: '   ',
+        homeworkLine: '',
+        dueTomorrowLine: '',
+        releaseLine: '',
+        activityLine: '',
+      },
+      deadlineResolutions: [],
+      usedLlm: true,
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    // The deterministic sentence for the seeded behavior event.
+    expect(sent).toContain('איחור');
+    expect(sent).toContain('מתמטיקה');
+  });
+
+  it('keeps the model prose for the sections it did write', async () => {
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('התנהגות');
+  });
+
   it('marks the delivery as not having used the model when it fell back', async () => {
     const harness = makeHarness();
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({

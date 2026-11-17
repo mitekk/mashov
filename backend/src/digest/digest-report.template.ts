@@ -8,11 +8,20 @@ import {
 } from './digest.types';
 
 /**
- * The fixed Hebrew report. The template owns every structural decision --
- * section headers, item bullets, the estimate label and its caveat -- so the
- * LLM writes sentences and never decides what is in the report. Hand it
- * `deterministicLines(payload)` instead and the same message renders with no
- * model involved at all.
+ * The fixed Hebrew report.
+ *
+ * The template owns every structural decision -- which sections exist, which
+ * appear, the estimate label and its caveat -- and the prose inside them is
+ * written per section. Hand it `deterministicLines(payload)` instead and the
+ * same message renders with no model involved at all.
+ *
+ * There are deliberately **no item bullets**. The report used to print the
+ * prose and then list the same facts underneath, which is the raw record
+ * stapled to a message about it. One consequence is worth stating plainly: the
+ * prose is now the only place the facts appear, so a section's line has to
+ * actually say what happened. That is why `deterministicLines` describes
+ * rather than counts, and why `DigestService.linesFor` refuses a blank line
+ * for a section that has items.
  */
 
 const CAVEAT =
@@ -25,44 +34,48 @@ export function formatSchoolDate(date: Date): string {
   return `${day}/${month}/${date.getUTCFullYear()}`;
 }
 
+/** "11:30:00" is a column value; a parent reads "11:30". */
+export function formatTimeOfDay(raw: string): string {
+  const match = /^(\d{1,2}):(\d{2})/.exec(raw.trim());
+  if (!match) return raw.trim();
+  return `${match[1].padStart(2, '0')}:${match[2]}`;
+}
+
 export function renderReport(payload: DigestPayload, lines: DigestLines): string {
   // Who and when first: this is what a parent scans for in a list of Telegram
-  // chats, and it is the only place the child's name appears. Prose that
-  // repeats the name reads like a form letter, so neither the deterministic
-  // lines nor the system prompt reintroduce it.
+  // chats, and it is the only place the child's name appears.
   const blocks: string[] = [
     `${payload.childFirstName} · ${formatSchoolDate(payload.reportFor)}`,
     lines.headline.trim(),
   ];
 
   if (payload.behavior.length > 0) {
-    blocks.push(section('התנהגות ונוכחות', lines.behaviorLine, payload.behavior.map(behaviorBullet)));
+    blocks.push(section('התנהגות ונוכחות', lines.behaviorLine));
   }
 
   if (payload.homeworkNew.length > 0) {
-    blocks.push(section('שיעורי בית חדשים', lines.homeworkLine, payload.homeworkNew.map(homeworkBullet)));
+    blocks.push(section('שיעורי בית חדשים', lines.homeworkLine));
   }
 
   // Before homework: a child leaving at 11:30 changes the shape of the day in a
   // way that an exercise on page 42 does not.
   if (payload.releases.length > 0) {
-    blocks.push(section('שחרור מוקדם', lines.releaseLine, payload.releases.map(releaseBullet)));
+    blocks.push(section('שחרור מוקדם', lines.releaseLine));
   }
 
   if (payload.activities.length > 0) {
-    blocks.push(
-      section('אישורים שממתינים לך', lines.activityLine, payload.activities.map(activityBullet)),
-    );
+    blocks.push(section('אישורים שממתינים לך', lines.activityLine));
   }
 
   if (payload.homeworkDueTomorrow.length > 0) {
-    blocks.push(
-      section(
-        'צפי הגשה למחר',
-        lines.dueTomorrowLine,
-        payload.homeworkDueTomorrow.map(dueBullet),
-      ),
-    );
+    // The one fact the model is not trusted to carry. ADR-0026 is a promise
+    // that a derived deadline is always labelled as derived, so the label and
+    // the date are appended by the template rather than hoped for in the prose
+    // -- and the date is safe to state once, because narrowing has already
+    // reduced this section to the items whose estimate is tomorrow.
+    const estimate = payload.homeworkDueTomorrow[0].estimatedDueDate;
+    const label = estimate ? `צפי הגשה: ${formatSchoolDate(estimate)}` : 'צפי הגשה: מחר';
+    blocks.push(section('צפי הגשה למחר', `${lines.dueTomorrowLine.trim()} (${label})`.trim()));
     blocks.push(CAVEAT);
   }
 
@@ -77,103 +90,66 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
  * renders right-to-left in Telegram without any markup, so bold is not worth a
  * delivery failure.
  */
-function section(title: string, prose: string, bullets: string[]): string {
-  const body = [title];
+function section(title: string, prose: string): string {
   const trimmed = prose.trim();
-  if (trimmed.length > 0) body.push(trimmed);
-  body.push(...bullets.map((bullet) => `• ${bullet}`));
-  return body.join('\n');
-}
-
-function behaviorBullet(fact: DigestBehaviorFact): string {
-  const parts = [fact.achvaName, fact.subject].filter((part) => part && part.length > 0);
-  const head = parts.join(' — ');
-  const remark = fact.remark?.trim();
-  return remark ? `${head}: ${remark}` : head;
-}
-
-function homeworkBullet(fact: DigestHomeworkFact): string {
-  const text = fact.homeworkText.trim();
-  const remark = fact.remark?.trim();
-  const body = remark ? `${text} (${remark})` : text;
-  return `${fact.subjectName}: ${body}`;
+  return trimmed.length > 0 ? `${title}\n${trimmed}` : '';
 }
 
 /**
- * The parent filed this request, so their own `remark` is shown back to them --
- * it is the reason they will recognise the row by. It is the one free-text
- * field the report renders but the prompt never carries: it routinely names
- * the child, and no part of the child's name goes to the model.
- */
-function releaseBullet(fact: DigestReleaseFact): string {
-  const head = `${formatSchoolDate(fact.releaseDate)} בשעה ${formatTimeOfDay(fact.startHour)}`;
-  const remark = fact.remark?.trim();
-  return remark ? `${head} — ${remark}` : head;
-}
-
-function activityBullet(fact: DigestActivityFact): string {
-  return `${fact.title} — יש להשיב עד ${formatSchoolDate(fact.endAnswerDate)}`;
-}
-
-/** "11:30:00" is a column value; a parent reads "11:30". */
-function formatTimeOfDay(raw: string): string {
-  const match = /^(\d{1,2}):(\d{2})/.exec(raw.trim());
-  if (!match) return raw.trim();
-  return `${match[1].padStart(2, '0')}:${match[2]}`;
-}
-
-/**
- * Deliberately says "צפי הגשה" (estimated) and never "תאריך הגשה" (due date).
- * Mashov exposes only lessonDate, when the work was given; there is no due-date
- * field to promise. See ADR-0026.
- */
-function dueBullet(fact: DigestHomeworkFact): string {
-  const base = homeworkBullet(fact);
-  return fact.estimatedDueDate
-    ? `${base} — צפי הגשה: ${formatSchoolDate(fact.estimatedDueDate)}`
-    : `${base} — צפי הגשה: מחר`;
-}
-
-/**
- * The prose used when the LLM times out, refuses, or returns malformed output.
- * It counts what happened instead of describing it, which is all a template
- * needs to render a complete, honest message. A parent getting a plainer
- * message beats a parent getting nothing.
+ * The prose used when the model times out, refuses, or returns unusable output
+ * -- and, per section, whenever it returns nothing for a section that has
+ * items.
+ *
+ * It used to count ("one note was recorded today"), which worked only because
+ * the bullets underneath said what the note was. With the bullets gone a
+ * counting fallback would tell a parent that something happened and never what,
+ * so these lines state the facts: subject, the teacher's own words, the text of
+ * the assignment, the time, the deadline. Plainer than the model's prose, and
+ * complete.
  */
 export function deterministicLines(payload: DigestPayload): DigestLines {
-  const behaviorCount = payload.behavior.length;
-  const newCount = payload.homeworkNew.length;
-  const dueCount = payload.homeworkDueTomorrow.length;
-  const releaseCount = payload.releases.length;
-  const activityCount = payload.activities.length;
-
   return {
     headline: 'עדכון יומי מבית הספר',
-    behaviorLine:
-      behaviorCount === 0
-        ? ''
-        : behaviorCount === 1
-          ? 'נרשמה הערת התנהגות אחת היום.'
-          : `נרשמו ${behaviorCount} הערות התנהגות היום.`,
+    behaviorLine: payload.behavior.map(behaviorSentence).join(' '),
     homeworkLine:
-      newCount === 0
+      payload.homeworkNew.length === 0
         ? ''
-        : `${newCount === 1 ? 'ניתנה מטלה אחת' : `ניתנו ${newCount} מטלות`} היום.`,
+        : `ניתנו המטלות הבאות: ${payload.homeworkNew.map(homeworkSentence).join('; ')}.`,
     dueTomorrowLine:
-      dueCount === 0
+      payload.homeworkDueTomorrow.length === 0
         ? ''
-        : `${dueCount === 1 ? 'מטלה אחת' : `${dueCount} מטלות`} בצפי הגשה למחר.`,
-    releaseLine:
-      releaseCount === 0
-        ? ''
-        : releaseCount === 1
-          ? 'יש שחרור מוקדם אחד בתוקף.'
-          : `יש ${releaseCount} שחרורים מוקדמים בתוקף.`,
+        : `מה שצפוי להידרש מחר: ${payload.homeworkDueTomorrow.map(homeworkSentence).join('; ')}.`,
+    releaseLine: payload.releases.map(releaseSentence).join(' '),
     activityLine:
-      activityCount === 0
+      payload.activities.length === 0
         ? ''
-        : activityCount === 1
-          ? 'יש אישור אחד שממתין לתשובה שלך.'
-          : `יש ${activityCount} אישורים שממתינים לתשובה שלך.`,
+        : `ממתינים לתשובתך: ${payload.activities.map(activitySentence).join('; ')}.`,
   };
+}
+
+function behaviorSentence(fact: DigestBehaviorFact): string {
+  const head = [fact.achvaName, fact.subject].filter((part) => part && part.length > 0).join(' ב');
+  const remark = fact.remark?.trim();
+  return remark ? `נרשם ${head}: ${remark}.` : `נרשם ${head}.`;
+}
+
+function homeworkSentence(fact: DigestHomeworkFact): string {
+  const text = fact.homeworkText.trim();
+  const remark = fact.remark?.trim();
+  return `${fact.subjectName} — ${remark ? `${text} (${remark})` : text}`;
+}
+
+/**
+ * Day and time, and deliberately not the parent's `remark`.
+ *
+ * The remark was the one other place the child's name appeared in the message
+ * ("אבקש לשחרר את יונתן"), and it is text the parent wrote themselves, so
+ * dropping it with the bullets costs them nothing they did not already know.
+ */
+function releaseSentence(fact: DigestReleaseFact): string {
+  return `שחרור מוקדם ב-${formatSchoolDate(fact.releaseDate)} בשעה ${formatTimeOfDay(fact.startHour)}.`;
+}
+
+function activitySentence(fact: DigestActivityFact): string {
+  return `${fact.title} (יש להשיב עד ${formatSchoolDate(fact.endAnswerDate)})`;
 }

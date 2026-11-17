@@ -41,9 +41,16 @@ dedup is by content hash; under-collecting would be invisible.
 **The label is the whole point.** The report says `צפי הגשה` ("estimated submission"), never
 `תאריך הגשה` ("due date"), and a section carrying an estimate is followed by a caveat stating
 outright that Mashov supplies no due date and how the estimate was derived. The template owns
-that string, so no model output can reword it. A unit test asserts, per bullet, that the
-due-date phrasing never appears — scoped to the bullets because the caveat uses that phrase
-precisely to deny it.
+that string, so no model output can reword it.
+
+It originally lived on each item bullet. The bullets were later removed — they repeated, line for
+line, the facts the prose above them already gave, which made the message read like a record
+rather than something written to a person. The label did **not** move into the prose with them:
+it is appended by the template to the section's line as `(צפי הגשה: DD/MM/YYYY)`, because this is
+the one factual claim in the report that a model must not be trusted to carry. The date is safe
+to state once there because narrowing has already reduced the section to items whose estimate is
+tomorrow. A unit test asserts that the section line never contains the due-date phrasing, scoped
+to that line because the caveat beneath it uses the phrase precisely to deny it.
 
 ## Consequences
 
