@@ -35,6 +35,27 @@ The channel is a configuration detail — a `digest_recipient` row names it — 
 `LogSender` is what `DIGEST_DRY_RUN` uses, and that flag **defaults to true**, so a first
 deployment renders and logs without messaging anybody.
 
+**Sonnet 5.5 at `low` effort, configurable per deployment.**
+
+The task is four short Hebrew lines plus one deadline-extraction judgement, so it does not need
+a frontier model. Measured against the real prompt, Haiku 5.5, Sonnet 5.5 and Opus 5.5 all
+extracted an explicit Hebrew deadline (`עד 25/11`) correctly — the only judgement here that
+changes what a parent is told, since the report's structure and item list are template-owned.
+Sonnet was chosen over Haiku on one observed difference: given a payload with no newly assigned
+homework, Haiku still wrote prose describing new homework, where Sonnet and Opus left the line
+empty. `renderReport` gates each section on its actual items, so that prose never rendered — but
+the gate only protects *empty* sections, and loose description of a section that does have items
+would reach a parent. Sonnet costs roughly a fifth of Opus on this task; at ≤7 calls per child
+per active day, all three are small enough that cost did not decide this.
+
+`low` effort is deliberate rather than timid: thinking counts against `max_tokens` on these
+models, so a higher level raises the chance of a truncated response — which lands on the
+deterministic fallback and costs the parent the prose entirely. `DIGEST_LLM_MODEL` and
+`DIGEST_LLM_EFFORT` override both. An unrecognised effort value is dropped with a warning
+rather than forwarded, because the API answers a bad effort with a 400, and this service turns
+every failure into the deterministic fallback — so a typo would silently degrade every message
+and look exactly like an outage.
+
 **Both new clients bypass the Mashov egress proxy, by different means.**
 
 `HTTPS_PROXY` is process-wide and plain axios honours it. ADR-0023's hop is a single

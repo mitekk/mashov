@@ -11,8 +11,27 @@ import {
   DigestSummary,
 } from './digest.types';
 
-const DEFAULT_MODEL = 'claude-opus-5-5';
+/**
+ * Sonnet 5.5 rather than Opus: measured against the real prompt, all three of
+ * Haiku 5.5, Sonnet 5.5 and Opus 5.5 extracted an explicit Hebrew deadline
+ * ("עד 25/11") correctly, which is the only judgement here that changes what a
+ * parent is told. Sonnet costs roughly a fifth of Opus on this task, and was
+ * the most disciplined of the three about not writing prose for a section it
+ * was given no items for. Haiku is cheaper again and a reasonable override.
+ */
+const DEFAULT_MODEL = 'claude-sonnet-5-5';
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * How hard the model thinks before answering. `low` is deliberate, not
+ * timid: the task is four short Hebrew lines plus one small array, and
+ * thinking counts against `max_tokens` on these models -- so a higher level
+ * raises the chance of a truncated response, which lands on the deterministic
+ * fallback and costs the parent the prose entirely.
+ */
+const DEFAULT_EFFORT = 'low';
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+type DigestEffort = (typeof EFFORT_LEVELS)[number];
 
 /**
  * Deliberately small. The output is four short Hebrew lines plus one small
@@ -172,7 +191,7 @@ export class DigestSummarizerService {
         max_tokens: MAX_TOKENS,
         system: SYSTEM_PROMPT,
         output_config: {
-          effort: 'low',
+          effort: this.readEffort(),
           format: { type: 'json_schema', schema: OUTPUT_SCHEMA as unknown as Record<string, unknown> },
         },
         messages: [{ role: 'user', content: buildPrompt(payload) }],
@@ -211,6 +230,29 @@ export class DigestSummarizerService {
   private readTimeoutMs(): number {
     const parsed = Number(this.config.get<string | number>('DIGEST_LLM_TIMEOUT_MS'));
     return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * An unrecognised level is dropped rather than forwarded. The API answers a
+   * bad effort with a 400, which this service turns into the deterministic
+   * fallback -- so a typo in `.env` would quietly cost every parent the
+   * model's prose, showing up only as a run of `usedLlm: false` rows that look
+   * exactly like an outage.
+   */
+  private readEffort(): DigestEffort {
+    const raw = this.config.get<string>('DIGEST_LLM_EFFORT');
+    if (raw === undefined || raw === null) return DEFAULT_EFFORT;
+
+    const normalized = String(raw).trim().toLowerCase();
+    if (normalized.length === 0) return DEFAULT_EFFORT;
+
+    const match = EFFORT_LEVELS.find((level) => level === normalized);
+    if (match) return match;
+
+    this.logger.warn(
+      `DIGEST_LLM_EFFORT="${normalized}" is not one of ${EFFORT_LEVELS.join(', ')}; using ${DEFAULT_EFFORT}.`,
+    );
+    return DEFAULT_EFFORT;
   }
 }
 

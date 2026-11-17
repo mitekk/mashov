@@ -60,7 +60,6 @@ function makeService(env: Record<string, string> = {}) {
   const config = {
     get: jest.fn((key: string) => ({
       ANTHROPIC_API_KEY: 'test-key',
-      DIGEST_LLM_MODEL: 'claude-opus-5-5',
       DIGEST_LLM_TIMEOUT_MS: '30000',
       ...env,
     })[key]),
@@ -139,13 +138,52 @@ describe('DigestSummarizerService.summarize', () => {
     await makeService().summarize(makePayload());
 
     const request = createMock.mock.calls[0][0];
-    expect(request.model).toBe('claude-opus-5-5');
+    // Sonnet 5.5 by default: it costs roughly a fifth of Opus on this task and
+    // was the most disciplined of the three about not describing items it was
+    // not given. Overridable per deployment with DIGEST_LLM_MODEL.
+    expect(request.model).toBe('claude-sonnet-5-5');
     expect(request.output_config.effort).toBe('low');
     expect(request.output_config.format.type).toBe('json_schema');
     // A deliberately short output: four Hebrew lines and a small array.
     expect(request.max_tokens).toBe(2000);
     // Thinking cannot be disabled on this model, so it is never sent.
     expect(request).not.toHaveProperty('thinking');
+  });
+
+  it('uses the model named in the environment over the default', async () => {
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    await makeService({ DIGEST_LLM_MODEL: 'claude-haiku-5-5' }).summarize(makePayload());
+
+    expect(createMock.mock.calls[0][0].model).toBe('claude-haiku-5-5');
+  });
+
+  it('uses the effort level named in the environment', async () => {
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    await makeService({ DIGEST_LLM_EFFORT: 'medium' }).summarize(makePayload());
+
+    expect(createMock.mock.calls[0][0].output_config.effort).toBe('medium');
+  });
+
+  it('accepts an effort level regardless of case or surrounding space', async () => {
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    await makeService({ DIGEST_LLM_EFFORT: '  HIGH ' }).summarize(makePayload());
+
+    expect(createMock.mock.calls[0][0].output_config.effort).toBe('high');
+  });
+
+  it('ignores an unusable effort level rather than letting the API reject it', async () => {
+    // An unrecognised value would be a 400, which this service turns into the
+    // deterministic fallback -- so a typo in .env would silently cost every
+    // parent the model's prose, visible only as a run of usedLlm=false.
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    const result = await makeService({ DIGEST_LLM_EFFORT: 'very-high' }).summarize(makePayload());
+
+    expect(createMock.mock.calls[0][0].output_config.effort).toBe('low');
+    expect(result.usedLlm).toBe(true);
   });
 
   it('falls back to deterministic prose when the call throws', async () => {

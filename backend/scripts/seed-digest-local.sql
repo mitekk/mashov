@@ -81,7 +81,12 @@ SELECT
   'telegram', '0000000000', 'Local dry run',
   true, today - interval '30 days', now(), now()
 FROM local_digest_day
-ON CONFLICT ("studentGuid", channel, address) DO UPDATE
+-- Conflict on the id, not on (studentGuid, channel, address): once you point
+-- this row at a real chat id the tuple no longer matches, and the insert would
+-- fail on the primary key instead. `address` is deliberately left alone here,
+-- so re-seeding to clear the ledger cannot silently redirect a real send back
+-- to the placeholder.
+ON CONFLICT (id) DO UPDATE
   SET enabled = true,
       "activeFrom" = (SELECT today - interval '30 days' FROM local_digest_day),
       "updatedAt" = now();

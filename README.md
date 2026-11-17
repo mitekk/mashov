@@ -179,7 +179,8 @@ it (`POST /api/v1/digest/recipients`).
 | `DIGEST_TIMEZONE` | also defines "today" and "tomorrow" | `Asia/Jerusalem` |
 | `DIGEST_DUE_LOOKBACK_DAYS` | how far back to look for homework that may be needed tomorrow | `14` |
 | `DIGEST_NEW_LOOKBACK_DAYS` | how far back to look for homework to report as newly assigned | `3` |
-| `DIGEST_LLM_MODEL` | model that writes the Hebrew prose | `claude-opus-5-5` |
+| `DIGEST_LLM_MODEL` | model that writes the Hebrew prose | `claude-sonnet-5-5` |
+| `DIGEST_LLM_EFFORT` | how hard it thinks first — `low`/`medium`/`high`/`xhigh`/`max` | `low` |
 | `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |
 | `ANTHROPIC_API_KEY` | **secret.** Omit it and the digest still sends, using the deterministic renderer | unset |
 | `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather | unset |
