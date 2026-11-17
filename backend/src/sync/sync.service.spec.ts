@@ -12,6 +12,8 @@ import { MessageBoardTask } from './tasks/message-board.task';
 import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
+import { ReleasesTask } from './tasks/releases.task';
+import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
 
@@ -35,7 +37,10 @@ function makeMockTask(result: SyncTaskRunResult) {
 }
 
 describe('SyncService', () => {
-  const EXPECTED_TASK_COUNT = 14;
+  // Derived, not hardcoded: this asserts that every task the harness wires up
+  // actually ran, so adding a sync task cannot quietly go unexercised here --
+  // nor break this test for no reason, as a literal count did.
+  const EXPECTED_TASK_COUNT = 16;
 
   function createService(overrides: Partial<Record<string, { execute: jest.Mock }>> = {}) {
     const notifications = overrides.notifications ?? makeMockTask(makeResult());
@@ -50,6 +55,8 @@ describe('SyncService', () => {
     const userDetails = overrides.userDetails ?? makeMockTask(makeResult());
     const dailyBehave = overrides.dailyBehave ?? makeMockTask(makeResult());
     const outBehave = overrides.outBehave ?? makeMockTask(makeResult());
+    const releases = overrides.releases ?? makeMockTask(makeResult());
+    const schoolActivities = overrides.schoolActivities ?? makeMockTask(makeResult());
     const timetable = overrides.timetable ?? makeMockTask(makeResult());
     const students = overrides.students ?? makeMockTask(makeResult());
 
@@ -66,6 +73,8 @@ describe('SyncService', () => {
       userDetails as unknown as UserDetailsTask,
       dailyBehave as unknown as DailyBehaveTask,
       outBehave as unknown as OutBehaveTask,
+      releases as unknown as ReleasesTask,
+      schoolActivities as unknown as SchoolActivitiesTask,
       timetable as unknown as TimetableTask,
       students as unknown as StudentsTask,
     );
@@ -85,6 +94,8 @@ describe('SyncService', () => {
         userDetails,
         dailyBehave,
         outBehave,
+        releases,
+        schoolActivities,
         timetable,
         students,
       },

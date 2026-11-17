@@ -56,6 +56,21 @@ services:
       # Wall-clock bound per Mashov request (default 10000 in code).
       MASHOV_TIMEOUT_MS: ${MASHOV_TIMEOUT_MS:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      # Per-child daily digest -> Telegram. Off by default, and silent even
+      # when on: DIGEST_DRY_RUN renders and logs without sending. See ADR-0026.
+      DIGEST_ENABLED: ${DIGEST_ENABLED:-false}
+      DIGEST_DRY_RUN: ${DIGEST_DRY_RUN:-true}
+      DIGEST_TIMEZONE: ${DIGEST_TIMEZONE:-Asia/Jerusalem}
+      DIGEST_DUE_LOOKBACK_DAYS: ${DIGEST_DUE_LOOKBACK_DAYS:-14}
+      DIGEST_NEW_LOOKBACK_DAYS: ${DIGEST_NEW_LOOKBACK_DAYS:-3}
+      DIGEST_ACTIVITY_WINDOW_DAYS: ${DIGEST_ACTIVITY_WINDOW_DAYS:-7}
+      DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
+      DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
+      DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
+      # Secrets. Never logged; see the note in ADR-0026 about ops/ having no
+      # secrets-management path for them yet.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       SESSION_LIFETIME_DAYS: ${SESSION_LIFETIME_DAYS:-30}
       SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
       FEATURE_DAILY_BEHAVE: ${FEATURE_DAILY_BEHAVE:-false}

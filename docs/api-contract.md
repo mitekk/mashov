@@ -88,6 +88,20 @@
 | GET | `/api/v1/settings/profile` | **Yes** (Phase 2) | — | See [Profile Response](#get-apiv1settingsprofile) | 200, 401 | changed |
 | POST | `/api/v1/sync/refresh` | **Yes** (Phase 2) | — | `{ started: true, message: string }` | 202, 401 | changed |
 
+### Digest — per-child daily activity briefing
+
+Delivery is strictly opt-in: a child receives a digest only if an enabled recipient row exists
+for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
+
+| Method | Path | Auth | Request Body | Response Body | Status | State |
+|--------|------|------|--------------|---------------|--------|-------|
+| GET | `/api/v1/digest/recipients?studentGuid=` | **Yes** | — | `{ data: DigestRecipient[] }` | 200, 400, 401 | new |
+| POST | `/api/v1/digest/recipients` | **Yes** | `{ studentGuid, channel, address, displayName? }` | `{ data: DigestRecipient }` | 201, 400, 401 | new |
+| PATCH | `/api/v1/digest/recipients/:id` | **Yes** | `{ enabled?, displayName? }` | `{ data: DigestRecipient }` | 200, 401, 404 | new |
+| DELETE | `/api/v1/digest/recipients/:id` | **Yes** | — | — | 204, 401, 403, 404 | new |
+| POST | `/api/v1/digest/runs` | **Yes** | `{ studentGuid?, dryRun? }` | `{ data: DigestRunResult[] }` | 201, 401, 429 | new |
+| GET | `/api/v1/digest/deliveries?studentGuid=&page=&limit=` | **Yes** | — | Paginated `DigestDelivery[]` | 200, 401 | new |
+
 ---
 
 ## Response Body Schemas
@@ -618,6 +632,68 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 | GET | `/api/students/{childGuid}/dailyBehave` | DailyBehaveSyncTask (feature-flagged) |
 | GET | `/api/students/{studentId}/outBehave` | OutBehaveSyncTask (feature-flagged) |
 
+### POST /api/v1/digest/runs
+
+Rate-limited to 5/min, tighter than the global 50/min, because it spends model tokens and
+sends real messages. It is also listed in the frontend proxy's `SLOW_PATH_PREFIXES`, so it
+gets the longer timeout rather than the 15 s default.
+
+```json
+{
+  "data": [
+    {
+      "studentGuid": "string",
+      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
+      "itemCount": 2,
+      "recipientCount": 1,
+      "usedLlm": true,
+      "error": "string (only when status is failed)"
+    }
+  ]
+}
+```
+
+`dryRun` renders and logs the message without sending it, and marks nothing as reported, so a
+later real run still has something to say. It defaults to the `DIGEST_DRY_RUN` env var, which
+itself defaults to `true`.
+
+### GET /api/v1/digest/deliveries
+
+```json
+{
+  "data": [
+    {
+      "id": "string",
+      "studentGuid": "string",
+      "reportFor": "2026-11-17",
+      "runAt": "2026-11-17T13:00:04Z",
+      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
+      "itemCount": 2,
+      "recipientCount": 1,
+      "channel": "telegram",
+      "messageText": "string (what was actually sent)",
+      "usedLlm": true,
+      "errorMessage": null
+    }
+  ],
+  "pagination": { "page": 1, "limit": 20, "total": 7, "totalPages": 1 }
+}
+```
+
+Every run writes a row, `status: "skipped_empty"` included. That is deliberate: without it a
+quiet child is indistinguishable from a broken job. `skipped_stale` is the stronger version of
+that — no items *and* the school data has not synced successfully for hours, so "nothing
+happened today" would be a wrong thing to imply. Digest runs are **not** recorded in `sync_run`
+— `GET /sync/status` counts distinct successful sources against a hardcoded
+`TOTAL_SYNC_SOURCES`, so digest rows there would skew the freshness percentage the dashboard
+shows.
+
+Scoped to the caller: a delivery row holds `messageText`, the rendered behavior remarks that
+were sent to a parent, so the history returns only children the caller has recipient rows for.
+`PATCH` and `DELETE` on a recipient are likewise restricted to the user who created it and
+return 403 otherwise.
+
+
 ---
 
 ## Notes
@@ -629,4 +705,6 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 5. **`POST /api/v1/sync/refresh`** — returns `202 Accepted` immediately. Sync runs asynchronously. Frontend should poll `GET /api/v1/settings/source-health` to observe progress.
 6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects`, `/children/notices`, and `/children/timetable` return full lists (no pagination needed at current data scale).
 7. **Read/handled state** — implemented directly on items (`isNew`, `isArchived` fields on `homework_item` and `behavior_item`; `isNew` on `mail_conversation`). There is no separate `read_state` table in Phase 1. State is household-global.
-8. **Timetable** — synced weekly (Sunday 03:00). The `day` field uses Israeli school week: 1=Sunday, 2=Monday, …, 6=Friday. Frontend should handle the case where `data` is empty (sync not yet run or source returned no data).
+8. **Digest deadlines** — the `צפי הגשה` date in a digest message is an *estimate*, never a due date. Mashov exposes no homework due-date field; the estimate comes from an explicit deadline written in the Hebrew text when there is one, else the group's next lesson from the timetable. ADR-0027 records this departure from the requirement not to promise due-soon logic.
+9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. The API validates that `studentGuid` is on the active roster and records the creating `userId`, but nothing prevents a row for another household's child. ADR-0026 documents the limitation.
+10. **Timetable** — synced weekly (Sunday 03:00). The `day` field uses Israeli school week: 1=Sunday, 2=Monday, …, 6=Friday. Frontend should handle the case where `data` is empty (sync not yet run or source returned no data).

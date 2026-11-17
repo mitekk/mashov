@@ -10,6 +10,7 @@ import { AppSessionModule } from "./app-session/app-session.module";
 import { AuthModule } from "./auth/auth.module";
 import { ConnectionModule } from "./connection/connection.module";
 import { SyncModule } from "./sync/sync.module";
+import { DigestModule } from "./digest/digest.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { FeedModule } from "./feed/feed.module";
 import { ChildrenModule } from "./children/children.module";
@@ -30,6 +31,7 @@ import { AppSessionGuard } from "./app-session/app-session.guard";
     AuthModule,
     ConnectionModule,
     SyncModule,
+    DigestModule,
     DashboardModule,
     FeedModule,
     ChildrenModule,

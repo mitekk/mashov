@@ -20,6 +20,8 @@ import { MessageBoardTask } from './tasks/message-board.task';
 import { UserDetailsTask } from './tasks/user-details.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
 import { OutBehaveTask } from './tasks/out-behave.task';
+import { ReleasesTask } from './tasks/releases.task';
+import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
 import { SchoolYearRolloverTask } from './tasks/school-year-rollover.task';
@@ -45,6 +47,8 @@ import { HistoryBackfillTask } from './tasks/history-backfill.task';
     UserDetailsTask,
     DailyBehaveTask,
     OutBehaveTask,
+    ReleasesTask,
+    SchoolActivitiesTask,
     TimetableTask,
     StudentsTask,
     SchoolYearRolloverTask,

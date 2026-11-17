@@ -8,40 +8,41 @@ datasource db {
 }
 
 model HouseholdConnection {
-  id               String    @id @default(cuid())
-  schoolCode       Int
-  schoolYear       Int
-  username         String
+  id                String    @id @default(cuid())
+  schoolCode        Int
+  schoolYear        Int
+  username          String
   encryptedPassword String
-  schoolName       String?
-  upstreamUserId   String?
-  cachedNewCount   Int       @default(0)
-  mashovUniqueId   String?
+  schoolName        String?
+  upstreamUserId    String?
+  cachedNewCount    Int       @default(0)
+  mashovUniqueId    String?
   /// accessToken.userSchoolYears from the last login: the years this household
   /// actually has records for. Json rather than Int[] to match every other
   /// list in this schema and to stay additive for `prisma db push`.
-  schoolYears      Json      @default("[]")
-  lastLoginAt      DateTime?
-  active           Boolean   @default(true)
-  userId           String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  schoolYears       Json      @default("[]")
+  lastLoginAt       DateTime?
+  active            Boolean   @default(true)
+  userId            String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  user             AppUser?  @relation(fields: [userId], references: [id])
+  user AppUser? @relation(fields: [userId], references: [id])
 
   @@map("household_connection")
 }
 
 model AppUser {
-  id            String   @id @default(uuid())
-  mashovUserId  String   @unique
-  semel         Int
-  username      String
-  displayName   String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  sessions      AppSession[]
-  connections   HouseholdConnection[]
+  id               String                @id @default(uuid())
+  mashovUserId     String                @unique
+  semel            Int
+  username         String
+  displayName      String
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  sessions         AppSession[]
+  connections      HouseholdConnection[]
+  digestRecipients DigestRecipient[]
 
   @@map("app_user")
 }
@@ -104,9 +105,9 @@ model Student {
 }
 
 model NotificationEvent {
-  id                     String   @id @default(cuid())
-  upstreamNotificationId Int?     @unique
-  fingerprint            String?  @unique
+  id                     String    @id @default(cuid())
+  upstreamNotificationId Int?      @unique
+  fingerprint            String?   @unique
   eventType              Int
   eventText              String
   eventKey               String?
@@ -117,49 +118,49 @@ model NotificationEvent {
   readTime               DateTime?
   parsedEventData        Json?
   rawPayload             Json
-  updatedAt              DateTime @updatedAt
+  updatedAt              DateTime  @updatedAt
 
   @@map("notification_event")
 }
 
 model MailConversation {
-  id                String    @id @default(cuid())
-  conversationId    String    @unique
+  id                String   @id @default(cuid())
+  conversationId    String   @unique
   subject           String
   senderNamePreview String?
   sendTime          DateTime
-  isUnread          Boolean   @default(false)
-  hasDrafts         Boolean   @default(false)
-  hasAttachments    Boolean   @default(false)
-  preventReply      Boolean   @default(false)
-  labels            Json      @default("[]")
+  isUnread          Boolean  @default(false)
+  hasDrafts         Boolean  @default(false)
+  hasAttachments    Boolean  @default(false)
+  preventReply      Boolean  @default(false)
+  labels            Json     @default("[]")
   rawPayload        Json?
-  lastFetchedAt     DateTime  @default(now())
+  lastFetchedAt     DateTime @default(now())
 
-  messages          MailMessage[]
+  messages MailMessage[]
 
   @@map("mail_conversation")
 }
 
 model MailMessage {
-  id                 String   @id @default(cuid())
-  messageId          String   @unique
-  conversationId     String
-  senderId           String
-  senderName         String
-  subject            String
-  bodyHtmlSanitized  String?
-  bodyTextPreview    String?
-  sendTime           DateTime
-  isNew              Boolean  @default(false)
-  recipients         Json     @default("[]")
-  files              Json     @default("[]")
-  preventReply       Boolean  @default(false)
-  sentViaEmail       Boolean  @default(false)
-  sentViaSms         Boolean  @default(false)
-  rawPayload         Json?
+  id                String   @id @default(cuid())
+  messageId         String   @unique
+  conversationId    String
+  senderId          String
+  senderName        String
+  subject           String
+  bodyHtmlSanitized String?
+  bodyTextPreview   String?
+  sendTime          DateTime
+  isNew             Boolean  @default(false)
+  recipients        Json     @default("[]")
+  files             Json     @default("[]")
+  preventReply      Boolean  @default(false)
+  sentViaEmail      Boolean  @default(false)
+  sentViaSms        Boolean  @default(false)
+  rawPayload        Json?
 
-  conversation       MailConversation @relation(fields: [conversationId], references: [conversationId])
+  conversation MailConversation @relation(fields: [conversationId], references: [conversationId])
 
   @@map("mail_message")
 }
@@ -184,9 +185,12 @@ model HomeworkItem {
   updatedAt    DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId])
-  // The feed filters on schoolYear with no studentGuid, so the compound
-  // uniques above (all leading on studentGuid) cannot serve a range predicate.
+  // Two readers, two shapes, and neither index serves the other. The feed
+  // filters on schoolYear with no studentGuid, so the compound uniques above
+  // (all leading on studentGuid) cannot serve its range predicate. The digest
+  // checker always has a studentGuid and scans a date range within it.
   @@index([schoolYear, lessonDate])
+  @@index([studentGuid, schoolYear, lessonDate])
   @@map("homework_item")
 }
 
@@ -212,7 +216,14 @@ model BehaviorItem {
   updatedAt      DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, lessonId, eventCode])
+  // As on homework_item: the feed's year-wide scan and the digest's per-child
+  // scan need different leading columns. Two dates as well -- lessonDate is
+  // when the event happened, eventAt when the teacher recorded it, and the
+  // digest windows on either, so a teacher entering yesterday's absence this
+  // afternoon is still today's news.
   @@index([schoolYear, eventAt])
+  @@index([studentGuid, schoolYear, lessonDate])
+  @@index([studentGuid, schoolYear, eventAt])
   @@map("behavior_item")
 }
 
@@ -235,16 +246,16 @@ model SubjectEnrollment {
 }
 
 model BehaviorTypeReference {
-  id              String   @id @default(cuid())
-  code            Int      @unique
-  name            String
-  displayOrder    Int      @default(0)
-  justifiable     Boolean  @default(false)
-  hidden          Boolean  @default(false)
-  showInBehave    Boolean  @default(true)
-  hideFromStudents Boolean @default(false)
-  rawPayload      Json?
-  updatedAt       DateTime @updatedAt
+  id               String   @id @default(cuid())
+  code             Int      @unique
+  name             String
+  displayOrder     Int      @default(0)
+  justifiable      Boolean  @default(false)
+  hidden           Boolean  @default(false)
+  showInBehave     Boolean  @default(true)
+  hideFromStudents Boolean  @default(false)
+  rawPayload       Json?
+  updatedAt        DateTime @updatedAt
 
   @@map("behavior_type_reference")
 }
@@ -264,7 +275,6 @@ model MessageBoardItem {
   @@map("message_board_item")
 }
 
-
 model SyncRun {
   id                    String    @id @default(cuid())
   source                String
@@ -277,6 +287,9 @@ model SyncRun {
   errorMessage          String?
   householdConnectionId String?
 
+  // FreshnessService.getAllSourceHealth() table-scanned this; it had no index at
+  // all and grows without bound.
+  @@index([source, startedAt])
   @@map("sync_run")
 }
 
@@ -310,4 +323,179 @@ model TimetableEntry {
   @@unique([studentGuid, schoolYear, day, lesson])
   @@index([studentGuid])
   @@map("timetable_entry")
+}
+
+// ---------------------------------------------------------------------------
+// Digest: per-child daily activity briefing pushed to a parent's messaging app.
+// ---------------------------------------------------------------------------
+
+/// Who receives a child's digest, and on which channel. These rows are also the
+/// de-facto child -> parent ownership mapping: `Student` has no userId FK (children
+/// are global and every cron iterates the whole active roster), so a child gets a
+/// digest only if an enabled recipient row exists for it. That makes delivery
+/// strictly opt-in, the right default for pushing a child's behavior data to a
+/// third party. See ADR-0025 for the trade-off this accepts.
+/// An early-release request a parent filed for a child.
+///
+/// Parent-submitted, not school-generated: `contactGuid` upstream names the
+/// parent who wrote it, and is deliberately NOT a column here -- nothing in the
+/// app needs it and it is a third party's identifier. The digest reports only a
+/// release scheduled for today or tomorrow, as a reminder; echoing a request
+/// back to the parent who filed it on the day they filed it is not news.
+model StudentRelease {
+  id              String    @id @default(cuid())
+  studentGuid     String
+  // Mashov's own release id, stable per request.
+  releaseId       Int
+  schoolYear      Int       @default(0)
+  // The release day, UTC midnight of the Jerusalem date.
+  releaseDate     DateTime
+  // Time of day the child leaves, as Mashov sends it: "11:30:00".
+  startHour       String
+  // The parent's free text. Rendered back to them; never sent to the model.
+  remark          String?
+  status          Int       @default(0)
+  isDeleted       Boolean   @default(false)
+  requestEditTime DateTime?
+  rawPayload      Json?
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([studentGuid, schoolYear, releaseId])
+  @@index([studentGuid, releaseDate])
+  @@map("student_release")
+}
+
+/// A school activity needing a parent's consent -- a field trip, a show.
+///
+/// Household-scoped, not per child: `/api/schoolActivities/permitted` takes no
+/// studentGuid, and `isAnswered` is the answer of the parent whose session
+/// fetched it. The row is therefore keyed by `userId` as well as the activity
+/// id, and `userId` is required: a row with no owner could not answer the
+/// question "has this parent signed it yet", which is the only reason the
+/// digest reports it.
+model SchoolActivity {
+  id                String    @id @default(cuid())
+  userId            String
+  // Mashov's own activity id, shared by every parent in the school.
+  activityId        Int
+  schoolYear        Int       @default(0)
+  // 1 = field trip, 2 = recurring/farm, 4 = theatre or show.
+  activityType      Int       @default(0)
+  title             String
+  /// The consent letter with its HTML stripped. Kept for a future UI; never
+  /// sent to the model, which gets the title and the dates only. The letter
+  /// routinely names staff and other children.
+  descriptionText   String?
+  activityStartDate DateTime
+  activityEndDate   DateTime
+  // The deadline for answering. This is what makes an activity reportable.
+  endAnswerDate     DateTime
+  isAnswered        Boolean   @default(false)
+  createTime        DateTime?
+  rawPayload        Json?
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([userId, schoolYear, activityId])
+  @@index([userId, endAnswerDate])
+  @@map("school_activity")
+}
+
+model DigestRecipient {
+  id          String   @id @default(cuid())
+  userId      String
+  studentGuid String
+  /// 'telegram' today; the DigestSender interface allows more.
+  channel     String
+  /// Telegram chat id.
+  address     String
+  displayName String?
+  enabled     Boolean  @default(true)
+  /// Items dated before this are never reported - stops the first run blasting a
+  /// backlog of the whole school year.
+  activeFrom  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([studentGuid, channel, address])
+  @@index([studentGuid, enabled])
+  @@index([userId])
+  @@map("digest_recipient")
+}
+
+/// One row per (item, reason) already reported to a parent. This is the dedup
+/// ledger; ADR-0017 forbids durable state in Redis, so the uniqueness of these rows
+/// is what makes the digest at-most-once.
+model DigestReportedItem {
+  id              String    @id @default(cuid())
+  studentGuid     String
+  /// 'behavior' | 'homework_new' | 'homework_due' - the *reason* the item was
+  /// reported. Distinct types let one homework row be reported once as newly
+  /// assigned and later as estimated-due.
+  itemType        String
+  /// HomeworkItem.id or BehaviorItem.id.
+  itemId          String
+  /// sha256 of the fields actually shown to the parent. Part of the unique key on
+  /// purpose: a teacher editing homework text yields a new hash, hence a new row,
+  /// hence a legitimate re-report as changed. A stable hash means the row already
+  /// exists, i.e. already reported - so no separate "has it changed" bookkeeping.
+  /// Never derive novelty from `updatedAt`: the 12-minute sync tasks upsert
+  /// identical rows and churn it on every pass.
+  contentHash     String
+  /// School day the report covered - retention and audit.
+  reportedFor     DateTime  @db.Date
+  claimedAt       DateTime  @default(now())
+  /// Which run owns this claim. A count from `createMany` says how many rows you
+  /// won but never which, so ownership has to be readable back: the claimer
+  /// stamps its own run id and then reads its own rows. Without it, two runs can
+  /// each believe they own an item and send it twice, and a failing run can
+  /// delete a claim another run is holding.
+  claimedBy       String?
+  /// Set only after a successful send. A row left unconfirmed past 30 minutes is a
+  /// crashed claim and is taken over by the next run.
+  confirmedAt     DateTime?
+  /// For a `homework_due` item the model resolved to a deadline that was not
+  /// tomorrow: the date it resolved to. The row stays (so the model is not asked
+  /// again every hour) and the checker re-admits the item on the day that date
+  /// *is* tomorrow. A confirmed row with this null means fully reported; with it
+  /// set, it means deferred to that date. Without this column the only options
+  /// are burying the deadline or re-resolving it on every run for a fortnight.
+  resolvedDueDate DateTime? @db.Date
+  deliveryId      String?
+
+  /// Named explicitly: the generated name would exceed Postgres's 63-character
+  /// identifier limit and be silently truncated, drifting `db push` from the
+  /// committed migration.
+  @@unique([studentGuid, itemType, itemId, contentHash], map: "digest_reported_item_dedup_key")
+  @@index([studentGuid, reportedFor])
+  /// The checker's hottest query: one lookup per child per run against the
+  /// hashes it just computed. The dedup unique leads with studentGuid, so
+  /// without this Postgres scans every row that child has ever had.
+  @@index([studentGuid, contentHash])
+  @@map("digest_reported_item")
+}
+
+/// The digest's own run log. Deliberately NOT recorded in `sync_run`: a digest is
+/// not a sync source, and sync.controller.ts counts distinct successful sources
+/// against a hardcoded TOTAL_SYNC_SOURCES, so digest rows there would silently skew
+/// the freshness percentage the dashboard shows. Every run writes a row, including
+/// `skipped_empty` - it is the only way to tell a quiet day from a broken job.
+model DigestDelivery {
+  id             String   @id @default(cuid())
+  studentGuid    String
+  reportFor      DateTime @db.Date
+  runAt          DateTime @default(now())
+  /// 'sent' | 'skipped_empty' | 'failed' | 'dry_run'
+  status         String
+  itemCount      Int      @default(0)
+  recipientCount Int      @default(0)
+  channel        String?
+  /// What was actually sent, for support.
+  messageText    String?
+  usedLlm        Boolean  @default(false)
+  errorMessage   String?
+
+  @@index([studentGuid, reportFor])
+  @@map("digest_delivery")
 }
