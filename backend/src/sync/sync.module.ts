@@ -7,6 +7,7 @@ import { SyncRunService } from './sync-run.service';
 import { BehaviorClassifierService } from './behavior-classifier.service';
 import { FreshnessService } from './freshness.service';
 import { SyncRunRetentionService } from './sync-run-retention.service';
+import { RosterPresenceService } from './roster-presence.service';
 import { SyncService } from './sync.service';
 import { SyncController } from './sync.controller';
 import { NotificationsTask } from './tasks/notifications.task';
@@ -35,6 +36,7 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
   providers: [
     SyncRunService,
     SyncRunRetentionService,
+    RosterPresenceService,
     BehaviorClassifierService,
     FreshnessService,
     SyncService,
@@ -61,6 +63,8 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
   exports: [
     SyncRunService,
     SyncRunRetentionService,
+    RosterPresenceService,
+    RosterPresenceService,
     BehaviorClassifierService,
     FreshnessService,
     SyncService,

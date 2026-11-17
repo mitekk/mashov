@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { MashovSessionService } from '../../session/mashov-session.service';
+import { RosterPresenceService } from '../roster-presence.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 /**
@@ -26,6 +27,7 @@ export class StudentsTask {
     private readonly prisma: PrismaService,
     private readonly syncRunService: SyncRunService,
     private readonly sessionService: MashovSessionService,
+    private readonly rosterPresence: RosterPresenceService,
   ) {}
 
   @Cron('*/30 * * * *')
@@ -78,6 +80,25 @@ export class StudentsTask {
         await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
         failedCount += 1;
         if (errorMessages.length < 10) errorMessages.push(msg);
+      }
+    }
+
+    // Retire children who have left the school. Guarded three ways, because
+    // the cost of sweeping on incomplete evidence is a child vanishing from
+    // their parent's dashboard:
+    //   - every connection must have refreshed successfully, since a child at
+    //     a second school is absent from the first school's roster;
+    //   - a connection-scoped run (manual refresh of one household) is not
+    //     whole-roster evidence;
+    //   - no connections at all means no evidence whatsoever.
+    if (!context.connectionId && failedCount === 0 && connections.length > 0) {
+      try {
+        deactivated += await this.rosterPresence.sweep();
+      } catch (error) {
+        // A failed sweep must not fail the roster sync that just succeeded.
+        this.logger.error(
+          `Roster presence sweep failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 

@@ -590,6 +590,7 @@ export class MashovSessionService {
         groupsRaw:
           child.groups as unknown as import("@prisma/client").Prisma.InputJsonValue,
         isActive: true,
+        lastSeenInRosterAt: new Date(),
         rawPayload:
           child as unknown as import("@prisma/client").Prisma.InputJsonValue,
       };

@@ -101,6 +101,13 @@ model Student {
   rawPayload  Json?
   updatedAt   DateTime @updatedAt
 
+  // When this child was last present in a login roster. Absence from
+  // `children[]` is the only signal that a child has left the school --
+  // Mashov does not move them to `inactiveChildren` -- and without it they
+  // stayed active forever while every per-student cron 403'd on them.
+  lastSeenInRosterAt DateTime?
+
+  @@index([isActive, lastSeenInRosterAt])
   @@map("student")
 }
 
