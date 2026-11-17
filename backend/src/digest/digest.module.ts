@@ -7,6 +7,7 @@ import { DigestCollectorService } from './digest-collector.service';
 import { DigestDeadlineService } from './digest-deadline.service';
 import { DigestSummarizerService } from './digest-summarizer.service';
 import { DigestRecipientService } from './digest-recipient.service';
+import { DigestRetentionService } from './digest-retention.service';
 import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
 import { DigestTask } from './tasks/digest.task';
@@ -37,6 +38,7 @@ import { DigestController } from './digest.controller';
     DigestDeadlineService,
     DigestSummarizerService,
     DigestRecipientService,
+    DigestRetentionService,
     TelegramSender,
     LogSender,
     DigestTask,

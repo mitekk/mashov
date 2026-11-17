@@ -1,5 +1,6 @@
 import { DigestTask } from './digest.task';
 import type { DigestService } from '../digest.service';
+import type { DigestRetentionService } from '../digest-retention.service';
 import type { ConfigService } from '@nestjs/config';
 
 function makeTask(env: Record<string, string> = {}) {
@@ -10,7 +11,14 @@ function makeTask(env: Record<string, string> = {}) {
     get: jest.fn((key: string) => env[key]),
   } as unknown as ConfigService;
 
-  return { runAll, task: new DigestTask({ runAll } as unknown as DigestService, config) };
+  const prune = jest.fn().mockResolvedValue({ reportedItems: 0, deliveries: 0 });
+  const task = new DigestTask(
+    { runAll } as unknown as DigestService,
+    { prune } as unknown as DigestRetentionService,
+    config,
+  );
+
+  return { runAll, prune, task };
 }
 
 describe('DigestTask', () => {
@@ -54,5 +62,15 @@ describe('DigestTask', () => {
       .find((entry) => typeof entry.value === 'object' && entry.value !== null && 'cronTime' in entry.value);
 
     expect(metadata?.value).toMatchObject({ cronTime: '0 13-19 * * *' });
+  });
+
+  it('prunes history even when the digest itself is disabled', () => {
+    // Rows written while the feature was on must still age out after it is
+    // turned off.
+    const { task, prune } = makeTask();
+
+    return task.pruneHistory().then(() => {
+      expect(prune).toHaveBeenCalledTimes(1);
+    });
   });
 });

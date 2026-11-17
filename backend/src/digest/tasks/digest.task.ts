@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { DigestService } from '../digest.service';
+import { DigestRetentionService } from '../digest-retention.service';
 
 /**
  * The hourly afternoon trigger. A shell only -- all logic lives in
@@ -24,6 +25,7 @@ export class DigestTask {
 
   constructor(
     private readonly digest: DigestService,
+    private readonly retention: DigestRetentionService,
     private readonly config: ConfigService,
   ) {}
 
@@ -44,6 +46,16 @@ export class DigestTask {
         .map(([status, count]) => `${status}=${count}`)
         .join(' ')}`,
     );
+  }
+
+  /**
+   * Prunes the digest's own history daily. Not gated on DIGEST_ENABLED: rows
+   * written while the feature was on must still age out after it is turned
+   * off. Scheduled at 02:30 to sit clear of the 02:00 session cleanup.
+   */
+  @Cron('30 2 * * *')
+  async pruneHistory(): Promise<void> {
+    await this.retention.prune();
   }
 
   /** Defaults to false: the cron stays off until it is deliberately enabled. */
