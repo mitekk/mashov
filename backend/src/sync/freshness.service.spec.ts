@@ -60,6 +60,8 @@ function makeSyncRun(
     fetchedCount: null,
     createdCount: null,
     updatedCount: null,
+    upstreamCount: null,
+    localCount: null,
     errorMessage: null,
   } as SyncRun;
 }
@@ -234,6 +236,8 @@ describe('FreshnessService', () => {
           fetchedCount: null,
           createdCount: null,
           updatedCount: null,
+          upstreamCount: null,
+          localCount: null,
           errorMessage: 'timeout',
         } as SyncRun;
 

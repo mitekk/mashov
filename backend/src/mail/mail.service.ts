@@ -3,6 +3,7 @@ import sanitizeHtml = require('sanitize-html');
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
   messageId: string;
@@ -339,6 +340,7 @@ export class MailService {
       hasDrafts: boolean;
       hasAttachments: boolean;
       preventReply: boolean;
+      locallyReadThroughAt: Date | null;
     },
   ): Promise<boolean> {
     try {
@@ -375,6 +377,7 @@ export class MailService {
       hasDrafts: boolean;
       hasAttachments: boolean;
       preventReply: boolean;
+      locallyReadThroughAt: Date | null;
     },
     upstream: UpstreamConversationDetail,
   ): Promise<void> {
@@ -384,7 +387,13 @@ export class MailService {
         subject: upstream.subject ?? fallbackConversation.subject,
         senderNamePreview: upstream.messages?.[0]?.senderName ?? fallbackConversation.senderNamePreview,
         sendTime: upstream.sendTime ? new Date(upstream.sendTime) : fallbackConversation.sendTime,
-        isUnread: upstream.isNew ?? fallbackConversation.isUnread,
+        // Opening a conversation must not re-inflate a row the sync just corrected:
+        // the same derivation runs here, with upstream.isNew kept only as the
+        // fallback for a payload that carries no messages. See src/mail/unread.ts.
+        isUnread: deriveIsUnread(
+          { isNew: upstream.isNew ?? fallbackConversation.isUnread, messages: upstream.messages },
+          fallbackConversation.locallyReadThroughAt,
+        ),
         hasDrafts: upstream.hasDrafts ?? fallbackConversation.hasDrafts,
         hasAttachments: upstream.hasAttachments ?? fallbackConversation.hasAttachments,
         preventReply: upstream.preventReply ?? fallbackConversation.preventReply,

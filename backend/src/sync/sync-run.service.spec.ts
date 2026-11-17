@@ -12,6 +12,8 @@ function makeSyncRun(overrides?: Partial<SyncRun>): SyncRun {
     fetchedCount: null,
     createdCount: null,
     updatedCount: null,
+    upstreamCount: null,
+    localCount: null,
     errorMessage: null,
     householdConnectionId: null,
     ...overrides,

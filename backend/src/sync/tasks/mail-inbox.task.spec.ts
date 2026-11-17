@@ -15,6 +15,8 @@ function makeSyncRun(id: string): SyncRun {
     fetchedCount: null,
     createdCount: null,
     updatedCount: null,
+    upstreamCount: null,
+    localCount: null,
     errorMessage: null,
     householdConnectionId: null,
   };
@@ -45,10 +47,14 @@ function makeMessage(overrides: Record<string, unknown> = {}) {
 function makeConversation(overrides: Record<string, unknown> = {}) {
   const { messages: overrideMessages, ...restOverrides } = overrides;
   const conversationId = (restOverrides.conversationId as string | undefined) ?? 'conv-1';
-  const message = makeMessage({
-    conversationId,
-    ...((overrideMessages as Array<Record<string, unknown>> | undefined)?.[0] ?? {}),
-  });
+  const messageOverrides = (overrideMessages as Array<Record<string, unknown>> | undefined) ?? [{}];
+  const messages = messageOverrides.map((messageOverride, index) =>
+    makeMessage({
+      messageId: `msg-${index + 1}`,
+      conversationId,
+      ...messageOverride,
+    }),
+  );
 
   return {
     conversationId,
@@ -59,7 +65,7 @@ function makeConversation(overrides: Record<string, unknown> = {}) {
     hasAttachments: false,
     preventReply: false,
     labels: [],
-    messages: [message],
+    messages,
     ...restOverrides,
   };
 }
@@ -79,9 +85,14 @@ describe('MailInboxTask', () => {
     mockPrisma = {
       householdConnection: {
         findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockResolvedValue({ id: 'household-1' }),
       } as unknown as PrismaService['householdConnection'],
       mailConversation: {
         upsert: jest.fn().mockResolvedValue({ id: 'conv-row-1' }),
+        findMany: jest.fn().mockResolvedValue([]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        count: jest.fn().mockResolvedValue(0),
       } as unknown as PrismaService['mailConversation'],
       mailMessage: {
         upsert: jest.fn().mockResolvedValue({ id: 'msg-row-1' }),
@@ -212,6 +223,98 @@ describe('MailInboxTask', () => {
       createdCount: 0,
       updatedCount: 50,
       failedCount: 0,
+    });
+  });
+  describe('unread derivation', () => {
+    function expectUpsertedIsUnread(value: boolean) {
+      expect(mockPrisma.mailConversation.upsert).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          where: { conversationId: 'conv-1' },
+          create: expect.objectContaining({ isUnread: value }),
+          update: expect.objectContaining({ isUnread: value }),
+        }),
+      );
+    }
+
+    it('derives isUnread from messages when the conversation flag is stale', async () => {
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([makeConversation({ isNew: true, messages: [{ isNew: false }] })])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expectUpsertedIsUnread(false);
+    });
+
+    it('keeps isUnread true when any message is unread', async () => {
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([
+          makeConversation({ isNew: false, messages: [{ isNew: false }, { isNew: true }] }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expectUpsertedIsUnread(true);
+    });
+
+    it('treats a deleted unread message as read', async () => {
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([
+          makeConversation({ isNew: true, messages: [{ isNew: true, isDeleted: true }] }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expectUpsertedIsUnread(false);
+    });
+
+    it('falls back to the conversation flag when messages is empty', async () => {
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([makeConversation({ isNew: true, messages: [] })])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expectUpsertedIsUnread(true);
+    });
+
+    it('respects a local read override', async () => {
+      (mockPrisma.mailConversation.findMany as jest.Mock).mockResolvedValueOnce([
+        { conversationId: 'conv-1', locallyReadThroughAt: new Date('2026-03-18T08:00:00Z') },
+      ]);
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([
+          makeConversation({ isNew: true, messages: [{ isNew: true, sendTime: '2026-03-18T08:00:00Z' }] }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expect(mockPrisma.mailConversation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { conversationId: { in: ['conv-1'] } },
+          select: { conversationId: true, locallyReadThroughAt: true },
+        }),
+      );
+      expectUpsertedIsUnread(false);
+    });
+
+    it('re-opens when a message arrives after the override', async () => {
+      (mockPrisma.mailConversation.findMany as jest.Mock).mockResolvedValueOnce([
+        { conversationId: 'conv-1', locallyReadThroughAt: new Date('2026-03-18T08:00:00Z') },
+      ]);
+      (mockMashovClient.get as jest.Mock)
+        .mockResolvedValueOnce([
+          makeConversation({ isNew: true, messages: [{ isNew: true, sendTime: '2026-03-18T09:00:00Z' }] }),
+        ])
+        .mockResolvedValueOnce([]);
+
+      await task.execute();
+
+      expectUpsertedIsUnread(true);
     });
   });
 });

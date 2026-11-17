@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
+import { deriveIsUnread } from '../../mail/unread';
 
 interface MashovMessage {
   messageId: string;
@@ -125,10 +126,26 @@ export class MailInboxTask {
         pageCount++;
         fetchedCount += conversations.length;
 
+        // One query per page for the page's local read overrides, rather than one per
+        // conversation. deriveIsUnread needs them to avoid undoing a mark-read that
+        // upstream never learned about.
+        const overrideRows = await this.prisma.mailConversation.findMany({
+          where: { conversationId: { in: conversations.map((conv) => conv.conversationId) } },
+          select: { conversationId: true, locallyReadThroughAt: true },
+        });
+        const readThroughByConversationId = new Map(
+          overrideRows.map((row) => [row.conversationId, row.locallyReadThroughAt]),
+        );
+
         for (const conv of conversations) {
           try {
             const senderName = conv.messages[0]?.senderName ?? null;
             const sendTime = new Date(conv.sendTime);
+            // conv.isNew is sticky and does not mean "unread" -- see src/mail/unread.ts.
+            const isUnread = deriveIsUnread(
+              conv,
+              readThroughByConversationId.get(conv.conversationId) ?? null,
+            );
 
             await this.prisma.mailConversation.upsert({
               where: { conversationId: conv.conversationId },
@@ -137,7 +154,7 @@ export class MailInboxTask {
                 subject: conv.subject,
                 senderNamePreview: senderName,
                 sendTime,
-                isUnread: conv.isNew,
+                isUnread,
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,
@@ -149,7 +166,7 @@ export class MailInboxTask {
                 subject: conv.subject,
                 senderNamePreview: senderName,
                 sendTime,
-                isUnread: conv.isNew,
+                isUnread,
                 hasDrafts: conv.hasDrafts,
                 hasAttachments: conv.hasAttachments,
                 preventReply: conv.preventReply,

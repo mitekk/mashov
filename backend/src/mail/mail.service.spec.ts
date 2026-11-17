@@ -19,6 +19,7 @@ function makeConversation(overrides?: object) {
     labels: [],
     rawPayload: {},
     lastFetchedAt: NOW,
+    locallyReadThroughAt: null,
     ...overrides,
   };
 }
@@ -686,6 +687,88 @@ describe('MailService', () => {
           where: expect.objectContaining({ id: 'household-1' }),
           data: expect.objectContaining({ cachedNewCount: 7 }),
         }),
+      );
+    });
+  });
+  describe('hydration unread derivation', () => {
+    function makeUpstreamDetail(overrides: object = {}, messageOverrides: object = {}) {
+      return {
+        conversationId: 'conv-upstream-1',
+        subject: 'Updated Subject',
+        sendTime: NOW.toISOString(),
+        isNew: true,
+        hasDrafts: false,
+        hasAttachments: false,
+        preventReply: false,
+        labels: [],
+        messages: [
+          {
+            messageId: 'msg-upstream-1',
+            conversationId: 'conv-upstream-1',
+            senderId: 'sender-1',
+            senderName: 'Teacher',
+            subject: 'Subject',
+            body: '<p>Body</p>',
+            sendTime: NOW.toISOString(),
+            isNew: true,
+            recipients: [],
+            files: [],
+            preventReply: false,
+            sentViaEmail: false,
+            sentViaSms: false,
+            ...messageOverrides,
+          },
+        ],
+        ...overrides,
+      };
+    }
+
+    async function hydrate(detail: object, conversationOverrides: object = {}) {
+      const conversationUpdate = jest.fn().mockResolvedValue(makeConversation());
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindUnique: jest
+            .fn()
+            .mockResolvedValue(makeConversation(conversationOverrides)),
+          conversationUpdate,
+          messageFindMany: jest.fn().mockResolvedValue([]),
+        }),
+        makeMockMashovClient({ get: jest.fn().mockResolvedValue(detail) }),
+      );
+      await service.getConversationDetail('conv-upstream-1');
+      return conversationUpdate;
+    }
+
+    it('does not re-inflate a conversation the sync just corrected', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail({}, { isNew: false }));
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: false }) }),
+      );
+    });
+
+    it('keeps isUnread true when the hydrated message is unread', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail({ isNew: false }));
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: true }) }),
+      );
+    });
+
+    it('respects a local read override when hydrating', async () => {
+      const conversationUpdate = await hydrate(makeUpstreamDetail(), {
+        locallyReadThroughAt: NOW,
+      });
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: false }) }),
+      );
+    });
+
+    it('falls back to the stored flag when upstream sends no messages', async () => {
+      const conversationUpdate = await hydrate(
+        makeUpstreamDetail({ isNew: undefined, messages: [] }),
+        { isUnread: true },
+      );
+      expect(conversationUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ isUnread: true }) }),
       );
     });
   });
