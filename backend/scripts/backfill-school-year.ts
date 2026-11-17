@@ -36,24 +36,29 @@ const COUNTED_TABLES = [
 ];
 
 /**
- * Splitting on `;` leaves every statement carrying the comment lines that
- * preceded it, so a statement cannot be recognised — or discarded — by its
- * first character. Dropping anything that *starts* with `--` silently threw
- * away the whole `UPDATE "homework_item"` statement, which sits directly under
- * the "-- Backfill:" comment; an integration test caught it. Strip the leading
- * comment lines instead of filtering the statement out.
+ * Splits the migration file into executable statements.
+ *
+ * Comment lines are stripped from the whole file *before* the split, not after.
+ * Two bugs made that necessary, both caught by the integration test:
+ *   - splitting first leaves every statement carrying the comments that
+ *     preceded it, so discarding anything *starting* with `--` silently threw
+ *     away the whole `UPDATE "homework_item"` statement under its
+ *     `-- Backfill:` comment;
+ *   - prose comments contain semicolons, so a `;`-split cuts mid-sentence and
+ *     hands fragments of English to the database as SQL.
+ *
+ * Valid for this file, which has no string literals containing `--` or `;`.
  */
-export function stripLeadingComments(statement: string): string {
-  const lines = statement.split('\n');
-  while (lines.length > 0) {
-    const first = (lines[0] ?? '').trim();
-    if (first.length === 0 || first.startsWith('--')) {
-      lines.shift();
-      continue;
-    }
-    break;
-  }
-  return lines.join('\n').trim();
+export function parseSqlStatements(sql: string): string[] {
+  const withoutComments = sql
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('--'))
+    .join('\n');
+
+  return withoutComments
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
 }
 
 async function rowCounts(): Promise<Record<string, number>> {
@@ -79,11 +84,7 @@ async function main() {
     throw new Error(`Migration file not found at: ${migrationPath}`);
   }
 
-  const statements = fs
-    .readFileSync(migrationPath, 'utf-8')
-    .split(';')
-    .map(stripLeadingComments)
-    .filter((statement) => statement.length > 0);
+  const statements = parseSqlStatements(fs.readFileSync(migrationPath, 'utf-8'));
 
   console.log(`Executing ${statements.length} SQL statements...`);
 
@@ -97,7 +98,11 @@ async function main() {
         msg.includes('does not exist') ||
         msg.includes('duplicate column')
       ) {
-        console.warn(`Skipping (already applied?): ${msg.split('\n')[0]}`);
+        // Prisma's message is multi-line with a blank first line, so name the
+        // statement as well — a bare "Skipping" line says nothing in a runbook.
+        const summary = statement.replace(/\s+/g, ' ').slice(0, 70);
+        const reason = msg.split('\n').map((line) => line.trim()).filter(Boolean).pop();
+        console.warn(`Skipping (already applied): ${summary} — ${reason}`);
         continue;
       }
       console.error(`Statement failed: ${statement}`);
@@ -117,25 +122,35 @@ async function main() {
     }
   }
 
-  await prisma.$executeRaw`
-    INSERT INTO "_prisma_migrations" (id, checksum, finished_at, migration_name, logs, rolled_back_at, started_at, applied_steps_count)
-    VALUES (
-      gen_random_uuid()::text,
-      'manual-school-year-scoping',
-      NOW(),
-      '20261117000000_school_year_scoping',
-      NULL,
-      NULL,
-      NOW(),
-      1
-    )
-    ON CONFLICT (migration_name) DO NOTHING
-  `;
+  // Bookkeeping only, and strictly best-effort: a `db push`-managed database
+  // has no `_prisma_migrations` table at all, which is production's situation.
+  // Letting this throw would exit(1) after the backfill had already succeeded.
+  try {
+    await prisma.$executeRaw`
+      INSERT INTO "_prisma_migrations" (id, checksum, finished_at, migration_name, logs, rolled_back_at, started_at, applied_steps_count)
+      VALUES (
+        gen_random_uuid()::text,
+        'manual-school-year-scoping',
+        NOW(),
+        '20261117000000_school_year_scoping',
+        NULL,
+        NULL,
+        NOW(),
+        1
+      )
+      ON CONFLICT (migration_name) DO NOTHING
+    `;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `Could not record the migration in _prisma_migrations (this is expected on a db push-managed database): ${msg.split('\n').filter(Boolean).slice(-1)[0]}`,
+    );
+  }
 
   console.log('School-year backfill complete.');
 }
 
-// Guarded so the file can be imported for its `stripLeadingComments` parser
+// Guarded so the file can be imported for its `parseSqlStatements` parser
 // without running the migration as a side effect.
 if (require.main === module) {
   main()
