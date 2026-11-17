@@ -20,6 +20,12 @@ export class ChildrenPage {
     return this.page.getByTestId(`child-list-card-${studentGuid}`);
   }
 
+  /** The child's class, as shown on their card — the user-visible symptom of a
+   *  frozen school year, since it is only ever updated by a roster refresh. */
+  childClass(studentGuid: string): Locator {
+    return this.page.getByTestId(`child-list-class-${studentGuid}`);
+  }
+
   allChildCards(): Locator {
     return this.page.locator('[data-testid^="child-list-card-"]');
   }

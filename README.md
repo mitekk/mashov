@@ -147,7 +147,8 @@ Copy `.env.example` to `.env`. The values you **must** set:
 | Variable | What |
 |---|---|
 | `MASHOV_USERNAME` · `MASHOV_PASSWORD` | your Mashov login |
-| `MASHOV_SEMEL` · `MASHOV_YEAR` | school ID (semel) + academic year |
+| `MASHOV_SEMEL` | school ID (semel) |
+| `MASHOV_YEAR` | *optional.* Break-glass override for the school year, which is otherwise auto-detected from upstream and persisted on the connection. Leave it unset. See [ADR-0024](docs/adr/0024-school-year-resolution-and-rollover.md). |
 | `ENCRYPTION_KEY` | 64-char hex key; encrypts stored credentials at rest |
 
 `DATABASE_URL`, `REDIS_URL`, the session/CORS settings, and the `FEATURE_*` flags all ship with
