@@ -165,6 +165,44 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 | `PROXY_SLOW_TIMEOUT_MS` | bound for long synchronous paths (`/api/v1/sync/*`) | `90000` |
 | `ENABLE_E2E_AUTH_BYPASS` | **tests only** — `1` lets the e2e browser skip the auth guard. Must stay unset or `0` in production. | `0` |
 
+### Daily digest to Telegram
+
+A per-child Hebrew briefing, pushed hourly from 13:00 to 19:00 Asia/Jerusalem — but only when
+that child has something unreported. Nothing new means no model call, no message, no cost.
+Delivery is opt-in per child: a child gets a digest only if an enabled recipient row exists for
+it (`POST /api/v1/digest/recipients`).
+
+| Variable | What | Default |
+|---|---|---|
+| `DIGEST_ENABLED` | master switch for the hourly cron | `false` |
+| `DIGEST_DRY_RUN` | renders and logs the message, sends nothing | `true` |
+| `DIGEST_TIMEZONE` | also defines "today" and "tomorrow" | `Asia/Jerusalem` |
+| `DIGEST_DUE_LOOKBACK_DAYS` | how far back to look for homework that may be needed tomorrow | `14` |
+| `DIGEST_LLM_MODEL` | model that writes the Hebrew prose | `claude-opus-5-5` |
+| `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |
+| `ANTHROPIC_API_KEY` | **secret.** Omit it and the digest still sends, using the deterministic renderer | unset |
+| `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather | unset |
+
+Both defaults are deliberately inert: merging the feature changes nothing until `DIGEST_ENABLED`
+is `true`, and even then `DIGEST_DRY_RUN` keeps it from messaging anyone until you set it to
+`false`. Check what it *would* have sent with `GET /api/v1/digest/deliveries`, which records
+every run — including the quiet ones, since silence is otherwise indistinguishable from a broken
+job.
+
+The model only writes prose. The report's structure, the item list, and the `צפי הגשה`
+(*estimated submission*) label are owned by a template, and every failure mode — missing key,
+timeout, refusal, malformed output — falls back to deterministic Hebrew and still sends.
+
+> **The submission date is an estimate, not a deadline.** Mashov exposes no homework due-date
+> field, only when the work was given. The digest estimates from an explicit date written in the
+> teacher's text, else the group's next lesson, and labels it as an estimate.
+> See [ADR-0026](docs/adr/0026-derived-homework-deadlines.md).
+
+Neither the Telegram client nor the Anthropic client uses `HTTPS_PROXY`: that hop is a single
+residential box provisioned for Mashov only. See
+[ADR-0025](docs/adr/0025-outbound-digest-delivery-and-llm-egress.md), which also records what
+child data reaches the model (first names only) and what does not.
+
 ### Reaching Mashov
 
 Mashov **blocks the production server's IP**: `GET /api/schools` returns 403 from the server and
