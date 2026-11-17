@@ -127,7 +127,6 @@ services:
       ENCRYPTION_KEY: test-encryption-key-32-chars-long!
       SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
-      MASHOV_YEAR: "2026"
       MASHOV_USERNAME: test
       MASHOV_PASSWORD: test
     volumes:
@@ -155,7 +154,6 @@ services:
       ENCRYPTION_KEY: test-encryption-key-32-chars-long!
       SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
-      MASHOV_YEAR: "2026"
       MASHOV_USERNAME: test
       MASHOV_PASSWORD: test
     volumes:

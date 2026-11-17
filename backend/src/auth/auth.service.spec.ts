@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
+import { SchoolYearService } from '../common/school-year/school-year.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -31,6 +32,7 @@ const mockPrisma = {
   },
   student: {
     upsert: jest.fn(),
+    updateMany: jest.fn(),
   },
 };
 
@@ -49,16 +51,19 @@ const mockEncryptionService = {
 };
 
 const mockConfig = {
-  get: jest.fn().mockImplementation((key: string) => {
-    if (key === 'MASHOV_YEAR') return '2026';
-    return undefined;
-  }),
+  get: jest.fn().mockImplementation(() => undefined),
+};
+
+const mockSchoolYearService = {
+  resolveForSchool: jest.fn(),
+  reconcileFromLogin: jest.fn(),
+  invalidate: jest.fn(),
 };
 
 const mockLoginResponse = {
   credential: { userId: 'mashov-uid-1', displayName: 'Test Parent' },
   accessToken: {
-    schoolSettings: { schoolName: 'Test School', schoolYear: 2026 },
+    schoolSettings: { schoolName: 'Test School', schoolYear: 2027 },
     children: [],
     username: 'testuser',
     userSettings: { detailsState: 1 },
@@ -71,6 +76,14 @@ describe('AuthService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolYearService.resolveForSchool.mockResolvedValue({
+      year: 2027,
+      source: 'calendar',
+    });
+    mockSchoolYearService.reconcileFromLogin.mockImplementation((candidate: number) => ({
+      year: candidate,
+      changed: false,
+    }));
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -80,6 +93,7 @@ describe('AuthService', () => {
         { provide: AppSessionService, useValue: mockAppSessionService },
         { provide: EncryptionService, useValue: mockEncryptionService },
         { provide: ConfigService, useValue: mockConfig },
+        { provide: SchoolYearService, useValue: mockSchoolYearService },
       ],
     }).compile();
 
@@ -231,6 +245,158 @@ describe('AuthService', () => {
           where: { studentGuid: 'child-1' },
         }),
       );
+    });
+  });
+
+  describe('school year resolution', () => {
+    function arrangeSuccessfulLogin(data: unknown = mockLoginResponse) {
+      mockHttp.post = jest.fn().mockResolvedValue({ data });
+      mockPrisma.appUser.findUnique.mockResolvedValue(null);
+      mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.householdConnection.create.mockResolvedValue({});
+      mockPrisma.householdConnection.update.mockResolvedValue({});
+      mockPrisma.student.upsert.mockResolvedValue({});
+      mockRedis.incr.mockResolvedValue(1);
+    }
+
+    it('sends the resolved year in the login body', async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockSchoolYearService.resolveForSchool).toHaveBeenCalledWith(482273);
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2027 }),
+        expect.anything(),
+      );
+    });
+
+    it('finds the existing connection by school and username rather than by year', async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findFirst.mockResolvedValue({ id: 'conn-1' });
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      for (const call of mockPrisma.householdConnection.findFirst.mock.calls) {
+        expect(call[0].where).not.toHaveProperty('schoolYear');
+        expect(call[0].where).toMatchObject({ schoolCode: 482273, username: 'user' });
+      }
+    });
+
+    it("advances an existing connection's schoolYear", async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findFirst.mockResolvedValue({
+        id: 'conn-1',
+        schoolYear: 2026,
+      });
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'conn-1' },
+          data: expect.objectContaining({ schoolYear: 2027 }),
+        }),
+      );
+    });
+
+    it('persists the year Mashov reports when it differs from the one sent', async () => {
+      arrangeSuccessfulLogin({
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          schoolSettings: { schoolName: 'Test School', schoolYear: 2026 },
+        },
+      });
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockSchoolYearService.reconcileFromLogin.mockReturnValue({ year: 2026, changed: true });
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockPrisma.householdConnection.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolYear: 2026 }),
+        }),
+      );
+    });
+
+    it('re-logs in once when Mashov reports a different active year', async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockSchoolYearService.reconcileFromLogin
+        .mockReturnValueOnce({ year: 2026, changed: true })
+        .mockReturnValue({ year: 2026, changed: false });
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+      expect(mockHttp.post).toHaveBeenLastCalledWith(
+        '/api/login',
+        expect.objectContaining({ year: 2026 }),
+        expect.anything(),
+      );
+    });
+
+    it('does not re-login more than once even if the year still disagrees', async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockSchoolYearService.reconcileFromLogin.mockReturnValue({ year: 2026, changed: true });
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('updates classCode and classNum for a child who moved up a grade', async () => {
+      arrangeSuccessfulLogin({
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          children: [
+            {
+              childGuid: 'child-1',
+              familyName: 'Cohen',
+              privateName: 'Avi',
+              classCode: 'ז',
+              classNum: 3,
+              gender: 'M',
+              groups: [1],
+            },
+          ],
+        },
+      });
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockPrisma.student.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { studentGuid: 'child-1' },
+          update: expect.objectContaining({ classCode: 'ז', classNum: 3 }),
+        }),
+      );
+    });
+
+    it('marks children Mashov reports as inactive as inactive', async () => {
+      arrangeSuccessfulLogin({
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          children: [],
+          inactiveChildren: [{ childGuid: 'child-gone' }],
+        },
+      });
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.student.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockPrisma.student.updateMany).toHaveBeenCalledWith({
+        where: { studentGuid: { in: ['child-gone'] } },
+        data: { isActive: false },
+      });
     });
   });
 

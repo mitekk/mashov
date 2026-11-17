@@ -7,6 +7,7 @@ import {
   createMashovAxios,
   resolveMashovBaseUrl,
 } from "../common/http/mashov-http";
+import { calendarSchoolYear } from "../common/school-year/school-year.service";
 
 interface LoginChild {
   childGuid: string;
@@ -87,11 +88,17 @@ export class SessionService {
     const csrfToken = "9c690c16-d0c8-ed43-9314-d622077e2e26";
 
     const semel = this.configService.get<number>("MASHOV_SEMEL");
-    const year = this.configService.get<number>("MASHOV_YEAR");
+    // MASHOV_YEAR is an optional break-glass override now, so derive the year
+    // when it is unset. (This class is unreachable from app.module.ts; the live
+    // path is MashovSessionService, which uses the full SchoolYearService.)
+    const configuredYear = this.configService.get<number>("MASHOV_YEAR");
+    const year = Number(configuredYear) > 0
+      ? Number(configuredYear)
+      : calendarSchoolYear(new Date());
     const username = this.configService.get<string>("MASHOV_USERNAME");
     const password = this.configService.get<string>("MASHOV_PASSWORD");
 
-    if (!semel || !year || !username || !password) {
+    if (!semel || !username || !password) {
       throw new Error(
         "Missing required Mashov credentials in environment variables",
       );

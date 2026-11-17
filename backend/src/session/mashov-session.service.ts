@@ -7,6 +7,7 @@ import {
   createMashovAxios,
   resolveMashovBaseUrl,
 } from "../common/http/mashov-http";
+import { SchoolYearService } from "../common/school-year/school-year.service";
 
 interface LoginChild {
   childGuid: string;
@@ -65,6 +66,7 @@ export class MashovSessionService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly encryptionService: EncryptionService,
+    private readonly schoolYearService: SchoolYearService,
   ) {
     this.baseUrl = resolveMashovBaseUrl(
       this.configService.get<string>("MASHOV_BASE_URL"),
@@ -96,18 +98,22 @@ export class MashovSessionService {
     const csrfToken = "9c690c16-d0c8-ed43-9314-d622077e2e26";
 
     const semel = this.configService.get<number>("MASHOV_SEMEL");
-    const year = this.configService.get<number>("MASHOV_YEAR");
     const username = this.configService.get<string>("MASHOV_USERNAME");
     const password = this.configService.get<string>("MASHOV_PASSWORD");
 
-    if (!semel || !year || !username || !password) {
+    // `year` is deliberately absent from this guard: MASHOV_YEAR is now an
+    // optional break-glass override, and requiring it here would mean the app
+    // cannot boot without the very constant that froze the school year.
+    if (!semel || !username || !password) {
       throw new Error(
         "Missing required Mashov credentials in environment variables",
       );
     }
 
+    const year = (await this.schoolYearService.resolveForSchool(Number(semel))).year;
+
     const stored = await this.prisma.householdConnection.findFirst({
-      where: { schoolCode: Number(semel), schoolYear: Number(year) },
+      where: { schoolCode: Number(semel), username },
       select: { mashovUniqueId: true },
     });
     const storedUniqueId = stored?.mashovUniqueId ?? null;
@@ -166,7 +172,7 @@ export class MashovSessionService {
 
     if (this.sessionCookies?.uniquId) {
       await this.prisma.householdConnection.updateMany({
-        where: { schoolCode: Number(semel), schoolYear: Number(year) },
+        where: { schoolCode: Number(semel), username },
         data: { mashovUniqueId: this.sessionCookies.uniquId },
       });
     }
@@ -345,7 +351,7 @@ export class MashovSessionService {
     const encryptedPassword = this.encryptionService.encrypt(password);
 
     const existing = await this.prisma.householdConnection.findFirst({
-      where: { schoolCode: semel, schoolYear: year },
+      where: { schoolCode: semel, username },
     });
 
     if (existing) {
@@ -354,6 +360,7 @@ export class MashovSessionService {
         data: {
           username,
           encryptedPassword,
+          schoolYear: year,
           schoolName: schoolSettings?.schoolName,
           upstreamUserId: credential?.userId,
           lastLoginAt: new Date(),
