@@ -89,10 +89,14 @@ export class MailService {
           NOT: { labels: { array_contains: ['archived'] } },
         },
       }),
-      this.prisma.householdConnection.findFirst({
+      // SUMMED, not read from one row. Each connection's cachedNewCount is
+      // now its own mailbox's unread count, so the household badge is their
+      // total -- reading the most recent connection's row alone would show one
+      // school's mail and silently hide the other's.
+      this.prisma.householdConnection.aggregate({
         where: { active: true },
-        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedNewCount: true },
+        _sum: { cachedNewCount: true },
+        _count: { _all: true },
       }),
       this.prisma.mailConversation.findMany({
         where: {
@@ -109,7 +113,14 @@ export class MailService {
       }),
     ]);
 
-    const newConversations = household?.cachedNewCount ?? localNewConversations;
+    // `_count` distinguishes "no connections, so fall back to the local
+    // count" from "connections whose counts genuinely sum to zero". Without
+    // it, _sum is null in both cases and an empty inbox would fall back to a
+    // local count that may not be zero.
+    const newConversations =
+      household._count._all > 0
+        ? household._sum.cachedNewCount ?? 0
+        : localNewConversations;
 
     return {
       newConversations,
@@ -898,22 +909,39 @@ export class MailService {
     }
   }
 
-  private async updateCachedNewCount(): Promise<void> {
-    const newCount = await this.prisma.mailConversation.count({
-      where: {
-        isUnread: true,
-        NOT: { labels: { array_contains: ['archived'] } },
-      },
-    });
+  /**
+   * Recompute `cachedNewCount` per connection, each from its own mailbox.
+   *
+   * MailCountsTask writes the same number every five minutes and MailInboxTask
+   * after every walk, so this has to agree with them exactly or a user action
+   * and the cron fight over one number. Unscoped -- one count written to one
+   * arbitrary row -- is what made the badge report the union of both schools.
+   *
+   * With no argument it refreshes every active connection plus the unowned
+   * (shared-session) rows, which is what a mail action needs: the ids it
+   * touched may span schools.
+   */
+  private async updateCachedNewCount(connectionIds?: string[]): Promise<void> {
+    const connections =
+      connectionIds === undefined
+        ? await this.prisma.householdConnection.findMany({
+            where: { active: true },
+            select: { id: true },
+          })
+        : connectionIds.map((id) => ({ id }));
 
-    const household = await this.prisma.householdConnection.findFirst({
-      where: { active: true },
-    });
-
-    if (household) {
+    for (const connection of connections) {
       await this.prisma.householdConnection.update({
-        where: { id: household.id },
-        data: { cachedNewCount: newCount },
+        where: { id: connection.id },
+        data: {
+          cachedNewCount: await this.prisma.mailConversation.count({
+            where: {
+              householdConnectionId: connection.id,
+              isUnread: true,
+              NOT: { labels: { array_contains: ['archived'] } },
+            },
+          }),
+        },
       });
     }
   }

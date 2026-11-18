@@ -62,6 +62,12 @@ services:
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       # Wall-clock bound per Mashov request (default 10000 in code).
       MASHOV_TIMEOUT_MS: ${MASHOV_TIMEOUT_MS:-}
+      # Kill switch for the mail unread reconciliation sweep. `false` freezes
+      # the inbox badge in place while a wrong count is diagnosed; the inbox
+      # walk and the per-conversation derivation keep running either way. Any
+      # other value, including unset, leaves the sweep on -- it is what keeps
+      # the badge matching Mashov's own unreadConversations.
+      MAIL_SWEEP_ENABLED: ${MAIL_SWEEP_ENABLED:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       # Per-child daily digest -> Telegram. Off by default, and silent even
       # when on: DIGEST_DRY_RUN renders and logs without sending. See ADR-0026.

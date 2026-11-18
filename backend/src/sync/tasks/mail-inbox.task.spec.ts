@@ -321,6 +321,9 @@ describe('MailInboxTask', () => {
 
       expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith({
         where: {
+          // The shared env session owns the unowned rows, and NULL selects
+          // exactly those -- not "everything".
+          householdConnectionId: null,
           isUnread: true,
           lastFetchedAt: { lt: RUN_STARTED_AT },
           // An orphan the user explicitly marked unread is their decision, not drift.
@@ -357,52 +360,194 @@ describe('MailInboxTask', () => {
       expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
     });
 
-    it('skips the sweep when more than one connection is active', async () => {
-      (mockPrisma.householdConnection.count as jest.Mock).mockResolvedValue(2);
-      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
-        { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
-        { id: 'conn-2', schoolCode: 2, schoolYear: 2026, username: 'b', encryptedPassword: 'y' },
-      ]);
-      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue([]);
+    describe('per connection', () => {
+      const CONN_A = {
+        id: 'conn-a',
+        schoolCode: 540175,
+        schoolYear: 2026,
+        username: 'a',
+        encryptedPassword: 'x',
+      };
+      const CONN_B = {
+        id: 'conn-b',
+        schoolCode: 999999,
+        schoolYear: 2027,
+        username: 'b',
+        encryptedPassword: 'y',
+      };
 
-      await task.execute();
+      /** Every mail row is stamped, so the transitional gate is satisfied. */
+      function allRowsStamped() {
+        (mockPrisma.mailConversation.count as jest.Mock).mockImplementation(({ where }) =>
+          Promise.resolve(where?.householdConnectionId === null ? 0 : 1),
+        );
+      }
 
-      expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
-    });
+      it('sweeps per connection, touching only that connection\'s rows', async () => {
+        // This is what the old "N active connections share one unscoped mail
+        // table" gate existed to prevent, and what the ownership column makes
+        // safe: the two row sets are disjoint, so `lastFetchedAt <
+        // runStartedAt` is a sound orphan test within each one.
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+          CONN_A,
+          CONN_B,
+        ]);
+        allRowsStamped();
+        (mockMashovClient.getForConnection as jest.Mock)
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([makeConversation({ conversationId: 'conv-b' })])
+          .mockResolvedValueOnce([]);
 
-    it('sweeps on a targeted run when only one connection is active', async () => {
-      // "refresh now" (sync.controller.ts) always targets the caller's connection, so on a
-      // single-connection deployment every user-triggered run is targeted. Skipping those
-      // meant pressing refresh never corrected the count.
-      (mockPrisma.householdConnection.count as jest.Mock).mockResolvedValue(1);
-      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
-        { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
-      ]);
-      (mockMashovClient.getForConnection as jest.Mock)
-        .mockResolvedValueOnce([makeConversation()])
-        .mockResolvedValueOnce([]);
+        await task.execute();
 
-      await task.execute({ connectionId: 'conn-1' });
+        const sweeps = (mockPrisma.mailConversation.updateMany as jest.Mock).mock.calls.map(
+          (call) => call[0].where.householdConnectionId,
+        );
+        expect(sweeps).toEqual(['conn-a', 'conn-b']);
+      });
 
-      expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { isUnread: false } }),
-      );
-    });
+      it('sweeps on a targeted run', async () => {
+        // "refresh now" always targets the caller's connection, so every
+        // user-triggered run is targeted. Refusing those meant pressing
+        // refresh never corrected the count.
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
+        allRowsStamped();
+        (mockMashovClient.getForConnection as jest.Mock)
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([]);
 
-    it('skips the sweep on a targeted run when another connection is also active', async () => {
-      // context.connectionId narrows the findMany, so the walked list is no evidence of
-      // how many mailboxes feed the unscoped table. Count independently.
-      (mockPrisma.householdConnection.count as jest.Mock).mockResolvedValue(2);
-      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
-        { id: 'conn-1', schoolCode: 1, schoolYear: 2026, username: 'a', encryptedPassword: 'x' },
-      ]);
-      (mockMashovClient.getForConnection as jest.Mock)
-        .mockResolvedValueOnce([makeConversation()])
-        .mockResolvedValueOnce([]);
+        await task.execute({ connectionId: 'conn-a' });
 
-      await task.execute({ connectionId: 'conn-1' });
+        expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ householdConnectionId: 'conn-a' }),
+          }),
+        );
+      });
 
-      expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+      it('skips a connection-scoped run while any mail row is unstamped', async () => {
+        // Belt and braces against an ownership backfill that never ran. It
+        // clears itself within one cycle, because both walk loops re-stamp in
+        // their update branch too.
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
+        (mockPrisma.mailConversation.count as jest.Mock).mockImplementation(({ where }) =>
+          Promise.resolve(where?.householdConnectionId === null ? 5 : 0),
+        );
+        (mockMashovClient.getForConnection as jest.Mock)
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([]);
+
+        await task.execute();
+
+        expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('skips a shared-session run when stamped rows exist', async () => {
+        // A per-connection walk is also running, and this run has no idea what
+        // that walk refreshed -- its own orphan test would be answering about
+        // somebody else's mailbox.
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([]);
+        (mockPrisma.mailConversation.count as jest.Mock).mockImplementation(({ where }) =>
+          Promise.resolve(where?.householdConnectionId?.not === null ? 3 : 0),
+        );
+        (mockMashovClient.get as jest.Mock)
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([]);
+
+        await task.execute();
+
+        expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('stamps every conversation and message it writes, on create and on update', async () => {
+        // The update branch is what makes the system self-heal if the backfill
+        // never ran -- without it the transitional gate above would never clear.
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
+        allRowsStamped();
+        (mockMashovClient.getForConnection as jest.Mock)
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([]);
+
+        await task.execute({ connectionId: 'conn-a' });
+
+        for (const call of (mockPrisma.mailConversation.upsert as jest.Mock).mock.calls) {
+          expect(call[0].create.householdConnectionId).toBe('conn-a');
+          expect(call[0].update.householdConnectionId).toBe('conn-a');
+        }
+        for (const call of (mockPrisma.mailMessage.upsert as jest.Mock).mock.calls) {
+          expect(call[0].create.householdConnectionId).toBe('conn-a');
+          expect(call[0].update.householdConnectionId).toBe('conn-a');
+        }
+      });
+
+      it('writes each connection its own cachedNewCount', async () => {
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+          CONN_A,
+          CONN_B,
+        ]);
+        (mockPrisma.mailConversation.count as jest.Mock).mockImplementation(({ where }) => {
+          if (where?.householdConnectionId === null) return Promise.resolve(0);
+          if (where?.isUnread !== true) return Promise.resolve(1);
+          return Promise.resolve(where.householdConnectionId === 'conn-a' ? 16 : 7);
+        });
+        (mockMashovClient.getForConnection as jest.Mock)
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([makeConversation({ conversationId: 'conv-b' })])
+          .mockResolvedValueOnce([]);
+
+        await task.execute();
+
+        const written = (mockPrisma.householdConnection.update as jest.Mock).mock.calls.map(
+          (call) => ({ id: call[0].where.id, count: call[0].data.cachedNewCount }),
+        );
+        expect(written).toEqual([
+          { id: 'conn-a', count: 16 },
+          { id: 'conn-b', count: 7 },
+        ]);
+      });
+
+      it('skips the sweep entirely when MAIL_SWEEP_ENABLED is false', async () => {
+        // The kill switch: a bad badge is one environment variable away from
+        // frozen rather than a rollback.
+        const previous = process.env.MAIL_SWEEP_ENABLED;
+        process.env.MAIL_SWEEP_ENABLED = 'false';
+        try {
+          (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
+          allRowsStamped();
+          (mockMashovClient.getForConnection as jest.Mock)
+            .mockResolvedValueOnce([makeConversation()])
+            .mockResolvedValueOnce([]);
+
+          await task.execute();
+
+          expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+        } finally {
+          if (previous === undefined) delete process.env.MAIL_SWEEP_ENABLED;
+          else process.env.MAIL_SWEEP_ENABLED = previous;
+        }
+      });
+
+      it('still sweeps when MAIL_SWEEP_ENABLED is unset', async () => {
+        // Default-on: reconciliation is what keeps the badge honest, so the
+        // switch is an escape hatch, not an opt-in.
+        const previous = process.env.MAIL_SWEEP_ENABLED;
+        delete process.env.MAIL_SWEEP_ENABLED;
+        try {
+          (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
+          allRowsStamped();
+          (mockMashovClient.getForConnection as jest.Mock)
+            .mockResolvedValueOnce([makeConversation()])
+            .mockResolvedValueOnce([]);
+
+          await task.execute();
+
+          expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalled();
+        } finally {
+          if (previous !== undefined) process.env.MAIL_SWEEP_ENABLED = previous;
+        }
+      });
     });
 
     it('refreshes cachedNewCount so the badge and the list agree before the next counts tick', async () => {

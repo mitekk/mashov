@@ -52,13 +52,20 @@ export class MailCountsTask {
       select: { startedAt: true },
     });
 
+    // All three counts are scoped to the mailbox being reported on. Unscoped,
+    // the breakdown described the union of every household's mail while
+    // `upstreamCount` described one school's -- so the diagnostic for the
+    // disagreement was itself the thing disagreeing.
+    const ownScope = { householdConnectionId: connectionId ?? null };
+
     const [archived, orphans, locallyOverridden] = await Promise.all([
       this.prisma.mailConversation.count({
-        where: { labels: { array_contains: ['archived'] } },
+        where: { ...ownScope, labels: { array_contains: ['archived'] } },
       }),
       lastInboxRun
         ? this.prisma.mailConversation.count({
             where: {
+              ...ownScope,
               isUnread: true,
               NOT: { labels: { array_contains: ['archived'] } },
               lastFetchedAt: { lt: lastInboxRun.startedAt },
@@ -66,7 +73,7 @@ export class MailCountsTask {
           })
         : Promise.resolve<number | 'unknown'>('unknown'),
       this.prisma.mailConversation.count({
-        where: { locallyReadThroughAt: { not: null } },
+        where: { ...ownScope, locallyReadThroughAt: { not: null } },
       }),
     ]);
 

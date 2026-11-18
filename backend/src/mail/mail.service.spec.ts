@@ -33,6 +33,15 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
   return {
     householdConnection: {
       findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
+      // The badge sums cachedNewCount across a household's connections, so the
+      // read is an aggregate rather than one row. `_count` is what separates
+      // "no connections, fall back to the local count" from "connections whose
+      // counts sum to zero".
+      aggregate:
+        overrides.householdAggregate ??
+        jest.fn().mockResolvedValue({ _sum: { cachedNewCount: null }, _count: { _all: 0 } }),
+      // updateCachedNewCount now refreshes every active connection in turn.
+      findMany: overrides.householdFindMany ?? jest.fn().mockResolvedValue([]),
       update: householdUpdate,
       updateMany: householdUpdate,
     },
@@ -112,15 +121,17 @@ function makeMockScope(overrides: Partial<Record<string, jest.Mock>> = {}) {
 
 describe('MailService', () => {
   describe('getSummary', () => {
-    it('prefers household cachedNewCount when active connection exists', async () => {
-      const householdFindFirst = jest.fn().mockResolvedValue({ cachedNewCount: 68 });
+    it('prefers the summed cachedNewCount when active connections exist', async () => {
+      const householdAggregate = jest
+        .fn()
+        .mockResolvedValue({ _sum: { cachedNewCount: 68 }, _count: { _all: 1 } });
       const conversationCount = jest.fn().mockResolvedValue(60);
       const conversationFindMany = jest.fn().mockResolvedValue([
         makeConversation({ conversationId: 'conv-upstream-1', isUnread: true }),
       ]);
       const service = new MailService(
         makeMockPrisma({
-          householdFindFirst,
+          householdAggregate,
           conversationCount,
           conversationFindMany,
           syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
@@ -133,7 +144,46 @@ describe('MailService', () => {
       expect(result.newConversations).toBe(68);
       expect(result.recentConversations[0].conversationId).toBe('conv-upstream-1');
       expect(result.lastSyncAt).toBe(NOW.toISOString());
-      expect(householdFindFirst).toHaveBeenCalled();
+      expect(householdAggregate).toHaveBeenCalled();
+    });
+
+    it('sums the badge across two schools', async () => {
+      // The metric the original unread fix was measured on. Reading one
+      // connection's row would show one school's mail and silently hide the
+      // other's; summing is what makes the badge the household's total.
+      const householdAggregate = jest
+        .fn()
+        .mockResolvedValue({ _sum: { cachedNewCount: 16 + 7 }, _count: { _all: 2 } });
+      const service = new MailService(
+        makeMockPrisma({
+          householdAggregate,
+          conversationCount: jest.fn().mockResolvedValue(999),
+          syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await expect(service.getSummary()).resolves.toMatchObject({ newConversations: 23 });
+    });
+
+    it('reports zero rather than falling back when the connections really sum to zero', async () => {
+      // _sum is null both for "no rows" and for "rows summing to zero", so
+      // without the _count check an emptied inbox would fall back to a local
+      // count that need not be zero -- a badge that will not clear.
+      const service = new MailService(
+        makeMockPrisma({
+          householdAggregate: jest
+            .fn()
+            .mockResolvedValue({ _sum: { cachedNewCount: 0 }, _count: { _all: 1 } }),
+          conversationCount: jest.fn().mockResolvedValue(42),
+          syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await expect(service.getSummary()).resolves.toMatchObject({ newConversations: 0 });
     });
 
     it('falls back to DB unread non-archived count when no active connection exists', async () => {
@@ -622,7 +672,7 @@ describe('MailService', () => {
           conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
           householdUpdate,
           conversationCount: jest.fn().mockResolvedValue(3),
-          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
+          householdFindMany: jest.fn().mockResolvedValue([{ id: 'household-1' }]),
         }),
         makeMockMashovClient({}),
         makeMockScope(),
@@ -635,6 +685,39 @@ describe('MailService', () => {
           data: expect.objectContaining({ cachedNewCount: 3 }),
         }),
       );
+    });
+
+    it('recomputes cachedNewCount per connection, each from its own mailbox', async () => {
+      // Each row must hold its OWN mailbox's count, because the badge sums
+      // them. Writing one unscoped count into each row is what reported the
+      // union of both schools once per school.
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
+      const conversationCount = jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(where.householdConnectionId === 'conn-a' ? 16 : 7),
+      );
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          householdUpdate,
+          conversationCount,
+          householdFindMany: jest
+            .fn()
+            .mockResolvedValue([{ id: 'conn-a' }, { id: 'conn-b' }]),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await service.markConversationsRead(['conv-1']);
+
+      const written = householdUpdate.mock.calls.map((call) => ({
+        id: call[0].where.id,
+        count: call[0].data.cachedNewCount,
+      }));
+      expect(written).toEqual([
+        { id: 'conn-a', count: 16 },
+        { id: 'conn-b', count: 7 },
+      ]);
     });
   });
 
@@ -720,7 +803,7 @@ describe('MailService', () => {
           conversationUpdateMany,
           householdUpdate,
           conversationCount: jest.fn().mockResolvedValue(7),
-          householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
+          householdFindMany: jest.fn().mockResolvedValue([{ id: 'household-1' }]),
         }),
         makeMockMashovClient({ put: mashovPut }),
         makeMockScope(),

@@ -174,6 +174,7 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 | `PROXY_SLOW_TIMEOUT_MS` | bound for long synchronous paths (`/api/v1/sync/*`) | `90000` |
 | `PROXY_ATTACHMENT_TIMEOUT_MS` | bound for attachment downloads (`/api/v1/{mail,children}/**/files/*`) | `45000` |
 | `ENABLE_E2E_AUTH_BYPASS` | **tests only** — `1` lets the e2e browser skip the auth guard. Must stay unset or `0` in production. | `0` |
+| `MAIL_SWEEP_ENABLED` | kill switch for the mail unread reconciliation sweep. Set to `false` to freeze the inbox badge in place while a wrong count is diagnosed — the walk and the per-conversation derivation keep running, only the orphan sweep stops. Anything else, including unset, leaves it on. | `true` |
 
 ### Daily digest to Telegram
 
