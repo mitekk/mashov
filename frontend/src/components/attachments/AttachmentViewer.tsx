@@ -5,8 +5,8 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { ChevronLeft, ChevronRight, Download, Printer, X } from 'lucide-react';
 import { AttachmentPreview } from '@/components/attachments/AttachmentPreview';
 import { useAttachmentBlob } from '@/hooks/useAttachmentBlob';
-import { printBlob, triggerBlobDownload } from '@/lib/blob-actions';
-import { formatFileSize } from '@/lib/mime';
+import { printBlob, triggerBlobDownload, triggerHrefDownload } from '@/lib/blob-actions';
+import { formatFileSize, isSvg } from '@/lib/mime';
 import { getTextDir } from '@/lib/rtl';
 import type { Attachment } from '@/types/api';
 
@@ -69,14 +69,23 @@ export function AttachmentViewer({
   }, [files.length, onIndexChange, safeIndex]);
 
   const handleDownload = useCallback(() => {
-    if (!blob || !file) return;
+    if (!file) return;
+
+    // No bytes in hand (the fetch was skipped for a type that can never
+    // preview), or bytes the browser must not be given a chance to render:
+    // either way, let the endpoint's `Content-Disposition` do the work.
+    if (!blob || isSvg(mimeType, file.fileName)) {
+      triggerHrefDownload(href, file.fileName);
+      return;
+    }
+
     triggerBlobDownload(blob, file.fileName);
-  }, [blob, file]);
+  }, [blob, file, href, mimeType]);
 
   const handlePrint = useCallback(() => {
     if (!blob || !file) return;
-    void printBlob(blob, mimeType, file.fileName);
-  }, [blob, file, mimeType]);
+    void printBlob(blob, mimeType, file.fileName, href);
+  }, [blob, file, href, mimeType]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -99,7 +108,10 @@ export function AttachmentViewer({
   if (!file) return null;
 
   const sizeLabel = blob ? formatFileSize(blob.size) : '';
-  const canPrint = Boolean(blob) && previewKind !== 'unsupported';
+  // SVG is viewable but not printable: see `printBlob`. Offering the button
+  // and then quietly downloading instead would be the worse answer.
+  const canPrint =
+    Boolean(blob) && previewKind !== 'unsupported' && !isSvg(mimeType, file.fileName);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -138,10 +150,9 @@ export function AttachmentViewer({
               <button
                 type="button"
                 onClick={handleDownload}
-                disabled={!blob}
                 aria-label="הורדה"
                 data-testid="attachment-download-button"
-                className="icon-button h-9 w-9 disabled:opacity-40"
+                className="icon-button h-9 w-9"
               >
                 <Download className="h-4 w-4" aria-hidden="true" />
               </button>

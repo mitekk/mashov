@@ -3,7 +3,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AttachmentError, ATTACHMENT_TIMEOUT_CODE } from '@/lib/attachment-errors';
-import { previewKindFor, resolveMimeType, type PreviewKind } from '@/lib/mime';
+import {
+  charsetFromContentType,
+  mimeFromExtension,
+  previewKindFor,
+  resolveMimeType,
+  type PreviewKind,
+} from '@/lib/mime';
 
 /**
  * Just above the proxy's own attachment budget (PROXY_ATTACHMENT_TIMEOUT_MS,
@@ -23,6 +29,7 @@ interface FetchedAttachment {
 }
 
 export interface UseAttachmentBlobResult {
+  /** The bytes, re-typed to the resolved MIME type (see below). */
   blob: Blob | undefined;
   /** Resolved type — header when informative, filename extension otherwise. */
   mimeType: string;
@@ -110,6 +117,44 @@ async function fetchAttachment(
 }
 
 /**
+ * Decode text bytes using the charset the server declared, falling back to
+ * UTF-8. `Blob.text()` is always UTF-8, which mangles the windows-1255 files
+ * Israeli schools commonly attach.
+ */
+async function decodeText(blob: Blob, charset: string | null): Promise<string> {
+  if (!charset || charset === 'utf-8' || charset === 'utf8') {
+    return blob.text();
+  }
+
+  try {
+    const decoder = new TextDecoder(charset);
+    return decoder.decode(await blob.arrayBuffer());
+  } catch {
+    // Unknown label — TextDecoder throws on construction. UTF-8 is the only
+    // other guess we have.
+    return blob.text();
+  }
+}
+
+/**
+ * Whether a file is worth fetching at all.
+ *
+ * When the filename extension is one we recognize *and* it names a type that
+ * can never render inline (Word, Excel, archives), there is nothing the bytes
+ * could change: the viewer would show the "cannot display" card either way.
+ * Skipping the fetch spares a parent on mobile data a full transfer to be told
+ * exactly that.
+ *
+ * An unrecognized or absent extension still fetches, because then the response
+ * header is the only thing that can identify the file.
+ */
+function shouldFetch(fileName: string): boolean {
+  const extensionMime = mimeFromExtension(fileName);
+  if (!extensionMime) return true;
+  return previewKindFor(extensionMime, fileName) !== 'unsupported';
+}
+
+/**
  * Fetch one attachment as a `Blob` and keep a live object URL for it.
  *
  * Why a blob rather than pointing `<img>`/`<iframe>` at the URL: the backend
@@ -133,22 +178,40 @@ export function useAttachmentBlob(
   const query = useQuery<FetchedAttachment>({
     queryKey: ['attachment', href],
     queryFn: ({ signal }) => fetchAttachment(href, signal),
-    enabled: enabled && href.length > 0,
+    enabled: enabled && href.length > 0 && shouldFetch(fileName),
     retry: 0,
     staleTime: Infinity,
     gcTime: 5 * 60_000,
   });
 
-  const blob = query.data?.blob;
+  const rawBlob = query.data?.blob;
+  const contentType = query.data?.contentType;
 
   const mimeType = useMemo(
-    () => resolveMimeType(query.data?.contentType, fileName),
-    [query.data?.contentType, fileName],
+    () => resolveMimeType(contentType, fileName),
+    [contentType, fileName],
   );
   const previewKind = useMemo(
     () => previewKindFor(mimeType, fileName),
     [mimeType, fileName],
   );
+
+  /**
+   * Re-typed to the *resolved* MIME type. This matters more than it looks: the
+   * backend defaults the header to `application/octet-stream` whenever upstream
+   * omits one, and a `blob:` URL of that type will not make the browser
+   * instantiate its PDF viewer or decode an image — the iframe would come up
+   * blank. Carrying the resolved type on the blob is what makes the
+   * extension-derived fallback actually render.
+   *
+   * The copy is skipped when the type already matches, so the common case does
+   * not pay for a second buffer.
+   */
+  const blob = useMemo(() => {
+    if (!rawBlob) return undefined;
+    if (rawBlob.type === mimeType) return rawBlob;
+    return new Blob([rawBlob], { type: mimeType });
+  }, [rawBlob, mimeType]);
 
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
 
@@ -181,8 +244,7 @@ export function useAttachmentBlob(
     const truncated = blob.size > TEXT_PREVIEW_LIMIT_BYTES;
     const slice = truncated ? blob.slice(0, TEXT_PREVIEW_LIMIT_BYTES) : blob;
 
-    void slice
-      .text()
+    void decodeText(slice, charsetFromContentType(contentType))
       .then((value) => {
         if (cancelled) return;
         setText(value);
@@ -197,7 +259,7 @@ export function useAttachmentBlob(
     return () => {
       cancelled = true;
     };
-  }, [blob, previewKind]);
+  }, [blob, previewKind, contentType]);
 
   return {
     blob,
@@ -206,7 +268,11 @@ export function useAttachmentBlob(
     objectUrl,
     text,
     isTextTruncated,
-    isLoading: query.isPending && query.fetchStatus === 'fetching',
+    // The object URL is minted in a passive effect, so there is one commit on
+    // which the bytes are here and the URL is not. Counting that as loading is
+    // what stops the preview flashing its error card on every success.
+    isLoading:
+      (query.isPending && query.fetchStatus === 'fetching') || Boolean(blob && !objectUrl),
     isError: query.isError,
     error: query.error,
     refetch: () => void query.refetch(),

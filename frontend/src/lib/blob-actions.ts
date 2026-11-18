@@ -6,7 +6,7 @@
  * can invalidate the URL the live preview is rendering.
  */
 
-import { previewKindFor } from '@/lib/mime';
+import { isSvg, previewKindFor } from '@/lib/mime';
 
 const PRINT_FRAME_LOAD_TIMEOUT_MS = 15_000;
 
@@ -22,8 +22,9 @@ const PRINT_CLEANUP_FALLBACK_MS = 60_000;
  *
  * Known gap: iOS Safari does not reliably honour `download` on a synthetic
  * anchor pointing at a `blob:` URL — it may open the file instead, leaving the
- * user to the share sheet. Accepted; the alternative is `window.open`, which
- * loses the filename everywhere else.
+ * user to the share sheet. Accepted for inert types; a scriptable one must go
+ * through {@link triggerHrefDownload} instead, where the server's
+ * `Content-Disposition` settles it.
  */
 export function triggerBlobDownload(blob: Blob, fileName: string): void {
   const objectUrl = URL.createObjectURL(blob);
@@ -41,6 +42,26 @@ export function triggerBlobDownload(blob: Blob, fileName: string): void {
   // Revoking synchronously can cancel the download in some browsers; one task
   // later the navigation has been handed off.
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+/**
+ * Save a file by navigating to its server URL instead of a blob URL.
+ *
+ * For types the browser must never get a chance to *render* — an SVG above all.
+ * The endpoint sends `Content-Disposition: attachment`, so the browser saves
+ * it; a `blob:` URL cannot promise that, and a rendered blob document runs the
+ * SVG's scripts in this app's origin with the session cookie attached.
+ */
+export function triggerHrefDownload(href: string, fileName: string): void {
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = fileName;
+  anchor.rel = 'noopener';
+  anchor.style.display = 'none';
+
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 function escapeHtml(value: string): string {
@@ -85,7 +106,11 @@ function afterTwoAnimationFrames(): Promise<void> {
  * Print one attachment.
  *
  * - Unsupported types delegate to {@link triggerBlobDownload} — there is
- *   nothing we can render, so saving the file is the honest action.
+ *   nothing we can render, so saving the file is the honest action. SVG takes
+ *   the same exit for a different reason: it renders safely in the preview's
+ *   `<img>`, but every path in here would have to put the document somewhere it
+ *   could execute. Callers should not offer Print for an SVG at all; this is
+ *   the backstop.
  * - PDFs go into a hidden iframe by `src`, where the browser's own viewer
  *   handles them.
  * - Images are decoded in the *parent* document first, then rendered via
@@ -100,12 +125,29 @@ function afterTwoAnimationFrames(): Promise<void> {
  *
  * **Fallback:** if the frame never loads or `print()` throws — some browsers
  * refuse programmatic printing of a frame, and iOS Safari is unreliable here —
- * this opens the file in a new tab (`window.open`) and lets the user print it
- * from there. Printing is therefore best-effort by design; it never throws at
- * the caller.
+ * this saves the file instead, so the button is never silent, and the user can
+ * print it from their own viewer. It deliberately does *not* `window.open` the
+ * blob URL: a top-level `blob:` navigation yields a document in this app's
+ * origin, which for a script-bearing file is stored XSS against the session.
+ * (A popup blocker would eat it regardless — by then we are several awaits
+ * past the click's user-gesture window.) Printing is best-effort by design; it
+ * never throws at the caller.
+ *
+ * `fallbackHref` is the file's server URL, used when the bytes themselves must
+ * not be handed to the browser as a blob.
  */
-export async function printBlob(blob: Blob, mime: string, fileName: string): Promise<void> {
+export async function printBlob(
+  blob: Blob,
+  mime: string,
+  fileName: string,
+  fallbackHref: string,
+): Promise<void> {
   const kind = previewKindFor(mime, fileName);
+
+  if (isSvg(mime, fileName)) {
+    triggerHrefDownload(fallbackHref, fileName);
+    return;
+  }
 
   if (kind === 'unsupported') {
     triggerBlobDownload(blob, fileName);
@@ -137,14 +179,10 @@ export async function printBlob(blob: Blob, mime: string, fileName: string): Pro
     URL.revokeObjectURL(objectUrl);
   };
 
-  const openInNewTab = () => {
-    cleanedUp = true;
-    window.clearTimeout(cleanupTimer);
-    window.removeEventListener('afterprint', cleanup);
-    frame.remove();
-    // Deliberately not revoked: the new tab still needs the URL. It dies with
-    // the document.
-    window.open(objectUrl, '_blank', 'noopener');
+  /** Give up on printing and save the file, so the action is never silent. */
+  const fallBackToDownload = () => {
+    cleanup();
+    triggerBlobDownload(blob, fileName);
   };
 
   try {
@@ -191,7 +229,7 @@ export async function printBlob(blob: Blob, mime: string, fileName: string): Pro
 
     const frameWindow = frame.contentWindow;
     if (!frameWindow) {
-      openInNewTab();
+      fallBackToDownload();
       return;
     }
 
@@ -215,6 +253,6 @@ export async function printBlob(blob: Blob, mime: string, fileName: string): Pro
     frameWindow.focus();
     frameWindow.print();
   } catch {
-    if (!cleanedUp) openInNewTab();
+    if (!cleanedUp) fallBackToDownload();
   }
 }

@@ -87,7 +87,12 @@ function upstreamErrorResponse(error: unknown): NextResponse {
 
 async function proxy(request: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   const { path } = await params;
-  const pathname = `/api/v1/${path.join('/')}`;
+  // Next hands these segments back URL-*decoded*, so re-encoding each one is
+  // what keeps the upstream path faithful: without it an id containing `/`
+  // re-splits into extra upstream segments, a `#` truncates the URL at the
+  // fragment, and the attachment predicate below stops matching — silently
+  // reverting that download to the default budget.
+  const pathname = `/api/v1/${path.map(encodeURIComponent).join('/')}`;
   const search = request.nextUrl.search;
   const url = `${BACKEND_URL}${pathname}${search}`;
 

@@ -115,6 +115,13 @@ export function AttachmentPreview({
     );
   }
 
+  // Decided before the object-URL guard below: this card never needs the
+  // bytes, and for a file whose extension already rules out a preview the hook
+  // does not fetch them at all.
+  if (previewKind === 'unsupported') {
+    return <UnsupportedCard fileName={fileName} onDownload={onDownload} />;
+  }
+
   if (!objectUrl) {
     return (
       <div data-testid="attachment-error" className="space-y-3">

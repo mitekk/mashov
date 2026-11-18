@@ -88,6 +88,31 @@ function extensionOf(fileName: string): string {
 }
 
 /**
+ * The MIME type the filename extension implies, or `null` when the extension
+ * is absent or unrecognized.
+ *
+ * Exposed so a caller can decide *before* fetching whether a file is worth
+ * pulling into memory: a `.docx` or `.zip` can never render inline, and
+ * streaming 30MB of it over mobile data only to show a "cannot display" card
+ * is worse than the plain link it replaced.
+ */
+export function mimeFromExtension(fileName: string): string | null {
+  return EXTENSION_MIME_TYPES[extensionOf(fileName)] ?? null;
+}
+
+/**
+ * The `charset` parameter of a Content-Type header, lowercased, or `null`.
+ *
+ * Needed because `Blob.text()` always decodes as UTF-8, and Mashov text
+ * attachments from Israeli schools are frequently windows-1255 — which would
+ * otherwise render as mojibake instead of Hebrew.
+ */
+export function charsetFromContentType(header: string | null | undefined): string | null {
+  const match = /;\s*charset\s*=\s*"?([^";]+)"?/i.exec(header ?? '');
+  return match ? match[1].trim().toLowerCase() : null;
+}
+
+/**
  * The effective MIME type of a downloaded attachment.
  *
  * Strips any `;charset=…` parameter, trims and lowercases. Trusts the header

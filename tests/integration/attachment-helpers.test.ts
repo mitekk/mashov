@@ -19,8 +19,10 @@ import {
   mailAttachmentHref,
 } from '@/lib/attachment-routes';
 import {
+  charsetFromContentType,
   formatFileSize,
   isSvg,
+  mimeFromExtension,
   previewKindFor,
   resolveMimeType,
 } from '@/lib/mime';
@@ -134,6 +136,53 @@ describe('previewKindFor', () => {
   it('strips parameters before matching', () => {
     expect(previewKindFor('text/plain; charset=utf-8', 'notes.txt')).toBe('text');
     expect(previewKindFor('APPLICATION/PDF', 'letter.pdf')).toBe('pdf');
+  });
+});
+
+describe('mimeFromExtension', () => {
+  it('maps a known extension', () => {
+    expect(mimeFromExtension('letter.pdf')).toBe('application/pdf');
+    expect(mimeFromExtension('PHOTO.PNG')).toBe('image/png');
+  });
+
+  it('returns null when the extension is unknown or absent', () => {
+    expect(mimeFromExtension('archive.xyz')).toBeNull();
+    expect(mimeFromExtension('mystery')).toBeNull();
+    expect(mimeFromExtension('.gitignore')).toBeNull();
+  });
+
+  it('names the office and archive types that can never preview', () => {
+    // This pairing is what lets the viewer skip the fetch entirely: a file
+    // whose extension resolves to an unsupported type cannot be rescued by
+    // the response header.
+    for (const fileName of ['form.docx', 'grades.xlsx', 'deck.pptx', 'bundle.zip']) {
+      const mime = mimeFromExtension(fileName);
+      expect(mime).not.toBeNull();
+      expect(previewKindFor(mime as string, fileName)).toBe('unsupported');
+    }
+  });
+
+  it('does not rule out a previewable extension', () => {
+    for (const fileName of ['a.pdf', 'a.png', 'a.svg', 'a.csv', 'a.txt']) {
+      const mime = mimeFromExtension(fileName);
+      expect(mime).not.toBeNull();
+      expect(previewKindFor(mime as string, fileName)).not.toBe('unsupported');
+    }
+  });
+});
+
+describe('charsetFromContentType', () => {
+  it('extracts the charset a Hebrew text attachment needs', () => {
+    expect(charsetFromContentType('text/csv; charset=windows-1255')).toBe('windows-1255');
+    expect(charsetFromContentType('text/plain;charset=UTF-8')).toBe('utf-8');
+    expect(charsetFromContentType('text/plain; charset="iso-8859-8"')).toBe('iso-8859-8');
+  });
+
+  it('returns null when no charset is declared', () => {
+    expect(charsetFromContentType('text/plain')).toBeNull();
+    expect(charsetFromContentType('application/octet-stream')).toBeNull();
+    expect(charsetFromContentType(null)).toBeNull();
+    expect(charsetFromContentType(undefined)).toBeNull();
   });
 });
 

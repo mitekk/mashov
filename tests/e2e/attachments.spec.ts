@@ -312,6 +312,20 @@ test.describe('Attachment viewer', () => {
 
     await expect(viewer.pdfPreview).toBeVisible();
     await expect(viewer.unsupportedCard).toBeHidden();
+
+    // Rendering the iframe is not enough: a blob URL still typed
+    // `application/octet-stream` makes the browser decline to open its PDF
+    // viewer, so the frame would come up blank. The blob must carry the
+    // *resolved* type, and a blob: URL is fetchable from the page to prove it.
+    const blobType = await page.evaluate(async () => {
+      const frame = document.querySelector<HTMLIFrameElement>(
+        '[data-testid="attachment-preview-pdf"]',
+      );
+      if (!frame) return 'no-frame';
+      const response = await fetch(frame.src);
+      return (await response.blob()).type;
+    });
+    expect(blobType).toBe('application/pdf');
   });
 
   test('offers download but not print for a file it cannot preview', async ({ page }) => {
@@ -324,6 +338,35 @@ test.describe('Attachment viewer', () => {
     await expect(viewer.unsupportedDownloadButton).toBeVisible();
     await expect(viewer.printButton).toBeHidden();
     await expect(viewer.downloadButton).toBeEnabled();
+  });
+
+  test('does not download a file whose extension already rules out a preview', async ({
+    page,
+  }) => {
+    const requested: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes(`/homework/${HOMEWORK_ID}/files/`)) {
+        requested.push(request.url());
+      }
+    });
+
+    await gotoHomework(page, [FILES[3]]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx');
+    await expect(viewer.unsupportedCard).toBeVisible();
+
+    // A `.docx` can never render inline, and no response header could change
+    // that — so pulling it into memory just to say so would cost a parent on
+    // mobile data the whole transfer.
+    expect(requested).toEqual([]);
+
+    // Download still works: it navigates to the endpoint, whose
+    // Content-Disposition makes the browser save it.
+    const downloadPromise = page.waitForEvent('download');
+    await viewer.unsupportedDownloadButton.click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe('form.docx');
   });
 
   test('navigates between several files with the buttons and the counter tracks', async ({
