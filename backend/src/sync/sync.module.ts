@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../prisma/prisma.module';
 import { MashovSessionModule } from '../session/mashov-session.module';
 import { SchoolYearModule } from '../common/school-year/school-year.module';
+import { RedisModule } from '../redis/redis.module';
 import { SyncRunService } from './sync-run.service';
 import { BehaviorClassifierService } from './behavior-classifier.service';
 import { FreshnessService } from './freshness.service';
@@ -32,7 +33,10 @@ import { HistoryBackfillTask } from './tasks/history-backfill.task';
 import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
 
 @Module({
-  imports: [ConfigModule, PrismaModule, MashovSessionModule, SchoolYearModule],
+  // RedisModule is @Global, but importing it here keeps SyncModule standalone:
+  // RefreshProgressService needs RedisService, and a test harness that imports
+  // SyncModule alone should not have to know that.
+  imports: [ConfigModule, PrismaModule, MashovSessionModule, SchoolYearModule, RedisModule],
   controllers: [SyncController],
   providers: [
     SyncRunService,

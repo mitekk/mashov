@@ -113,6 +113,10 @@ services:
       PROXY_SLOW_TIMEOUT_MS: ${PROXY_SLOW_TIMEOUT_MS:-}
       NEXT_PUBLIC_API_URL: /api/v1
       NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
+      # Last-resort bound on the first-login sync screen (default 120000). Must
+      # stay above PROXY_SLOW_TIMEOUT_MS so POST /sync/refresh always resolves
+      # or 504s before the cap fires.
+      NEXT_PUBLIC_SYNCING_HARD_CAP_MS: ${NEXT_PUBLIC_SYNCING_HARD_CAP_MS:-}
       # Opt-in only. Set to 1 by the e2e test commands and CI; must stay 0
       # everywhere else — when enabled, an x-mashov-e2e-auth-bypass header or a
       # mashov-e2e-browser user agent walks straight past the auth guard.

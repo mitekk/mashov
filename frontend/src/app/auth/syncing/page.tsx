@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import SyncingPageClient from './SyncingPageClient';
 
 export const metadata: Metadata = {
@@ -10,5 +11,11 @@ export const metadata: Metadata = {
 };
 
 export default function SyncingPage() {
-  return <SyncingPageClient />;
+  // The client reads a search param, which prerendering requires a boundary
+  // for. The fallback is deliberately empty: it is visible for a single frame.
+  return (
+    <Suspense fallback={null}>
+      <SyncingPageClient />
+    </Suspense>
+  );
 }
