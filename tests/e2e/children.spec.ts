@@ -109,6 +109,15 @@ const MOCK_ME = {
   username: 'e2e-parent',
   displayName: 'E2E Parent',
   connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+  schools: [
+    {
+      id: 'conn-mock-1',
+      semel: 540175,
+      schoolName: 'Test School',
+      shortLabel: 'Test School',
+      schoolYear: 2026,
+    },
+  ],
 };
 
 test.beforeEach(async ({ page }) => {

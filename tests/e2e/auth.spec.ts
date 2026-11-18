@@ -45,6 +45,15 @@ const MOCK_ME = {
   username: 'testparent',
   displayName: 'Test Parent',
   connectedSchool: { schoolName: 'בית ספר לדוגמה', schoolYear: 2026 },
+  schools: [
+    {
+      id: 'conn-mock-1',
+      semel: 540175,
+      schoolName: 'בית ספר לדוגמה',
+      shortLabel: 'בית ספר לדוגמה',
+      schoolYear: 2026,
+    },
+  ],
 };
 
 const MOCK_EMPTY_DASHBOARD = {
@@ -80,6 +89,29 @@ async function mockMorePageQueries(page: Page): Promise<void> {
         sources: [],
         overallState: 'fresh',
         lastFullSyncAt: null,
+      },
+    });
+  });
+
+  await page.route('**/api/v1/school-links', async (route) => {
+    await route.fulfill({
+      json: {
+        data: [
+          {
+            id: 'conn-mock-1',
+            semel: 540175,
+            schoolName: 'בית ספר לדוגמה',
+            shortLabel: 'בית ספר לדוגמה',
+            schoolYear: 2026,
+            username: 'parent',
+            childrenCount: 1,
+            isPrimary: true,
+            lastLoginAt: new Date().toISOString(),
+            lastSyncAt: new Date().toISOString(),
+            active: true,
+          },
+        ],
+        pagination: { page: 1, limit: 1, total: 1, totalPages: 1 },
       },
     });
   });
@@ -722,7 +754,8 @@ test.describe('Auth — settings page', () => {
 
     // Page must be accessible (not redirected to auth)
     expect(page.url()).not.toContain('/auth/sign-in');
-    await expect(page.getByTestId('settings-school-name')).toBeVisible();
+    await expect(page.getByTestId('settings-schools-card')).toBeVisible();
+    await expect(page.getByTestId('settings-school-name-540175')).toBeVisible();
 
     // The /more page must render something meaningful
     const body = page.locator('body');

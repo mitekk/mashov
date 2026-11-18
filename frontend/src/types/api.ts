@@ -541,12 +541,49 @@ export interface ConnectedSchool {
   schoolYear: number;
 }
 
+/** The slice of a school link every page's badge needs. */
+export interface MeSchool {
+  id: string;
+  semel: number;
+  schoolName: string;
+  /** Short enough for a chip on a 360px row; resolved server-side. */
+  shortLabel: string;
+  schoolYear: number;
+}
+
 export interface AppUser {
   mashovUserId: string;
   username: string;
   displayName: string;
+  /** @deprecated use `schools`; this is `schools[0]` and cannot describe two. */
   connectedSchool: ConnectedSchool | null;
+  /**
+   * Every connected school, newest sign-in first; `[]` when none.
+   *
+   * Every new school-aware surface gates on `schools.length >= 2`, so with one
+   * school the DOM is byte-identical to before this field existed.
+   */
+  schools: MeSchool[];
 }
+
+/** One connected Mashov account, as the management screen needs it. */
+export interface SchoolLink {
+  id: string;
+  semel: number;
+  schoolName: string;
+  shortLabel: string;
+  schoolYear: number;
+  /** Shown so a parent with two accounts can tell them apart. Never a password. */
+  username: string;
+  childrenCount: number;
+  isPrimary: boolean;
+  lastLoginAt: string | null;
+  /** `null` means the first sync has not finished yet. */
+  lastSyncAt: string | null;
+  active: boolean;
+}
+
+export type SchoolLinksResponse = PaginatedResponse<SchoolLink>;
 
 export interface School {
   semel: number;

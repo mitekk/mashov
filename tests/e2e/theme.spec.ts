@@ -18,6 +18,15 @@ async function mockCoreRoutes(page: Page) {
       username: 'theme-parent',
       displayName: 'Theme Parent',
       connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+      schools: [
+        {
+          id: 'conn-mock-1',
+          semel: 540175,
+          schoolName: 'Test School',
+          shortLabel: 'Test School',
+          schoolYear: 2026,
+        },
+      ],
     }),
   );
 
@@ -186,6 +195,30 @@ async function mockCoreRoutes(page: Page) {
         },
       ],
       lastFetchedAt: new Date().toISOString(),
+    }),
+  );
+
+  // `/more` lists the household's schools, so the page needs this route as
+  // much as it needs source-health. An unmocked 401 here is indistinguishable
+  // from an expired session and the client bounces to sign-in.
+  await page.route('**/api/v1/school-links', (route) =>
+    json(route, {
+      data: [
+        {
+          id: 'conn-1',
+          semel: 540175,
+          schoolName: 'Test School',
+          shortLabel: 'Test School',
+          schoolYear: 2026,
+          username: 'parent',
+          childrenCount: 1,
+          isPrimary: true,
+          lastLoginAt: new Date().toISOString(),
+          lastSyncAt: new Date().toISOString(),
+          active: true,
+        },
+      ],
+      pagination: { page: 1, limit: 1, total: 1, totalPages: 1 },
     }),
   );
 

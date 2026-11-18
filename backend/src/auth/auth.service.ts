@@ -11,6 +11,8 @@ import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
+import { SchoolLinksService } from '../school-links/school-links.service';
+import type { MeSchool } from '../school-links/school-links.service';
 import {
   createMashovAxios,
   isUpstreamUnreachable,
@@ -66,6 +68,7 @@ export class AuthService {
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
     private readonly schoolYearService: SchoolYearService,
+    private readonly schoolLinksService: SchoolLinksService,
   ) {
     this.mashovBaseUrl = resolveMashovBaseUrl(
       this.configService.get<string>('MASHOV_BASE_URL'),
@@ -411,7 +414,9 @@ export class AuthService {
     mashovUserId: string;
     username: string;
     displayName: string;
+    /** @deprecated kept for one release; built from `schools[0]`. */
     connectedSchool: { schoolName: string; schoolYear: number } | null;
+    schools: MeSchool[];
   }> {
     const appUser = await this.prisma.appUser.findUnique({
       where: { id: userId },
@@ -423,16 +428,20 @@ export class AuthService {
       });
     }
 
-    const connection = await this.prisma.householdConnection.findFirst({
-      where: { userId, active: true },
-      orderBy: { lastLoginAt: 'desc' },
-    });
+    // Every school, newest sign-in first. `['me']` is already fetched in the
+    // app shell, so this is the cheap read every page's school badge needs --
+    // GET /school-links carries only the management-only fields on top.
+    const schools = await this.schoolLinksService.listMeSchools(userId);
 
+    // Built from schools[0] rather than its own query, so the two can never
+    // disagree about which school is primary. Deprecated: it cannot honestly
+    // describe a household with two schools, and the frontend stops reading it
+    // in the cleanup step.
     const connectedSchool =
-      connection
+      schools.length > 0
         ? {
-            schoolName: connection.schoolName ?? '',
-            schoolYear: connection.schoolYear,
+            schoolName: schools[0].schoolName,
+            schoolYear: schools[0].schoolYear,
           }
         : null;
 
@@ -441,6 +450,7 @@ export class AuthService {
       username: appUser.username,
       displayName: appUser.displayName,
       connectedSchool,
+      schools,
     };
   }
 }

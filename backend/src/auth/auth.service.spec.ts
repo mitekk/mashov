@@ -8,6 +8,7 @@ import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
+import { SchoolLinksService } from '../school-links/school-links.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -54,6 +55,13 @@ const mockConfig = {
   get: jest.fn().mockImplementation(() => undefined),
 };
 
+const mockSchoolLinksService = {
+  // One method feeds both GET /school-links and me.schools, so the two can
+  // never disagree about which schools a household has.
+  listLinks: jest.fn().mockResolvedValue([]),
+  listMeSchools: jest.fn().mockResolvedValue([]),
+};
+
 const mockSchoolYearService = {
   resolveForSchool: jest.fn(),
   reconcileFromLogin: jest.fn(),
@@ -76,6 +84,7 @@ describe('AuthService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
     mockSchoolYearService.resolveForSchool.mockResolvedValue({
       year: 2027,
       source: 'calendar',
@@ -94,6 +103,7 @@ describe('AuthService', () => {
         { provide: EncryptionService, useValue: mockEncryptionService },
         { provide: ConfigService, useValue: mockConfig },
         { provide: SchoolYearService, useValue: mockSchoolYearService },
+        { provide: SchoolLinksService, useValue: mockSchoolLinksService },
       ],
     }).compile();
 
@@ -562,15 +572,73 @@ describe('AuthService', () => {
         username: 'test',
         displayName: 'Test Parent',
       });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({
-        schoolName: 'My School',
-        schoolYear: 2026,
-      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([
+        {
+          id: 'conn-1',
+          semel: 540175,
+          schoolName: 'My School',
+          shortLabel: 'My School',
+          schoolYear: 2026,
+        },
+      ]);
 
       const result = await service.getMe('user-1');
 
       expect(result.connectedSchool).toEqual({ schoolName: 'My School', schoolYear: 2026 });
       expect(result.username).toBe('test');
+    });
+
+    it('returns every connected school, newest sign-in first', async () => {
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'Test Parent',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([
+        { id: 'conn-b', semel: 999999, schoolName: 'B', shortLabel: 'B', schoolYear: 2027 },
+        { id: 'conn-a', semel: 540175, schoolName: 'A', shortLabel: 'A', schoolYear: 2026 },
+      ]);
+
+      const result = await service.getMe('user-1');
+
+      expect(result.schools.map((school) => school.id)).toEqual(['conn-b', 'conn-a']);
+    });
+
+    it('builds the deprecated connectedSchool from schools[0]', async () => {
+      // Derived rather than queried separately, so the two cannot disagree
+      // about which school is primary.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'Test Parent',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([
+        { id: 'conn-b', semel: 999999, schoolName: 'B', shortLabel: 'B', schoolYear: 2027 },
+        { id: 'conn-a', semel: 540175, schoolName: 'A', shortLabel: 'A', schoolYear: 2026 },
+      ]);
+
+      const result = await service.getMe('user-1');
+
+      expect(result.connectedSchool).toEqual({ schoolName: 'B', schoolYear: 2027 });
+    });
+
+    it('returns an empty schools list rather than omitting it', async () => {
+      // `[]`, not undefined: every badge does `me.schools.length >= 2`, and an
+      // absent array would throw in the app shell before anything renders.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'Test Parent',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
+
+      const result = await service.getMe('user-1');
+
+      expect(result.schools).toEqual([]);
+      expect(result.connectedSchool).toBeNull();
     });
 
     it('throws 401 when user not found', async () => {

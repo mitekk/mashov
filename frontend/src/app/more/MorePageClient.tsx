@@ -7,15 +7,16 @@ import { AppShell } from '@/components/layout/AppShell';
 import { SourceHealthList } from '@/components/more/SourceHealthList';
 import { ContentFreshnessCard } from '@/components/more/ContentFreshnessCard';
 import { ProfileCard } from '@/components/more/ProfileCard';
+import { SchoolLinksCard } from '@/components/more/SchoolLinksCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSourceHealth, useProfile } from '@/hooks/useSettings';
+import { useSchoolLinks } from '@/hooks/useSchoolLinks';
 import { useMe } from '@/hooks/useAuth';
 import { deleteConnection } from '@/api/connection';
 import { signOut } from '@/api/auth';
-import { School } from 'lucide-react';
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? '1.0.0';
 
@@ -26,6 +27,7 @@ export default function MorePage() {
   const { data: health, isLoading: healthLoading, isError: healthError } = useSourceHealth();
   const { data: profile } = useProfile();
   const { data: me } = useMe();
+  const { data: schoolLinks } = useSchoolLinks();
 
   // Disconnect confirm modal
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
@@ -61,28 +63,13 @@ export default function MorePage() {
           </div>
         </header>
 
-        {/* Connected school */}
-        {me?.connectedSchool && (
+        {/* Connected schools */}
+        {schoolLinks && schoolLinks.length > 0 && (
           <section>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              בית ספר מחובר
+              {schoolLinks.length === 1 ? 'בית ספר מחובר' : 'בתי ספר מחוברים'}
             </h2>
-            <div className="card-base p-4 flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                <School className="w-4 h-4 text-primary" />
-              </div>
-              <div>
-                <p
-                  data-testid="settings-school-name"
-                  className="text-sm font-semibold text-foreground"
-                >
-                  {me.connectedSchool.schoolName}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  שנת לימודים {me.connectedSchool.schoolYear}
-                </p>
-              </div>
-            </div>
+            <SchoolLinksCard links={schoolLinks} />
           </section>
         )}
 
@@ -129,7 +116,7 @@ export default function MorePage() {
             onClick={() => setShowDisconnectConfirm(true)}
             className="w-full rounded-xl border border-destructive/40 px-4 py-3 text-sm font-medium text-destructive hover:bg-destructive/5 transition-colors"
           >
-            ניתוק מבית הספר
+            {(schoolLinks?.length ?? 1) > 1 ? 'ניתוק מכל בתי הספר' : 'ניתוק מבית הספר'}
           </button>
         </section>
 

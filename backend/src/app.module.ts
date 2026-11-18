@@ -9,6 +9,7 @@ import { RedisModule } from "./redis/redis.module";
 import { AppSessionModule } from "./app-session/app-session.module";
 import { AuthModule } from "./auth/auth.module";
 import { ConnectionModule } from "./connection/connection.module";
+import { SchoolLinksModule } from "./school-links/school-links.module";
 import { SyncModule } from "./sync/sync.module";
 import { DigestModule } from "./digest/digest.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
@@ -30,6 +31,7 @@ import { AppSessionGuard } from "./app-session/app-session.guard";
     MashovSessionModule,
     AuthModule,
     ConnectionModule,
+    SchoolLinksModule,
     SyncModule,
     DigestModule,
     DashboardModule,
