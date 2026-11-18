@@ -55,8 +55,18 @@ export class ChildrenService {
   async getChildren(userId?: string) {
     await this.sessionService.ensureStudentsAvailable(userId);
 
+    // Scoped to the caller's household. This used to return every active
+    // student row in the database with no ownership check at all, which is
+    // what made the PRD's multi-tenancy claim untrue.
+    //
+    // Unstamped children are included for the reason `ownsStudent` documents:
+    // NULL means "ownership unknown", and excluding them would empty the app
+    // on a deployment that has not re-synced since the migration.
     const students = await this.prisma.student.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(userId ? await this.householdStudentWhere(userId) : {}),
+      },
       orderBy: { fullName: 'asc' },
     });
 
@@ -923,7 +933,72 @@ export class ChildrenService {
         },
       });
     }
+
+    // The ownership guard. Until now any signed-in user could read any child
+    // by guid: `Student` had no owner column and this method only checked that
+    // the row existed. The PRD has claimed since Phase 2 that a parent sees
+    // "only their own children's data"; this is where that becomes true.
+    //
+    // 404, not 403. A 403 confirms the guid names a real child, which is
+    // exactly the fact a stranger must not be able to probe for -- and the
+    // guids appear in URLs. The message is identical to the not-found one for
+    // the same reason.
+    if (userId && !(await this.ownsStudent(userId, student.householdConnectionId))) {
+      throw new NotFoundException({
+        error: {
+          code: 'NOT_FOUND',
+          message: `Student not found: ${studentGuid}`,
+          details: [],
+        },
+      });
+    }
+
     return student;
+  }
+
+  /**
+   * The `where` fragment that restricts a student list to one household.
+   *
+   * Returns the household's own connections' children plus the unstamped
+   * ones, matching `ownsStudent`.
+   */
+  private async householdStudentWhere(userId: string) {
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId, active: true },
+      select: { id: true },
+    });
+
+    return {
+      OR: [
+        { householdConnectionId: { in: connections.map((row) => row.id) } },
+        { householdConnectionId: null },
+      ],
+    };
+  }
+
+  /**
+   * Whether a household owns a child.
+   *
+   * An unstamped child (`householdConnectionId: null`) is readable by any
+   * caller. That is deliberate and temporary: the shared env-credential
+   * session writes unowned rows, and the ownership backfill refuses to guess
+   * above one active connection, so refusing them would break a
+   * single-school deployment that has not re-synced since the migration. Every
+   * roster refresh and every per-student sync task stamps them, so the window
+   * closes within one cycle -- and a second school cannot be linked until the
+   * rows carry owners anyway.
+   */
+  private async ownsStudent(
+    userId: string,
+    householdConnectionId: string | null,
+  ): Promise<boolean> {
+    if (householdConnectionId === null) return true;
+
+    const connection = await this.prisma.householdConnection.findFirst({
+      where: { id: householdConnectionId, userId },
+      select: { id: true },
+    });
+    return connection !== null;
   }
 
   private async tryDownloadCandidates(

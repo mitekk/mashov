@@ -80,7 +80,7 @@ export class DashboardService {
 
     const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(yearScope, userId),
-      this.getSummary(yearScope),
+      this.getSummary(yearScope, userId),
       this.getFeed(windowScope, userId),
       this.getFreshness(),
       this.getSchoolInfo(),
@@ -95,7 +95,7 @@ export class DashboardService {
     };
   }
 
-  private async getSummary(yearScope: YearScope) {
+  private async getSummary(yearScope: YearScope, userId?: string) {
     const [localNewConversations, household, students, recentHomework, recentBehavior] = await Promise.all([
       this.prisma.mailConversation.count({
         where: {
@@ -103,12 +103,19 @@ export class DashboardService {
           NOT: { labels: { array_contains: ['archived'] } },
         },
       }),
-      this.prisma.householdConnection.findFirst({
-        where: { active: true },
-        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedNewCount: true },
+      // Summed over the CALLER's connections. Reading one row showed one
+      // school's mail and hid the other's; reading every household's row
+      // showed a stranger's.
+      this.prisma.householdConnection.aggregate({
+        where: { active: true, ...(userId ? { userId } : {}) },
+        _sum: { cachedNewCount: true },
+        _count: { _all: true },
       }),
-      this.prisma.student.count({ where: { isActive: true } }),
+      // childrenCount is the caller's children, not everyone's. It feeds the
+      // "N children" line on the dashboard.
+      this.prisma.student.count({
+        where: { isActive: true, ...(await this.householdStudentWhere(userId)) },
+      }),
       this.prisma.homeworkItem.count({
         where: {
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
@@ -123,7 +130,14 @@ export class DashboardService {
         },
       }),
     ]);
-    const newConversations = household?.cachedNewCount ?? localNewConversations;
+    // `_count` separates "no connections, so fall back to the local count"
+    // from "connections whose counts genuinely sum to zero": _sum is null in
+    // both cases, and without the distinction an emptied inbox would fall back
+    // to a count that need not be zero.
+    const newConversations =
+      household._count._all > 0
+        ? household._sum.cachedNewCount ?? 0
+        : localNewConversations;
 
     return {
       newConversations,
@@ -135,7 +149,10 @@ export class DashboardService {
 
   private async getFeed(yearScope: HistoryWhere, userId?: string): Promise<FeedItem[]> {
     const students = await this.prisma.student.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(await this.householdStudentWhere(userId)),
+      },
       select: { studentGuid: true, fullName: true },
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
@@ -252,9 +269,36 @@ export class DashboardService {
     return [];
   }
 
+  /**
+   * The `where` fragment restricting a student list to one household.
+   *
+   * Unstamped children (`householdConnectionId: null`) are included: NULL
+   * means "ownership unknown, re-stamp on the next roster refresh", not "no
+   * owner", so excluding them would empty the dashboard on a deployment that
+   * has not re-synced since the ownership migration.
+   */
+  private async householdStudentWhere(userId?: string) {
+    if (!userId) return {};
+
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId, active: true },
+      select: { id: true },
+    });
+
+    return {
+      OR: [
+        { householdConnectionId: { in: connections.map((row) => row.id) } },
+        { householdConnectionId: null },
+      ],
+    };
+  }
+
   private async getChildren(yearScope: YearScope, userId?: string): Promise<ChildCard[]> {
     const students = await this.prisma.student.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(await this.householdStudentWhere(userId)),
+      },
       orderBy: { fullName: 'asc' },
     });
 

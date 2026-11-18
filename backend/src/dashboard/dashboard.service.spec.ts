@@ -46,6 +46,11 @@ function makeService(overrides: Overrides = {}) {
         schoolName: 'School',
       }),
       findMany: jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
+      // The badge is summed over the CALLER's connections now, so the read is
+      // an aggregate rather than one row.
+      aggregate: jest
+        .fn()
+        .mockResolvedValue({ _sum: { cachedNewCount: 0 }, _count: { _all: 1 } }),
     },
     student: {
       findMany: ownershipAwareStudentFindMany(

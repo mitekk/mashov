@@ -30,6 +30,8 @@ const mockPrisma = {
     // The cross-child year scope lists the connections rather than resolving
     // one household-wide year.
     findMany: jest.fn(),
+    // The badge is summed over the caller's own connections.
+    aggregate: jest.fn(),
   },
 };
 
@@ -80,6 +82,10 @@ describe('DashboardService', () => {
     mockPrisma.behaviorItem.findFirst.mockResolvedValue(null);
     mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
     mockPrisma.householdConnection.findMany.mockResolvedValue([]);
+    mockPrisma.householdConnection.aggregate.mockResolvedValue({
+      _sum: { cachedNewCount: null },
+      _count: { _all: 0 },
+    });
     mockFreshness.computeFreshness.mockResolvedValue({
       state: 'fresh',
       lastSyncAt: null,
@@ -124,9 +130,15 @@ describe('DashboardService', () => {
       expect(result.summary.newConversations).toBe(7);
     });
 
-    it('summary newConversations prefers cachedNewCount from active household connection', async () => {
+    it('summary newConversations sums cachedNewCount across the caller\'s connections', async () => {
+      // Summed, not read from one row: with two schools the badge is the
+      // household's total, and the most recent connection's row alone would
+      // show one school's mail and hide the other's.
       seedEmptyState();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({ cachedNewCount: 23 });
+      mockPrisma.householdConnection.aggregate.mockResolvedValue({
+        _sum: { cachedNewCount: 16 + 7 },
+        _count: { _all: 2 },
+      });
       mockPrisma.mailConversation.count.mockResolvedValue(7);
 
       const result = await service.getDashboard();

@@ -2007,3 +2007,219 @@ describe('ChildrenService', () => {
     });
   });
 });
+
+describe('ChildrenService household isolation', () => {
+  /**
+   * The claim `docs/prd/PRD-current.md` has made since Phase 2 -- "a secure,
+   * multi-tenant system where multiple parents ... view only their own
+   * children's data" -- was not true. `Student` had no owner column, so
+   * `getChildren()` returned every active student row in the database and
+   * `getStudentOrThrow` only checked that the row existed. Any signed-in
+   * parent could list, and read, every child in the system.
+   */
+  interface OwnedStudent {
+    id: string;
+    studentGuid: string;
+    privateName: string;
+    familyName: string;
+    fullName: string;
+    classCode: string;
+    classNum: number;
+    gender: string;
+    isActive: boolean;
+    householdConnectionId: string | null;
+    updatedAt: Date;
+  }
+
+  const MINE: OwnedStudent = {
+    id: 'row-mine',
+    studentGuid: 'guid-mine',
+    privateName: 'Mika',
+    familyName: 'Kors',
+    fullName: 'Mika Kors',
+    classCode: 'ז',
+    classNum: 3,
+    gender: 'F',
+    isActive: true,
+    householdConnectionId: 'conn-mine',
+    updatedAt: new Date('2026-11-01T00:00:00Z'),
+  };
+  const THEIRS = {
+    ...MINE,
+    id: 'row-theirs',
+    studentGuid: 'guid-theirs',
+    fullName: 'Someone Else',
+    householdConnectionId: 'conn-theirs',
+  };
+  const UNSTAMPED = {
+    ...MINE,
+    id: 'row-unstamped',
+    studentGuid: 'guid-unstamped',
+    fullName: 'Not Yet Attributed',
+    householdConnectionId: null,
+  };
+
+  /** Prisma that honours ownership on both the list and the single read. */
+  function makePrisma(students: OwnedStudent[], myConnections: string[]) {
+    const matchesHousehold = (student: OwnedStudent, where: Record<string, unknown>) => {
+      const or = where.OR as Array<Record<string, unknown>> | undefined;
+      if (!or) return true;
+      return or.some((clause) => {
+        const scoped = clause.householdConnectionId as
+          | { in?: string[] }
+          | null
+          | undefined;
+        if (scoped === null) return student.householdConnectionId === null;
+        if (scoped?.in)
+          return (
+            student.householdConnectionId !== null &&
+            scoped.in.includes(student.householdConnectionId)
+          );
+        return false;
+      });
+    };
+
+    return {
+      student: {
+        findMany: jest.fn(({ where } = {}) =>
+          Promise.resolve(students.filter((student) => matchesHousehold(student, where ?? {}))),
+        ),
+        findUnique: jest.fn(({ where }) =>
+          Promise.resolve(
+            students.find((student) => student.studentGuid === where.studentGuid) ?? null,
+          ),
+        ),
+      },
+      householdConnection: {
+        findFirst: jest.fn(({ where }) =>
+          Promise.resolve(
+            where?.id && where?.userId
+              ? myConnections.includes(where.id as string)
+                ? { id: where.id }
+                : null
+              : { schoolYear: 2027 },
+          ),
+        ),
+        findMany: jest.fn().mockResolvedValue(myConnections.map((id) => ({ id, schoolYear: 2027 }))),
+        findUnique: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+      },
+      homeworkItem: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      behaviorItem: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      subjectEnrollment: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
+      },
+      messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
+      timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
+      studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
+      schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
+      mailConversation: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      syncRun: { findFirst: jest.fn().mockResolvedValue(null) },
+    } as unknown as jest.Mocked<PrismaService>;
+  }
+
+  function makeService(students: OwnedStudent[], myConnections: string[]) {
+    return new ChildrenService(
+      makePrisma(students, myConnections),
+      makeMockSession(),
+      makeMockMashovClient(),
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope(),
+    );
+  }
+
+  it("lists only the caller's own children", async () => {
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data.map((child) => child.studentGuid)).toEqual(['guid-mine']);
+  });
+
+  it("returns 404, not 403, for another household's child", async () => {
+    // 404 because a 403 confirms the guid names a real child -- and the guids
+    // appear in URLs, so that is exactly the fact a stranger must not probe
+    // for. The message matches the genuine not-found one for the same reason.
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    await expect(service.getChildWorkspace('guid-theirs', 'user-mine')).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('uses the same message for a foreign child as for a missing one', async () => {
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const foreign = await service
+      .getChildWorkspace('guid-theirs', 'user-mine')
+      .catch((error: { response: { error: { message: string } } }) => error.response.error.message);
+    const missing = await service
+      .getChildWorkspace('guid-nonexistent', 'user-mine')
+      .catch((error: { response: { error: { message: string } } }) => error.response.error.message);
+
+    expect(foreign).toBe('Student not found: guid-theirs');
+    expect(missing).toBe('Student not found: guid-nonexistent');
+  });
+
+  it("lets the caller read their own child", async () => {
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    await expect(service.getChildWorkspace('guid-mine', 'user-mine')).resolves.toMatchObject({
+      student: expect.objectContaining({ studentGuid: 'guid-mine' }),
+    });
+  });
+
+  it('returns an empty list for a user with no connection, not every child', async () => {
+    // The failure mode that matters: falling back to "everything" when the
+    // household resolves to nothing is how an unscoped read hides.
+    const service = makeService([MINE, THEIRS], []);
+
+    const result = await service.getChildren('user-with-no-school');
+
+    expect(result.data).toEqual([]);
+  });
+
+  it('still admits an unstamped child, in both the list and the single read', async () => {
+    // NULL means "ownership unknown, re-stamp on the next roster refresh", not
+    // "nobody's". Refusing these would empty the app on a single-school
+    // deployment that has not re-synced since the ownership migration.
+    const service = makeService([MINE, UNSTAMPED, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data.map((child) => child.studentGuid).sort()).toEqual([
+      'guid-mine',
+      'guid-unstamped',
+    ]);
+    await expect(
+      service.getChildWorkspace('guid-unstamped', 'user-mine'),
+    ).resolves.toBeTruthy();
+  });
+
+  it('applies no household filter when there is no caller', async () => {
+    // The digest and the cron paths pass no userId. They are server-side and
+    // deliberately global; tightening them here would silently stop the
+    // digest.
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren();
+
+    expect(result.data.map((child) => child.studentGuid).sort()).toEqual([
+      'guid-mine',
+      'guid-theirs',
+    ]);
+  });
+});
