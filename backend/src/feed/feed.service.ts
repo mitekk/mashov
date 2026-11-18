@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildStudentSchoolMap } from '../common/student-school-map';
 import {
   historyScopeForStudents,
 } from '../common/school-year/school-year.scope';
@@ -11,6 +12,17 @@ export interface FeedItem {
   sourceId: string;
   studentGuid: string | null;
   studentName: string | null;
+  /**
+   * Which school this item's child belongs to, or `null` for a mail item.
+   *
+   * `null` is also what an unstamped child reports, which the UI reads as "no
+   * badge" rather than as a school called "null". Mail is household-wide and
+   * genuinely has no child, so it carries none either -- the school filter
+   * leaves those visible rather than hiding them under a chip they cannot
+   * match.
+   */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
   title: string;
   summary: string;
   category: string;
@@ -50,6 +62,9 @@ export class FeedService {
       select: { studentGuid: true, fullName: true },
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
+    // Built alongside the name map, from the same rows, so a feed item can
+    // say which school it came from without a second query per item.
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students);
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
@@ -77,6 +92,9 @@ export class FeedService {
         sourceType: 'homework',
         studentGuid: hw.studentGuid,
         studentName: studentMap.get(hw.studentGuid) ?? null,
+        schoolId: schoolMap.get(hw.studentGuid)?.schoolId ?? null,
+        schoolShortLabel:
+          schoolMap.get(hw.studentGuid)?.shortLabel ?? null,
         title: `${hw.subjectName}: ${hw.homeworkText.substring(0, 60)}`,
         summary: hw.homeworkText,
         category: 'homework',
@@ -99,6 +117,9 @@ export class FeedService {
         sourceType: isPositive ? 'positive' : 'behavior',
         studentGuid: b.studentGuid,
         studentName: studentMap.get(b.studentGuid) ?? null,
+        schoolId: schoolMap.get(b.studentGuid)?.schoolId ?? null,
+        schoolShortLabel:
+          schoolMap.get(b.studentGuid)?.shortLabel ?? null,
         title: b.achvaName,
         summary: b.remark ?? b.achvaName,
         category: 'behavior',
@@ -120,6 +141,9 @@ export class FeedService {
         sourceType: 'mail',
         studentGuid: null,
         studentName: null,
+        // Mail is household-wide: it has no child and therefore no school.
+        schoolId: null,
+        schoolShortLabel: null,
         title: conv.subject,
         summary: conv.senderNamePreview ?? conv.subject,
         category: 'mail',

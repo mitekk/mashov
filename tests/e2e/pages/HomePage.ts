@@ -71,4 +71,28 @@ export class HomePage {
   feedSelectCheckbox(itemId: string): Locator {
     return this.page.getByTestId(`feed-select-${itemId}`);
   }
+
+  /** The chip row. Absent entirely below two connected schools. */
+  get schoolFilterChips() {
+    return this.page.getByTestId('school-filter-chips');
+  }
+
+  schoolFilterChip(semel: number | 'all') {
+    return this.page.getByTestId(`school-filter-chip-${semel}`);
+  }
+
+  /** Press a school's chip and wait for the URL to carry it. */
+  async filterBySchool(semel: number | 'all'): Promise<void> {
+    await this.schoolFilterChip(semel).click();
+    await this.page.waitForURL(
+      semel === 'all' ? (url) => !url.search.includes('school=') : `**?*school=${semel}*`,
+    );
+  }
+
+  /** A row's school badge; absent below two connected schools. */
+  schoolBadge(id: string) {
+    return this.page.getByTestId(
+      `child-card-school-${id}`,
+    );
+  }
 }

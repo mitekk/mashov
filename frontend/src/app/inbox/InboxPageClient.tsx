@@ -20,6 +20,14 @@ import {
 } from '@/hooks/useMail';
 import { Archive, Mail, MailOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { SchoolFilterChips } from '@/components/school/SchoolFilterChips';
+import { useMe } from '@/hooks/useAuth';
+import {
+  matchesSchoolFilter,
+  parseSchoolFilter,
+  serializeSchoolFilter,
+  type SchoolFilter,
+} from '@/lib/school-filter';
 
 type InboxFilter = 'all' | 'new' | 'archived';
 
@@ -38,6 +46,7 @@ function InboxPageContent() {
   const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
 
   const { data: summary } = useMailSummary();
+  const { data: me } = useMe();
   const {
     data,
     isLoading,
@@ -52,9 +61,30 @@ function InboxPageContent() {
   const { mutate: archive, isPending: isArchivePending } = useArchive();
   const { mutate: unarchive, isPending: isUnarchivePending } = useUnarchive();
 
-  const conversations = useMemo(
+  const allConversations = useMemo(
     () => data?.pages.flatMap((page) => page.data) ?? [],
     [data],
+  );
+
+  // Both params coexist: /inbox?filter=new&school=540175 is a valid state, and
+  // each row of chips owns its own key.
+  const schoolFilter = parseSchoolFilter(searchParams.get('school'), me?.schools ?? []);
+
+  function setSchoolFilter(next: SchoolFilter) {
+    const params = new URLSearchParams(searchParams.toString());
+    const value = serializeSchoolFilter(next);
+    if (value === null) params.delete('school');
+    else params.set('school', value);
+    const query = params.toString();
+    router.replace(query ? `/inbox?${query}` : '/inbox');
+  }
+
+  const conversations = useMemo(
+    () =>
+      allConversations.filter((conversation) =>
+        matchesSchoolFilter(schoolFilter, semelOf(conversation.schoolId, me?.schools)),
+      ),
+    [allConversations, schoolFilter, me?.schools],
   );
   const isBulkActionPending = isMarkReadPending
     || isMarkUnreadPending
@@ -198,6 +228,8 @@ function InboxPageContent() {
         </div>
       </header>
 
+      <SchoolFilterChips value={schoolFilter} onChange={setSchoolFilter} />
+
       {hasSelection && (
         <section
           data-testid="inbox-bulk-actions"
@@ -325,4 +357,19 @@ export default function InboxPage() {
       </Suspense>
     </AppShell>
   );
+}
+
+/**
+ * A connection id resolved to its semel.
+ *
+ * The filter is keyed by semel because that is what survives unlinking and
+ * re-linking a school and what belongs in a shareable URL, while a
+ * conversation carries the connection id it was fetched with.
+ */
+function semelOf(
+  schoolId: string | null,
+  schools: Array<{ id: string; semel: number }> | undefined,
+): number | null {
+  if (!schoolId) return null;
+  return schools?.find((school) => school.id === schoolId)?.semel ?? null;
 }

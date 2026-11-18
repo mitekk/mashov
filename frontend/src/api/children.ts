@@ -284,6 +284,13 @@ function normalizeChildListItem(item: UnknownRecord): ChildListItem {
     subjectCount: Number(item.subjectCount ?? 0),
     latestUpdateAt:
       typeof item.latestUpdateAt === 'string' ? item.latestUpdateAt : null,
+    // Absent on a backend that predates school fields, which is a valid
+    // response: null reads as "no badge", not as a school called "null".
+    schoolId: typeof item.schoolId === 'string' ? item.schoolId : null,
+    schoolName: typeof item.schoolName === 'string' ? item.schoolName : null,
+    schoolShortLabel:
+      typeof item.schoolShortLabel === 'string' ? item.schoolShortLabel : null,
+    semel: typeof item.semel === 'number' ? item.semel : null,
   };
 }
 

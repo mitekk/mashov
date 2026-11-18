@@ -9,6 +9,7 @@ import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { cn } from '@/lib/utils';
+import { SchoolBadge } from '@/components/school/SchoolBadge';
 
 interface ChildCardProps {
   child: ChildListItem;
@@ -34,6 +35,13 @@ export function ChildCard({ child }: ChildCardProps) {
               לא פעיל
             </span>
           )}
+          {/* Self-hiding below two schools, so a one-school card is unchanged. */}
+          <SchoolBadge
+            schoolShortLabel={child.schoolShortLabel}
+            schoolName={child.schoolName}
+            testId={`child-list-school-${child.studentGuid}`}
+            className="flex-shrink-0"
+          />
         </div>
         <p
           data-testid={`child-list-class-${child.studentGuid}`}

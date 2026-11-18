@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 import type { ConnectionTarget } from '../session/connection-target';
 import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
+import { resolveSchoolLabels } from '../common/school-label';
 import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
@@ -137,17 +138,42 @@ export class MailService {
     };
   }
 
-  async getConversations(page: number, limit: number, filter: 'all' | 'new' | 'archived') {
-    const where = this.buildInboxWhere(filter);
+  async getConversations(
+    page: number,
+    limit: number,
+    filter: 'all' | 'new' | 'archived',
+    /** Narrows to one school's mailbox; omitted, every mailbox. */
+    schoolId?: string,
+  ) {
+    const where = this.buildInboxWhere(filter, schoolId);
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
         where,
         orderBy: { sendTime: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
+        // Joined rather than resolved per row: the conversation already has
+        // the connection, and the inbox shows its label on every line.
+        include: {
+          connection: { select: { id: true, schoolCode: true, schoolName: true, displayLabel: true } },
+        },
       }),
       this.prisma.mailConversation.count({ where }),
     ]);
+
+    const labels = resolveSchoolLabels(
+      [
+        ...new Map(
+          items
+            .map((item) => item.connection)
+            // Truthy, not `!== null`: Prisma yields null for a missing
+            // relation, but a row read without the include yields undefined,
+            // and both mean "no school".
+            .filter((connection): connection is NonNullable<typeof connection> => Boolean(connection))
+            .map((connection) => [connection.id, connection]),
+        ).values(),
+      ],
+    );
 
     return {
       data: items.map((item) => ({
@@ -161,6 +187,13 @@ export class MailService {
         preventReply: item.preventReply,
         labels: this.asStringArray(item.labels),
         lastFetchedAt: item.lastFetchedAt.toISOString(),
+        // `null` on an unstamped conversation, which the UI reads as no badge.
+        schoolId: item.connection?.id ?? null,
+        schoolShortLabel: item.connection
+          ? labels.get(item.connection.id) ??
+            item.connection.schoolName ??
+            String(item.connection.schoolCode)
+          : null,
       })),
       pagination: {
         page,
@@ -477,11 +510,16 @@ export class MailService {
     );
   }
 
-  private buildInboxWhere(filter: 'all' | 'new' | 'archived'): Prisma.MailConversationWhereInput {
+  private buildInboxWhere(
+    filter: 'all' | 'new' | 'archived',
+    schoolId?: string,
+  ): Prisma.MailConversationWhereInput {
+    const school = schoolId ? { householdConnectionId: schoolId } : {};
     if (filter === 'archived') {
-      return { labels: { array_contains: ['archived'] } };
+      return { ...school, labels: { array_contains: ['archived'] } };
     }
     return {
+      ...school,
       ...(filter === 'new' ? { isUnread: true } : {}),
       NOT: { labels: { array_contains: ['archived'] } },
     };

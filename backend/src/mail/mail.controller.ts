@@ -22,6 +22,11 @@ class ConversationsQueryDto {
   @IsIn(['all', 'new', 'archived'])
   filter?: 'all' | 'new' | 'archived' = 'all';
 
+  /** The school whose mailbox to show; omitted, every mailbox. */
+  @IsOptional()
+  @IsString()
+  schoolId?: string;
+
   /** @deprecated use filter=new instead */
   @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
@@ -69,7 +74,7 @@ export class MailController {
     // Support legacy newOnly param for backward compat with older clients/tests
     const filter: 'all' | 'new' | 'archived' =
       query.filter ?? (query.newOnly ? 'new' : 'all');
-    return this.mailService.getConversations(page, limit, filter);
+    return this.mailService.getConversations(page, limit, filter, query.schoolId);
   }
 
   @Get('conversations/:id')

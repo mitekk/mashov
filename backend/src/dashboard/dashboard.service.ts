@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildStudentSchoolMap } from '../common/student-school-map';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { UserItemStateService } from '../common/user-item-state.service';
@@ -16,6 +17,17 @@ export interface FeedItem {
   sourceId: string;
   studentGuid: string | null;
   studentName: string | null;
+  /**
+   * Which school this item's child belongs to, or `null` for a mail item.
+   *
+   * `null` is also what an unstamped child reports, which the UI reads as "no
+   * badge" rather than as a school called "null". Mail is household-wide and
+   * genuinely has no child, so it carries none either -- the school filter
+   * leaves those visible rather than hiding them under a chip they cannot
+   * match.
+   */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
   title: string;
   summary: string;
   category: string;
@@ -52,6 +64,9 @@ export interface ChildCard {
   positiveBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
+  /** `null` for a child with no ownership stamp: the UI shows no badge. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
 }
 
 @Injectable()
@@ -156,6 +171,9 @@ export class DashboardService {
       select: { studentGuid: true, fullName: true },
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
+    // Built alongside the name map, from the same rows, so a feed item can
+    // say which school it came from without a second query per item.
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students);
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
@@ -196,6 +214,9 @@ export class DashboardService {
         summary: hw.homeworkText,
         studentGuid: hw.studentGuid,
         studentName: studentMap.get(hw.studentGuid) ?? null,
+        schoolId: schoolMap.get(hw.studentGuid)?.schoolId ?? null,
+        schoolShortLabel:
+          schoolMap.get(hw.studentGuid)?.shortLabel ?? null,
         category: 'homework',
         priority: 'medium',
         isPositive: false,
@@ -219,6 +240,9 @@ export class DashboardService {
         summary: b.remark ?? b.achvaName,
         studentGuid: b.studentGuid,
         studentName: studentMap.get(b.studentGuid) ?? null,
+        schoolId: schoolMap.get(b.studentGuid)?.schoolId ?? null,
+        schoolShortLabel:
+          schoolMap.get(b.studentGuid)?.shortLabel ?? null,
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
@@ -240,6 +264,9 @@ export class DashboardService {
         summary: conv.senderNamePreview ?? conv.subject,
         studentGuid: null,
         studentName: null,
+        // Mail is household-wide: it has no child and therefore no school.
+        schoolId: null,
+        schoolShortLabel: null,
         category: 'mail',
         priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
@@ -302,6 +329,7 @@ export class DashboardService {
       orderBy: { fullName: 'asc' },
     });
 
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const cards: ChildCard[] = await Promise.all(
@@ -388,6 +416,8 @@ export class DashboardService {
           positiveBehaviorCount: positiveBehavior,
           latestUpdateAt,
           oneLineStatus,
+          schoolId: schoolMap.get(student.studentGuid)?.schoolId ?? null,
+          schoolShortLabel: schoolMap.get(student.studentGuid)?.shortLabel ?? null,
         };
       }),
     );

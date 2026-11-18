@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo } from 'react';
+import React, { Suspense, useEffect, useMemo } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
 import { ChildQuickCard } from '@/components/home/ChildQuickCard';
 import { LatestFeed } from '@/components/home/LatestFeed';
@@ -12,6 +12,15 @@ import { useDashboard } from '@/hooks/useDashboard';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { formatRelativeHe } from '@/lib/dates';
 import type { DashboardResponse } from '@/types/api';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { SchoolFilterChips } from '@/components/school/SchoolFilterChips';
+import { useMe } from '@/hooks/useAuth';
+import {
+  matchesSchoolFilter,
+  parseSchoolFilter,
+  serializeSchoolFilter,
+  type SchoolFilter,
+} from '@/lib/school-filter';
 
 const EMPTY_DASHBOARD: DashboardResponse = {
   freshness: {
@@ -33,8 +42,11 @@ const EMPTY_DASHBOARD: DashboardResponse = {
   },
 };
 
-export default function HomePage() {
+function HomePageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { data, isLoading, isError, refetch } = useDashboard();
+  const { data: me } = useMe();
   const {
     selectedChildGuid,
     setSelectedChildGuid,
@@ -43,6 +55,42 @@ export default function HomePage() {
 
   const dashboard = data ?? EMPTY_DASHBOARD;
   const hasChildren = dashboard.children.length > 0;
+
+  const schoolFilter = parseSchoolFilter(searchParams.get('school'), me?.schools ?? []);
+
+  function setSchoolFilter(next: SchoolFilter) {
+    const params = new URLSearchParams(searchParams.toString());
+    const value = serializeSchoolFilter(next);
+    if (value === null) params.delete('school');
+    else params.set('school', value);
+    const query = params.toString();
+    router.replace(query ? `/home?${query}` : '/home');
+  }
+
+  /**
+   * The filter is RENDER-ONLY. It never touches the selected child.
+   *
+   * Child selection is a workspace concern persisted in
+   * localStorage['mashov.selectedChildGuid'], and the auto-select effect below
+   * deliberately keeps operating on the UNFILTERED list -- otherwise merely
+   * looking at one school would silently reassign which child the rest of the
+   * app is about.
+   */
+  const visibleChildren = useMemo(
+    () =>
+      dashboard.children.filter((child) =>
+        matchesSchoolFilter(schoolFilter, semelOf(child.schoolId, me?.schools)),
+      ),
+    [dashboard.children, schoolFilter, me?.schools],
+  );
+
+  const visibleFeed = useMemo(
+    () =>
+      dashboard.feed.filter((item) =>
+        matchesSchoolFilter(schoolFilter, semelOf(item.schoolId, me?.schools)),
+      ),
+    [dashboard.feed, schoolFilter, me?.schools],
+  );
 
   const selectedChild = useMemo(
     () => dashboard.children.find((child) => child.studentGuid === selectedChildGuid) ?? null,
@@ -98,11 +146,13 @@ export default function HomePage() {
           />
         )}
 
+        <SchoolFilterChips value={schoolFilter} onChange={setSchoolFilter} />
+
         {hasChildren && (
           <section data-testid="home-children" className="section-stack">
             <h2 className="text-lg font-semibold text-foreground">ילדים</h2>
             <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
-              {dashboard.children.map((child) => (
+              {visibleChildren.map((child) => (
                 <ChildQuickCard
                   key={child.studentGuid}
                   child={child}
@@ -113,8 +163,38 @@ export default function HomePage() {
         )}
 
         {/* Latest feed */}
-        <LatestFeed items={dashboard.feed} />
+        {/* Filtered in step with the rail above: a chip that narrowed the
+            children but not the feed below them would be worse than no chip. */}
+        <LatestFeed items={visibleFeed} />
       </div>
     </AppShell>
+  );
+}
+
+/** A connection id resolved to the semel the filter is keyed by. */
+function semelOf(
+  schoolId: string | null,
+  schools: Array<{ id: string; semel: number }> | undefined,
+): number | null {
+  if (!schoolId) return null;
+  return schools?.find((school) => school.id === schoolId)?.semel ?? null;
+}
+
+/**
+ * `useSearchParams` reads the school filter, and Next refuses to statically
+ * prerender a page that calls it without a boundary. The same wrapper /inbox
+ * already uses, for the same reason.
+ */
+export default function HomePage() {
+  return (
+    <Suspense
+      fallback={(
+        <AppShell>
+          <LoadingState message="טוען נתונים..." />
+        </AppShell>
+      )}
+    >
+      <HomePageContent />
+    </Suspense>
   );
 }

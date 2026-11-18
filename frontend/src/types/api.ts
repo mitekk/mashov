@@ -59,6 +59,9 @@ export interface FeedItem {
   sourceId: string;
   studentGuid: string | null;
   studentName: string | null;
+  /** `null` for mail (household-wide) and for an unstamped child. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
   title: string;
   summary: string;
   category: string;
@@ -84,6 +87,9 @@ export interface DashboardChildCard {
   positiveBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
+  /** `null` for a child with no ownership stamp: the UI shows no badge. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
 }
 
 export interface SchoolInfo {
@@ -119,6 +125,11 @@ export interface ChildListItem {
   positiveBehaviorCount: number;
   subjectCount: number;
   latestUpdateAt: string | null;
+  /** `null` for a child with no ownership stamp: the UI shows no badge. */
+  schoolId: string | null;
+  schoolName: string | null;
+  schoolShortLabel: string | null;
+  semel: number | null;
 }
 
 export interface ChildrenResponse {
@@ -317,6 +328,9 @@ export interface ConversationListItem {
   preventReply: boolean;
   labels: string[];
   lastFetchedAt: string;
+  /** `null` on an unstamped conversation: the UI shows no badge. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
 }
 
 export type ConversationsResponse = PaginatedResponse<ConversationListItem>;
