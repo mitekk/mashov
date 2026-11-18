@@ -10,6 +10,7 @@ import {
   yearScopeForStudents,
   type StudentYearScope,
 } from '../common/school-year/school-year.scope';
+import { visibleStudentWhere } from '../common/student-links';
 
 export interface FeedItem {
   id: string;
@@ -299,25 +300,16 @@ export class DashboardService {
   /**
    * The `where` fragment restricting a student list to one household.
    *
-   * Unstamped children (`householdConnectionId: null`) are included: NULL
-   * means "ownership unknown, re-stamp on the next roster refresh", not "no
-   * owner", so excluding them would empty the dashboard on a deployment that
-   * has not re-synced since the ownership migration.
+   * Reads the visibility edge, not the routing stamp: a child two parents
+   * share carries one stamp, so a stamp predicate emptied the dashboard of
+   * whichever parent had not synced most recently (ADR-0031). A child with no
+   * links is admitted -- no link means "ownership unknown, link on the next
+   * roster refresh", not "no owner".
    */
   private async householdStudentWhere(userId?: string) {
     if (!userId) return {};
 
-    const connections = await this.prisma.householdConnection.findMany({
-      where: { userId, active: true },
-      select: { id: true },
-    });
-
-    return {
-      OR: [
-        { householdConnectionId: { in: connections.map((row) => row.id) } },
-        { householdConnectionId: null },
-      ],
-    };
+    return visibleStudentWhere(this.prisma, userId);
   }
 
   private async getChildren(yearScope: YearScope, userId?: string): Promise<ChildCard[]> {

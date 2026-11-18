@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { linkStudentsToConnection } from '../common/student-links';
 
 /** The minimum a per-student task knows about a child. */
 export interface FanoutStudent {
@@ -95,6 +96,13 @@ export async function stampOwnershipIfChanged(
       where: { studentGuid: student.studentGuid },
       data: { householdConnectionId: connection.id },
     });
+    // A non-empty response is proof this account knows the child, so the
+    // connection also earns a VIEW of them (ADR-0031) -- the half the stamp
+    // cannot carry, since a child two parents share needs both. Written only
+    // when the stamp changes: the login roster maintains the set in the steady
+    // state, and re-asserting it on every successful fetch would be ten
+    // pointless writes per student every twelve minutes.
+    await linkStudentsToConnection(prisma, connection.id, [student.studentGuid]);
     student.householdConnectionId = connection.id;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

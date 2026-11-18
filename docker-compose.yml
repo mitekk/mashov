@@ -194,7 +194,7 @@ services:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@db-test:5432/mashov
       REDIS_URL: redis://redis:6379
-      ENCRYPTION_KEY: test-encryption-key-32-chars-long!
+      ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
       SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
       MASHOV_USERNAME: test
@@ -221,7 +221,7 @@ services:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@db-test:5432/mashov
       REDIS_URL: redis://redis:6379
-      ENCRYPTION_KEY: test-encryption-key-32-chars-long!
+      ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
       SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
       MASHOV_USERNAME: test

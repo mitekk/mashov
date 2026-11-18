@@ -39,6 +39,7 @@ model HouseholdConnection {
   user AppUser? @relation(fields: [userId], references: [id])
 
   students         Student[]
+  studentLinks     StudentConnection[]
   conversations    MailConversation[]
   messages         MailMessage[]
   notifications    NotificationEvent[]
@@ -152,9 +153,13 @@ model Student {
   // stayed active forever while every per-student cron 403'd on them.
   lastSeenInRosterAt DateTime?
 
-  /// The connection whose login roster this child appeared in -- the household
-  /// ownership this schema went without, and the reason
-  /// `ChildrenService.getChildren()` returned every active row in the database.
+  /// Which connection to ask upstream for this child -- ROUTING ONLY.
+  ///
+  /// It is deliberately NOT the answer to "who may see this child": that is
+  /// `links`, because a child can legitimately belong to more than one user
+  /// (two parents, their own Mashov accounts, the same children). Carrying
+  /// both jobs on this one column is what made the second parent to sync evict
+  /// the first. See ADR-0031.
   ///
   /// Nullable permanently, not transitionally: the shared env-credential
   /// session legitimately writes unowned rows, and NULL means "ownership
@@ -168,9 +173,40 @@ model Student {
   householdConnectionId String?
   connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
 
+  /// Every connection whose login roster lists this child -- the VISIBILITY
+  /// edge. A user sees a child when any of their own connections links them.
+  /// No links at all means "ownership unknown", which stays readable by any
+  /// caller for the same reason the NULL stamp did. See ADR-0031.
+  links StudentConnection[]
+
   @@index([isActive, lastSeenInRosterAt])
   @@index([householdConnectionId, isActive])
   @@map("student")
+}
+
+/// Which connections list a child, and therefore which users may see them.
+///
+/// `Student.studentGuid` is globally unique and every per-child table is keyed
+/// by it alone, so a child's data is ONE shared copy. What was missing was the
+/// visibility edge: two parents with their own Mashov accounts at one school
+/// both legitimately list the same children (ADR-0016, PRD open question 2),
+/// and a single `householdConnectionId` made whichever synced second evict the
+/// other. See ADR-0031.
+model StudentConnection {
+  studentGuid           String
+  householdConnectionId String
+  /// When this connection first listed the child. Audit, and the field that
+  /// distinguishes this from a prunable roster cache: a row here is a granted
+  /// view, not an observation to be tidied away on a sync hiccup.
+  firstSeenAt           DateTime @default(now())
+  lastSeenInRosterAt    DateTime @default(now())
+
+  student    Student             @relation(fields: [studentGuid], references: [studentGuid], onDelete: Cascade)
+  connection HouseholdConnection @relation(fields: [householdConnectionId], references: [id], onDelete: Cascade)
+
+  @@id([studentGuid, householdConnectionId])
+  @@index([householdConnectionId])
+  @@map("student_connection")
 }
 
 model NotificationEvent {

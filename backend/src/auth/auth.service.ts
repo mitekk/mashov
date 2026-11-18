@@ -18,6 +18,10 @@ import {
   isUpstreamUnreachable,
   resolveMashovBaseUrl,
 } from '../common/http/mashov-http';
+import {
+  connectionStudentWhere,
+  linkStudentsToConnection,
+} from '../common/student-links';
 
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SECONDS = 900; // 15 minutes
@@ -420,6 +424,18 @@ export class AuthService {
       });
     }
 
+    // The visibility edge (ADR-0031): the stamp above routes upstream calls,
+    // this grants the connection a view. It must be a set, because two parents
+    // with their own accounts at one school list the same children and a lone
+    // stamp made the second to sign in evict the first.
+    await linkStudentsToConnection(
+      this.prisma,
+      connectionId,
+      children
+        .map((child) => child.childGuid)
+        .filter((guid): guid is string => typeof guid === 'string' && guid.length > 0),
+    );
+
     const inactiveGuids = this.parseInactiveChildGuids(
       loginData.accessToken?.inactiveChildren,
     );
@@ -429,12 +445,9 @@ export class AuthService {
           studentGuid: { in: inactiveGuids },
           // Scoped like persistRoster's equivalent sweep: `inactiveChildren`
           // is school-local, so one school must not be able to retire a child
-          // belonging to another. Not-yet-stamped rows are included because
-          // NULL means "ownership unknown", not "someone else's".
-          OR: [
-            { householdConnectionId: connectionId },
-            { householdConnectionId: null },
-          ],
+          // it does not list. Since ADR-0031 that is the link rather than the
+          // routing stamp -- a child two parents share carries only one stamp.
+          ...connectionStudentWhere(connectionId),
         },
         data: { isActive: false },
       });

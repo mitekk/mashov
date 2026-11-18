@@ -13,6 +13,10 @@ import { SyncService } from '../sync/sync.service';
 import { ConnectionService } from '../connection/connection.service';
 import { MashovCredentialValidatorService } from '../common/mashov-login/mashov-credential-validator.service';
 import { resolveSchoolLabels } from '../common/school-label';
+import {
+  connectionStudentWhere,
+  linkStudentsToConnection,
+} from '../common/student-links';
 
 /**
  * How many schools one household may connect.
@@ -389,17 +393,25 @@ export class SchoolLinksService {
       });
     }
 
+    // The visibility edge (ADR-0031). A child the other parent's connection
+    // already lists gains a SECOND link here rather than having its stamp
+    // taken over, which is what made linking evict the other parent's view.
+    await linkStudentsToConnection(
+      this.prisma,
+      connection.id,
+      children
+        .map((child) => child.childGuid)
+        .filter((guid): guid is string => typeof guid === 'string' && guid.length > 0),
+    );
+
     const inactiveGuids = parseInactiveChildGuids(login.data.accessToken?.inactiveChildren);
     if (inactiveGuids.length > 0) {
       await this.prisma.student.updateMany({
         where: {
           studentGuid: { in: inactiveGuids },
-          // This school's own children, or not-yet-stamped ones. A school must
-          // not be able to retire a child it does not own.
-          OR: [
-            { householdConnectionId: connection.id },
-            { householdConnectionId: null },
-          ],
+          // The children this school lists, or unlinked ones. A school must
+          // not be able to retire a child it does not list.
+          ...connectionStudentWhere(connection.id),
         },
         data: { isActive: false },
       });
@@ -450,12 +462,15 @@ export class SchoolLinksService {
 
     const labels = resolveSchoolLabels(connections);
 
-    // Counted per connection in one grouped query rather than one per row.
-    const counts = await this.prisma.student.groupBy({
+    // Counted per connection in one grouped query rather than one per row,
+    // over the visibility edge: "how many children does this school list for
+    // me". The routing stamp would undercount a child the other parent's
+    // connection happens to hold (ADR-0031).
+    const counts = await this.prisma.studentConnection.groupBy({
       by: ['householdConnectionId'],
       where: {
-        isActive: true,
         householdConnectionId: { in: connections.map((connection) => connection.id) },
+        student: { isActive: true },
       },
       _count: { _all: true },
     });

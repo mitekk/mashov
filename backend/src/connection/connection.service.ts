@@ -229,24 +229,46 @@ export class ConnectionService {
     id: string;
     schoolCode: number;
   }): Promise<void> {
-    // This connection's own children, and ONLY those. NOT `{ isActive: true }`,
-    // which was the original global bug -- and deliberately not NULL-stamped
-    // children either, even when this is the household's last school.
+    // The children THIS connection lists, read from the visibility edge rather
+    // than the routing stamp: a child two parents share carries one stamp, so
+    // a stamp predicate would both miss children this school lists and claim
+    // children it does not (ADR-0031).
     //
-    // "NULL within this household" does not exist: an unattributed row has no
-    // household by definition, so a `householdConnectionId: null` predicate
-    // reaches every unattributed child in the database. On a deployment with
-    // two households that meant one parent pressing "disconnect all" deleted
-    // the other family's children and their whole history, unrecoverably.
+    // NOT `{ isActive: true }`, which was the original global bug -- and
+    // deliberately not unattributed children either, even when this is the
+    // household's last school. "Unattributed within this household" does not
+    // exist: a child nobody lists has no household by definition, so such a
+    // predicate reaches every unattributed child in the database. On a
+    // deployment with two households that meant one parent pressing
+    // "disconnect all" deleted the other family's children and their whole
+    // history, unrecoverably.
     //
     // Leaving them costs nothing that matters: RosterPresenceService already
     // retires a child who stops appearing in any login roster, and the next
-    // sync re-stamps the ones that still belong to somebody.
-    const students = await this.prisma.student.findMany({
+    // sync re-links the ones that still belong to somebody.
+    const listed = await this.prisma.studentConnection.findMany({
       where: { householdConnectionId: connection.id },
       select: { studentGuid: true },
     });
-    const studentGuids = students.map((student) => student.studentGuid);
+    const listedGuids = listed.map((link) => link.studentGuid);
+
+    // A child any OTHER connection also lists survives: unlinking removes this
+    // parent's VIEW, not the child. Deleting a shared child would take the
+    // other parent's homework, behaviour, releases and digest history with it,
+    // and there is no second copy anywhere -- every per-child table is keyed by
+    // `studentGuid` alone.
+    const alsoListedElsewhere =
+      listedGuids.length > 0
+        ? await this.prisma.studentConnection.findMany({
+            where: {
+              studentGuid: { in: listedGuids },
+              householdConnectionId: { not: connection.id },
+            },
+            select: { studentGuid: true },
+          })
+        : [];
+    const shared = new Set(alsoListedElsewhere.map((link) => link.studentGuid));
+    const studentGuids = listedGuids.filter((guid) => !shared.has(guid));
 
     // The behaviour taxonomy is school-level, so it survives if another
     // active connection is still at the same school (two parents, one school).
@@ -299,6 +321,13 @@ export class ConnectionService {
           ]
         : []),
       this.prisma.syncRun.deleteMany({ where: { householdConnectionId: connection.id } }),
+      // This connection's views, including the ones on children that survive
+      // because another connection still lists them. The connection row's own
+      // delete would cascade these away, but doing it explicitly keeps the
+      // revocation visible at the point where it is decided.
+      this.prisma.studentConnection.deleteMany({
+        where: { householdConnectionId: connection.id },
+      }),
       // The children themselves. Without this they survived as orphans with
       // isActive: true, and the remaining school's per-student crons 403'd on
       // every one of them every twelve minutes, forever.

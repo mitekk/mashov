@@ -76,9 +76,14 @@ describe('orderConnectionsForStudent', () => {
 describe('stampOwnershipIfChanged', () => {
   function makePrisma() {
     const update = jest.fn().mockResolvedValue({});
+    const linkUpsert = jest.fn().mockResolvedValue({});
     return {
-      prisma: { student: { update } } as unknown as PrismaService,
+      prisma: {
+        student: { update },
+        studentConnection: { upsert: linkUpsert },
+      } as unknown as PrismaService,
       update,
+      linkUpsert,
     };
   }
 
@@ -150,6 +155,62 @@ describe('stampOwnershipIfChanged', () => {
 
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('grants the answering connection a view when it takes the stamp', async () => {
+    // A non-empty response from this connection is proof the account knows the
+    // child, which is exactly what a visibility link records (ADR-0031). It
+    // also closes the window where a child the backfill never reached is
+    // stamped but unlinked.
+    const { prisma, linkUpsert } = makePrisma();
+
+    await stampOwnershipIfChanged(
+      prisma,
+      { studentGuid: 'guid-1', householdConnectionId: null },
+      CONN_A,
+      logger,
+    );
+
+    expect(linkUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          studentGuid_householdConnectionId: {
+            studentGuid: 'guid-1',
+            householdConnectionId: 'conn-a',
+          },
+        },
+      }),
+    );
+  });
+
+  it('writes no link when the stamp already matches', async () => {
+    // Ten tasks per student every twelve minutes. The link is a set that the
+    // login roster maintains; re-asserting it on every successful fetch would
+    // be an UPDATE storm for no new information.
+    const { prisma, linkUpsert } = makePrisma();
+
+    await stampOwnershipIfChanged(
+      prisma,
+      { studentGuid: 'guid-1', householdConnectionId: 'conn-a' },
+      CONN_A,
+      logger,
+    );
+
+    expect(linkUpsert).not.toHaveBeenCalled();
+  });
+
+  it('grants no view on an empty response', async () => {
+    const { prisma, linkUpsert } = makePrisma();
+
+    await stampOwnershipIfChanged(
+      prisma,
+      { studentGuid: 'guid-1', householdConnectionId: null },
+      CONN_A,
+      logger,
+      false,
+    );
+
+    expect(linkUpsert).not.toHaveBeenCalled();
   });
 
   it('swallows a write failure rather than failing the student', async () => {

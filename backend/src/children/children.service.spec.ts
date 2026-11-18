@@ -79,7 +79,13 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
   const student = makeStudent();
   return {
     student: {
-      findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([student]),
+      // `links: { none: {} }` asks "which children does nobody list" -- none
+      // here, since the fixture child is linked to conn-1 below.
+      findMany:
+        overrides.studentFindMany ??
+        jest.fn((args?: { where?: { links?: { none?: object } } }) =>
+          Promise.resolve(args?.where?.links?.none ? [] : [student]),
+        ),
       findUnique: overrides.studentFindUnique ?? jest.fn().mockResolvedValue(student),
     },
     homeworkItem: {
@@ -113,6 +119,15 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     },
     syncRun: {
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
+    },
+    // Visibility is the link set, not the routing stamp (ADR-0031). These
+    // suites exercise one household's own child, so it is linked to conn-1.
+    studentConnection: {
+      findMany:
+        overrides.studentLinkFindMany ??
+        jest.fn().mockResolvedValue([
+          { studentGuid: student.studentGuid, householdConnectionId: 'conn-1' },
+        ]),
     },
     householdConnection: {
       findFirst:
@@ -2033,6 +2048,11 @@ describe('ChildrenService household isolation', () => {
     gender: string;
     isActive: boolean;
     householdConnectionId: string | null;
+    /**
+     * The connections that LIST this child -- visibility, which has to be a
+     * set (ADR-0031). `householdConnectionId` beside it is routing only.
+     */
+    links: string[];
     updatedAt: Date;
   }
 
@@ -2047,6 +2067,7 @@ describe('ChildrenService household isolation', () => {
     gender: 'F',
     isActive: true,
     householdConnectionId: 'conn-mine',
+    links: ['conn-mine'],
     updatedAt: new Date('2026-11-01T00:00:00Z'),
   };
   const THEIRS = {
@@ -2055,6 +2076,7 @@ describe('ChildrenService household isolation', () => {
     studentGuid: 'guid-theirs',
     fullName: 'Someone Else',
     householdConnectionId: 'conn-theirs',
+    links: ['conn-theirs'],
   };
   const UNSTAMPED = {
     ...MINE,
@@ -2062,29 +2084,53 @@ describe('ChildrenService household isolation', () => {
     studentGuid: 'guid-unstamped',
     fullName: 'Not Yet Attributed',
     householdConnectionId: null,
+    links: [],
+  };
+  /**
+   * The child both parents list, and the whole reason for ADR-0031.
+   *
+   * Two parents, their own Mashov accounts at one school, the same children --
+   * the shape ADR-0016 requires and PRD open question 2 describes. The routing
+   * stamp names the OTHER parent's connection here on purpose: that is exactly
+   * the state the second parent's sync leaves behind, and under the old
+   * stamp-as-visibility rule it emptied the first parent's `/children`.
+   */
+  const SHARED = {
+    ...MINE,
+    id: 'row-shared',
+    studentGuid: 'guid-shared',
+    fullName: 'Shared Child',
+    householdConnectionId: 'conn-theirs',
+    links: ['conn-mine', 'conn-theirs'],
   };
 
   /** Prisma that honours ownership on both the list and the single read. */
   function makePrisma(students: OwnedStudent[], myConnections: string[]) {
+    // Interprets the real predicate shape: an OR of "some link names one of my
+    // connections" and "no links at all".
     const matchesHousehold = (student: OwnedStudent, where: Record<string, unknown>) => {
       const or = where.OR as Array<Record<string, unknown>> | undefined;
       if (!or) return true;
       return or.some((clause) => {
-        const scoped = clause.householdConnectionId as
-          | { in?: string[] }
-          | null
+        const links = clause.links as
+          | { some?: { householdConnectionId?: { in?: string[] } }; none?: object }
           | undefined;
-        if (scoped === null) return student.householdConnectionId === null;
-        if (scoped?.in)
-          return (
-            student.householdConnectionId !== null &&
-            scoped.in.includes(student.householdConnectionId)
-          );
+        if (links?.none) return student.links.length === 0;
+        const wanted = links?.some?.householdConnectionId?.in;
+        if (wanted) return student.links.some((id) => wanted.includes(id));
         return false;
       });
     };
 
     return {
+      studentConnection: {
+        findMany: jest.fn(({ where }) =>
+          Promise.resolve(
+            (students.find((student) => student.studentGuid === where.studentGuid)?.links ?? [])
+              .map((id) => ({ studentGuid: where.studentGuid, householdConnectionId: id })),
+          ),
+        ),
+      },
       student: {
         findMany: jest.fn(({ where } = {}) =>
           Promise.resolve(students.filter((student) => matchesHousehold(student, where ?? {}))),
@@ -2187,6 +2233,43 @@ describe('ChildrenService household isolation', () => {
     });
   });
 
+  it('shows a shared child to BOTH parents, whichever one holds the stamp', async () => {
+    // B1. Before the visibility edge, the second parent to sync re-stamped the
+    // shared rows and the first parent's children vanished until their own
+    // next sync flipped it back -- children oscillating one cycle at a time,
+    // with each parent's read/unread flags unreachable while the other held
+    // the stamp.
+    const mine = makeService([SHARED], ['conn-mine']);
+    const theirs = makeService([SHARED], ['conn-theirs']);
+
+    const forMine = await mine.getChildren('user-mine');
+    const forTheirs = await theirs.getChildren('user-theirs');
+
+    expect(forMine.data.map((child) => child.studentGuid)).toEqual(['guid-shared']);
+    expect(forTheirs.data.map((child) => child.studentGuid)).toEqual(['guid-shared']);
+  });
+
+  it('lets both parents open a shared child, not just the stamped one', async () => {
+    const mine = makeService([SHARED], ['conn-mine']);
+
+    await expect(mine.getChildWorkspace('guid-shared', 'user-mine')).resolves.toMatchObject({
+      student: expect.objectContaining({ studentGuid: 'guid-shared' }),
+    });
+  });
+
+  it('still refuses a child whose only link is another household\'s', async () => {
+    // The edge must widen visibility for a shared child without widening it
+    // for an unrelated one: one link to a foreign connection is still foreign.
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data.map((child) => child.studentGuid)).toEqual(['guid-mine']);
+    await expect(service.getChildWorkspace('guid-theirs', 'user-mine')).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
   it('returns an empty list for a user with no connection, not every child', async () => {
     // The failure mode that matters: falling back to "everything" when the
     // household resolves to nothing is how an unscoped read hides.
@@ -2263,6 +2346,15 @@ describe('ChildrenService ownership guard coverage', () => {
       student: {
         findUnique: jest.fn().mockResolvedValue(THEIRS),
         findMany: jest.fn().mockResolvedValue([THEIRS]),
+      },
+      // The foreign child is listed by the other household's connection and
+      // by nobody else, so the caller has no link to it.
+      studentConnection: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { studentGuid: 'guid-theirs', householdConnectionId: 'conn-theirs' },
+          ]),
       },
       // The caller owns conn-mine only, never conn-theirs.
       householdConnection: {

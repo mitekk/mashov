@@ -124,26 +124,30 @@ describe('school-year scope', () => {
             Promise.resolve(connections.find((conn) => conn.id === where.id) ?? null),
           ),
         },
-        student: {
-          // Mirrors the real predicate: the household's own children OR the
-          // ones nobody owns yet, which the scope has to admit as well.
+        // The visibility edge. The fixture's `householdConnectionId` is read as
+        // "the connection that LISTS this child"; a child may appear twice,
+        // once per parent, which is the shape ADR-0031 exists for.
+        studentConnection: {
           findMany: jest.fn(({ where }) => {
-            const clauses: Array<Record<string, unknown>> = where?.OR ?? [where ?? {}];
-            const ids = clauses.flatMap((clause) => {
-              const scoped = clause.householdConnectionId as { in?: string[] } | null | undefined;
-              return scoped && typeof scoped === 'object' && scoped.in ? scoped.in : [];
-            });
-            const wantsUnstamped = clauses.some(
-              (clause) => clause.householdConnectionId === null,
-            );
+            const wanted: string[] = where?.householdConnectionId?.in ?? [];
             return Promise.resolve(
-              students.filter((student) =>
-                student.householdConnectionId === null
-                  ? wantsUnstamped
-                  : ids.includes(student.householdConnectionId),
+              students.filter(
+                (student) =>
+                  student.householdConnectionId !== null &&
+                  wanted.includes(student.householdConnectionId),
               ),
             );
           }),
+        },
+        student: {
+          // Only the unlinked query reaches here now: `links: { none: {} }`.
+          findMany: jest.fn(({ where }) =>
+            Promise.resolve(
+              where?.links?.none
+                ? students.filter((student) => student.householdConnectionId === null)
+                : students,
+            ),
+          ),
           findUnique: jest.fn(({ where }) =>
             Promise.resolve(
               students.find((student) => student.studentGuid === where.studentGuid) ?? null,
@@ -158,6 +162,32 @@ describe('school-year scope', () => {
       { studentGuid: 'a2', householdConnectionId: 'conn-a' },
       { studentGuid: 'b1', householdConnectionId: 'conn-b' },
     ];
+
+    it('scopes a child both parents list under each of their connections', async () => {
+      // ADR-0031: the shared child is stamped to one connection only, so
+      // bucketing by the stamp dropped them out of the other parent's year
+      // scope -- card in the list, empty when opened. Both connections are at
+      // one school and therefore on one year, so the duplicate branch is
+      // harmless.
+      const shared = [
+        { studentGuid: 'shared', householdConnectionId: 'conn-a' },
+        { studentGuid: 'shared', householdConnectionId: 'conn-b' },
+      ];
+
+      const scope = await yearScopeForStudents(
+        makeMultiPrisma([CONN_A, CONN_B], shared),
+        'user-1',
+      );
+
+      const branches = scope.OR.filter(
+        (branch): branch is { studentGuid: { in: string[] }; schoolYear: { in: number[] } } =>
+          'studentGuid' in branch && 'in' in (branch.schoolYear as object),
+      );
+      expect(branches.some((branch) => branch.studentGuid.in.includes('shared')
+        && branch.schoolYear.in.includes(2026))).toBe(true);
+      expect(branches.some((branch) => branch.studentGuid.in.includes('shared')
+        && branch.schoolYear.in.includes(2027))).toBe(true);
+    });
 
     it('reports each connection on its own year', async () => {
       const byConnection = await schoolYearByConnection(

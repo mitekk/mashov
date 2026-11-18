@@ -35,6 +35,12 @@ const mockPrisma = {
     findMany: jest.fn().mockResolvedValue([]),
     deleteMany: jest.fn(),
   },
+  // The visibility edge. `findMany` answers two questions here: which children
+  // this connection lists, and which of those any OTHER connection also lists.
+  studentConnection: {
+    findMany: jest.fn().mockResolvedValue([]),
+    deleteMany: jest.fn(),
+  },
   syncRun: { deleteMany: jest.fn() },
   homeworkItem: { deleteMany: jest.fn() },
   behaviorItem: { deleteMany: jest.fn() },
@@ -236,6 +242,7 @@ describe('ConnectionService', () => {
         ['digestDelivery', mockPrisma.digestDelivery.deleteMany],
         ['behaviorTypeReference', mockPrisma.behaviorTypeReference.deleteMany],
         ['syncRun', mockPrisma.syncRun.deleteMany],
+        ['studentConnection', mockPrisma.studentConnection.deleteMany],
         ['student', mockPrisma.student.deleteMany],
       ];
       return models.flatMap(([model, mock]) =>
@@ -262,7 +269,9 @@ describe('ConnectionService', () => {
       // one school wiped the other's mail and notifications.
       mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
       mockPrisma.householdConnection.count.mockResolvedValue(1); // conn-b remains
-      mockPrisma.student.findMany.mockResolvedValue([{ studentGuid: 'guid-a' }]);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-a' }])
+        .mockResolvedValueOnce([]);
       mockPrisma.$transaction.mockResolvedValue([]);
 
       await service.deleteConnection('user-1', 'conn-a');
@@ -285,9 +294,61 @@ describe('ConnectionService', () => {
 
       await service.deleteConnection('user-1', 'conn-a');
 
-      expect(mockPrisma.student.findMany).toHaveBeenCalledWith(
+      // Read from the visibility edge, not the routing stamp: a child this
+      // school lists can carry the other parent's stamp (ADR-0031).
+      expect(mockPrisma.studentConnection.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { householdConnectionId: 'conn-a' } }),
       );
+    });
+
+    it('keeps a child the other parent still lists, and all of their data', async () => {
+      // The blast radius ADR-0031 called out. Two parents, their own Mashov
+      // accounts, the same children: unlinking one parent's school must remove
+      // that parent's VIEW, not the child. Deleting the shared child would
+      // take the other parent's homework, behaviour, releases and digest
+      // history with it, unrecoverably.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany
+        // this connection lists both children...
+        .mockResolvedValueOnce([{ studentGuid: 'guid-own' }, { studentGuid: 'guid-shared' }])
+        // ...and another connection also lists the second one.
+        .mockResolvedValueOnce([{ studentGuid: 'guid-shared' }]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      // Only the exclusively-listed child is deleted, everywhere.
+      expect(mockPrisma.student.deleteMany).toHaveBeenCalledWith({
+        where: { studentGuid: { in: ['guid-own'] } },
+      });
+      for (const { model, where } of deletedWheres()) {
+        const guids = (where as { studentGuid?: { in?: string[] } } | undefined)?.studentGuid
+          ?.in;
+        if (guids) {
+          expect(guids).toEqual(['guid-own']);
+          expect(model).not.toBe('__never__');
+        }
+      }
+    });
+
+    it('revokes the unlinked connection\'s view of a shared child', async () => {
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-shared' }])
+        .mockResolvedValueOnce([{ studentGuid: 'guid-shared' }]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      expect(mockPrisma.studentConnection.deleteMany).toHaveBeenCalledWith({
+        where: { householdConnectionId: 'conn-a' },
+      });
+      // ...and the child itself survives.
+      expect(mockPrisma.student.deleteMany).toHaveBeenCalledWith({
+        where: { studentGuid: { in: [] } },
+      });
     });
 
     it('deletes mail messages before mail conversations', async () => {
@@ -316,7 +377,9 @@ describe('ConnectionService', () => {
       // reappeared on re-link.
       mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
       mockPrisma.householdConnection.count.mockResolvedValue(1);
-      mockPrisma.student.findMany.mockResolvedValue([{ studentGuid: 'guid-a' }]);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-a' }])
+        .mockResolvedValueOnce([]);
       mockPrisma.$transaction.mockResolvedValue([]);
 
       await service.deleteConnection('user-1', 'conn-a');
@@ -337,7 +400,9 @@ describe('ConnectionService', () => {
       // who no longer existed.
       mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
       mockPrisma.householdConnection.count.mockResolvedValue(1);
-      mockPrisma.student.findMany.mockResolvedValue([{ studentGuid: 'guid-a' }]);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-a' }])
+        .mockResolvedValueOnce([]);
       mockPrisma.$transaction.mockResolvedValue([]);
 
       await service.deleteConnection('user-1', 'conn-a');
@@ -357,7 +422,9 @@ describe('ConnectionService', () => {
       // forever.
       mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
       mockPrisma.householdConnection.count.mockResolvedValue(1);
-      mockPrisma.student.findMany.mockResolvedValue([{ studentGuid: 'guid-a' }]);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-a' }])
+        .mockResolvedValueOnce([]);
       mockPrisma.$transaction.mockResolvedValue([]);
 
       await service.deleteConnection('user-1', 'conn-a');
@@ -426,17 +493,24 @@ describe('ConnectionService', () => {
       // then deletes their entire history. The rule was the defect.
       //
       // Leaving them is safe: RosterPresenceService already retires a child who
-      // stops appearing in any roster, and the next sync re-stamps the rest.
+      // stops appearing in any roster, and the next sync re-links the rest.
+      //
+      // Since ADR-0031 the selection runs over the link table, which cannot
+      // express "unattributed" at all -- a child nobody lists simply has no
+      // row here. That makes the old rule unreachable by construction, and
+      // this test pins that it stays unreachable.
       mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
       mockPrisma.householdConnection.count.mockResolvedValue(0); // last school
       mockPrisma.$transaction.mockResolvedValue([]);
 
       await service.deleteConnection('user-1');
 
-      expect(mockPrisma.student.findMany).toHaveBeenCalledWith(
+      expect(mockPrisma.studentConnection.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { householdConnectionId: 'conn-a' } }),
       );
-      const selections = mockPrisma.student.findMany.mock.calls.map((call) => call[0].where);
+      const selections = mockPrisma.studentConnection.findMany.mock.calls.map(
+        (call) => call[0].where,
+      );
       for (const where of selections) {
         expect(JSON.stringify(where)).not.toContain('null');
       }

@@ -322,30 +322,51 @@ describe('School-year scoping & rollover', () => {
       encryptedPassword: 'enc',
       active: true,
     };
-    const older = await prisma.householdConnection.create({
-      data: { ...base, schoolYear: 2026, lastLoginAt: new Date('2026-01-01T00:00:00Z') },
-    });
-    const newer = await prisma.householdConnection.create({
-      data: { ...base, schoolYear: 2027, lastLoginAt: new Date('2026-11-01T00:00:00Z') },
-    });
-    // A different household must not be touched.
-    const other = await prisma.householdConnection.create({
-      data: { ...base, username: 'other-parent', schoolYear: 2026 },
-    });
 
-    // Run it twice: it executes on every container boot.
-    await prisma.$executeRawUnsafe(dedupe[0]);
-    await prisma.$executeRawUnsafe(dedupe[0]);
+    // The duplicates this statement exists for can no longer be INSERTED:
+    // `@@unique([schoolCode, username])` now forbids them. They can still
+    // EXIST, which is the whole point -- they were written before the index,
+    // and 20261120000000_connection_duplicate_collapse runs ahead of
+    // `prisma db push` precisely so the index can be created over them. So the
+    // fixture reproduces the pre-index world by dropping the constraint for
+    // the duration of the test.
+    // Prisma's `@@unique` is a unique INDEX, not a table constraint, so it is
+    // dropped and recreated as one.
+    await prisma.$executeRawUnsafe(
+      'DROP INDEX IF EXISTS "household_connection_schoolCode_username_key"',
+    );
 
-    const rows = await prisma.householdConnection.findMany({
-      where: { id: { in: [older.id, newer.id, other.id] } },
-      select: { id: true, active: true },
-    });
-    const activeById = new Map(rows.map((row) => [row.id, row.active]));
+    try {
+      const older = await prisma.householdConnection.create({
+        data: { ...base, schoolYear: 2026, lastLoginAt: new Date('2026-01-01T00:00:00Z') },
+      });
+      const newer = await prisma.householdConnection.create({
+        data: { ...base, schoolYear: 2027, lastLoginAt: new Date('2026-11-01T00:00:00Z') },
+      });
+      // A different household must not be touched.
+      const other = await prisma.householdConnection.create({
+        data: { ...base, username: 'other-parent', schoolYear: 2026 },
+      });
 
-    expect(activeById.get(newer.id)).toBe(true);
-    expect(activeById.get(older.id)).toBe(false);
-    expect(activeById.get(other.id)).toBe(true);
+      // Run it twice: it executes on every container boot.
+      await prisma.$executeRawUnsafe(dedupe[0]);
+      await prisma.$executeRawUnsafe(dedupe[0]);
+
+      const rows = await prisma.householdConnection.findMany({
+        where: { id: { in: [older.id, newer.id, other.id] } },
+        select: { id: true, active: true },
+      });
+      const activeById = new Map(rows.map((row) => [row.id, row.active]));
+
+      expect(activeById.get(newer.id)).toBe(true);
+      expect(activeById.get(older.id)).toBe(false);
+      expect(activeById.get(other.id)).toBe(true);
+    } finally {
+      await prisma.householdConnection.deleteMany({ where: { schoolCode: 999001 } });
+      await prisma.$executeRawUnsafe(
+        'CREATE UNIQUE INDEX IF NOT EXISTS "household_connection_schoolCode_username_key" ON "household_connection" ("schoolCode", "username")',
+      );
+    }
   });
 
   it('records the migration in _prisma_migrations without an ON CONFLICT clause', async () => {

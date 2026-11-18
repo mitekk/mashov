@@ -79,6 +79,7 @@ interface Harness {
       create: jest.Mock;
       findMany: jest.Mock;
     };
+    studentConnection: { upsert: jest.Mock };
     syncRun: { findFirst: jest.Mock; create: jest.Mock };
   };
 }
@@ -96,6 +97,9 @@ function makeHarness(
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       findMany: jest.fn().mockResolvedValue([]),
       count: jest.fn().mockResolvedValue(0),
+    },
+    studentConnection: {
+      upsert: jest.fn().mockResolvedValue({}),
     },
     householdConnection: {
       findFirst: jest.fn().mockResolvedValue(
@@ -213,12 +217,15 @@ describe('MashovSessionService', () => {
       expect(prisma.student.updateMany).toHaveBeenCalledWith({
         where: {
           studentGuid: { in: ['child-gone'] },
-          // Scoped to this connection's own children (or to not-yet-stamped
-          // ones). `inactiveChildren` is school-local, and another school can
-          // legitimately have a child with the same guid only in the sense that
-          // the guid is global — but a connection must not be able to
-          // deactivate a child it does not own.
-          OR: [{ householdConnectionId: 'conn-1' }, { householdConnectionId: null }],
+          // Scoped to the children THIS connection lists, plus the unlinked
+          // ones. `inactiveChildren` is school-local, so a connection must not
+          // be able to retire a child it does not list -- and since ADR-0031
+          // that is a link, not the routing stamp: a child two parents share
+          // is stamped to only one of them.
+          OR: [
+            { links: { some: { householdConnectionId: 'conn-1' } } },
+            { links: { none: {} } },
+          ],
         },
         data: { isActive: false },
       });
@@ -478,6 +485,40 @@ describe('MashovSessionService', () => {
         where: { studentGuid: { in: ['child-gone'] } },
         data: { isActive: false },
       });
+    });
+
+    it('grants the connection a view of every child in the roster', async () => {
+      // The stamp says who to ASK upstream; the link says who may SEE. Two
+      // parents at one school share children, so only the link can be a set --
+      // and before it existed the second of them to sync took the children
+      // away from the first (ADR-0031).
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(prisma.studentConnection.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            studentGuid_householdConnectionId: {
+              studentGuid: 'child-1',
+              householdConnectionId: 'conn-1',
+            },
+          },
+        }),
+      );
+    });
+
+    it('grants no view on a shared-session login', async () => {
+      // The env-credential session has no connection, so there is nobody to
+      // grant a view to. Writing one would hand the household that happens to
+      // hold MASHOV_USERNAME a view of every child on the box.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.initialize();
+
+      expect(prisma.studentConnection.upsert).not.toHaveBeenCalled();
     });
 
     it('re-stamps and warns when a child turns up under another connection', async () => {

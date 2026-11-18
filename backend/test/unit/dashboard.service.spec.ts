@@ -11,6 +11,9 @@ const mockPrisma = {
     count: jest.fn(),
     findMany: jest.fn(),
   },
+  // No link rows: `buildStudentSchoolMap` then falls back to the routing
+  // stamp, so these suites read exactly the schools they always did.
+  studentConnection: { findMany: jest.fn().mockResolvedValue([]) },
   student: {
     count: jest.fn(),
     findMany: jest.fn(),

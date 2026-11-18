@@ -1,5 +1,6 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveSchoolLabels } from './school-label';
+import { linksForStudents } from './student-links';
 
 /** Which school a child belongs to, as a response field needs it. */
 export interface StudentSchool {
@@ -12,9 +13,16 @@ export interface StudentSchool {
 /**
  * studentGuid -> that child's school, for a list of children.
  *
- * Two queries for a whole list rather than one per item, and the labels are
+ * Resolved through the visibility links rather than the routing stamp alone
+ * (ADR-0031): a child two parents share is stamped to one of them, and the
+ * other parent would otherwise get no badge at all. Any link answers
+ * correctly, because a child is at one school and every connection listing
+ * them is at that school -- so the stamp is preferred when it is among the
+ * links purely to keep a single-school deployment's output byte-identical.
+ *
+ * A few queries for a whole list rather than per item, and the labels are
  * resolved across the set so two schools in one cluster cannot present the
- * same chip (see school-label.ts). A child with no ownership stamp is simply
+ * same chip (see school-label.ts). A child no connection lists is simply
  * absent from the map, which callers read as "no badge".
  */
 export async function buildStudentSchoolMap(
@@ -33,10 +41,25 @@ export async function buildStudentSchoolMap(
         select: { studentGuid: true, householdConnectionId: true },
       });
 
+  const linksByStudent = await linksForStudents(
+    prisma,
+    owned.map((student) => student.studentGuid),
+  );
+
+  /** The stamp when it still names a connection that lists the child. */
+  const resolvedFor = (studentGuid: string, stamp?: string | null): string | undefined => {
+    const links = linksByStudent.get(studentGuid) ?? [];
+    if (stamp && links.includes(stamp)) return stamp;
+    if (links.length > 0) return links[0];
+    // No links recorded yet: fall back to the stamp so a database whose
+    // backfill has not run keeps showing the badge it showed before.
+    return stamp ?? undefined;
+  };
+
   const connectionIds = [
     ...new Set(
       owned
-        .map((student) => student.householdConnectionId)
+        .map((student) => resolvedFor(student.studentGuid, student.householdConnectionId))
         .filter((id): id is string => typeof id === 'string'),
     ),
   ];
@@ -60,9 +83,8 @@ export async function buildStudentSchoolMap(
   );
 
   for (const student of owned) {
-    const school = student.householdConnectionId
-      ? byId.get(student.householdConnectionId)
-      : undefined;
+    const resolved = resolvedFor(student.studentGuid, student.householdConnectionId);
+    const school = resolved ? byId.get(resolved) : undefined;
     if (school) map.set(student.studentGuid, school);
   }
   return map;

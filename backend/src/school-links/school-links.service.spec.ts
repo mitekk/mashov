@@ -37,7 +37,9 @@ function makePrisma(options: {
   return {
     prisma: {
       householdConnection: { findMany },
-      student: { groupBy: studentGroupBy },
+      // Children are counted over the visibility edge (ADR-0031), so a child
+      // the other parent's connection holds the stamp for still counts here.
+      studentConnection: { groupBy: studentGroupBy },
       syncRun: { groupBy: syncRunGroupBy },
     } as unknown as PrismaService,
     findMany,
@@ -265,11 +267,13 @@ describe('SchoolLinksService.createLink', () => {
   } = {}) {
     const upsert = jest.fn().mockResolvedValue({ id: 'conn-new' });
     const studentUpsert = jest.fn().mockResolvedValue({});
+    const linkUpsert = jest.fn().mockResolvedValue({});
     const studentUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
 
     return {
       upsert,
       studentUpsert,
+      linkUpsert,
       studentUpdateMany,
       prisma: {
         householdConnection: {
@@ -297,12 +301,15 @@ describe('SchoolLinksService.createLink', () => {
           ),
           upsert,
         },
-        student: {
-          upsert: studentUpsert,
-          updateMany: studentUpdateMany,
+        studentConnection: {
+          upsert: linkUpsert,
           groupBy: jest.fn().mockResolvedValue([
             { householdConnectionId: 'conn-new', _count: { _all: 1 } },
           ]),
+        },
+        student: {
+          upsert: studentUpsert,
+          updateMany: studentUpdateMany,
         },
         syncRun: { groupBy: jest.fn().mockResolvedValue([]) },
       } as unknown as PrismaService,
@@ -325,6 +332,28 @@ describe('SchoolLinksService.createLink', () => {
     // The child is stamped with the new connection, so it is owned from the
     // first moment rather than waiting for a sync to attribute it.
     expect(studentUpsert.mock.calls[0][0].create.householdConnectionId).toBe('conn-new');
+  });
+
+  it('grants the new connection a view of its children', async () => {
+    // Stamping alone was not enough: the stamp routes, the link decides who
+    // may see. A child the other parent's connection already lists must gain a
+    // second link rather than have its stamp taken over (ADR-0031).
+    const { prisma, linkUpsert } = makePrisma();
+    const validate = jest.fn().mockResolvedValue(loginPayload());
+    const service = makeService(prisma, { validator: { validate } });
+
+    await service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' });
+
+    expect(linkUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          studentGuid_householdConnectionId: {
+            studentGuid: 'guid-b1',
+            householdConnectionId: 'conn-new',
+          },
+        },
+      }),
+    );
   });
 
   it('does NOT await the background refresh', async () => {

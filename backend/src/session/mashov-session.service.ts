@@ -8,6 +8,10 @@ import {
   resolveMashovBaseUrl,
 } from "../common/http/mashov-http";
 import { SchoolYearService } from "../common/school-year/school-year.service";
+import {
+  connectionStudentWhere,
+  linkStudentsToConnection,
+} from '../common/student-links';
 
 interface LoginChild {
   childGuid: string;
@@ -636,6 +640,18 @@ export class MashovSessionService {
       }
     }
 
+    // The visibility edge (ADR-0031). The stamp above says which connection to
+    // ASK for this child; this says who may SEE them, and it has to be a set:
+    // two parents with their own Mashov accounts at one school list the same
+    // children, and a single stamp meant whichever synced second took them
+    // away from the other until the next cycle flipped it back.
+    //
+    // Only for a real connection. The shared env-credential session has nobody
+    // to grant a view to.
+    if (connectionId) {
+      await linkStudentsToConnection(this.prisma, connectionId, guids);
+    }
+
     const inactiveGuids = this.parseInactiveChildGuids(
       data.accessToken?.inactiveChildren,
     );
@@ -649,14 +665,7 @@ export class MashovSessionService {
           // be able to deactivate a child it does not own. The shared
           // env-session path has no connection and stays unscoped, which is
           // the behaviour it has always had.
-          ...(connectionId
-            ? {
-                OR: [
-                  { householdConnectionId: connectionId },
-                  { householdConnectionId: null },
-                ],
-              }
-            : {}),
+          ...(connectionId ? connectionStudentWhere(connectionId) : {}),
         },
         data: { isActive: false },
       });

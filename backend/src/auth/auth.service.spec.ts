@@ -38,6 +38,9 @@ const mockPrisma = {
     upsert: jest.fn(),
     updateMany: jest.fn(),
   },
+  studentConnection: {
+    upsert: jest.fn(),
+  },
 };
 
 const mockRedis = {
@@ -337,14 +340,29 @@ describe('AuthService', () => {
         { update: Record<string, unknown> },
       ];
       expect(update.householdConnectionId).toBe('conn-existing');
+      // And the login grants that connection a VIEW of the child, which is
+      // the half the stamp cannot do: two parents at one school both list the
+      // same children, so visibility has to be a set (ADR-0031).
+      expect(mockPrisma.studentConnection.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            studentGuid_householdConnectionId: {
+              studentGuid: 'child-1',
+              householdConnectionId: 'conn-existing',
+            },
+          },
+        }),
+      );
       // The deactivation sweep is scoped the same way persistRoster's is: one
-      // school must not be able to retire a child it does not own.
+      // school must not be able to retire a child it does not list. Since
+      // ADR-0031 that is a link rather than the routing stamp, because a child
+      // two parents share is stamped to only one of them.
       expect(mockPrisma.student.updateMany).toHaveBeenCalledWith({
         where: {
           studentGuid: { in: ['child-gone'] },
           OR: [
-            { householdConnectionId: 'conn-existing' },
-            { householdConnectionId: null },
+            { links: { some: { householdConnectionId: 'conn-existing' } } },
+            { links: { none: {} } },
           ],
         },
         data: { isActive: false },
@@ -557,10 +575,14 @@ describe('AuthService', () => {
       expect(mockPrisma.student.updateMany).toHaveBeenCalledWith({
         where: {
           studentGuid: { in: ['child-gone'] },
-          // Scoped as of the ownership stamp: `inactiveChildren` is
-          // school-local, so a login must not retire a child another school
-          // owns. NULL is included because it means "ownership unknown".
-          OR: [{ householdConnectionId: 'conn-new' }, { householdConnectionId: null }],
+          // Scoped by the visibility edge: `inactiveChildren` is school-local,
+          // so a login must not retire a child its own school does not list.
+          // An unlinked child is included because that means "ownership
+          // unknown", not "somebody else's".
+          OR: [
+            { links: { some: { householdConnectionId: 'conn-new' } } },
+            { links: { none: {} } },
+          ],
         },
         data: { isActive: false },
       });

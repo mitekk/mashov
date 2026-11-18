@@ -19,10 +19,12 @@ function makeMockPrisma(overrides: Partial<{
         overrides.connectionFindMany ??
         jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
     },
+    studentConnection: {
+      findMany: linkFindMany([{ studentGuid: 'student-1', householdConnectionId: 'conn-1' }]),
+    },
     student: {
       findMany: ownershipAwareStudentFindMany(
         overrides.studentFindMany ?? jest.fn().mockResolvedValue([]),
-        [{ studentGuid: 'student-1', householdConnectionId: 'conn-1' }],
       ),
     },
     homeworkItem: { findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]) },
@@ -77,25 +79,33 @@ function windowWhere(
  * mock honest for both instead of making every test aware of the ownership
  * lookup.
  */
-function ownershipAwareStudentFindMany(
-  roster: jest.Mock,
+function ownershipAwareStudentFindMany(roster: jest.Mock): jest.Mock {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    // "Which children does nobody list" -- none, since every fixture child is
+    // linked below. Before ADR-0031 this was the `householdConnectionId: null`
+    // half of the same question.
+    if ((args?.where?.links as { none?: object } | undefined)?.none) {
+      return Promise.resolve([]);
+    }
+    return roster(args);
+  });
+}
+
+/** The visibility edge, from the same fixture the ownership mock uses. */
+function linkFindMany(
   owned: Array<{ studentGuid: string; householdConnectionId: string }>,
 ): jest.Mock {
   return jest.fn((args?: { where?: Record<string, unknown> }) => {
-    // The ownership lookup asks for "this household's connections OR the
-    // unattributed ones", so it is recognised by the OR rather than by a bare
-    // householdConnectionId filter.
-    const clauses = (args?.where?.OR as Array<Record<string, unknown>> | undefined) ?? null;
-    if (clauses) {
-      const ids = clauses.flatMap((clause) => {
-        const scoped = clause.householdConnectionId as { in?: string[] } | null | undefined;
-        return scoped && typeof scoped === 'object' && scoped.in ? scoped.in : [];
-      });
-      return Promise.resolve(
-        owned.filter((student) => ids.includes(student.householdConnectionId)),
-      );
-    }
-    return roster(args);
+    const byConnection = (args?.where?.householdConnectionId as { in?: string[] } | undefined)
+      ?.in;
+    const byStudent = (args?.where?.studentGuid as { in?: string[] } | undefined)?.in;
+    return Promise.resolve(
+      owned.filter(
+        (link) =>
+          (!byConnection || byConnection.includes(link.householdConnectionId)) &&
+          (!byStudent || byStudent.includes(link.studentGuid)),
+      ),
+    );
   });
 }
 

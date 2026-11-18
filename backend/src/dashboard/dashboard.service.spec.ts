@@ -59,6 +59,11 @@ function makeService(overrides: Overrides = {}) {
       ),
       count: jest.fn().mockResolvedValue(1),
     },
+    studentConnection: {
+      findMany: linkFindMany([
+        { studentGuid: 'student-1', householdConnectionId: 'conn-1' },
+      ]),
+    },
     homeworkItem: {
       findMany: homeworkFindMany,
       findFirst: homeworkFindFirst,
@@ -124,32 +129,59 @@ function yearWhere(year: number, guids = ['student-1']) {
   };
 }
 /**
- * A `student.findMany` that answers both callers.
+ * A `student.findMany` that answers every caller.
  *
- * The cross-child year scope asks "which children does each connection own",
- * and everything else asks for the roster. Routing on the predicate keeps one
- * mock honest for both instead of making every test aware of the ownership
- * lookup.
+ * Three ask: the visibility filter (an OR over `links`), the year scope's
+ * "which children does nobody list" query (`links: { none: {} }`), and
+ * everything else, which wants the roster. Routing on the predicate keeps one
+ * mock honest for all of them instead of making every test aware of the
+ * ownership lookup.
  */
 function ownershipAwareStudentFindMany(
   roster: jest.Mock,
   owned: Array<{ studentGuid: string; householdConnectionId: string }>,
 ): jest.Mock {
   return jest.fn((args?: { where?: Record<string, unknown> }) => {
-    // The ownership lookup asks for "this household's connections OR the
-    // unattributed ones", so it is recognised by the OR rather than by a bare
-    // householdConnectionId filter.
-    const clauses = (args?.where?.OR as Array<Record<string, unknown>> | undefined) ?? null;
+    const where = (args?.where ?? {}) as Record<string, unknown>;
+
+    // "Children nobody lists": every fixture child is listed, so none.
+    const links = where.links as { none?: object } | undefined;
+    if (links?.none) return Promise.resolve([]);
+
+    const clauses = (where.OR as Array<Record<string, unknown>> | undefined) ?? null;
     if (clauses) {
       const ids = clauses.flatMap((clause) => {
-        const scoped = clause.householdConnectionId as { in?: string[] } | null | undefined;
-        return scoped && typeof scoped === 'object' && scoped.in ? scoped.in : [];
+        const scoped = (clause.links as
+          | { some?: { householdConnectionId?: { in?: string[] } } }
+          | undefined)?.some?.householdConnectionId?.in;
+        return scoped ?? [];
       });
-      return Promise.resolve(
-        owned.filter((student) => ids.includes(student.householdConnectionId)),
+      const visible = owned
+        .filter((student) => ids.includes(student.householdConnectionId))
+        .map((student) => student.studentGuid);
+      return roster(args).then((students: Array<{ studentGuid: string }>) =>
+        students.filter((student) => visible.includes(student.studentGuid)),
       );
     }
     return roster(args);
+  });
+}
+
+/** The visibility edge, built from the same `owned` fixture. */
+function linkFindMany(
+  owned: Array<{ studentGuid: string; householdConnectionId: string }>,
+): jest.Mock {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    const byConnection = (args?.where?.householdConnectionId as { in?: string[] } | undefined)
+      ?.in;
+    const byStudent = (args?.where?.studentGuid as { in?: string[] } | undefined)?.in;
+    return Promise.resolve(
+      owned.filter(
+        (link) =>
+          (!byConnection || byConnection.includes(link.householdConnectionId)) &&
+          (!byStudent || byStudent.includes(link.studentGuid)),
+      ),
+    );
   });
 }
 

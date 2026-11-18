@@ -276,14 +276,21 @@ export type StudentYearScope = {
 };
 
 /**
- * The children each connection owns, plus the ones nobody owns yet.
+ * The children each connection LISTS, plus the ones nobody lists yet.
  *
- * The unstamped set is returned separately and deliberately. Leaving it out
- * was a bug with teeth: `householdStudentWhere` and `ownsStudent` both include
- * an unstamped child in the list -- NULL means "ownership unknown", not
- * "nobody's" -- so a scope that contributes no branch for them shows the
- * parent a child's card with zero homework, zero subjects and no recent
- * behaviour. Present in the list, empty when opened.
+ * Read from the visibility edge rather than the routing stamp (ADR-0031): a
+ * child two parents share is stamped to whichever of them synced last, so
+ * bucketing by the stamp dropped the child out of the other parent's year
+ * scope entirely -- their card present in the list and empty when opened. A
+ * shared child lands in both connections' buckets, which is harmless because
+ * two connections listing one child are at one school and therefore on one
+ * year.
+ *
+ * The unlinked set is returned separately and deliberately. Leaving it out was
+ * a bug with teeth: `visibleStudentWhere` and `canSeeStudent` both admit a
+ * child with no links -- no link means "ownership unknown", not "nobody's" --
+ * so a scope that contributes no branch for them shows the parent a card with
+ * zero homework, zero subjects and no recent behaviour.
  *
  * It is not a corner case either: the ownership backfill refuses on a
  * two-connection database, which is exactly the deployment this feature
@@ -297,24 +304,24 @@ async function guidsByConnection(
     return { byConnection: new Map(), unstamped: [] };
   }
 
-  const students = await prisma.student.findMany({
-    where: { OR: [{ householdConnectionId: { in: connectionIds } }, { householdConnectionId: null }] },
+  const links = await prisma.studentConnection.findMany({
+    where: { householdConnectionId: { in: connectionIds } },
     select: { studentGuid: true, householdConnectionId: true },
   });
 
   const byConnection = new Map<string, string[]>();
-  const unstamped: string[] = [];
-  for (const student of students) {
-    const key = student.householdConnectionId;
-    if (!key) {
-      unstamped.push(student.studentGuid);
-      continue;
-    }
-    const bucket = byConnection.get(key);
-    if (bucket) bucket.push(student.studentGuid);
-    else byConnection.set(key, [student.studentGuid]);
+  for (const link of links) {
+    const bucket = byConnection.get(link.householdConnectionId);
+    if (bucket) bucket.push(link.studentGuid);
+    else byConnection.set(link.householdConnectionId, [link.studentGuid]);
   }
-  return { byConnection, unstamped };
+
+  const unlinked = await prisma.student.findMany({
+    where: { links: { none: {} } },
+    select: { studentGuid: true },
+  });
+
+  return { byConnection, unstamped: unlinked.map((student) => student.studentGuid) };
 }
 
 /**
