@@ -21,6 +21,7 @@ function makeStudent() {
     classNum: 10,
     gender: 'F',
     isActive: true,
+    householdConnectionId: 'conn-1',
     updatedAt: new Date('2026-03-12T10:00:00Z'),
   };
 }
@@ -117,6 +118,14 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
       findFirst:
         overrides.connectionFindFirst ??
         jest.fn().mockResolvedValue({ schoolYear: 2027 }),
+      // The cross-child reads pair each school's children with that school's
+      // year, so they list the connections rather than resolving one year.
+      findMany:
+        overrides.connectionFindMany ??
+        jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
+      findUnique:
+        overrides.connectionFindUnique ??
+        jest.fn().mockResolvedValue({ id: 'conn-1', schoolYear: 2027 }),
     },
   } as unknown as jest.Mocked<PrismaService>;
 }
@@ -190,10 +199,24 @@ function makeMockConfig(startYear?: string): ConfigService {
   } as unknown as ConfigService;
 }
 
-/** The window predicate a history-spanning read is expected to issue. */
+/** The window predicate a per-CHILD history-spanning read is expected to issue. */
 function windowWhere(start: number, current: number) {
   return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
 }
+
+/**
+ * The current-year predicate a CROSS-CHILD read issues.
+ *
+ * Each school's children paired with that school's year, rather than one year
+ * for the household. With a single connection that is this one clause, which
+ * selects exactly the rows `{ schoolYear: { in: [year, 0] } }` used to.
+ */
+function crossChildYearWhere(year: number, guids: string[] = [TEST_GUID]) {
+  return {
+    OR: [{ schoolYear: 0 }, { studentGuid: { in: guids }, schoolYear: { in: [year] } }],
+  };
+}
+
 
 describe('ChildrenService', () => {
   describe('getChildren', () => {
@@ -1494,7 +1517,7 @@ describe('ChildrenService', () => {
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+          where: expect.objectContaining(crossChildYearWhere(2027)),
         }),
       );
     });
@@ -1514,7 +1537,7 @@ describe('ChildrenService', () => {
 
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+          where: expect.objectContaining(crossChildYearWhere(2027)),
         }),
       );
     });
@@ -1533,7 +1556,7 @@ describe('ChildrenService', () => {
       await service.getChildren('user-1');
 
       expect(subjectCount).toHaveBeenCalledWith({
-        where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        where: expect.objectContaining(crossChildYearWhere(2027)),
       });
     });
 
@@ -1677,7 +1700,7 @@ describe('ChildrenService', () => {
       await service.getChildren('user-1');
 
       expect(subjectCount).toHaveBeenCalledWith({
-        where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        where: expect.objectContaining(crossChildYearWhere(2027)),
       });
     });
 
@@ -1722,7 +1745,7 @@ describe('ChildrenService', () => {
       for (const mock of [homeworkFindFirst, behaviorFindFirst]) {
         expect(mock).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+            where: expect.objectContaining(crossChildYearWhere(2027)),
           }),
         );
       }

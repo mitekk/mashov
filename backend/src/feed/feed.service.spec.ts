@@ -8,14 +8,23 @@ function makeMockPrisma(overrides: Partial<{
   behaviorFindMany: jest.Mock;
   mailFindMany: jest.Mock;
   connectionFindFirst: jest.Mock;
+  connectionFindMany: jest.Mock;
 }>): jest.Mocked<PrismaService> {
   return {
     householdConnection: {
       findFirst:
         overrides.connectionFindFirst ??
         jest.fn().mockResolvedValue({ schoolYear: 2027 }),
+      findMany:
+        overrides.connectionFindMany ??
+        jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
     },
-    student: { findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([]) },
+    student: {
+      findMany: ownershipAwareStudentFindMany(
+        overrides.studentFindMany ?? jest.fn().mockResolvedValue([]),
+        [{ studentGuid: 'student-1', householdConnectionId: 'conn-1' }],
+      ),
+    },
     homeworkItem: { findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]) },
     behaviorItem: { findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]) },
     mailConversation: { findMany: overrides.mailFindMany ?? jest.fn().mockResolvedValue([]) },
@@ -33,9 +42,42 @@ function makeFeedService(prisma: PrismaService, startYear?: string): FeedService
 }
 
 /** The window predicate the feed is expected to issue. */
-function windowWhere(start: number, current: number) {
-  return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
+/**
+ * The window predicate a cross-child read issues: each school's children at
+ * that school's window, rather than one window for the household. With a
+ * single connection it selects exactly the rows the flat form used to.
+ */
+function windowWhere(start: number, current: number, guids = ['student-1']) {
+  return {
+    OR: [
+      { schoolYear: 0 },
+      { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
+    ],
+  };
 }
+/**
+ * A `student.findMany` that answers both callers.
+ *
+ * The cross-child year scope asks "which children does each connection own",
+ * and everything else asks for the roster. Routing on the predicate keeps one
+ * mock honest for both instead of making every test aware of the ownership
+ * lookup.
+ */
+function ownershipAwareStudentFindMany(
+  roster: jest.Mock,
+  owned: Array<{ studentGuid: string; householdConnectionId: string }>,
+): jest.Mock {
+  return jest.fn((args?: { where?: { householdConnectionId?: { in?: string[] } } }) => {
+    const ids = args?.where?.householdConnectionId?.in;
+    if (ids !== undefined) {
+      return Promise.resolve(
+        owned.filter((student) => ids.includes(student.householdConnectionId)),
+      );
+    }
+    return roster(args);
+  });
+}
+
 
 describe('FeedService', () => {
   describe('getFeed', () => {

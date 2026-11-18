@@ -129,12 +129,63 @@ export class FreshnessService {
    * ended — the crons were succeeding at fetching the wrong year.
    */
   async computeContentFreshness(): Promise<ContentFreshness> {
-    const connection = await this.prisma.householdConnection.findFirst({
+    // Computed per connection and reported at its WORST. A second school with
+    // no data yet would otherwise read as a frozen year for the whole
+    // household -- and conversely, reading only the most recent connection
+    // would hide a genuinely stale school behind a healthy one.
+    const connections = await this.prisma.householdConnection.findMany({
       where: { active: true },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-      select: { schoolCode: true, schoolYear: true },
+      select: { id: true, schoolCode: true, schoolYear: true },
     });
 
+    if (connections.length > 1) {
+      const perConnection = await Promise.all(
+        connections.map((connection) => this.contentFreshnessForConnection(connection)),
+      );
+      return this.worstContentFreshness(perConnection);
+    }
+
+    return this.contentFreshnessForConnection(connections[0] ?? null);
+  }
+
+  /**
+   * The worst of several per-school verdicts.
+   *
+   * `stale_year` beats `no_content` beats `current`: a school asking for a
+   * dead year is a fault, while a school with nothing yet is merely quiet, and
+   * one healthy school must not mask either. `newestContentAt` is the newest
+   * across the household, because that is what "when did anything last happen"
+   * means to a parent.
+   */
+  private worstContentFreshness(results: ContentFreshness[]): ContentFreshness {
+    const rank: Record<ContentFreshnessStatus, number> = {
+      current: 0,
+      no_content: 1,
+      stale_year: 2,
+    };
+    const worst = results.reduce((a, b) => (rank[b.status] > rank[a.status] ? b : a));
+
+    const newest = results
+      .map((result) => result.newestContentAt)
+      .filter((value): value is string => value !== null)
+      .sort()
+      .reverse()[0] ?? null;
+
+    const ages = results
+      .map((result) => result.contentAgeDays)
+      .filter((value): value is number => value !== null);
+
+    return {
+      ...worst,
+      newestContentAt: newest,
+      contentAgeDays: ages.length > 0 ? Math.min(...ages) : null,
+    };
+  }
+
+  private async contentFreshnessForConnection(
+    connection: { id: string; schoolCode: number; schoolYear: number } | null,
+  ): Promise<ContentFreshness> {
     const observedSchoolYear = connection?.schoolYear ?? 0;
     const expectedSchoolYear = connection
       ? (await this.schoolYearService.resolveForSchool(connection.schoolCode)).year
@@ -142,7 +193,12 @@ export class FreshnessService {
 
     const studentGuids = (
       await this.prisma.student.findMany({
-        where: { isActive: true },
+        where: {
+          isActive: true,
+          // Scoped to this school's own children, so one school's silence is
+          // not measured against the other school's content.
+          ...(connection ? { householdConnectionId: connection.id } : {}),
+        },
         select: { studentGuid: true },
       })
     ).map((student) => student.studentGuid);

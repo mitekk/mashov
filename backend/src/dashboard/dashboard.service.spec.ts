@@ -45,9 +45,13 @@ function makeService(overrides: Overrides = {}) {
         cachedNewCount: 0,
         schoolName: 'School',
       }),
+      findMany: jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
     },
     student: {
-      findMany: jest.fn().mockResolvedValue([STUDENT]),
+      findMany: ownershipAwareStudentFindMany(
+        jest.fn().mockResolvedValue([STUDENT]),
+        [{ studentGuid: 'student-1', householdConnectionId: 'conn-1' }],
+      ),
       count: jest.fn().mockResolvedValue(1),
     },
     homeworkItem: {
@@ -91,11 +95,53 @@ function makeService(overrides: Overrides = {}) {
 }
 
 /** The window predicate a history-spanning read is expected to issue. */
-function windowWhere(start: number, current: number) {
-  return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
+/**
+ * The window predicate a cross-child read issues: each school's children at
+ * that school's window, rather than one window for the household.
+ */
+function windowWhere(start: number, current: number, guids = ['student-1']) {
+  return {
+    OR: [
+      { schoolYear: 0 },
+      { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
+    ],
+  };
 }
 
-const CURRENT_YEAR_ONLY = { schoolYear: { in: [2027, 0] } };
+/** The same, for a cross-child current-year read. */
+function yearWhere(year: number, guids = ['student-1']) {
+  return {
+    OR: [{ schoolYear: 0 }, { studentGuid: { in: guids }, schoolYear: { in: [year] } }],
+  };
+}
+/**
+ * A `student.findMany` that answers both callers.
+ *
+ * The cross-child year scope asks "which children does each connection own",
+ * and everything else asks for the roster. Routing on the predicate keeps one
+ * mock honest for both instead of making every test aware of the ownership
+ * lookup.
+ */
+function ownershipAwareStudentFindMany(
+  roster: jest.Mock,
+  owned: Array<{ studentGuid: string; householdConnectionId: string }>,
+): jest.Mock {
+  return jest.fn((args?: { where?: { householdConnectionId?: { in?: string[] } } }) => {
+    const ids = args?.where?.householdConnectionId?.in;
+    if (ids !== undefined) {
+      return Promise.resolve(
+        owned.filter((student) => ids.includes(student.householdConnectionId)),
+      );
+    }
+    return roster(args);
+  });
+}
+
+
+// Cross-child, so the per-connection pair shape: this school's children at
+// this school's year. With one connection it selects exactly the rows the flat
+// `{ schoolYear: { in: [2027, 0] } }` used to.
+const CURRENT_YEAR_ONLY = yearWhere(2027);
 
 describe('DashboardService', () => {
   describe('getDashboard', () => {

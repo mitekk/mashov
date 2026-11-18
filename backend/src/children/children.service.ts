@@ -7,10 +7,12 @@ import { ConnectionScopeService } from '../common/connection-scope/connection-sc
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
 import {
-  currentSchoolYearFor,
+  schoolYearForConnection,
   currentYearScope,
   historyScope,
-  schoolYearWindowFor,
+  schoolYearWindowForStudent,
+  yearScopeForStudents,
+  type YearScope,
 } from '../common/school-year/school-year.scope';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
@@ -61,7 +63,12 @@ export class ChildrenService {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // Current year only: these are activity counts and staleness signals, and
     // the subject count would double for a groupId that recurs yearly.
-    const yearScope = currentYearScope(await currentSchoolYearFor(this.prisma, userId));
+    //
+    // Cross-child, so each school contributes its own children at its own
+    // year. A single household-wide year hides the other school's children
+    // outright every September, when one school has rolled over and the other
+    // has not.
+    const yearScope = await yearScopeForStudents(this.prisma, userId);
 
     const data = await Promise.all(
       students.map(async (student) => {
@@ -127,7 +134,10 @@ export class ChildrenService {
     const student = await this.getStudentOrThrow(studentGuid, userId);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // Current year only: counts, the subject total and the weekly-hours sum.
-    const yearScope = currentYearScope(await currentSchoolYearFor(this.prisma, userId));
+    // One child, so one year -- that child's own school's.
+    const yearScope = currentYearScope(
+      await schoolYearForConnection(this.prisma, student.householdConnectionId),
+    );
 
     const [
       activityCounts,
@@ -191,7 +201,7 @@ export class ChildrenService {
     status: ItemStatusFilter = 'new',
     userId?: string,
   ) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     // Fetch all non-filtered items for state-based filtering
     // A list, so it spans the configured history window; `pagination.total`
@@ -200,7 +210,11 @@ export class ChildrenService {
       where: {
         studentGuid,
         ...historyScope(
-          await schoolYearWindowFor(this.prisma, this.configService, userId),
+          await schoolYearWindowForStudent(
+            this.prisma,
+            this.configService,
+            student.householdConnectionId,
+          ),
         ),
       },
       orderBy: { lessonDate: 'desc' },
@@ -262,14 +276,18 @@ export class ChildrenService {
     status: ItemStatusFilter = 'new',
     userId?: string,
   ) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const allItems = await this.prisma.behaviorItem.findMany({
       where: {
         studentGuid,
         ...(bucket !== 'all' ? { classification: bucket } : {}),
         ...historyScope(
-          await schoolYearWindowFor(this.prisma, this.configService, userId),
+          await schoolYearWindowForStudent(
+            this.prisma,
+            this.configService,
+            student.householdConnectionId,
+          ),
         ),
       },
       orderBy: { eventAt: 'desc' },
@@ -533,12 +551,14 @@ export class ChildrenService {
   }
 
   async getTimetable(studentGuid: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const entries = await this.prisma.timetableEntry.findMany({
       where: {
         studentGuid,
-        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
       },
       orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
     });
@@ -561,12 +581,14 @@ export class ChildrenService {
   }
 
   async getSubjects(studentGuid: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const items = await this.prisma.subjectEnrollment.findMany({
       where: {
         studentGuid,
-        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
       },
       orderBy: { subjectName: 'asc' },
     });
@@ -679,14 +701,16 @@ export class ChildrenService {
   }
 
   async getNotices(studentGuid: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const now = new Date();
     const items = await this.prisma.messageBoardItem.findMany({
       where: {
         studentGuid,
         expirationDate: { gt: now },
-        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
       },
       orderBy: { expirationDate: 'asc' },
     });
@@ -795,14 +819,22 @@ export class ChildrenService {
     };
   }
 
-  private async requireStudent(studentGuid: string, userId?: string): Promise<void> {
-    await this.getStudentOrThrow(studentGuid, userId);
+  /**
+   * Authorise the request and hand the row back.
+   *
+   * It returns the student because every caller needs
+   * `householdConnectionId` immediately afterwards to resolve the year its
+   * rows were written at -- and re-reading the row for one column it is
+   * already holding is a query per per-child endpoint for nothing.
+   */
+  private async requireStudent(studentGuid: string, userId?: string) {
+    return this.getStudentOrThrow(studentGuid, userId);
   }
 
   private async getUnreadChildActivityCounts(
     studentGuid: string,
     since: Date,
-    yearScope: { schoolYear: { in: number[] } },
+    yearScope: YearScope,
     userId?: string,
   ): Promise<{
     recentHomeworkCount: number;

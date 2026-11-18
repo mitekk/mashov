@@ -2,8 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import {
-  historyScope,
-  schoolYearWindowFor,
+  historyScopeForStudents,
 } from '../common/school-year/school-year.scope';
 
 export interface FeedItem {
@@ -38,8 +37,12 @@ export class FeedService {
     // unbounded `orderBy desc` still cannot reach a year nobody asked for.
     // Mail is deliberately not year-scoped — mailConversation carries no
     // schoolYear — and the backfill does not fetch it.
-    const yearScope = historyScope(
-      await schoolYearWindowFor(this.prisma, this.configService, userId),
+    // Cross-child, so each school contributes its own children at its own
+    // window rather than the household sharing one.
+    const yearScope = await historyScopeForStudents(
+      this.prisma,
+      this.configService,
+      userId,
     );
 
     const students = await this.prisma.student.findMany({

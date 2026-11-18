@@ -36,8 +36,11 @@ function makeEnvelope(overrides: Partial<RefreshEnvelope> = {}): RefreshEnvelope
 }
 
 function makeController(
-  read: RefreshReadResult,
-  options: { connection?: { id: string } | null } = {},
+  read: RefreshReadResult | ((connectionId: string) => RefreshReadResult),
+  options: {
+    connection?: { id: string } | null;
+    connections?: Array<{ id: string; schoolCode: number; schoolName: string | null }>;
+  } = {},
 ) {
   // Any access at all fails, not a hand-picked list of five method names: a
   // regression reaching the table through $queryRaw, or through a method
@@ -52,18 +55,30 @@ function makeController(
       },
     },
   );
+  // The status read lists every active connection now, rather than resolving
+  // one: `done` must mean every school has stopped, not whichever school
+  // findFirst happened to return.
+  const connections =
+    options.connections ??
+    (options.connection === undefined
+      ? [{ id: 'conn-1', schoolCode: 540175, schoolName: 'School' }]
+      : options.connection === null
+        ? []
+        : [{ schoolCode: 540175, schoolName: 'School', ...options.connection }]);
+
   const prisma = {
     householdConnection: {
-      findFirst: jest
-        .fn()
-        .mockResolvedValue(options.connection === undefined ? { id: 'conn-1' } : options.connection),
+      findFirst: jest.fn().mockResolvedValue(connections[0] ?? null),
+      findMany: jest.fn().mockResolvedValue(connections),
     },
     syncRun,
   } as unknown as PrismaService;
 
   const syncService = { refreshAll: jest.fn() } as unknown as SyncService;
   const refreshProgress = {
-    read: jest.fn().mockResolvedValue(read),
+    read: jest.fn((connectionId: string) =>
+      Promise.resolve(typeof read === 'function' ? read(connectionId) : read),
+    ),
     isStale: jest.fn((envelope: RefreshEnvelope, now?: Date) =>
       realProgressService.isStale(envelope, now),
     ),
@@ -243,3 +258,265 @@ describe('SyncController', () => {
     });
   });
 });
+
+describe('SyncController across two schools', () => {
+  const TWO = [
+    { id: 'conn-a', schoolCode: 540175, schoolName: 'אורט רמון' },
+    { id: 'conn-b', schoolCode: 999999, schoolName: 'תיכון רמון' },
+  ];
+
+  describe('getStatus', () => {
+    it('is not done while either school is still running', async () => {
+      // The decisive case. A per-connection read reported `done` as soon as
+      // whichever connection it picked finished, releasing the first-login
+      // screen while the other school was still fetching -- so the parent
+      // landed on a home page missing half their children.
+      const { controller } = makeController(
+        (connectionId) => ({
+          ok: true,
+          envelope: makeEnvelope({
+            connectionId,
+            phase: connectionId === 'conn-a' ? 'success' : 'running',
+            endedAt: connectionId === 'conn-a' ? new Date().toISOString() : null,
+            tasksTotal: 17,
+            tasksSettled: connectionId === 'conn-a' ? 17 : 4,
+          }),
+        }),
+        { connections: TWO },
+      );
+
+      const status = await controller.getStatus(REQUEST);
+
+      expect(status.done).toBe(false);
+      expect(status.phase).toBe('running');
+    });
+
+    it('is done once every school has stopped', async () => {
+      const endedAt = new Date().toISOString();
+      const { controller } = makeController(
+        (connectionId) => ({
+          ok: true,
+          envelope: makeEnvelope({
+            connectionId,
+            phase: 'success',
+            endedAt,
+            tasksTotal: 17,
+            tasksSettled: 17,
+          }),
+        }),
+        { connections: TWO },
+      );
+
+      const status = await controller.getStatus(REQUEST);
+
+      expect(status.done).toBe(true);
+      expect(status.phase).toBe('success');
+    });
+
+    it('sums the task counts across schools', async () => {
+      const { controller } = makeController(
+        (connectionId) => ({
+          ok: true,
+          envelope: makeEnvelope({
+            connectionId,
+            phase: 'success',
+            endedAt: new Date().toISOString(),
+            tasksTotal: 17,
+            tasksSettled: 17,
+            tasksFailed: connectionId === 'conn-b' ? 2 : 0,
+          }),
+        }),
+        { connections: TWO },
+      );
+
+      const status = await controller.getStatus(REQUEST);
+
+      expect(status.tasksTotal).toBe(34);
+      expect(status.tasksSettled).toBe(34);
+      expect(status.tasksFailed).toBe(2);
+      // The legacy keys stay in step with them, for clients that read those.
+      expect(status.sourcesTotal).toBe(34);
+      expect(status.sourcesCompleted).toBe(34);
+    });
+
+    it('reports a partial school rather than letting a healthy one mask it', async () => {
+      const { controller } = makeController(
+        (connectionId) => ({
+          ok: true,
+          envelope: makeEnvelope({
+            connectionId,
+            phase: connectionId === 'conn-a' ? 'success' : 'partial',
+            endedAt: new Date().toISOString(),
+          }),
+        }),
+        { connections: TWO },
+      );
+
+      await expect(controller.getStatus(REQUEST)).resolves.toMatchObject({
+        done: true,
+        phase: 'partial',
+      });
+    });
+
+    it('breaks the progress down per school so the UI can name the one it waits on', async () => {
+      const { controller } = makeController(
+        (connectionId) => ({
+          ok: true,
+          envelope: makeEnvelope({
+            connectionId,
+            phase: connectionId === 'conn-a' ? 'success' : 'running',
+            tasksTotal: 17,
+            tasksSettled: connectionId === 'conn-a' ? 17 : 4,
+            currentTask: connectionId === 'conn-a' ? null : 'homework',
+          }),
+        }),
+        { connections: TWO },
+      );
+
+      const status = await controller.getStatus(REQUEST);
+
+      expect(status.schools).toEqual([
+        {
+          schoolId: 'conn-a',
+          semel: 540175,
+          schoolName: 'אורט רמון',
+          phase: 'success',
+          tasksTotal: 17,
+          tasksSettled: 17,
+          tasksFailed: 0,
+          currentTask: null,
+        },
+        {
+          schoolId: 'conn-b',
+          semel: 999999,
+          schoolName: 'תיכון רמון',
+          phase: 'running',
+          tasksTotal: 17,
+          tasksSettled: 4,
+          tasksFailed: 0,
+          currentTask: 'homework',
+        },
+      ]);
+      // And the headline task is the running school's, not the finished one's.
+      expect(status.currentTask).toBe('homework');
+    });
+
+    it('keeps polling when one school has an envelope and the other does not', async () => {
+      // A school linked a moment ago has opened no envelope yet. Treating its
+      // missing read as a terminal state would report the household done.
+      const { controller } = makeController(
+        (connectionId) =>
+          connectionId === 'conn-a'
+            ? { ok: true, envelope: makeEnvelope({ connectionId, phase: 'running' }) }
+            : { ok: false, reason: 'missing' },
+        { connections: TWO },
+      );
+
+      await expect(controller.getStatus(REQUEST)).resolves.toMatchObject({
+        done: false,
+        phase: 'running',
+      });
+    });
+
+    it('404s on a schoolId belonging to another household', async () => {
+      // 404 rather than 403: a 403 would confirm the id exists.
+      const { controller } = makeController({ ok: false, reason: 'missing' }, {
+        connections: [],
+      });
+      const request = {
+        user: { userId: 'user-1' },
+        query: { schoolId: 'conn-someone-else' },
+      } as unknown as Request;
+
+      await expect(controller.getStatus(request)).rejects.toMatchObject({
+        status: 404,
+      });
+    });
+
+    it('still reports idle, not 404, when the user has no connection at all', async () => {
+      // This is what the first-login screen polls before a connection exists.
+      const { controller } = makeController({ ok: false, reason: 'missing' }, {
+        connections: [],
+      });
+
+      await expect(controller.getStatus(REQUEST)).resolves.toMatchObject({
+        phase: 'idle',
+        done: false,
+      });
+    });
+  });
+
+  describe('refresh', () => {
+    it('refreshes every school sequentially', async () => {
+      const order: string[] = [];
+      const refreshAll = jest.fn(async ({ connectionId }: { connectionId: string }) => {
+        order.push(`start:${connectionId}`);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        order.push(`end:${connectionId}`);
+        return { status: 'success', tasks: [] };
+      });
+      const { controller } = makeControllerWithService(refreshAll, TWO);
+
+      await controller.refresh(REQUEST);
+
+      // Concurrency 1: two simultaneous Mashov logins from one household is
+      // asking for a rate limit.
+      expect(order).toEqual([
+        'start:conn-a',
+        'end:conn-a',
+        'start:conn-b',
+        'end:conn-b',
+      ]);
+    });
+
+    it('refreshes only the named school when given a schoolId', async () => {
+      const refreshAll = jest.fn().mockResolvedValue({ status: 'success', tasks: [] });
+      const { controller } = makeControllerWithService(refreshAll, [TWO[1]]);
+      const request = {
+        user: { userId: 'user-1' },
+        query: { schoolId: 'conn-b' },
+      } as unknown as Request;
+
+      await controller.refresh(request);
+
+      expect(refreshAll).toHaveBeenCalledTimes(1);
+      expect(refreshAll).toHaveBeenCalledWith({ connectionId: 'conn-b' });
+    });
+
+    it('404s on a foreign schoolId', async () => {
+      const refreshAll = jest.fn();
+      const { controller } = makeControllerWithService(refreshAll, []);
+      const request = {
+        user: { userId: 'user-1' },
+        query: { schoolId: 'conn-someone-else' },
+      } as unknown as Request;
+
+      await expect(controller.refresh(request)).rejects.toMatchObject({ status: 404 });
+      expect(refreshAll).not.toHaveBeenCalled();
+    });
+  });
+});
+
+function makeControllerWithService(
+  refreshAll: jest.Mock,
+  connections: Array<{ id: string; schoolCode: number; schoolName: string | null }>,
+) {
+  const prisma = {
+    householdConnection: {
+      findFirst: jest.fn().mockResolvedValue(connections[0] ?? null),
+      findMany: jest.fn().mockResolvedValue(connections),
+    },
+  } as unknown as PrismaService;
+  const refreshProgress = {
+    read: jest.fn().mockResolvedValue({ ok: false, reason: 'missing' }),
+    isStale: jest.fn().mockReturnValue(false),
+  } as unknown as RefreshProgressService;
+
+  return {
+    controller: new SyncController(
+      { refreshAll } as unknown as SyncService,
+      prisma,
+      refreshProgress,
+    ),
+  };
+}

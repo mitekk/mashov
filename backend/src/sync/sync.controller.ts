@@ -11,6 +11,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { SyncService } from './sync.service';
+import type { ManualSyncRefreshResponse } from './sync.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefreshProgressService } from './refresh-progress.service';
 import type { RefreshEnvelope, RefreshTaskProgress } from './refresh-progress.service';
@@ -31,6 +32,18 @@ export type SyncStatusPhase =
   | 'failed'
   | 'unknown';
 
+/** One school's own progress, so the UI can say which is still syncing. */
+export interface SyncStatusSchool {
+  schoolId: string;
+  semel: number;
+  schoolName: string | null;
+  phase: SyncStatusPhase;
+  tasksTotal: number;
+  tasksSettled: number;
+  tasksFailed: number;
+  currentTask: string | null;
+}
+
 export interface SyncStatusResponse {
   /** Legacy keys, same names and types as before, for old clients. */
   done: boolean;
@@ -45,6 +58,12 @@ export interface SyncStatusResponse {
   tasksFailed: number;
   currentTask: string | null;
   tasks: RefreshTaskProgress[];
+  /**
+   * Per-school breakdown. One entry per active connection, so the first-login
+   * screen can name the school it is waiting on rather than showing a bar that
+   * stalls for no visible reason.
+   */
+  schools: SyncStatusSchool[];
 }
 
 const IDLE_STATUS: Omit<SyncStatusResponse, 'phase'> = {
@@ -59,6 +78,18 @@ const IDLE_STATUS: Omit<SyncStatusResponse, 'phase'> = {
   tasksFailed: 0,
   currentTask: null,
   tasks: [],
+  schools: [],
+};
+
+/** Worst-wins, so one school still running keeps the household running. */
+const PHASE_RANK: Record<SyncStatusPhase, number> = {
+  idle: 0,
+  success: 1,
+  unknown: 2,
+  partial: 3,
+  stale: 4,
+  failed: 5,
+  running: 6,
 };
 
 @Controller('sync')
@@ -80,22 +111,59 @@ export class SyncController {
       });
     }
 
-    const connection = await this.prisma.householdConnection.findFirst({
-      where: { userId, active: true },
+    const connections = await this.resolveConnections(userId, req);
+
+    // Sequential, concurrency 1. Two simultaneous Mashov logins from one
+    // household is asking for a rate limit, and `refreshAll` already dedupes
+    // per connection so there is nothing to gain from overlapping them.
+    const results: ManualSyncRefreshResponse[] = [];
+    for (const connection of connections) {
+      results.push(await this.syncService.refreshAll({ connectionId: connection.id }));
+    }
+
+    // The single-school response shape is unchanged, so existing clients and
+    // the six e2e MOCK constants keep working; `schools` is additive.
+    const first = results[0];
+    return {
+      ...first,
+      schools: connections.map((connection, index) => ({
+        schoolId: connection.id,
+        semel: connection.schoolCode,
+        schoolName: connection.schoolName,
+        status: results[index]?.status ?? 'failed',
+      })),
+    };
+  }
+
+  /**
+   * The connections a request is about: one when `schoolId` names it, else all
+   * of the user's active ones.
+   *
+   * A `schoolId` belonging to another household is a 404, not a 403 -- a 403
+   * would confirm the id exists.
+   */
+  private async resolveConnections(userId: string, req: Request) {
+    const schoolId = typeof req.query?.schoolId === 'string' ? req.query.schoolId : undefined;
+
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId, active: true, ...(schoolId ? { id: schoolId } : {}) },
       orderBy: { lastLoginAt: 'desc' },
+      select: { id: true, schoolCode: true, schoolName: true },
     });
 
-    if (!connection) {
+    if (connections.length === 0) {
       throw new NotFoundException({
         error: {
           code: 'NOT_FOUND',
-          message: 'No active connection found for this user',
+          message: schoolId
+            ? 'No such school is connected to this account'
+            : 'No active connection found for this user',
           details: [],
         },
       });
     }
 
-    return this.syncService.refreshAll({ connectionId: connection.id });
+    return connections;
   }
 
   /**
@@ -119,40 +187,120 @@ export class SyncController {
       });
     }
 
-    const connection = await this.prisma.householdConnection.findFirst({
-      where: { userId, active: true },
+    const schoolId = typeof req.query?.schoolId === 'string' ? req.query.schoolId : undefined;
+
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId, active: true, ...(schoolId ? { id: schoolId } : {}) },
       orderBy: { lastLoginAt: 'desc' },
+      select: { id: true, schoolCode: true, schoolName: true },
     });
 
-    if (!connection) {
+    if (connections.length === 0) {
+      // Still `idle` rather than 404 for the no-connection case, which is what
+      // the first-login screen polls before a connection exists. A named
+      // schoolId that resolves to nothing is the one 404.
+      if (schoolId) {
+        throw new NotFoundException({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'No such school is connected to this account',
+            details: [],
+          },
+        });
+      }
       return { ...IDLE_STATUS, phase: 'idle' };
     }
 
-    const read = await this.refreshProgress.read(connection.id);
+    const reads = await Promise.all(
+      connections.map(async (connection) => ({
+        connection,
+        read: await this.refreshProgress.read(connection.id),
+      })),
+    );
 
-    if (!read.ok) {
-      // `unavailable` keeps the client polling rather than returning a 500:
-      // Redis being down is not the user's problem, and the frontend's other
-      // two exits (the trigger resolving, the hard cap) still work.
-      return { ...IDLE_STATUS, phase: read.reason === 'missing' ? 'idle' : 'unknown' };
+    const schools: SyncStatusSchool[] = reads.map(({ connection, read }) => {
+      if (!read.ok) {
+        return {
+          schoolId: connection.id,
+          semel: connection.schoolCode,
+          schoolName: connection.schoolName,
+          phase: read.reason === 'missing' ? ('idle' as const) : ('unknown' as const),
+          tasksTotal: 0,
+          tasksSettled: 0,
+          tasksFailed: 0,
+          currentTask: null,
+        };
+      }
+      return {
+        schoolId: connection.id,
+        semel: connection.schoolCode,
+        schoolName: connection.schoolName,
+        phase: this.resolvePhase(read.envelope),
+        tasksTotal: read.envelope.tasksTotal,
+        tasksSettled: read.envelope.tasksSettled,
+        tasksFailed: read.envelope.tasksFailed,
+        currentTask: read.envelope.currentTask,
+      };
+    });
+
+    const envelopes = reads
+      .map(({ read }) => (read.ok ? read.envelope : null))
+      .filter((envelope): envelope is RefreshEnvelope => envelope !== null);
+
+    if (envelopes.length === 0) {
+      // Every read failed. `unavailable` keeps the client polling rather than
+      // returning a 500: Redis being down is not the user's problem, and the
+      // frontend's other two exits (the trigger resolving, the hard cap) still
+      // work.
+      const anyUnavailable = reads.some(
+        ({ read }) => !read.ok && read.reason !== 'missing',
+      );
+      return {
+        ...IDLE_STATUS,
+        phase: anyUnavailable ? 'unknown' : 'idle',
+        schools,
+      };
     }
 
-    const { envelope } = read;
-    const phase = this.resolvePhase(envelope);
+    // Worst-wins: `done` only once EVERY school has stopped running. One
+    // school finishing first must not release the first-login screen while the
+    // other is still fetching, which is what a per-connection read did.
+    const phase = schools
+      .map((school) => school.phase)
+      .reduce((a, b) => (PHASE_RANK[b] > PHASE_RANK[a] ? b : a));
+
+    const sum = (pick: (envelope: RefreshEnvelope) => number) =>
+      envelopes.reduce((total, envelope) => total + pick(envelope), 0);
+
+    // The newest start and the latest end across the household: the refresh as
+    // the user experiences it, not as one connection saw it.
+    const startedAt = envelopes.map((envelope) => envelope.startedAt).sort()[0] ?? null;
+    const endedAts = envelopes.map((envelope) => envelope.endedAt);
+    const endedAt = endedAts.includes(null)
+      ? null
+      : (endedAts.filter((value): value is string => value !== null).sort().reverse()[0] ?? null);
+
+    const tasksTotal = sum((envelope) => envelope.tasksTotal);
+    const tasksSettled = sum((envelope) => envelope.tasksSettled);
 
     return {
       done: phase !== 'running',
-      sourcesCompleted: envelope.tasksSettled,
-      sourcesTotal: envelope.tasksTotal,
+      sourcesCompleted: tasksSettled,
+      sourcesTotal: tasksTotal,
       phase,
-      refreshId: envelope.refreshId,
-      startedAt: envelope.startedAt,
-      endedAt: envelope.endedAt,
-      tasksTotal: envelope.tasksTotal,
-      tasksSettled: envelope.tasksSettled,
-      tasksFailed: envelope.tasksFailed,
-      currentTask: envelope.currentTask,
-      tasks: envelope.tasks,
+      // One id is all a client can use; the per-school breakdown carries the
+      // rest.
+      refreshId: envelopes[0].refreshId,
+      startedAt,
+      endedAt,
+      tasksTotal,
+      tasksSettled,
+      tasksFailed: sum((envelope) => envelope.tasksFailed),
+      currentTask:
+        schools.find((school) => school.phase === 'running')?.currentTask ??
+        envelopes[0].currentTask,
+      tasks: envelopes.flatMap((envelope) => envelope.tasks),
+      schools,
     };
   }
 

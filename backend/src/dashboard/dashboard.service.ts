@@ -5,9 +5,9 @@ import { MashovSessionService } from '../session/mashov-session.service';
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
 import {
-  currentYearScope,
-  historyScope,
-  schoolYearWindowFor,
+  historyScopeForStudents,
+  yearScopeForStudents,
+  type StudentYearScope,
 } from '../common/school-year/school-year.scope';
 
 export interface FeedItem {
@@ -29,10 +29,16 @@ export interface FeedItem {
   linkPath: string;
 }
 
-/** The current year alone: counts, and every staleness signal. */
-type YearScope = { schoolYear: { in: number[] } };
+/**
+ * The current year alone: counts, and every staleness signal.
+ *
+ * Cross-child, so it is the per-connection pair shape -- each school's
+ * children at that school's year. A single household-wide year hides the other
+ * school's children every September.
+ */
+type YearScope = StudentYearScope;
 /** The configured history window: the lists, where more data is the point. */
-type HistoryWhere = ReturnType<typeof historyScope>;
+type HistoryWhere = StudentYearScope;
 
 export interface ChildCard {
   studentGuid: string;
@@ -65,9 +71,12 @@ export class DashboardService {
     // counts and `latestUpdateAt` stay on the current year. In September the
     // feed therefore shows last year's items rather than being empty, and
     // `latestUpdateAt` is what still reports the new year as quiet.
-    const window = await schoolYearWindowFor(this.prisma, this.configService, userId);
-    const yearScope = currentYearScope(window.current);
-    const windowScope = historyScope(window);
+    const yearScope = await yearScopeForStudents(this.prisma, userId);
+    const windowScope = await historyScopeForStudents(
+      this.prisma,
+      this.configService,
+      userId,
+    );
 
     const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(yearScope, userId),

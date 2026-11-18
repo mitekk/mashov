@@ -138,3 +138,200 @@ export async function currentSchoolYearFor(
     ? connection.schoolYear
     : calendarSchoolYear(new Date());
 }
+
+// ---------------------------------------------------------------------------
+// Two schools, two years.
+//
+// Everything above is correct wherever a single student or a single year is
+// known, and stays exactly as it is. What it cannot express is a household
+// whose schools sit on different years -- which happens every September, when
+// one school has opened the new year and the other has not. `currentYearScope`
+// of one year then hides the other school's children entirely.
+//
+// The honest shape for a student-keyed table is an OR of (student-set, year)
+// pairs: each connection contributes its own children at its own year. There
+// is no single year that is right for the household, and picking one is the
+// bug.
+// ---------------------------------------------------------------------------
+
+/** The year each of a household's active connections is on, keyed by id. */
+export async function schoolYearByConnection(
+  prisma: PrismaService,
+  userId?: string,
+): Promise<Map<string, number>> {
+  const connections = await prisma.householdConnection.findMany({
+    where: { active: true, ...(userId ? { userId } : {}) },
+    select: { id: true, schoolYear: true },
+  });
+
+  const fallback = calendarSchoolYear(new Date());
+  return new Map(
+    connections.map((conn) => [
+      conn.id,
+      conn.schoolYear && conn.schoolYear > 0 ? conn.schoolYear : fallback,
+    ]),
+  );
+}
+
+/**
+ * The year one connection is on, falling back to the household's.
+ *
+ * Takes the id rather than the student guid so a caller that already holds the
+ * student row does not pay a second read for a column it is holding -- which
+ * is every per-child endpoint, since they all load the child to authorise the
+ * request first.
+ */
+export async function schoolYearForConnection(
+  prisma: PrismaService,
+  connectionId: string | null | undefined,
+): Promise<number> {
+  if (connectionId) {
+    const connection = await prisma.householdConnection.findUnique({
+      where: { id: connectionId },
+      select: { schoolYear: true },
+    });
+    if (connection?.schoolYear && connection.schoolYear > 0) {
+      return connection.schoolYear;
+    }
+  }
+
+  // Unstamped, or stamped to a connection that has gone away. The household
+  // fallback is what a single-school deployment has always used.
+  return currentSchoolYearFor(prisma);
+}
+
+/**
+ * The year ONE child's rows are written at, which is the year to read them at.
+ *
+ * Per-child endpoints use this rather than a household-wide year: the child
+ * belongs to one school, that school is on one year, and the sync tasks stamp
+ * that child's rows with it.
+ *
+ * Prefer `schoolYearForConnection` where the student row is already in hand.
+ */
+export async function currentSchoolYearForStudent(
+  prisma: PrismaService,
+  studentGuid: string,
+): Promise<number> {
+  const student = await prisma.student.findUnique({
+    where: { studentGuid },
+    select: { householdConnectionId: true },
+  });
+
+  return schoolYearForConnection(prisma, student?.householdConnectionId);
+}
+
+/** The history window ONE child's school spans. */
+export async function schoolYearWindowForStudent(
+  prisma: PrismaService,
+  config: ConfigService,
+  connectionId: string | null | undefined,
+): Promise<SchoolYearWindow> {
+  const current = await schoolYearForConnection(prisma, connectionId);
+  return { start: historyStartYear(current, config), current };
+}
+
+/** The history window each of a household's connections spans. */
+export async function schoolYearWindowsFor(
+  prisma: PrismaService,
+  config: ConfigService,
+  userId?: string,
+): Promise<Map<string, SchoolYearWindow>> {
+  const byConnection = await schoolYearByConnection(prisma, userId);
+  const windows = new Map<string, SchoolYearWindow>();
+  for (const [connectionId, current] of byConnection) {
+    windows.set(connectionId, { start: historyStartYear(current, config), current });
+  }
+  return windows;
+}
+
+/** A student-keyed where fragment: an OR of (that connection's children, its year). */
+export type StudentYearScope = {
+  OR: Array<
+    | { schoolYear: number }
+    | { studentGuid: { in: string[] }; schoolYear: { in: number[] } }
+    | { studentGuid: { in: string[] }; schoolYear: { gte: number; lte: number } }
+  >;
+};
+
+async function guidsByConnection(
+  prisma: PrismaService,
+  connectionIds: string[],
+): Promise<Map<string, string[]>> {
+  if (connectionIds.length === 0) return new Map();
+
+  const students = await prisma.student.findMany({
+    where: { householdConnectionId: { in: connectionIds } },
+    select: { studentGuid: true, householdConnectionId: true },
+  });
+
+  const byConnection = new Map<string, string[]>();
+  for (const student of students) {
+    const key = student.householdConnectionId;
+    if (!key) continue;
+    const bucket = byConnection.get(key);
+    if (bucket) bucket.push(student.studentGuid);
+    else byConnection.set(key, [student.studentGuid]);
+  }
+  return byConnection;
+}
+
+/**
+ * The current year for every child, each at their own school's year.
+ *
+ * `UNSCOPED_SCHOOL_YEAR` is admitted on its own, with no student predicate:
+ * those are pre-migration rows that belong to whichever child they name, and
+ * excluding them would blank a half-migrated database -- the same reason
+ * `currentYearScope` admits it.
+ *
+ * With one connection this reduces to exactly `currentYearScope(thatYear)`
+ * plus a `studentGuid IN (...)` that matches all of its children, so a
+ * single-school deployment reads the same rows it always did.
+ */
+/**
+ * Either shape a caller can thread into a `where`: one year for one child,
+ * or the per-connection pairs for a cross-child read.
+ */
+export type YearScope = { schoolYear: { in: number[] } } | StudentYearScope;
+
+export async function yearScopeForStudents(
+  prisma: PrismaService,
+  userId?: string,
+): Promise<StudentYearScope> {
+  const byConnection = await schoolYearByConnection(prisma, userId);
+  const guids = await guidsByConnection(prisma, [...byConnection.keys()]);
+
+  const OR: StudentYearScope['OR'] = [{ schoolYear: UNSCOPED_SCHOOL_YEAR }];
+  for (const [connectionId, year] of byConnection) {
+    const connectionGuids = guids.get(connectionId);
+    if (!connectionGuids || connectionGuids.length === 0) continue;
+    OR.push({
+      studentGuid: { in: connectionGuids },
+      schoolYear: { in: [year] },
+    });
+  }
+
+  return { OR };
+}
+
+/** The configured history window for every child, each at their own school's. */
+export async function historyScopeForStudents(
+  prisma: PrismaService,
+  config: ConfigService,
+  userId?: string,
+): Promise<StudentYearScope> {
+  const windows = await schoolYearWindowsFor(prisma, config, userId);
+  const guids = await guidsByConnection(prisma, [...windows.keys()]);
+
+  const OR: StudentYearScope['OR'] = [{ schoolYear: UNSCOPED_SCHOOL_YEAR }];
+  for (const [connectionId, window] of windows) {
+    const connectionGuids = guids.get(connectionId);
+    if (!connectionGuids || connectionGuids.length === 0) continue;
+    OR.push({
+      studentGuid: { in: connectionGuids },
+      schoolYear: { gte: window.start, lte: window.current },
+    });
+  }
+
+  return { OR };
+}

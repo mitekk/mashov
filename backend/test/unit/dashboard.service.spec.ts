@@ -27,6 +27,9 @@ const mockPrisma = {
   },
   householdConnection: {
     findFirst: jest.fn(),
+    // The cross-child year scope lists the connections rather than resolving
+    // one household-wide year.
+    findMany: jest.fn(),
   },
 };
 
@@ -76,6 +79,7 @@ describe('DashboardService', () => {
     mockPrisma.homeworkItem.findFirst.mockResolvedValue(null);
     mockPrisma.behaviorItem.findFirst.mockResolvedValue(null);
     mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+    mockPrisma.householdConnection.findMany.mockResolvedValue([]);
     mockFreshness.computeFreshness.mockResolvedValue({
       state: 'fresh',
       lastSyncAt: null,

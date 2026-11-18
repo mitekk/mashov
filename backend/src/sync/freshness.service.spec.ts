@@ -9,6 +9,8 @@ const NOW = new Date('2026-11-17T12:00:00Z');
 
 function makeMockPrisma(options: {
   connection?: { schoolCode: number; schoolYear: number } | null;
+  /** Several schools, for the worst-state cases. */
+  connections?: Array<{ id: string; schoolCode: number; schoolYear: number }>;
   newestHomeworkAt?: Date | null;
   newestBehaviorAt?: Date | null;
 } = {}) {
@@ -18,6 +20,16 @@ function makeMockPrisma(options: {
         options.connection === undefined
           ? { schoolCode: 1234, schoolYear: 2027 }
           : options.connection,
+      ),
+      // Content freshness is computed per connection and reported at its
+      // worst, so it lists them rather than resolving one.
+      findMany: jest.fn().mockResolvedValue(
+        options.connections ??
+          (options.connection === undefined
+            ? [{ id: 'conn-1', schoolCode: 1234, schoolYear: 2027 }]
+            : options.connection === null
+              ? []
+              : [{ id: 'conn-1', ...options.connection }]),
       ),
     },
     student: {
@@ -682,6 +694,121 @@ describe('FreshnessService.computeContentFreshness', () => {
       connection: { schoolCode: 1234, schoolYear: 2026 },
       newestHomeworkAt: new Date('2026-06-28T00:00:00Z'),
     });
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'stale_year',
+    });
+  });
+});
+
+describe('FreshnessService.computeContentFreshness across two schools', () => {
+  /**
+   * Content freshness has to be per school and reported at its worst.
+   *
+   * Reading one connection -- whichever `findFirst` returned -- hides a
+   * genuinely stale school behind a healthy one. Measuring both schools'
+   * children against one school's expected year does the opposite: a school
+   * just linked, with nothing synced yet, drags the whole household to
+   * `stale_year` and degrades a dashboard that is fine.
+   */
+  function makePrisma(
+    connections: Array<{ id: string; schoolCode: number; schoolYear: number }>,
+    contentByConnection: Record<string, Date | null>,
+  ) {
+    return {
+      householdConnection: {
+        findFirst: jest.fn().mockResolvedValue(connections[0] ?? null),
+        findMany: jest.fn().mockResolvedValue(connections),
+      },
+      student: {
+        findMany: jest.fn(({ where }) =>
+          Promise.resolve(
+            where?.householdConnectionId
+              ? [{ studentGuid: `stu-${where.householdConnectionId}` }]
+              : [],
+          ),
+        ),
+      },
+      homeworkItem: {
+        aggregate: jest.fn(({ where }) => {
+          const guid: string | undefined = where?.studentGuid?.in?.[0];
+          const connectionId = guid?.replace(/^stu-/, '') ?? '';
+          return Promise.resolve({
+            _max: { lessonDate: contentByConnection[connectionId] ?? null },
+          });
+        }),
+      },
+      behaviorItem: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { eventAt: null } }),
+      },
+    } as unknown as PrismaService;
+  }
+
+  const FRESH = new Date(Date.UTC(2026, 10, 10));
+  const CONN_CURRENT = { id: 'conn-a', schoolCode: 540175, schoolYear: 2027 };
+  const CONN_FROZEN = { id: 'conn-b', schoolCode: 999999, schoolYear: 2025 };
+
+  beforeAll(() => {
+    jest.useFakeTimers().setSystemTime(new Date(Date.UTC(2026, 10, 18)));
+  });
+  afterAll(() => jest.useRealTimers());
+
+  it('reports stale_year when one school is on a dead year', async () => {
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, CONN_FROZEN], { 'conn-a': FRESH, 'conn-b': FRESH }),
+      makeMockSchoolYear(2027),
+    );
+
+    const result = await service.computeContentFreshness();
+
+    expect(result.status).toBe('stale_year');
+  });
+
+  it('stays current when both schools are on the live year', async () => {
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, { ...CONN_FROZEN, schoolYear: 2027 }], {
+        'conn-a': FRESH,
+        'conn-b': FRESH,
+      }),
+      makeMockSchoolYear(2027),
+    );
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'current',
+    });
+  });
+
+  it('does not let a school with no data yet report as a frozen year', async () => {
+    // A school linked this morning has no content. That is "quiet", not
+    // "asking for a dead year", and it must not degrade the dashboard for the
+    // school that is working.
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, { ...CONN_FROZEN, schoolYear: 2027 }], {
+        'conn-a': FRESH,
+        'conn-b': null,
+      }),
+      makeMockSchoolYear(2027),
+    );
+
+    const result = await service.computeContentFreshness();
+
+    expect(result.status).toBe('no_content');
+    // And the household's newest content is still reported, from the school
+    // that has some.
+    expect(result.newestContentAt).toBe(FRESH.toISOString());
+  });
+
+  it('does not hide a stale school behind a healthy one', async () => {
+    // The order matters: conn-a is what findFirst would have returned, and it
+    // is fine. Reading only it would report `current`.
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, CONN_FROZEN], { 'conn-a': FRESH, 'conn-b': FRESH }),
+      makeMockSchoolYear(2027),
+    );
 
     await expect(service.computeContentFreshness()).resolves.toMatchObject({
       status: 'stale_year',
