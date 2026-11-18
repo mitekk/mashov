@@ -91,11 +91,16 @@ export class FreshnessService {
     private readonly schoolYearService: SchoolYearService,
   ) {}
 
-  /** Loads both per-source maps once, for callers that need more than one read. */
-  async loadSyncRuns(): Promise<SyncRunSnapshot> {
+  /**
+   * Loads both per-source maps once, for callers that need more than one read.
+   *
+   * `householdConnectionId` scopes the snapshot to one caller's connection;
+   * omitting it keeps the global view the dashboard freshness read wants.
+   */
+  async loadSyncRuns(householdConnectionId?: string): Promise<SyncRunSnapshot> {
     const [allRuns, successRuns] = await Promise.all([
-      this.syncRunService.getAllSourceHealth(),
-      this.syncRunService.getLatestSuccessfulRuns(),
+      this.syncRunService.getAllSourceHealth(householdConnectionId),
+      this.syncRunService.getLatestSuccessfulRuns(householdConnectionId),
     ]);
     return { allRuns, successRuns };
   }

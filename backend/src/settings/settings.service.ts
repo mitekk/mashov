@@ -9,7 +9,31 @@ export class SettingsService {
     private readonly freshnessService: FreshnessService,
   ) {}
 
-  async getSourceHealth() {
+  /**
+   * Source health for one caller's connection.
+   *
+   * This read was unscoped: any signed-in user got every household's sources,
+   * and because per-student source keys are `<name>:<studentGuid>`, that
+   * handed them other families' child identifiers. The connection now filters
+   * both `sync_run` reads.
+   *
+   * Known residual, and the reason this is a narrowing rather than a fix:
+   * `Student` carries no household column, so the per-student tasks iterate
+   * every child in the database and stamp those runs with whichever connection
+   * triggered the refresh. Until `Student` is scoped, a caller's own rows can
+   * still name a child who is not theirs. That is a schema change with its own
+   * ADR; this stops the read itself from fanning out across households.
+   */
+  async getSourceHealth(householdConnectionId: string | null) {
+    if (!householdConnectionId) {
+      return {
+        sources: [],
+        overallState: 'stale' as const,
+        lastFullSyncAt: null,
+        contentFreshness: null,
+      };
+    }
+
     const studentGuids = (
       await this.prisma.student.findMany({
         where: { isActive: true },
@@ -19,7 +43,7 @@ export class SettingsService {
 
     // One load of the sync_run maps, shared by both reads below. Fetching them
     // per call meant four round trips for this one response.
-    const snapshot = await this.freshnessService.loadSyncRuns();
+    const snapshot = await this.freshnessService.loadSyncRuns(householdConnectionId);
 
     const [sources, freshness] = await Promise.all([
       this.freshnessService.getAllSourceHealth(studentGuids, snapshot),

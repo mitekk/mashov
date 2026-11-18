@@ -68,13 +68,26 @@ export class SyncRunService {
    *
    * `DISTINCT ON` returns one row per source, so the result set is now the
    * number of sources rather than the size of the table.
+   *
+   * `householdConnectionId` scopes the read to one caller. Without it
+   * `GET /api/v1/settings/source-health` handed every signed-in user every
+   * household's sources — and per-student source keys embed the student GUID,
+   * so that leaked other families' child identifiers. The unscoped form stays
+   * for the dashboard-wide freshness read, which is deliberately global.
    */
-  async getAllSourceHealth(): Promise<Map<string, SyncRun>> {
-    const runs = await this.prisma.$queryRaw<SyncRun[]>`
-      SELECT DISTINCT ON (source) *
-      FROM sync_run
-      ORDER BY source, "startedAt" DESC
-    `;
+  async getAllSourceHealth(householdConnectionId?: string): Promise<Map<string, SyncRun>> {
+    const runs = householdConnectionId
+      ? await this.prisma.$queryRaw<SyncRun[]>`
+          SELECT DISTINCT ON (source) *
+          FROM sync_run
+          WHERE "householdConnectionId" = ${householdConnectionId}
+          ORDER BY source, "startedAt" DESC
+        `
+      : await this.prisma.$queryRaw<SyncRun[]>`
+          SELECT DISTINCT ON (source) *
+          FROM sync_run
+          ORDER BY source, "startedAt" DESC
+        `;
     return new Map(runs.map((run) => [run.source, run]));
   }
 
@@ -86,13 +99,20 @@ export class SyncRunService {
    * every consumer then skipped it (`if (!run?.endedAt) continue`), reporting
    * the source as never synced while a perfectly good older run sat behind it.
    */
-  async getLatestSuccessfulRuns(): Promise<Map<string, SyncRun>> {
-    const runs = await this.prisma.$queryRaw<SyncRun[]>`
-      SELECT DISTINCT ON (source) *
-      FROM sync_run
-      WHERE status = 'success'
-      ORDER BY source, "endedAt" DESC NULLS LAST
-    `;
+  async getLatestSuccessfulRuns(householdConnectionId?: string): Promise<Map<string, SyncRun>> {
+    const runs = householdConnectionId
+      ? await this.prisma.$queryRaw<SyncRun[]>`
+          SELECT DISTINCT ON (source) *
+          FROM sync_run
+          WHERE status = 'success' AND "householdConnectionId" = ${householdConnectionId}
+          ORDER BY source, "endedAt" DESC NULLS LAST
+        `
+      : await this.prisma.$queryRaw<SyncRun[]>`
+          SELECT DISTINCT ON (source) *
+          FROM sync_run
+          WHERE status = 'success'
+          ORDER BY source, "endedAt" DESC NULLS LAST
+        `;
     return new Map(runs.map((run) => [run.source, run]));
   }
 }

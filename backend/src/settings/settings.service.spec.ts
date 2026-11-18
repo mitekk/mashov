@@ -70,7 +70,7 @@ describe('SettingsService', () => {
         }),
       );
 
-      const result = await service.getSourceHealth();
+      const result = await service.getSourceHealth('conn-1');
       expect(result).toEqual({
         sources: expect.any(Array),
         overallState: 'fresh',
@@ -128,6 +128,36 @@ describe('SettingsService', () => {
     });
   });
 
+  describe('getSourceHealth scoping', () => {
+    // Any signed-in user used to get every household's sources. Per-student
+    // source keys embed the student GUID, so that leaked other families'
+    // child identifiers through a settings screen.
+    it('returns nothing and reads nothing when the caller has no connection', async () => {
+      const loadSyncRuns = jest.fn();
+      const getAllSourceHealth = jest.fn();
+      const computeFreshness = jest.fn();
+      const studentFindMany = jest.fn();
+      const service = new SettingsService(
+        makeMockPrisma({ studentFindMany }),
+        makeMockFreshnessService({
+          loadSyncRuns,
+          getAllSourceHealth,
+          computeFreshness,
+        }) as never,
+      );
+
+      const result = await service.getSourceHealth(null);
+
+      expect(result.sources).toEqual([]);
+      expect(result.lastFullSyncAt).toBeNull();
+      expect(result.contentFreshness).toBeNull();
+      expect(loadSyncRuns).not.toHaveBeenCalled();
+      expect(getAllSourceHealth).not.toHaveBeenCalled();
+      expect(computeFreshness).not.toHaveBeenCalled();
+      expect(studentFindMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getSourceHealth connection use', () => {
     // Each of these maps was formerly fetched twice -- once here and again
     // inside computeFreshness -- so one response made four full reads of an
@@ -161,9 +191,10 @@ describe('SettingsService', () => {
         }) as never,
       );
 
-      await service.getSourceHealth();
+      await service.getSourceHealth('conn-1');
 
       expect(loadSyncRuns).toHaveBeenCalledTimes(1);
+      expect(loadSyncRuns).toHaveBeenCalledWith('conn-1');
       const snapshot = await loadSyncRuns.mock.results[0].value;
       expect(getAllSourceHealth).toHaveBeenCalledWith(['guid-1'], snapshot);
       expect(computeFreshness).toHaveBeenCalledWith(snapshot);
