@@ -2,6 +2,8 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import type { ConnectionTarget } from '../session/connection-target';
+import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -45,6 +47,7 @@ export class ChildrenService {
     private readonly mashovClient: MashovHttpClient,
     private readonly userItemStateService: UserItemStateService,
     private readonly configService: ConfigService,
+    private readonly scope: ConnectionScopeService,
   ) {}
 
   async getChildren(userId?: string) {
@@ -352,6 +355,7 @@ export class ChildrenService {
       candidates,
       `https://web.mashov.info/students/main/students/${studentGuid}/homework`,
       file.fileName,
+      await this.scope.targetForStudent(studentGuid),
     );
   }
 
@@ -387,6 +391,7 @@ export class ChildrenService {
       candidates,
       `https://web.mashov.info/students/main/students/${studentGuid}/behave`,
       file.fileName,
+      await this.scope.targetForStudent(studentGuid),
     );
   }
 
@@ -587,8 +592,9 @@ export class ChildrenService {
 
     const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
     try {
-      const plans = await this.mashovClient.get<unknown[]>(
+      const plans = await this.mashovClient.getForTarget<unknown[]>(
         `/api/students/${studentGuid}/lessons/plans`,
+        await this.scope.targetForStudent(studentGuid),
         { headers: { Referer: referer } },
       );
       const data = Array.isArray(plans) ? plans : [];
@@ -603,8 +609,9 @@ export class ChildrenService {
 
     const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
     try {
-      const history = await this.mashovClient.get<unknown[]>(
+      const history = await this.mashovClient.getForTarget<unknown[]>(
         `/api/students/${studentGuid}/lessons/history`,
+        await this.scope.targetForStudent(studentGuid),
         { headers: { Referer: referer } },
       );
       const data = Array.isArray(history) ? history : [];
@@ -618,8 +625,9 @@ export class ChildrenService {
     await this.requireStudent(studentGuid);
 
     const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
-    return this.mashovClient.get<unknown[]>(
+    return this.mashovClient.getForTarget<unknown[]>(
       `/api/students/${studentGuid}/studentReleases`,
+      await this.scope.targetForStudent(studentGuid),
       { headers: { Referer: referer } },
     );
   }
@@ -628,8 +636,13 @@ export class ChildrenService {
     await this.requireStudent(studentGuid);
 
     const referer = 'https://web.mashov.info/students/main/schoolActivities';
-    return this.mashovClient.get<unknown[]>(
+    // The endpoint takes no studentGuid and is household-scoped upstream, so
+    // it answers for whichever account asked. Routing it through this child's
+    // own school is exactly right: it is that school's activities the caller
+    // is looking at.
+    return this.mashovClient.getForTarget<unknown[]>(
       '/api/schoolActivities/permitted',
+      await this.scope.targetForStudent(studentGuid),
       { headers: { Referer: referer } },
     );
   }
@@ -638,9 +651,10 @@ export class ChildrenService {
     await this.requireStudent(studentGuid);
 
     const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
-    return this.mashovClient.put<void>(
+    return this.mashovClient.putForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/request`,
       body,
+      await this.scope.targetForStudent(studentGuid),
       { headers: { Referer: referer } },
     );
   }
@@ -648,17 +662,19 @@ export class ChildrenService {
   async updateStudentRelease(studentGuid: string, releaseId: number, body: unknown) {
     await this.requireStudent(studentGuid);
 
-    return this.mashovClient.put<void>(
+    return this.mashovClient.putForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}/request`,
       body,
+      await this.scope.targetForStudent(studentGuid),
     );
   }
 
   async deleteStudentRelease(studentGuid: string, releaseId: number) {
     await this.requireStudent(studentGuid);
 
-    return this.mashovClient.delete<void>(
+    return this.mashovClient.deleteForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}`,
+      await this.scope.targetForStudent(studentGuid),
     );
   }
 
@@ -882,6 +898,7 @@ export class ChildrenService {
     candidates: Array<string | undefined | null>,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
     const uniqueCandidates = Array.from(new Set(
       candidates
@@ -891,7 +908,12 @@ export class ChildrenService {
 
     for (const candidate of uniqueCandidates) {
       try {
-        return await this.downloadBinaryFromUpstream(candidate, referer, fallbackFileName);
+        return await this.downloadBinaryFromUpstream(
+          candidate,
+          referer,
+          fallbackFileName,
+          target,
+        );
       } catch {
         // Try next candidate URL.
       }
@@ -904,13 +926,18 @@ export class ChildrenService {
     pathOrUrl: string,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
-    const response = await this.mashovClient.getResponse<ArrayBuffer>(pathOrUrl, {
-      responseType: 'arraybuffer',
-      headers: {
-        Referer: referer,
+    const response = await this.mashovClient.getResponseForTarget<ArrayBuffer>(
+      pathOrUrl,
+      target,
+      {
+        responseType: 'arraybuffer',
+        headers: {
+          Referer: referer,
+        },
       },
-    });
+    );
 
     const headers = (response.headers ?? {}) as Record<string, string | string[] | undefined>;
     const contentType = this.readHeader(headers, 'content-type');

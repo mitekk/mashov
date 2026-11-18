@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
-import { SessionModule } from '../../session/session.module';
+import { MashovSessionModule } from '../../session/mashov-session.module';
 import { ConnectionScopeService } from './connection-scope.service';
 
 /**
@@ -9,7 +9,7 @@ import { ConnectionScopeService } from './connection-scope.service';
  * SettingsModule.
  */
 @Module({
-  imports: [PrismaModule, SessionModule],
+  imports: [PrismaModule, MashovSessionModule],
   providers: [ConnectionScopeService],
   exports: [ConnectionScopeService],
 })

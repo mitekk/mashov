@@ -3,6 +3,8 @@ import sanitizeHtml = require('sanitize-html');
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import type { ConnectionTarget } from '../session/connection-target';
+import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
@@ -76,6 +78,7 @@ export class MailService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mashovClient: MashovHttpClient,
+    private readonly scope: ConnectionScopeService,
   ) {}
 
   async getSummary() {
@@ -240,6 +243,12 @@ export class MailService {
     }
 
     const referer = `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`;
+    // Resolved once for the whole download, including the retry below: the
+    // message's own stamp, so a bare messageId is enough and no join is
+    // needed.
+    const target = await this.scope.targetForMessage(messageId).catch(() =>
+      this.scope.targetForConversation(conversationId),
+    );
 
     let message = await this.getMessageInConversation(conversationId, messageId);
     if (!message) {
@@ -267,6 +276,7 @@ export class MailService {
         }),
         referer,
         attachment.fileName,
+        target,
       );
     } catch {
       // Attachment URLs may be short-lived; refresh from upstream and retry once.
@@ -287,6 +297,7 @@ export class MailService {
         }),
         referer,
         refreshedAttachment.fileName,
+        target,
       );
     }
   }
@@ -344,8 +355,9 @@ export class MailService {
     },
   ): Promise<boolean> {
     try {
-      const upstream = await this.mashovClient.get<UpstreamConversationDetail>(
+      const upstream = await this.mashovClient.getForTarget<UpstreamConversationDetail>(
         `/api/mail/conversations/${conversationId}`,
+        await this.scope.targetForConversation(conversationId),
         {
           headers: {
             Referer: `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`,
@@ -576,6 +588,7 @@ export class MailService {
     candidates: Array<string | undefined | null>,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
     const uniqueCandidates = Array.from(new Set(
       candidates
@@ -586,7 +599,12 @@ export class MailService {
     let lastError: string | null = null;
     for (const candidate of uniqueCandidates) {
       try {
-        return await this.downloadBinaryFromUpstream(candidate, referer, fallbackFileName);
+        return await this.downloadBinaryFromUpstream(
+          candidate,
+          referer,
+          fallbackFileName,
+          target,
+        );
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         // Try next candidate URL.
@@ -603,13 +621,18 @@ export class MailService {
     pathOrUrl: string,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
-    const response = await this.mashovClient.getResponse<ArrayBuffer>(pathOrUrl, {
-      responseType: 'arraybuffer',
-      headers: {
-        Referer: referer,
+    const response = await this.mashovClient.getResponseForTarget<ArrayBuffer>(
+      pathOrUrl,
+      target,
+      {
+        responseType: 'arraybuffer',
+        headers: {
+          Referer: referer,
+        },
       },
-    });
+    );
 
     const headers = (response.headers ?? {}) as Record<string, string | string[] | undefined>;
     const contentType = this.readHeader(headers, 'content-type');
@@ -739,18 +762,18 @@ export class MailService {
       return { updated: 0 };
     }
 
-    try {
-      await this.mashovClient.put(
-        '/api/mail/conversations/markAsUnread',
-        eligibleConversationIds,
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-        },
-      );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Upstream markAsUnread failed: ${msg}; updating DB only`);
-    }
+    // An id list from the client can span schools, and one upstream call
+    // cannot carry both: Mashov authenticates per school, so a mixed list is
+    // one request per connection with its own subset. A failure on one
+    // connection must not stop the other's.
+    await this.forEachConnectionSubset(
+      eligibleConversationIds,
+      'markAsUnread',
+      (subset, target) =>
+        this.mashovClient.putForTarget('/api/mail/conversations/markAsUnread', subset, target, {
+          headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+        }),
+    );
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: {
@@ -769,18 +792,11 @@ export class MailService {
   }
 
   async archive(conversationIds: string[]) {
-    try {
-      await this.mashovClient.put(
-        '/api/mail/conversations/move/archive',
-        conversationIds,
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-        },
-      );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Upstream archive failed: ${msg}; updating DB only`);
-    }
+    await this.forEachConnectionSubset(conversationIds, 'archive', (subset, target) =>
+      this.mashovClient.putForTarget('/api/mail/conversations/move/archive', subset, target, {
+        headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+      }),
+    );
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: { conversationId: { in: conversationIds } },
@@ -801,39 +817,85 @@ export class MailService {
     // lever we have. It answers with the number of conversations it actually marked
     // (apis/put-api-mail-conversations-markAsUnread.md), which is what tells us whether
     // the unread state we are about to store locally is real.
-    let markedUnreadUpstream = false;
-    try {
-      const marked = await this.mashovClient.put<unknown>(
-        '/api/mail/conversations/markAsUnread',
-        conversationIds,
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-        },
-      );
-      markedUnreadUpstream = typeof marked === 'number' ? marked > 0 : true;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Upstream unarchive(markAsUnread) failed: ${msg}; updating DB only`);
-    }
+    // Both the upstream confirmation and the local write are per connection.
+    // Collapsing them to one boolean would let one school's failed call
+    // suppress the other school's *confirmed* unread -- the two mailboxes know
+    // nothing about each other, and their answers must not be mixed.
+    const grouped = await this.scope.groupConversationsByConnection(conversationIds);
+    let totalUpdated = 0;
 
-    const updated = await this.prisma.mailConversation.updateMany({
-      where: { conversationId: { in: conversationIds } },
-      data: {
-        labels: [] as unknown as Prisma.InputJsonValue,
-        locallyReadThroughAt: null,
-        // Only claim unread when upstream confirms it. conv.isNew is the read-state
-        // authority, and a conversation archived while read is read -- inventing unread
-        // here would inflate the badge, which is the bug this branch exists to fix. If
-        // the call failed, the next walk settles the real state within 7 minutes.
-        ...(markedUnreadUpstream
-          ? { isUnread: true, locallyMarkedUnreadAt: new Date() }
-          : {}),
-      },
-    });
+    for (const [connectionId, subset] of grouped) {
+      let markedUnreadUpstream = false;
+      try {
+        const target = connectionId
+          ? await this.scope.targetFor(connectionId)
+          : await this.scope.targetForConversation(subset[0]);
+        const marked = await this.mashovClient.putForTarget<unknown>(
+          '/api/mail/conversations/markAsUnread',
+          subset,
+          target,
+          {
+            headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+          },
+        );
+        markedUnreadUpstream = typeof marked === 'number' ? marked > 0 : true;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Upstream unarchive(markAsUnread) failed for connection ${connectionId ?? 'unstamped'}: ${msg}; updating DB only`,
+        );
+      }
+
+      const updated = await this.prisma.mailConversation.updateMany({
+        where: { conversationId: { in: subset } },
+        data: {
+          labels: [] as unknown as Prisma.InputJsonValue,
+          locallyReadThroughAt: null,
+          // Only claim unread when upstream confirms it. conv.isNew is the read-state
+          // authority, and a conversation archived while read is read -- inventing unread
+          // here would inflate the badge, which is the bug this branch exists to fix. If
+          // the call failed, the next walk settles the real state within 7 minutes.
+          ...(markedUnreadUpstream
+            ? { isUnread: true, locallyMarkedUnreadAt: new Date() }
+            : {}),
+        },
+      });
+      totalUpdated += updated.count;
+    }
 
     await this.updateCachedNewCount();
 
-    return { updated: updated.count };
+    return { updated: totalUpdated };
+  }
+
+  /**
+   * Run one upstream call per owning connection, each with only its own ids.
+   *
+   * Per-connection failure is warn-and-continue, as the single-connection
+   * version was: the local write still happens and the next inbox walk
+   * settles the real state within seven minutes. What must not happen is one
+   * school's failure skipping the other school's call.
+   */
+  private async forEachConnectionSubset(
+    conversationIds: string[],
+    label: string,
+    call: (subset: string[], target: ConnectionTarget) => Promise<unknown>,
+  ): Promise<void> {
+    const grouped = await this.scope.groupConversationsByConnection(conversationIds);
+
+    for (const [connectionId, subset] of grouped) {
+      try {
+        const target = connectionId
+          ? await this.scope.targetFor(connectionId)
+          : await this.scope.targetForConversation(subset[0]);
+        await call(subset, target);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Upstream ${label} failed for connection ${connectionId ?? 'unstamped'}: ${msg}; updating DB only`,
+        );
+      }
+    }
   }
 
   private async updateCachedNewCount(): Promise<void> {

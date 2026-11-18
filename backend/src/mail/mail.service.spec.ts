@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { MailService } from './mail.service';
 
 const NOW = new Date('2026-03-11T10:00:00Z');
@@ -55,14 +56,58 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
 }
 
 function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>>) {
+  const response = jest.fn().mockResolvedValue({ data: new ArrayBuffer(0), headers: {} });
   return {
+    // The env-session surface. Kept so a spec can still assert it is unused;
+    // src/session/env-session-fence.spec.ts is what enforces that.
     get: overrides.get ?? jest.fn().mockResolvedValue({}),
-    getResponse: overrides.getResponse ?? jest.fn().mockResolvedValue({
-      data: new ArrayBuffer(0),
-      headers: {},
-    }),
+    getResponse: overrides.getResponse ?? response,
     put: overrides.put ?? jest.fn().mockResolvedValue({}),
+    // The per-connection surface the reads and mutations actually use.
+    getForTarget: overrides.getForTarget ?? overrides.get ?? jest.fn().mockResolvedValue({}),
+    getResponseForTarget: overrides.getResponseForTarget ?? overrides.getResponse ?? response,
+    putForTarget: overrides.putForTarget ?? overrides.put ?? jest.fn().mockResolvedValue({}),
+    deleteForTarget: overrides.deleteForTarget ?? jest.fn().mockResolvedValue({}),
   } as unknown as jest.Mocked<MashovHttpClient>;
+}
+
+/** The single target makeMockScope resolves everything to. */
+const SCOPE_TARGET = {
+  id: 'conn-1',
+  schoolCode: 1234,
+  schoolYear: 2027,
+  username: 'parent',
+  password: 'pw',
+  schoolName: 'School',
+};
+
+/**
+ * ConnectionScopeService stand-in. The reads under test resolve the owning
+ * school through it; one connection means every lookup answers the same way,
+ * which is what keeps these assertions identical to the pre-ownership ones.
+ */
+function makeMockScope(overrides: Partial<Record<string, jest.Mock>> = {}) {
+  const target = {
+    id: 'conn-1',
+    schoolCode: 1234,
+    schoolYear: 2027,
+    username: 'parent',
+    password: 'pw',
+    schoolName: 'School',
+  };
+  return {
+    targetFor: overrides.targetFor ?? jest.fn().mockResolvedValue(target),
+    targetForStudent: overrides.targetForStudent ?? jest.fn().mockResolvedValue(target),
+    targetForConversation:
+      overrides.targetForConversation ?? jest.fn().mockResolvedValue(target),
+    targetForMessage: overrides.targetForMessage ?? jest.fn().mockResolvedValue(target),
+    listTargets: overrides.listTargets ?? jest.fn().mockResolvedValue([target]),
+    groupConversationsByConnection:
+      overrides.groupConversationsByConnection ??
+      jest.fn((ids: string[]) => Promise.resolve(new Map([['conn-1', ids]]))),
+    studentGuidsForUser: overrides.studentGuidsForUser ?? jest.fn().mockResolvedValue([]),
+    stampStudent: overrides.stampStudent ?? jest.fn().mockResolvedValue(undefined),
+  } as unknown as ConnectionScopeService;
 }
 
 describe('MailService', () => {
@@ -81,6 +126,7 @@ describe('MailService', () => {
           syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       const result = await service.getSummary();
@@ -99,6 +145,7 @@ describe('MailService', () => {
           syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       const result = await service.getSummary();
@@ -114,6 +161,7 @@ describe('MailService', () => {
           conversationFindMany,
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.getSummary();
@@ -137,6 +185,7 @@ describe('MailService', () => {
           conversationCount: jest.fn().mockResolvedValue(2),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       const result = await service.getSummary();
@@ -154,6 +203,7 @@ describe('MailService', () => {
           conversationCount: jest.fn().mockResolvedValue(1),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       const result = await service.getConversations(1, 20, 'all');
@@ -173,6 +223,7 @@ describe('MailService', () => {
           conversationCount: jest.fn().mockResolvedValue(1),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       const result = await service.getConversations(1, 20, 'all');
@@ -187,6 +238,7 @@ describe('MailService', () => {
           conversationFindUnique: jest.fn().mockResolvedValue(null),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await expect(service.getConversationDetail('missing')).rejects.toThrow(
@@ -219,6 +271,7 @@ describe('MailService', () => {
           ]),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       const result = await service.getConversationDetail('conv-1');
@@ -276,6 +329,7 @@ describe('MailService', () => {
         makeMockMashovClient({
           get: jest.fn().mockRejectedValue(new Error('network error')),
         }),
+        makeMockScope(),
       );
 
       const result = await service.getConversationDetail('conv-upstream-1');
@@ -357,13 +411,13 @@ describe('MailService', () => {
           messageUpsert,
         }),
         makeMockMashovClient({ get: mashovGet }),
+        makeMockScope(),
       );
 
       const result = await service.getConversationDetail('conv-upstream-1');
       expect(mashovGet).toHaveBeenCalledWith(
-        '/api/mail/conversations/conv-upstream-1',
-        expect.any(Object),
-      );
+        '/api/mail/conversations/conv-upstream-1', SCOPE_TARGET,
+        expect.any(Object));
       expect(messageUpsert).toHaveBeenCalled();
       expect(result.messages[0].hasAttachments).toBe(true);
     });
@@ -395,19 +449,19 @@ describe('MailService', () => {
           ]),
         }),
         makeMockMashovClient({ getResponse }),
+        makeMockScope(),
       );
 
       await service.downloadMessageAttachment('conv-1', 'msg-1', 'file-1');
 
       expect(getResponse).toHaveBeenCalledWith(
-        'https://cdn.example.com/download/file-1',
+        'https://cdn.example.com/download/file-1', SCOPE_TARGET,
         expect.objectContaining({
           responseType: 'arraybuffer',
           headers: expect.objectContaining({
             Referer: 'https://web.mashov.info/students/main/mailbox/conversation/conv-1',
           }),
-        }),
-      );
+        }));
     });
 
     it('supports Mashov download endpoint pattern with /download/:fileName', async () => {
@@ -434,14 +488,14 @@ describe('MailService', () => {
           ]),
         }),
         makeMockMashovClient({ getResponse }),
+        makeMockScope(),
       );
 
       await service.downloadMessageAttachment('conv-1', 'msg-1', 'file-1');
 
       expect(getResponse).toHaveBeenCalledWith(
-        '/api/mail/messages/msg-1/files/file-1/download/document.pdf',
-        expect.any(Object),
-      );
+        '/api/mail/messages/msg-1/files/file-1/download/document.pdf', SCOPE_TARGET,
+        expect.any(Object));
     });
 
     it('refreshes conversation detail and retries attachment download when first attempt fails', async () => {
@@ -522,18 +576,17 @@ describe('MailService', () => {
           get: mashovGet,
           getResponse,
         }),
+        makeMockScope(),
       );
 
       await service.downloadMessageAttachment('conv-1', 'msg-1', 'file-1');
 
       expect(mashovGet).toHaveBeenCalledWith(
-        '/api/mail/conversations/conv-1',
-        expect.any(Object),
-      );
+        '/api/mail/conversations/conv-1', SCOPE_TARGET,
+        expect.any(Object));
       expect(getResponse).toHaveBeenCalledWith(
-        'https://download.example.com/file-1',
-        expect.any(Object),
-      );
+        'https://download.example.com/file-1', SCOPE_TARGET,
+        expect.any(Object));
     });
   });
 
@@ -549,6 +602,7 @@ describe('MailService', () => {
           householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       const result = await service.markConversationsRead(['conv-1', 'conv-2']);
@@ -571,6 +625,7 @@ describe('MailService', () => {
           householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.markConversationsRead(['conv-1']);
@@ -596,6 +651,7 @@ describe('MailService', () => {
           conversationUpdateMany,
         }),
         makeMockMashovClient({ put: mashovPut }),
+        makeMockScope(),
       );
 
       const result = await service.markUnread(['conv-1', 'conv-2']);
@@ -607,9 +663,8 @@ describe('MailService', () => {
       );
       expect(mashovPut).toHaveBeenCalledWith(
         '/api/mail/conversations/markAsUnread',
-        ['conv-1', 'conv-2'],
-        expect.any(Object),
-      );
+        ['conv-1', 'conv-2'], SCOPE_TARGET,
+        expect.any(Object));
     });
 
     it('markUnread skips archived conversations', async () => {
@@ -621,6 +676,7 @@ describe('MailService', () => {
           conversationUpdateMany,
         }),
         makeMockMashovClient({ put: mashovPut }),
+        makeMockScope(),
       );
 
       const result = await service.markUnread(['conv-archived-1']);
@@ -638,15 +694,15 @@ describe('MailService', () => {
           householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({ put: mashovPut }),
+        makeMockScope(),
       );
 
       const result = await service.archive(['conv-upstream-1']);
       expect(result.updated).toBe(1);
       expect(mashovPut).toHaveBeenCalledWith(
         '/api/mail/conversations/move/archive',
-        ['conv-upstream-1'],
-        expect.any(Object),
-      );
+        ['conv-upstream-1'], SCOPE_TARGET,
+        expect.any(Object));
       expect(conversationUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ conversationId: { in: ['conv-upstream-1'] } }),
@@ -667,15 +723,15 @@ describe('MailService', () => {
           householdFindFirst: jest.fn().mockResolvedValue({ id: 'household-1' }),
         }),
         makeMockMashovClient({ put: mashovPut }),
+        makeMockScope(),
       );
 
       const result = await service.unarchive(['conv-archived-1']);
       expect(result.updated).toBe(1);
       expect(mashovPut).toHaveBeenCalledWith(
         '/api/mail/conversations/markAsUnread',
-        ['conv-archived-1'],
-        expect.any(Object),
-      );
+        ['conv-archived-1'], SCOPE_TARGET,
+        expect.any(Object));
       expect(conversationUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ conversationId: { in: ['conv-archived-1'] } }),
@@ -690,6 +746,164 @@ describe('MailService', () => {
       );
     });
   });
+
+  describe('mail actions across two schools', () => {
+    const TARGET_A = { ...SCOPE_TARGET, id: 'conn-a', schoolCode: 540175 };
+    const TARGET_B = {
+      ...SCOPE_TARGET,
+      id: 'conn-b',
+      schoolCode: 999999,
+      username: 'parent-b',
+    };
+
+    /** Scope stub that really splits an id list between two mailboxes. */
+    function twoSchoolScope() {
+      const owners: Record<string, string> = {
+        'conv-a1': 'conn-a',
+        'conv-a2': 'conn-a',
+        'conv-b1': 'conn-b',
+      };
+      return {
+        targetFor: jest.fn((id: string) =>
+          Promise.resolve(id === 'conn-a' ? TARGET_A : TARGET_B),
+        ),
+        targetForConversation: jest.fn().mockResolvedValue(TARGET_A),
+        targetForMessage: jest.fn().mockResolvedValue(TARGET_A),
+        listTargets: jest.fn().mockResolvedValue([TARGET_A, TARGET_B]),
+        groupConversationsByConnection: jest.fn((ids: string[]) => {
+          const grouped = new Map<string | null, string[]>();
+          for (const id of ids) {
+            const owner = owners[id] ?? null;
+            const bucket = grouped.get(owner);
+            if (bucket) bucket.push(id);
+            else grouped.set(owner, [id]);
+          }
+          return Promise.resolve(grouped);
+        }),
+        studentGuidsForUser: jest.fn().mockResolvedValue([]),
+        stampStudent: jest.fn(),
+      } as unknown as ConnectionScopeService;
+    }
+
+    it('archive issues one call per school, each with only its own ids', async () => {
+      // Mashov authenticates per school, so one request cannot carry both
+      // mailboxes: sending school A's session school B's conversation ids is a
+      // 403 at best and silently wrong at worst.
+      const mashovPut = jest.fn().mockResolvedValue({});
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 3 }),
+        }),
+        makeMockMashovClient({ put: mashovPut }),
+        twoSchoolScope(),
+      );
+
+      await service.archive(['conv-a1', 'conv-b1', 'conv-a2']);
+
+      expect(mashovPut).toHaveBeenCalledTimes(2);
+      expect(mashovPut).toHaveBeenCalledWith(
+        '/api/mail/conversations/move/archive',
+        ['conv-a1', 'conv-a2'],
+        TARGET_A,
+        expect.anything(),
+      );
+      expect(mashovPut).toHaveBeenCalledWith(
+        '/api/mail/conversations/move/archive',
+        ['conv-b1'],
+        TARGET_B,
+        expect.anything(),
+      );
+    });
+
+    it("archives one school's mail locally even when the other school's call fails", async () => {
+      const mashovPut = jest.fn().mockImplementation((_url, _body, target) =>
+        target.id === 'conn-a' ? Promise.reject(new Error('403')) : Promise.resolve({}),
+      );
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 3 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: mashovPut }),
+        twoSchoolScope(),
+      );
+
+      const result = await service.archive(['conv-a1', 'conv-b1']);
+
+      // Both calls attempted, and the local write still happens: the next
+      // inbox walk settles the real state within seven minutes.
+      expect(mashovPut).toHaveBeenCalledTimes(2);
+      expect(result.updated).toBe(3);
+      expect(conversationUpdateMany).toHaveBeenCalled();
+    });
+
+    it('markUnread sends each school only its own eligible ids', async () => {
+      const mashovPut = jest.fn().mockResolvedValue({});
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindMany: jest.fn().mockResolvedValue([
+            { conversationId: 'conv-a1' },
+            { conversationId: 'conv-b1' },
+          ]),
+          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 2 }),
+        }),
+        makeMockMashovClient({ put: mashovPut }),
+        twoSchoolScope(),
+      );
+
+      await service.markUnread(['conv-a1', 'conv-b1']);
+
+      expect(mashovPut).toHaveBeenCalledTimes(2);
+      const sentIds = mashovPut.mock.calls.map((call) => call[1]);
+      expect(sentIds).toEqual([['conv-a1'], ['conv-b1']]);
+    });
+
+    it("unarchive does not let one school's failure suppress the other's confirmed unread", async () => {
+      // The decisive case. Before this was per connection, a single boolean
+      // carried both answers: school A failing meant school B's conversation
+      // was unarchived but never marked unread, so the badge under-reported
+      // mail the user had explicitly brought back.
+      const mashovPut = jest.fn().mockImplementation((_url, _body, target) =>
+        target.id === 'conn-a' ? Promise.reject(new Error('503')) : Promise.resolve(1),
+      );
+      const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const service = new MailService(
+        makeMockPrisma({ conversationUpdateMany }),
+        makeMockMashovClient({ put: mashovPut }),
+        twoSchoolScope(),
+      );
+
+      await service.unarchive(['conv-a1', 'conv-b1']);
+
+      const callsBySubset = new Map(
+        conversationUpdateMany.mock.calls.map((call) => {
+          const arg = call[0] as {
+            where: { conversationId: { in: string[] } };
+            data: Record<string, unknown>;
+          };
+          return [arg.where.conversationId.in.join(','), arg.data];
+        }),
+      );
+
+      // A failed: unarchived, but no invented unread.
+      expect(callsBySubset.get('conv-a1')).not.toHaveProperty('isUnread');
+      // B confirmed: unread is real and recorded.
+      expect(callsBySubset.get('conv-b1')).toMatchObject({ isUnread: true });
+    });
+
+    it('sums the updated count across schools', async () => {
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        }),
+        makeMockMashovClient({ put: jest.fn().mockResolvedValue(1) }),
+        twoSchoolScope(),
+      );
+
+      await expect(service.unarchive(['conv-a1', 'conv-b1'])).resolves.toEqual({
+        updated: 2,
+      });
+    });
+  });
+
   describe('hydration unread derivation', () => {
     function makeUpstreamDetail(overrides: object = {}, messageOverrides: object = {}) {
       return {
@@ -734,6 +948,7 @@ describe('MailService', () => {
           messageFindMany: jest.fn().mockResolvedValue([]),
         }),
         makeMockMashovClient({ get: jest.fn().mockResolvedValue(detail) }),
+        makeMockScope(),
       );
       await service.getConversationDetail('conv-upstream-1');
       return conversationUpdate;
@@ -788,6 +1003,7 @@ describe('MailService', () => {
           ]),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.markConversationsRead(['conv-1', 'conv-2']);
@@ -817,6 +1033,7 @@ describe('MailService', () => {
             .mockResolvedValue([{ conversationId: 'conv-1', sendTime: OLDER }]),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.markConversationsRead(['conv-1']);
@@ -840,6 +1057,7 @@ describe('MailService', () => {
             .mockResolvedValue([{ conversationId: 'conv-1', sendTime: OLDER }]),
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.markConversationsRead(['conv-1']);
@@ -858,6 +1076,7 @@ describe('MailService', () => {
           conversationUpdateMany,
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.markUnread(['conv-1']);
@@ -873,6 +1092,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({ conversationUpdateMany }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.markConversationsRead(['conv-1']);
@@ -889,6 +1109,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({ conversationUpdateMany }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.archive(['conv-1']);
@@ -908,6 +1129,7 @@ describe('MailService', () => {
           conversationUpdateMany,
         }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.markUnread(['conv-1']);
@@ -927,6 +1149,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({ conversationUpdateMany }),
         makeMockMashovClient({ put: jest.fn().mockRejectedValue(new Error('upstream down')) }),
+        makeMockScope(),
       );
 
       await service.unarchive(['conv-1']);
@@ -941,6 +1164,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({ conversationUpdateMany }),
         makeMockMashovClient({ put: jest.fn().mockResolvedValue(0) }),
+        makeMockScope(),
       );
 
       await service.unarchive(['conv-1']);
@@ -953,6 +1177,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({ conversationUpdateMany }),
         makeMockMashovClient({ put: jest.fn().mockResolvedValue(1) }),
+        makeMockScope(),
       );
 
       await service.unarchive(['conv-1']);
@@ -967,6 +1192,7 @@ describe('MailService', () => {
       const service = new MailService(
         makeMockPrisma({ conversationUpdateMany }),
         makeMockMashovClient({}),
+        makeMockScope(),
       );
 
       await service.unarchive(['conv-1']);
