@@ -369,8 +369,9 @@ export class ChildrenService {
     studentGuid: string,
     homeworkId: string,
     fileId: string,
+    userId?: string,
   ): Promise<DownloadedFile> {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const homework = await this.prisma.homeworkItem.findUnique({
       where: { id: homeworkId },
@@ -405,8 +406,9 @@ export class ChildrenService {
     studentGuid: string,
     behaviorId: string,
     fileId: string,
+    userId?: string,
   ): Promise<DownloadedFile> {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const behavior = await this.prisma.behaviorItem.findUnique({
       where: { id: behaviorId },
@@ -633,8 +635,8 @@ export class ChildrenService {
     };
   }
 
-  async getLessonPlans(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getLessonPlans(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
     try {
@@ -650,8 +652,8 @@ export class ChildrenService {
     }
   }
 
-  async getLessonHistory(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getLessonHistory(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
     try {
@@ -667,8 +669,8 @@ export class ChildrenService {
     }
   }
 
-  async getStudentReleases(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getStudentReleases(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
     return this.mashovClient.getForTarget<unknown[]>(
@@ -678,8 +680,8 @@ export class ChildrenService {
     );
   }
 
-  async getSchoolActivities(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getSchoolActivities(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = 'https://web.mashov.info/students/main/schoolActivities';
     // The endpoint takes no studentGuid and is household-scoped upstream, so
@@ -693,8 +695,8 @@ export class ChildrenService {
     );
   }
 
-  async createStudentRelease(studentGuid: string, body: unknown) {
-    await this.requireStudent(studentGuid);
+  async createStudentRelease(studentGuid: string, body: unknown, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
     return this.mashovClient.putForTarget<void>(
@@ -705,8 +707,13 @@ export class ChildrenService {
     );
   }
 
-  async updateStudentRelease(studentGuid: string, releaseId: number, body: unknown) {
-    await this.requireStudent(studentGuid);
+  async updateStudentRelease(
+    studentGuid: string,
+    releaseId: number,
+    body: unknown,
+    userId?: string,
+  ) {
+    await this.requireStudent(studentGuid, userId);
 
     return this.mashovClient.putForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}/request`,
@@ -715,8 +722,8 @@ export class ChildrenService {
     );
   }
 
-  async deleteStudentRelease(studentGuid: string, releaseId: number) {
-    await this.requireStudent(studentGuid);
+  async deleteStudentRelease(studentGuid: string, releaseId: number, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     return this.mashovClient.deleteForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}`,

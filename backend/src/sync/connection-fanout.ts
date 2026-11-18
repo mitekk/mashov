@@ -64,7 +64,23 @@ export async function stampOwnershipIfChanged(
   student: FanoutStudent,
   connection: FanoutConnection,
   logger: Logger,
+  /**
+   * Whether the response actually proves this connection knows the child.
+   *
+   * An empty 200 does not. At least one of the eleven per-student endpoints
+   * plausibly answers `[]` rather than 403 for a guid outside the account, and
+   * treating that as proof lets the WRONG school claim a child the moment the
+   * right school's password goes stale: the year written becomes the claimant's
+   * (hiding the child's rows), the chip names the wrong school, release writes
+   * route to the wrong Mashov account, and on a shared deployment the claiming
+   * household gains read access.
+   *
+   * Defaults true so a caller that genuinely has no payload to judge -- the
+   * roster path, where the login response IS the evidence -- behaves as before.
+   */
+  hasEvidence = true,
 ): Promise<void> {
+  if (!hasEvidence) return;
   if (student.householdConnectionId === connection.id) return;
 
   if (student.householdConnectionId) {

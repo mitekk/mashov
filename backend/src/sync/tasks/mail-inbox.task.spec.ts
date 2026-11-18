@@ -426,10 +426,17 @@ describe('MailInboxTask', () => {
         );
       });
 
-      it('skips a connection-scoped run while any mail row is unstamped', async () => {
-        // Belt and braces against an ownership backfill that never ran. It
-        // clears itself within one cycle, because both walk loops re-stamp in
-        // their update branch too.
+      it('still sweeps its own rows while unattributed rows exist', async () => {
+        // An earlier version refused here, reasoning the condition would clear
+        // itself because both walk loops re-stamp on update. That is only true
+        // for rows upstream still returns -- and the rows this sweep exists for
+        // are the ones upstream has STOPPED returning, which no walk can ever
+        // re-stamp. One such orphan would have disabled reconciliation for
+        // every connection permanently, bringing back the inflated badge.
+        //
+        // Refusing was never necessary: the sweep's `where` is
+        // `householdConnectionId: conn.id`, which an unattributed row cannot
+        // match. The scoping is the protection.
         (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
         (mockPrisma.mailConversation.count as jest.Mock).mockImplementation(({ where }) =>
           Promise.resolve(where?.householdConnectionId === null ? 5 : 0),
@@ -440,7 +447,32 @@ describe('MailInboxTask', () => {
 
         await task.execute();
 
-        expect(mockPrisma.mailConversation.updateMany).not.toHaveBeenCalled();
+        expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ householdConnectionId: 'conn-a' }),
+          }),
+        );
+      });
+
+      it('never blanks an existing stamp on a shared-session walk', async () => {
+        // persistRoster is careful about this and mail was not: writing
+        // `householdConnectionId: null` in an update branch un-owns a row a
+        // per-connection walk had already attributed, which is one way to
+        // manufacture unattributed orphans in the first place.
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([]);
+        (mockPrisma.mailConversation.count as jest.Mock).mockResolvedValue(0);
+        (mockMashovClient.get as jest.Mock)
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([]);
+
+        await task.execute();
+
+        for (const call of (mockPrisma.mailConversation.upsert as jest.Mock).mock.calls) {
+          expect(call[0].update).not.toHaveProperty('householdConnectionId');
+        }
+        for (const call of (mockPrisma.mailMessage.upsert as jest.Mock).mock.calls) {
+          expect(call[0].update).not.toHaveProperty('householdConnectionId');
+        }
       });
 
       it('skips a shared-session run when stamped rows exist', async () => {

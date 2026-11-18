@@ -107,7 +107,8 @@ function makeService(overrides: Overrides = {}) {
 function windowWhere(start: number, current: number, guids = ['student-1']) {
   return {
     OR: [
-      { schoolYear: 0 },
+      // Scoped to the household's own children; see unscopedBranch.
+      { studentGuid: { in: guids }, schoolYear: { in: [0] } },
       { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
     ],
   };
@@ -116,7 +117,10 @@ function windowWhere(start: number, current: number, guids = ['student-1']) {
 /** The same, for a cross-child current-year read. */
 function yearWhere(year: number, guids = ['student-1']) {
   return {
-    OR: [{ schoolYear: 0 }, { studentGuid: { in: guids }, schoolYear: { in: [year] } }],
+    OR: [
+      { studentGuid: { in: guids }, schoolYear: { in: [0] } },
+      { studentGuid: { in: guids }, schoolYear: { in: [year] } },
+    ],
   };
 }
 /**
@@ -131,9 +135,16 @@ function ownershipAwareStudentFindMany(
   roster: jest.Mock,
   owned: Array<{ studentGuid: string; householdConnectionId: string }>,
 ): jest.Mock {
-  return jest.fn((args?: { where?: { householdConnectionId?: { in?: string[] } } }) => {
-    const ids = args?.where?.householdConnectionId?.in;
-    if (ids !== undefined) {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    // The ownership lookup asks for "this household's connections OR the
+    // unattributed ones", so it is recognised by the OR rather than by a bare
+    // householdConnectionId filter.
+    const clauses = (args?.where?.OR as Array<Record<string, unknown>> | undefined) ?? null;
+    if (clauses) {
+      const ids = clauses.flatMap((clause) => {
+        const scoped = clause.householdConnectionId as { in?: string[] } | null | undefined;
+        return scoped && typeof scoped === 'object' && scoped.in ? scoped.in : [];
+      });
       return Promise.resolve(
         owned.filter((student) => ids.includes(student.householdConnectionId)),
       );

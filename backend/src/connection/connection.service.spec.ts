@@ -48,6 +48,10 @@ const mockPrisma = {
   schoolActivity: { deleteMany: jest.fn() },
   parentProfile: { deleteMany: jest.fn() },
   behaviorTypeReference: { deleteMany: jest.fn() },
+  // All three digest tables are keyed by studentGuid and were also missing.
+  digestRecipient: { deleteMany: jest.fn() },
+  digestReportedItem: { deleteMany: jest.fn() },
+  digestDelivery: { deleteMany: jest.fn() },
   subjectEnrollment: { deleteMany: jest.fn() },
   $transaction: jest.fn().mockResolvedValue([]),
 };
@@ -227,6 +231,9 @@ describe('ConnectionService', () => {
         ['timetableEntry', mockPrisma.timetableEntry.deleteMany],
         ['subjectEnrollment', mockPrisma.subjectEnrollment.deleteMany],
         ['studentRelease', mockPrisma.studentRelease.deleteMany],
+        ['digestRecipient', mockPrisma.digestRecipient.deleteMany],
+        ['digestReportedItem', mockPrisma.digestReportedItem.deleteMany],
+        ['digestDelivery', mockPrisma.digestDelivery.deleteMany],
         ['behaviorTypeReference', mockPrisma.behaviorTypeReference.deleteMany],
         ['syncRun', mockPrisma.syncRun.deleteMany],
         ['student', mockPrisma.student.deleteMany],
@@ -283,24 +290,6 @@ describe('ConnectionService', () => {
       );
     });
 
-    it('takes the NULL-stamped children too, but only on the last school', async () => {
-      // Before then NULL means "ownership unknown", and such a child may
-      // belong to the school that is staying.
-      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
-      mockPrisma.householdConnection.count.mockResolvedValue(0); // nothing remains
-      mockPrisma.$transaction.mockResolvedValue([]);
-
-      await service.deleteConnection('user-1');
-
-      expect(mockPrisma.student.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: {
-            OR: [{ householdConnectionId: 'conn-a' }, { householdConnectionId: null }],
-          },
-        }),
-      );
-    });
-
     it('deletes mail messages before mail conversations', async () => {
       // MailMessage.conversationId is a foreign key onto
       // MailConversation.conversationId, so the other order is a constraint
@@ -338,6 +327,28 @@ describe('ConnectionService', () => {
       expect(mockPrisma.schoolActivity.deleteMany).toHaveBeenCalledWith({
         where: { householdConnectionId: 'conn-a' },
       });
+    });
+
+    it('deletes the digest subscriptions and the dedup ledger', async () => {
+      // All three digest tables are keyed by studentGuid and survived an
+      // unlink. Left behind, a re-link resurrects the subscriptions AND the
+      // DigestReportedItem rows -- so the first digest after re-linking
+      // silently suppresses every item it had already reported for a child
+      // who no longer existed.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.student.findMany.mockResolvedValue([{ studentGuid: 'guid-a' }]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      for (const mock of [
+        mockPrisma.digestRecipient.deleteMany,
+        mockPrisma.digestReportedItem.deleteMany,
+        mockPrisma.digestDelivery.deleteMany,
+      ]) {
+        expect(mock).toHaveBeenCalledWith({ where: { studentGuid: { in: ['guid-a'] } } });
+      }
     });
 
     it('deletes the student rows rather than orphaning them', async () => {
@@ -405,6 +416,30 @@ describe('ConnectionService', () => {
       const touchedModels = deletedWheres().map((entry) => entry.model);
       expect(touchedModels).not.toContain('appUser');
       expect(touchedModels).not.toContain('appSession');
+    });
+
+    it('never selects NULL-stamped students, even on the last school', async () => {
+      // The plan said "include NULL-stamped students only when this is the
+      // user's last connection", and that rule is household-BLIND: there is no
+      // such thing as "NULL within this household", so on a deployment with
+      // two households it selects every unattributed child in the database and
+      // then deletes their entire history. The rule was the defect.
+      //
+      // Leaving them is safe: RosterPresenceService already retires a child who
+      // stops appearing in any roster, and the next sync re-stamps the rest.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(0); // last school
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1');
+
+      expect(mockPrisma.student.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { householdConnectionId: 'conn-a' } }),
+      );
+      const selections = mockPrisma.student.findMany.mock.calls.map((call) => call[0].where);
+      for (const where of selections) {
+        expect(JSON.stringify(where)).not.toContain('null');
+      }
     });
 
     it('unlinks every school when given no id', async () => {

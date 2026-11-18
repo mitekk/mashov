@@ -125,13 +125,22 @@ describe('school-year scope', () => {
           ),
         },
         student: {
+          // Mirrors the real predicate: the household's own children OR the
+          // ones nobody owns yet, which the scope has to admit as well.
           findMany: jest.fn(({ where }) => {
-            const ids: string[] = where?.householdConnectionId?.in ?? [];
+            const clauses: Array<Record<string, unknown>> = where?.OR ?? [where ?? {}];
+            const ids = clauses.flatMap((clause) => {
+              const scoped = clause.householdConnectionId as { in?: string[] } | null | undefined;
+              return scoped && typeof scoped === 'object' && scoped.in ? scoped.in : [];
+            });
+            const wantsUnstamped = clauses.some(
+              (clause) => clause.householdConnectionId === null,
+            );
             return Promise.resolve(
-              students.filter(
-                (student) =>
-                  student.householdConnectionId &&
-                  ids.includes(student.householdConnectionId),
+              students.filter((student) =>
+                student.householdConnectionId === null
+                  ? wantsUnstamped
+                  : ids.includes(student.householdConnectionId),
               ),
             );
           }),
@@ -250,6 +259,76 @@ describe('school-year scope', () => {
 
       expect(windows.get('conn-a')).toEqual({ start: 2024, current: 2026 });
       expect(windows.get('conn-b')).toEqual({ start: 2025, current: 2027 });
+    });
+
+    describe('unstamped children', () => {
+      /**
+       * The policy's two halves have to agree.
+       *
+       * `householdStudentWhere` and `ownsStudent` deliberately INCLUDE an
+       * unstamped child -- NULL means "ownership unknown", not "nobody's" --
+       * so the year scope must admit their rows too. Dropping them shows the
+       * parent a child's card with 0 homework, 0 subjects and no recent
+       * behaviour: present in the list, empty when opened.
+       *
+       * And this is not a corner. The ownership backfill refuses on a
+       * two-connection database, which is exactly the deployment this feature
+       * creates.
+       */
+      const WITH_ORPHAN = [
+        { studentGuid: 'a1', householdConnectionId: 'conn-a' },
+        { studentGuid: 'orphan', householdConnectionId: null },
+      ];
+
+      it("admits an unstamped child's rows at the household's years", async () => {
+        const scope = await yearScopeForStudents(
+          makeMultiPrisma([CONN_A, CONN_B], WITH_ORPHAN),
+        );
+
+        const orphanBranch = scope.OR.find(
+          (clause) =>
+            'studentGuid' in clause && clause.studentGuid.in.includes('orphan'),
+        );
+        expect(orphanBranch).toBeDefined();
+      });
+
+      it("offers the unstamped child every year the household is on", async () => {
+        // The child's rows could have been written by either school's sync,
+        // because nothing recorded which one. Admitting both years is the only
+        // answer that cannot hide them.
+        const scope = await yearScopeForStudents(
+          makeMultiPrisma([CONN_A, CONN_B], WITH_ORPHAN),
+        );
+
+        const orphanBranch = scope.OR.find(
+          (clause) =>
+            'studentGuid' in clause && clause.studentGuid.in.includes('orphan'),
+        ) as { schoolYear: { in: number[] } };
+        expect(orphanBranch.schoolYear.in).toEqual(
+          expect.arrayContaining([2026, 2027, UNSCOPED_SCHOOL_YEAR]),
+        );
+      });
+
+      it('spans the window for an unstamped child in the history scope too', async () => {
+        const scope = await historyScopeForStudents(
+          makeMultiPrisma([CONN_A, CONN_B], WITH_ORPHAN),
+          makeConfig(2025),
+        );
+
+        const orphanBranch = scope.OR.find(
+          (clause) =>
+            'studentGuid' in clause && clause.studentGuid.in.includes('orphan'),
+        );
+        expect(orphanBranch).toBeDefined();
+      });
+
+      it('still admits pre-migration rows for a stamped child', async () => {
+        const scope = await yearScopeForStudents(
+          makeMultiPrisma([CONN_A, CONN_B], WITH_ORPHAN),
+        );
+
+        expect(scope.OR[0]).toEqual({ schoolYear: UNSCOPED_SCHOOL_YEAR });
+      });
     });
 
     describe('currentSchoolYearForStudent', () => {

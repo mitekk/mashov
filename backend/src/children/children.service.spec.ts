@@ -213,7 +213,12 @@ function windowWhere(start: number, current: number) {
  */
 function crossChildYearWhere(year: number, guids: string[] = [TEST_GUID]) {
   return {
-    OR: [{ schoolYear: 0 }, { studentGuid: { in: guids }, schoolYear: { in: [year] } }],
+    OR: [
+      // Scoped to the household's own children: unscoped, one household's
+      // pre-migration rows reached every other household's reads.
+      { studentGuid: { in: guids }, schoolYear: { in: [0] } },
+      { studentGuid: { in: guids }, schoolYear: { in: [year] } },
+    ],
   };
 }
 
@@ -2221,5 +2226,150 @@ describe('ChildrenService household isolation', () => {
       'guid-mine',
       'guid-theirs',
     ]);
+  });
+});
+
+describe('ChildrenService ownership guard coverage', () => {
+  /**
+   * Every route that takes a studentGuid must enforce ownership.
+   *
+   * Nine of them did not: they called `requireStudent(studentGuid)` without a
+   * userId, so the guard inside `getStudentOrThrow` was skipped entirely. Two
+   * of those nine are writes and one is a delete, and all of them resolve the
+   * upstream target from the row's OWN stamp -- i.e. from the victim's
+   * connection, using the victim's decrypted Mashov password. Household B
+   * could create and cancel early-release requests inside household A's
+   * Mashov account, and stream A's children's homework attachments.
+   *
+   * Guids are not a secret: they appear in URLs and in every /children
+   * response.
+   */
+  const THEIRS = {
+    id: 'row-theirs',
+    studentGuid: 'guid-theirs',
+    privateName: 'Someone',
+    familyName: 'Else',
+    fullName: 'Someone Else',
+    classCode: 'ז',
+    classNum: 3,
+    gender: 'F',
+    isActive: true,
+    householdConnectionId: 'conn-theirs',
+    updatedAt: new Date('2026-11-01T00:00:00Z'),
+  };
+
+  function makeService() {
+    const prisma = {
+      student: {
+        findUnique: jest.fn().mockResolvedValue(THEIRS),
+        findMany: jest.fn().mockResolvedValue([THEIRS]),
+      },
+      // The caller owns conn-mine only, never conn-theirs.
+      householdConnection: {
+        findFirst: jest.fn(({ where }) =>
+          Promise.resolve(
+            where?.id && where?.userId
+              ? where.id === 'conn-mine'
+                ? { id: 'conn-mine' }
+                : null
+              : { schoolYear: 2027 },
+          ),
+        ),
+        findMany: jest.fn().mockResolvedValue([{ id: 'conn-mine', schoolYear: 2027 }]),
+        findUnique: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+      },
+      homeworkItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'hw-1',
+          studentGuid: 'guid-theirs',
+          files: [{ fileId: 'f1', fileName: 'note.pdf' }],
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      behaviorItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'beh-1',
+          studentGuid: 'guid-theirs',
+          rawPayload: { files: [{ fileId: 'f1', fileName: 'note.pdf' }] },
+          lessonId: 5,
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      subjectEnrollment: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
+      },
+      messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
+      timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
+      studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
+      schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as jest.Mocked<PrismaService>;
+
+    const client = makeMockMashovClient();
+    const service = new ChildrenService(
+      prisma,
+      makeMockSession(),
+      client,
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope(),
+    );
+    return { service, client };
+  }
+
+  /** Every call below targets a child the caller does not own. */
+  const FOREIGN = 'guid-theirs';
+  const CALLER = 'user-mine';
+
+  const ROUTES: Array<{
+    name: string;
+    call: (service: ChildrenService) => Promise<unknown>;
+  }> = [
+    { name: 'getLessonPlans', call: (s) => s.getLessonPlans(FOREIGN, CALLER) },
+    { name: 'getLessonHistory', call: (s) => s.getLessonHistory(FOREIGN, CALLER) },
+    { name: 'getStudentReleases', call: (s) => s.getStudentReleases(FOREIGN, CALLER) },
+    { name: 'getSchoolActivities', call: (s) => s.getSchoolActivities(FOREIGN, CALLER) },
+    {
+      name: 'createStudentRelease',
+      call: (s) => s.createStudentRelease(FOREIGN, { date: '2026-11-20' }, CALLER),
+    },
+    {
+      name: 'updateStudentRelease',
+      call: (s) => s.updateStudentRelease(FOREIGN, 7, { date: '2026-11-21' }, CALLER),
+    },
+    { name: 'deleteStudentRelease', call: (s) => s.deleteStudentRelease(FOREIGN, 7, CALLER) },
+    {
+      name: 'downloadHomeworkAttachment',
+      call: (s) => s.downloadHomeworkAttachment(FOREIGN, 'hw-1', 'f1', CALLER),
+    },
+    {
+      name: 'downloadBehaviorAttachment',
+      call: (s) => s.downloadBehaviorAttachment(FOREIGN, 'beh-1', 'f1', CALLER),
+    },
+  ];
+
+  it.each(ROUTES)('$name refuses a child the caller does not own', async ({ call }) => {
+    const { service } = makeService();
+
+    await expect(call(service)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it.each(ROUTES)('$name reaches no upstream call for a foreign child', async ({ call }) => {
+    // The guard has to run BEFORE the target is resolved. Refusing after the
+    // request has already been sent with the victim's credentials would be no
+    // protection at all -- the release would already be created or cancelled.
+    const { service, client } = makeService();
+
+    await call(service).catch(() => undefined);
+
+    expect(client.getForTarget).not.toHaveBeenCalled();
+    expect(client.putForTarget).not.toHaveBeenCalled();
+    expect(client.deleteForTarget).not.toHaveBeenCalled();
+    expect(client.getResponseForTarget).not.toHaveBeenCalled();
   });
 });

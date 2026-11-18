@@ -77,7 +77,6 @@ export class MailInboxTask {
     maxPages: number;
     sweepEnabled: boolean;
     foreignStampedCount: number;
-    unstampedCount: number;
     isSharedSession: boolean;
   }): string | null {
     // The kill switch, so a wrong badge is one environment variable away from
@@ -101,14 +100,20 @@ export class MailInboxTask {
     if (gates.isSharedSession && gates.foreignStampedCount > 0) {
       return 'shared-session run on a connection-scoped mail table';
     }
-    // Belt and braces against an ownership backfill that never ran. It clears
-    // itself within one cycle, because both walk loops re-stamp in their
-    // `update` branch as well as their `create` branch. Kept permanently: one
-    // indexed COUNT is cheap, and sweeping while rows are unattributed is
-    // exactly the corruption the old gate was protecting against.
-    if (!gates.isSharedSession && gates.unstampedCount > 0) {
-      return `${gates.unstampedCount} unstamped mail row(s) present`;
-    }
+    // There is deliberately NO "unstamped rows present" gate.
+    //
+    // An earlier version had one, reasoning that it would clear itself within a
+    // cycle because both walk loops re-stamp in their `update` branch. That is
+    // only true for rows upstream still returns -- and the rows this sweep
+    // exists for are precisely the ones upstream has STOPPED returning, which
+    // no walk can ever re-stamp. One such orphan would have disabled
+    // reconciliation for every connection permanently, bringing back the
+    // inflated badge with nothing but a debug line to show for it.
+    //
+    // It was never needed anyway: the sweep's own `where` is
+    // `householdConnectionId: conn.id`, which an unattributed row cannot
+    // match. The scoping is the protection; the gate only added a way to get
+    // stuck.
     return null;
   }
 
@@ -244,7 +249,9 @@ export class MailInboxTask {
                 labels: (conv.labels ?? []) as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
-                householdConnectionId: conn ? conn.id : null,
+                // Only when there IS a connection: a shared-session walk must not
+                // blank a stamp a per-connection walk already set.
+                ...(conn ? { householdConnectionId: conn.id } : {}),
               },
             });
 
@@ -275,7 +282,9 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
-                  householdConnectionId: conn ? conn.id : null,
+                  // Only when there IS a connection: a shared-session walk must not
+                  // blank a stamp a per-connection walk already set.
+                  ...(conn ? { householdConnectionId: conn.id } : {}),
                 },
               });
             }
@@ -349,7 +358,9 @@ export class MailInboxTask {
                 labels: ['archived'] as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
-                householdConnectionId: conn ? conn.id : null,
+                // Only when there IS a connection: a shared-session walk must not
+                // blank a stamp a per-connection walk already set.
+                ...(conn ? { householdConnectionId: conn.id } : {}),
               },
             });
 
@@ -379,7 +390,9 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
-                  householdConnectionId: conn ? conn.id : null,
+                  // Only when there IS a connection: a shared-session walk must not
+                  // blank a stamp a per-connection walk already set.
+                  ...(conn ? { householdConnectionId: conn.id } : {}),
                 },
               });
             }
@@ -403,19 +416,13 @@ export class MailInboxTask {
       // frozen with it. Anything not refreshed by this run is such an orphan by
       // definition. Clear isUnread, never delete the row: MailMessage.conversationId
       // has a foreign key to it, and clearing is enough for both the badge and the list.
-      // Two indexed COUNTs, both permanent. See sweepSkipReason.
-      const [foreignStampedCount, unstampedCount] = await Promise.all([
-        conn
-          ? Promise.resolve(0)
-          : this.prisma.mailConversation.count({
-              where: { householdConnectionId: { not: null } },
-            }),
-        conn
-          ? this.prisma.mailConversation.count({
-              where: { householdConnectionId: null },
-            })
-          : Promise.resolve(0),
-      ]);
+      // One indexed COUNT, and only on the shared-session path. See
+      // sweepSkipReason for why a connection-scoped run needs no such check.
+      const foreignStampedCount = conn
+        ? 0
+        : await this.prisma.mailConversation.count({
+            where: { householdConnectionId: { not: null } },
+          });
 
       const sweepSkipReason = this.sweepSkipReason({
         failedCount,
@@ -424,7 +431,6 @@ export class MailInboxTask {
         maxPages,
         sweepEnabled: this.sweepEnabled(),
         foreignStampedCount,
-        unstampedCount,
         isSharedSession: conn === null,
       });
       let sweptCount = 0;

@@ -211,20 +211,13 @@ export class ConnectionService {
       });
     }
 
-    // Whether this is the household's last school decides how NULL-stamped
-    // rows are treated below.
-    const remaining = await this.prisma.householdConnection.count({
-      where: {
-        userId,
-        active: true,
-        id: { notIn: connections.map((connection) => connection.id) },
-      },
-    });
-
     for (const connection of connections) {
-      await this.deleteOneConnection(connection, remaining === 0);
+      await this.deleteOneConnection(connection);
     }
 
+    const remaining = await this.prisma.householdConnection.count({
+      where: { userId, active: true },
+    });
     this.logger.log(
       `Unlinked ${connections.length} school(s) for userId=${userId}; ${remaining} remain`,
     );
@@ -232,19 +225,25 @@ export class ConnectionService {
     return { ok: true };
   }
 
-  private async deleteOneConnection(
-    connection: { id: string; schoolCode: number },
-    isLastConnection: boolean,
-  ): Promise<void> {
-    // This connection's own children. NOT `{ isActive: true }`, which was the
-    // global bug. NULL-stamped children are included only when this is the
-    // household's last school: before then, NULL means "ownership unknown",
-    // and deleting such a child could remove one belonging to the school that
-    // is staying.
+  private async deleteOneConnection(connection: {
+    id: string;
+    schoolCode: number;
+  }): Promise<void> {
+    // This connection's own children, and ONLY those. NOT `{ isActive: true }`,
+    // which was the original global bug -- and deliberately not NULL-stamped
+    // children either, even when this is the household's last school.
+    //
+    // "NULL within this household" does not exist: an unattributed row has no
+    // household by definition, so a `householdConnectionId: null` predicate
+    // reaches every unattributed child in the database. On a deployment with
+    // two households that meant one parent pressing "disconnect all" deleted
+    // the other family's children and their whole history, unrecoverably.
+    //
+    // Leaving them costs nothing that matters: RosterPresenceService already
+    // retires a child who stops appearing in any login roster, and the next
+    // sync re-stamps the ones that still belong to somebody.
     const students = await this.prisma.student.findMany({
-      where: isLastConnection
-        ? { OR: [{ householdConnectionId: connection.id }, { householdConnectionId: null }] }
-        : { householdConnectionId: connection.id },
+      where: { householdConnectionId: connection.id },
       select: { studentGuid: true },
     });
     const studentGuids = students.map((student) => student.studentGuid);
@@ -283,6 +282,15 @@ export class ConnectionService {
       // studentRelease was missing from this transaction entirely: a parent's
       // early-release requests survived an unlink and reappeared on re-link.
       this.prisma.studentRelease.deleteMany({ where: { studentGuid: { in: studentGuids } } }),
+      // So were all three digest tables, which are keyed by studentGuid too.
+      // Left behind, a re-link resurrects the subscriptions AND the dedup
+      // ledger -- so the first digest after re-linking silently suppresses
+      // every item it had already reported for a child who no longer existed.
+      this.prisma.digestRecipient.deleteMany({ where: { studentGuid: { in: studentGuids } } }),
+      this.prisma.digestReportedItem.deleteMany({
+        where: { studentGuid: { in: studentGuids } },
+      }),
+      this.prisma.digestDelivery.deleteMany({ where: { studentGuid: { in: studentGuids } } }),
       ...(sharesSchool === 0
         ? [
             this.prisma.behaviorTypeReference.deleteMany({

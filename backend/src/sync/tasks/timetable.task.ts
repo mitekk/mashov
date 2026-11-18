@@ -129,7 +129,14 @@ export class TimetableTask {
               answered = true;
               // A success on a non-owner re-stamps, so a child who moved
               // school stops costing a failed call on every later run.
-              await stampOwnershipIfChanged(this.prisma, student, conn, this.logger);
+              await stampOwnershipIfChanged(
+                this.prisma,
+                student,
+                conn,
+                this.logger,
+                // An empty 200 is not proof the child is in this account.
+                Array.isArray(items) && items.length > 0,
+              );
               break;
             } catch { /* try next connection */ }
           }

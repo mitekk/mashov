@@ -245,6 +245,27 @@ export async function schoolYearWindowsFor(
   return windows;
 }
 
+/**
+ * The `schoolYear = 0` branch: pre-migration rows, restricted to the
+ * household's children when there is a caller to restrict it to.
+ *
+ * Without a caller (the digest and cron paths, which are deliberately global)
+ * it stays unrestricted, which is the behaviour those paths have always had.
+ */
+function unscopedBranch(
+  userId: string | undefined,
+  byConnection: Map<string, string[]>,
+  unstamped: string[],
+): { schoolYear: number } | { studentGuid: { in: string[] }; schoolYear: { in: number[] } } {
+  if (!userId) return { schoolYear: UNSCOPED_SCHOOL_YEAR };
+
+  const householdGuids = [...[...byConnection.values()].flat(), ...unstamped];
+  return {
+    studentGuid: { in: householdGuids },
+    schoolYear: { in: [UNSCOPED_SCHOOL_YEAR] },
+  };
+}
+
 /** A student-keyed where fragment: an OR of (that connection's children, its year). */
 export type StudentYearScope = {
   OR: Array<
@@ -254,26 +275,46 @@ export type StudentYearScope = {
   >;
 };
 
+/**
+ * The children each connection owns, plus the ones nobody owns yet.
+ *
+ * The unstamped set is returned separately and deliberately. Leaving it out
+ * was a bug with teeth: `householdStudentWhere` and `ownsStudent` both include
+ * an unstamped child in the list -- NULL means "ownership unknown", not
+ * "nobody's" -- so a scope that contributes no branch for them shows the
+ * parent a child's card with zero homework, zero subjects and no recent
+ * behaviour. Present in the list, empty when opened.
+ *
+ * It is not a corner case either: the ownership backfill refuses on a
+ * two-connection database, which is exactly the deployment this feature
+ * creates.
+ */
 async function guidsByConnection(
   prisma: PrismaService,
   connectionIds: string[],
-): Promise<Map<string, string[]>> {
-  if (connectionIds.length === 0) return new Map();
+): Promise<{ byConnection: Map<string, string[]>; unstamped: string[] }> {
+  if (connectionIds.length === 0) {
+    return { byConnection: new Map(), unstamped: [] };
+  }
 
   const students = await prisma.student.findMany({
-    where: { householdConnectionId: { in: connectionIds } },
+    where: { OR: [{ householdConnectionId: { in: connectionIds } }, { householdConnectionId: null }] },
     select: { studentGuid: true, householdConnectionId: true },
   });
 
   const byConnection = new Map<string, string[]>();
+  const unstamped: string[] = [];
   for (const student of students) {
     const key = student.householdConnectionId;
-    if (!key) continue;
+    if (!key) {
+      unstamped.push(student.studentGuid);
+      continue;
+    }
     const bucket = byConnection.get(key);
     if (bucket) bucket.push(student.studentGuid);
     else byConnection.set(key, [student.studentGuid]);
   }
-  return byConnection;
+  return { byConnection, unstamped };
 }
 
 /**
@@ -299,15 +340,33 @@ export async function yearScopeForStudents(
   userId?: string,
 ): Promise<StudentYearScope> {
   const byConnection = await schoolYearByConnection(prisma, userId);
-  const guids = await guidsByConnection(prisma, [...byConnection.keys()]);
+  const { byConnection: guids, unstamped } = await guidsByConnection(prisma, [
+    ...byConnection.keys(),
+  ]);
 
-  const OR: StudentYearScope['OR'] = [{ schoolYear: UNSCOPED_SCHOOL_YEAR }];
+  // The pre-migration branch is scoped to the household's own children when a
+  // caller is known. Unscoped it carried no student predicate at all, so one
+  // household's `schoolYear = 0` rows reached every other household's feed --
+  // the student-keyed tables have no owner column of their own, and this
+  // fragment is the only thing standing between them.
+  const OR: StudentYearScope['OR'] = [unscopedBranch(userId, guids, unstamped)];
   for (const [connectionId, year] of byConnection) {
     const connectionGuids = guids.get(connectionId);
     if (!connectionGuids || connectionGuids.length === 0) continue;
     OR.push({
       studentGuid: { in: connectionGuids },
       schoolYear: { in: [year] },
+    });
+  }
+
+  // An unstamped child gets EVERY year the household is on. Nothing recorded
+  // which school wrote their rows, so admitting only one year would hide them
+  // whenever the guess was wrong -- and hiding a child's data is a worse
+  // failure than showing a row that is one year stale.
+  if (unstamped.length > 0) {
+    OR.push({
+      studentGuid: { in: unstamped },
+      schoolYear: { in: [...new Set([...byConnection.values(), UNSCOPED_SCHOOL_YEAR])] },
     });
   }
 
@@ -321,15 +380,28 @@ export async function historyScopeForStudents(
   userId?: string,
 ): Promise<StudentYearScope> {
   const windows = await schoolYearWindowsFor(prisma, config, userId);
-  const guids = await guidsByConnection(prisma, [...windows.keys()]);
+  const { byConnection: guids, unstamped } = await guidsByConnection(prisma, [
+    ...windows.keys(),
+  ]);
 
-  const OR: StudentYearScope['OR'] = [{ schoolYear: UNSCOPED_SCHOOL_YEAR }];
+  const OR: StudentYearScope['OR'] = [unscopedBranch(userId, guids, unstamped)];
   for (const [connectionId, window] of windows) {
     const connectionGuids = guids.get(connectionId);
     if (!connectionGuids || connectionGuids.length === 0) continue;
     OR.push({
       studentGuid: { in: connectionGuids },
       schoolYear: { gte: window.start, lte: window.current },
+    });
+  }
+
+  // As above: the widest window any of the household's schools spans, since
+  // nothing says which school's sync wrote this child's rows.
+  if (unstamped.length > 0) {
+    const starts = [...windows.values()].map((window) => window.start);
+    const currents = [...windows.values()].map((window) => window.current);
+    OR.push({
+      studentGuid: { in: unstamped },
+      schoolYear: { gte: Math.min(...starts), lte: Math.max(...currents) },
     });
   }
 

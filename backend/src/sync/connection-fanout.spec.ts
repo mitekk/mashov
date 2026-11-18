@@ -169,3 +169,86 @@ describe('stampOwnershipIfChanged', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('stampOwnershipIfChanged evidence requirement', () => {
+  /**
+   * A `200 []` is not proof a child belongs to an account.
+   *
+   * At least one of the eleven per-student endpoints plausibly answers with an
+   * empty array rather than a 403 for a guid outside the account. Treating
+   * that as proof lets the wrong school claim a child the moment the right
+   * school's password goes stale -- and the claim cascades: the year written
+   * becomes the claimant's, so the child's rows fall outside their own school's
+   * year scope; the chip names the wrong school; release writes route to the
+   * wrong Mashov account; and on a shared deployment the claiming household
+   * gains read access to that child.
+   */
+  const logger = new Logger('test');
+
+  function makePrisma() {
+    const update = jest.fn().mockResolvedValue({});
+    return { prisma: { student: { update } } as unknown as PrismaService, update };
+  }
+
+  it('does not claim a child on an empty response', async () => {
+    const { prisma, update } = makePrisma();
+
+    await stampOwnershipIfChanged(
+      prisma,
+      { studentGuid: 'guid-1', householdConnectionId: 'conn-a' },
+      CONN_B,
+      logger,
+      false,
+    );
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('does not even fill in a missing stamp without evidence', async () => {
+    // A first attribution from an empty payload is the same guess, just
+    // without a previous owner to contradict it.
+    const { prisma, update } = makePrisma();
+
+    await stampOwnershipIfChanged(
+      prisma,
+      { studentGuid: 'guid-1', householdConnectionId: null },
+      CONN_B,
+      logger,
+      false,
+    );
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('claims the child when the response carried data', async () => {
+    const { prisma, update } = makePrisma();
+
+    await stampOwnershipIfChanged(
+      prisma,
+      { studentGuid: 'guid-1', householdConnectionId: null },
+      CONN_B,
+      logger,
+      true,
+    );
+
+    expect(update).toHaveBeenCalledWith({
+      where: { studentGuid: 'guid-1' },
+      data: { householdConnectionId: 'conn-b' },
+    });
+  });
+
+  it('defaults to claiming, for the roster path that has no payload to judge', async () => {
+    // The login response IS the evidence there, so the caller has nothing to
+    // pass and must keep its previous behaviour.
+    const { prisma, update } = makePrisma();
+
+    await stampOwnershipIfChanged(
+      prisma,
+      { studentGuid: 'guid-1', householdConnectionId: null },
+      CONN_B,
+      logger,
+    );
+
+    expect(update).toHaveBeenCalled();
+  });
+});

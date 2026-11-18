@@ -190,12 +190,14 @@ export class ChildrenController {
     @Param('studentGuid') studentGuid: string,
     @Param('homeworkId') homeworkId: string,
     @Param('fileId') fileId: string,
+    @Req() req: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
     const file = await this.childrenService.downloadHomeworkAttachment(
       studentGuid,
       homeworkId,
       fileId,
+      req.user?.userId,
     );
 
     response.setHeader(
@@ -286,12 +288,14 @@ export class ChildrenController {
     @Param('studentGuid') studentGuid: string,
     @Param('behaviorId') behaviorId: string,
     @Param('fileId') fileId: string,
+    @Req() req: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
     const file = await this.childrenService.downloadBehaviorAttachment(
       studentGuid,
       behaviorId,
       fileId,
+      req.user?.userId,
     );
 
     response.setHeader(
@@ -361,35 +365,37 @@ export class ChildrenController {
   }
 
   @Get(':studentGuid/lessons/plans')
-  getLessonPlans(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getLessonPlans(studentGuid);
+  getLessonPlans(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getLessonPlans(studentGuid, req.user?.userId);
   }
 
   @Get(':studentGuid/lessons/history')
-  getLessonHistory(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getLessonHistory(studentGuid);
+  getLessonHistory(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getLessonHistory(studentGuid, req.user?.userId);
   }
 
   @Get(':studentGuid/releases')
-  getStudentReleases(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getStudentReleases(studentGuid);
+  getStudentReleases(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getStudentReleases(studentGuid, req.user?.userId);
   }
 
   @Get(':studentGuid/school-activities')
-  getSchoolActivities(@Param('studentGuid') studentGuid: string) {
-    return this.childrenService.getSchoolActivities(studentGuid);
+  getSchoolActivities(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getSchoolActivities(studentGuid, req.user?.userId);
   }
 
   @Put(':studentGuid/releases/request')
   async createStudentRelease(
     @Param('studentGuid') studentGuid: string,
     @Body() body: CreateReleaseDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     res.status(204);
     await this.childrenService.createStudentRelease(
       studentGuid,
       { ...body, studentGuid },
+      req.user?.userId,
     );
   }
 
@@ -398,11 +404,13 @@ export class ChildrenController {
     @Param('studentGuid') studentGuid: string,
     @Param('releaseId') releaseId: string,
     @Body() body: UpdateReleaseDto,
+    @Req() req: Request,
   ) {
     return this.childrenService.updateStudentRelease(
       studentGuid,
       Number(releaseId),
       body,
+      req.user?.userId,
     );
   }
 
@@ -410,10 +418,15 @@ export class ChildrenController {
   deleteStudentRelease(
     @Param('studentGuid') studentGuid: string,
     @Param('releaseId') releaseId: string,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     res.status(204);
-    return this.childrenService.deleteStudentRelease(studentGuid, Number(releaseId));
+    return this.childrenService.deleteStudentRelease(
+      studentGuid,
+      Number(releaseId),
+      req.user?.userId,
+    );
   }
 
   @Get(':studentGuid/subjects')

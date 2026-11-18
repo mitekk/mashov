@@ -94,7 +94,14 @@ export class ReleasesTask {
               { headers: { Referer: referer } },
             );
             schoolYear = conn.schoolYear;
-            await stampOwnershipIfChanged(this.prisma, student, conn, this.logger);
+            await stampOwnershipIfChanged(
+                this.prisma,
+                student,
+                conn,
+                this.logger,
+                // An empty 200 is not proof the child is in this account.
+                Array.isArray(items) && items.length > 0,
+              );
             break;
           } catch {
             /* try the next connection */

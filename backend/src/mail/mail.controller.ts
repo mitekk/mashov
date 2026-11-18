@@ -1,8 +1,8 @@
-import { Controller, Get, Param, Put, Body, Query, Res, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Param, Put, Body, Query, Req, Res, StreamableFile } from '@nestjs/common';
 import { IsArray, IsString, IsOptional, IsIn, IsBoolean, IsInt, Min, Max } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { MailService } from './mail.service';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 class ConversationsQueryDto {
   @IsOptional()
@@ -63,8 +63,8 @@ export class MailController {
   constructor(private readonly mailService: MailService) {}
 
   @Get('summary')
-  async getSummary() {
-    return this.mailService.getSummary();
+  async getSummary(@Req() req: Request) {
+    return this.mailService.getSummary(req.user?.userId);
   }
 
   @Get('conversations')

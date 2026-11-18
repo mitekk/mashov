@@ -82,10 +82,21 @@ export class MailService {
     private readonly scope: ConnectionScopeService,
   ) {}
 
-  async getSummary() {
+  /**
+   * The inbox badge and the three most recent unread conversations.
+   *
+   * Takes the caller, because the badge is a SUM now. Reading one connection's
+   * row was accidentally tenant-safe; summing `{ active: true }` across the
+   * whole table is not -- two households each with 5 unread would both have
+   * been shown 10.
+   */
+  async getSummary(userId?: string) {
+    const ownScope = await this.householdMailScope(userId);
+
     const [localNewConversations, household, recentConversations, lastSync] = await Promise.all([
       this.prisma.mailConversation.count({
         where: {
+          ...ownScope,
           isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
@@ -95,12 +106,13 @@ export class MailService {
       // total -- reading the most recent connection's row alone would show one
       // school's mail and silently hide the other's.
       this.prisma.householdConnection.aggregate({
-        where: { active: true },
+        where: { active: true, ...(userId ? { userId } : {}) },
         _sum: { cachedNewCount: true },
         _count: { _all: true },
       }),
       this.prisma.mailConversation.findMany({
         where: {
+          ...ownScope,
           isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
@@ -508,6 +520,32 @@ export class MailService {
         });
       }),
     );
+  }
+
+  /**
+   * Restricts a mail read to the caller's own mailboxes.
+   *
+   * Unstamped conversations are included, as everywhere else: NULL means
+   * "ownership unknown", and excluding them would empty the inbox on a
+   * deployment that has not re-synced since the ownership migration.
+   *
+   * No caller means no filter -- the digest and cron paths are server-side and
+   * deliberately global.
+   */
+  private async householdMailScope(userId?: string) {
+    if (!userId) return {};
+
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId, active: true },
+      select: { id: true },
+    });
+
+    return {
+      OR: [
+        { householdConnectionId: { in: connections.map((row) => row.id) } },
+        { householdConnectionId: null },
+      ],
+    };
   }
 
   private buildInboxWhere(

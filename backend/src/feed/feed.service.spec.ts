@@ -47,10 +47,24 @@ function makeFeedService(prisma: PrismaService, startYear?: string): FeedService
  * that school's window, rather than one window for the household. With a
  * single connection it selects exactly the rows the flat form used to.
  */
-function windowWhere(start: number, current: number, guids = ['student-1']) {
+function windowWhere(
+  start: number,
+  current: number,
+  guids = ['student-1'],
+  /**
+   * Whether a caller is known. Without one -- the digest and cron paths -- the
+   * pre-migration branch stays unrestricted, which is the behaviour those
+   * paths have always had. With one it is scoped to that household's children,
+   * because otherwise one household's `schoolYear = 0` rows reach every
+   * other household's feed.
+   */
+  scoped = true,
+) {
   return {
     OR: [
-      { schoolYear: 0 },
+      scoped
+        ? { studentGuid: { in: guids }, schoolYear: { in: [0] } }
+        : { schoolYear: 0 },
       { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
     ],
   };
@@ -67,9 +81,16 @@ function ownershipAwareStudentFindMany(
   roster: jest.Mock,
   owned: Array<{ studentGuid: string; householdConnectionId: string }>,
 ): jest.Mock {
-  return jest.fn((args?: { where?: { householdConnectionId?: { in?: string[] } } }) => {
-    const ids = args?.where?.householdConnectionId?.in;
-    if (ids !== undefined) {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    // The ownership lookup asks for "this household's connections OR the
+    // unattributed ones", so it is recognised by the OR rather than by a bare
+    // householdConnectionId filter.
+    const clauses = (args?.where?.OR as Array<Record<string, unknown>> | undefined) ?? null;
+    if (clauses) {
+      const ids = clauses.flatMap((clause) => {
+        const scoped = clause.householdConnectionId as { in?: string[] } | null | undefined;
+        return scoped && typeof scoped === 'object' && scoped.in ? scoped.in : [];
+      });
       return Promise.resolve(
         owned.filter((student) => ids.includes(student.householdConnectionId)),
       );
@@ -148,7 +169,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: windowWhere(2027, 2027),
+          where: windowWhere(2027, 2027, ['student-1'], false),
           orderBy: { lessonDate: 'desc' },
         }),
       );
@@ -163,7 +184,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: windowWhere(2027, 2027),
+          where: windowWhere(2027, 2027, ['student-1'], false),
           orderBy: { eventAt: 'desc' },
         }),
       );
@@ -399,7 +420,7 @@ describe('FeedService', () => {
       const result = await service.getFeed(1, 20);
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2026, 2027) }),
+        expect.objectContaining({ where: windowWhere(2026, 2027, ['student-1'], false) }),
       );
       expect(result.data[0].id).toBe('hw-last-year');
     });
@@ -424,7 +445,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2027, 2027) }),
+        expect.objectContaining({ where: windowWhere(2027, 2027, ['student-1'], false) }),
       );
     });
 

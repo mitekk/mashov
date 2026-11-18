@@ -186,6 +186,65 @@ describe('MailService', () => {
       await expect(service.getSummary()).resolves.toMatchObject({ newConversations: 0 });
     });
 
+    it("sums only the CALLER's connections, never every household's", async () => {
+      // Reading one connection's row was accidentally tenant-safe. Summing
+      // `{ active: true }` across the whole table is not: two households each
+      // with 5 unread would both have been shown 10, and the inbox listed the
+      // other household's subjects and sender names.
+      const householdAggregate = jest
+        .fn()
+        .mockResolvedValue({ _sum: { cachedNewCount: 5 }, _count: { _all: 1 } });
+      const conversationFindMany = jest.fn().mockResolvedValue([]);
+      const service = new MailService(
+        makeMockPrisma({
+          householdAggregate,
+          conversationFindMany,
+          conversationCount: jest.fn().mockResolvedValue(0),
+          householdFindMany: jest.fn().mockResolvedValue([{ id: 'conn-mine' }]),
+          syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await service.getSummary('user-mine');
+
+      expect(householdAggregate).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { active: true, userId: 'user-mine' } }),
+      );
+      // The local count and the recent-conversation list are scoped too, or
+      // the badge is right while the list under it is not.
+      const [recentArgs] = conversationFindMany.mock.calls[0] as [
+        { where: Record<string, unknown> },
+      ];
+      expect(recentArgs.where.OR).toEqual([
+        { householdConnectionId: { in: ['conn-mine'] } },
+        { householdConnectionId: null },
+      ]);
+    });
+
+    it('applies no household filter when there is no caller', async () => {
+      // The digest and cron paths are server-side and deliberately global.
+      const householdAggregate = jest
+        .fn()
+        .mockResolvedValue({ _sum: { cachedNewCount: 5 }, _count: { _all: 1 } });
+      const service = new MailService(
+        makeMockPrisma({
+          householdAggregate,
+          conversationCount: jest.fn().mockResolvedValue(0),
+          syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await service.getSummary();
+
+      expect(householdAggregate).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { active: true } }),
+      );
+    });
+
     it('falls back to DB unread non-archived count when no active connection exists', async () => {
       const conversationCount = jest.fn().mockResolvedValue(60);
       const service = new MailService(
