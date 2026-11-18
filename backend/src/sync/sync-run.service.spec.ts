@@ -198,6 +198,19 @@ describe('SyncRunService', () => {
       expect(queryRaw.mock.calls[0].slice(1)).toEqual(['conn-1']);
     });
 
+    // Every scheduled task calls execute() with no context, so a cron run
+    // stores householdConnectionId = NULL. Filtering those out would report
+    // `never_synced` for a system whose crons are working perfectly -- which
+    // is the one thing this endpoint exists to tell the truth about.
+    it('keeps unattributed cron runs in a scoped read', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(makeMockPrisma({ queryRaw }));
+
+      await service.getAllSourceHealth('conn-1');
+
+      expect(sqlOf(queryRaw)).toContain('"householdConnectionId" IS NULL');
+    });
+
     it('does not filter when no connection is given', async () => {
       const queryRaw = jest.fn().mockResolvedValue([]);
       const service = new SyncRunService(makeMockPrisma({ queryRaw }));
@@ -257,6 +270,7 @@ describe('SyncRunService', () => {
       const sql = sqlOf(queryRaw);
       expect(sql).toContain('"householdConnectionId" =');
       expect(sql).toContain("status = 'success'");
+      expect(sql).toContain('"householdConnectionId" IS NULL');
       expect(queryRaw.mock.calls[0].slice(1)).toEqual(['conn-1']);
     });
 

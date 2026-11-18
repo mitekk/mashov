@@ -69,15 +69,36 @@ export const TERMINAL_TTL_SECONDS = 600;
  */
 export const STALE_RUNNING_MS = 5 * 60_000;
 
+/**
+ * How often a running refresh re-writes its envelope even when no task has
+ * started or settled.
+ *
+ * Progress writes alone are not enough to prove liveness: all fifteen parallel
+ * tasks start in the same tick, so a single slow task can leave the envelope
+ * untouched for as long as it runs. Past `STALE_RUNNING_MS` that looks exactly
+ * like a dead backend and every client is told the refresh is over. The
+ * heartbeat is what separates "slow" from "gone", so it must stay comfortably
+ * below the staleness threshold.
+ */
+export const HEARTBEAT_INTERVAL_MS = 60_000;
+
+const REFRESH_PHASES: readonly string[] = ['running', 'success', 'partial', 'failed'];
+
 function isRefreshEnvelope(value: unknown): value is RefreshEnvelope {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return (
     typeof candidate.refreshId === 'string' &&
     typeof candidate.connectionId === 'string' &&
+    // The enum, not merely `typeof === 'string'`. Anything outside it is not
+    // `running`, so `resolvePhase` would pass it through as a terminal phase --
+    // reporting `done: true` and handing the client a phase its own type says
+    // cannot exist.
     typeof candidate.phase === 'string' &&
+    REFRESH_PHASES.includes(candidate.phase) &&
     typeof candidate.tasksTotal === 'number' &&
-    typeof candidate.tasksSettled === 'number'
+    typeof candidate.tasksSettled === 'number' &&
+    Array.isArray(candidate.tasks)
   );
 }
 

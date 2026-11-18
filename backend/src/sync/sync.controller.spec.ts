@@ -2,12 +2,20 @@ import type { Request } from 'express';
 import { SyncController } from './sync.controller';
 import type { SyncService } from './sync.service';
 import type { PrismaService } from '../prisma/prisma.service';
-import { STALE_RUNNING_MS } from './refresh-progress.service';
-import type {
-  RefreshEnvelope,
-  RefreshProgressService,
-  RefreshReadResult,
-} from './refresh-progress.service';
+import { RefreshProgressService, STALE_RUNNING_MS } from './refresh-progress.service';
+import type { RefreshEnvelope, RefreshReadResult } from './refresh-progress.service';
+import type { RedisService } from '../redis/redis.service';
+
+/**
+ * The real staleness rule, not a copy of it.
+ *
+ * A reimplemented `isStale` in this mock would keep passing if the production
+ * comparison were inverted — the test would be checking the copy.
+ */
+const realProgressService = new RefreshProgressService({
+  get: jest.fn(),
+  set: jest.fn(),
+} as unknown as RedisService);
 
 function makeEnvelope(overrides: Partial<RefreshEnvelope> = {}): RefreshEnvelope {
   const now = new Date().toISOString();
@@ -31,13 +39,19 @@ function makeController(
   read: RefreshReadResult,
   options: { connection?: { id: string } | null } = {},
 ) {
-  const syncRun = {
-    groupBy: jest.fn(),
-    findMany: jest.fn(),
-    findFirst: jest.fn(),
-    count: jest.fn(),
-    aggregate: jest.fn(),
-  };
+  // Any access at all fails, not a hand-picked list of five method names: a
+  // regression reaching the table through $queryRaw, or through a method
+  // nobody thought to enumerate, has to be caught too.
+  const syncRunAccesses: string[] = [];
+  const syncRun = new Proxy(
+    {},
+    {
+      get(_target, property) {
+        syncRunAccesses.push(String(property));
+        throw new Error(`getStatus must not touch prisma.syncRun (read .${String(property)})`);
+      },
+    },
+  );
   const prisma = {
     householdConnection: {
       findFirst: jest
@@ -50,16 +64,14 @@ function makeController(
   const syncService = { refreshAll: jest.fn() } as unknown as SyncService;
   const refreshProgress = {
     read: jest.fn().mockResolvedValue(read),
-    isStale: jest.fn((envelope: RefreshEnvelope, now: Date = new Date()) => {
-      const updatedAt = Date.parse(envelope.updatedAt);
-      if (Number.isNaN(updatedAt)) return true;
-      return now.getTime() - updatedAt > STALE_RUNNING_MS;
-    }),
+    isStale: jest.fn((envelope: RefreshEnvelope, now?: Date) =>
+      realProgressService.isStale(envelope, now),
+    ),
   } as unknown as RefreshProgressService;
 
   return {
     controller: new SyncController(syncService, prisma, refreshProgress),
-    syncRun,
+    syncRunAccesses,
     refreshProgress,
   };
 }
@@ -69,12 +81,16 @@ const REQUEST = { user: { userId: 'user-1' } } as unknown as Request;
 describe('SyncController', () => {
   describe('getStatus', () => {
     it('reports done when the refresh envelope reached a terminal state even though a source failed', async () => {
-      // The production report. A household with four children has 21 sources,
-      // one of which (`groups:<guid>`) fails every time upstream refuses it.
-      // The old controller counted successful sources against a hardcoded 16
-      // and parked the first-login screen one short, forever. A failed source
-      // is per-source health — it is not a reason to trap the user on a
-      // spinner with no exit.
+      // The production report. A source — `groups:<guid>` — fails every time
+      // upstream refuses it, so the old controller, counting successful
+      // sources against a hardcoded 16, parked the first-login screen one
+      // short forever. A failed source is per-source health; it is not a
+      // reason to trap the user on a spinner with no exit.
+      //
+      // The counts here are display data. `tasksTotal` is the wired task
+      // count and does not vary by household — that independence is the whole
+      // point — so the controller must report whatever the envelope holds
+      // rather than compare it to anything.
       const { controller } = makeController({
         ok: true,
         envelope: makeEnvelope({
@@ -100,22 +116,20 @@ describe('SyncController', () => {
       // report, so no count of rows in an unbounded audit table can mean
       // "finished" again — not a stale cron success inside a time window,
       // not a history backfill, not a per-student source key.
-      const { controller, syncRun } = makeController({
+      const { controller, syncRunAccesses } = makeController({
         ok: true,
         envelope: makeEnvelope(),
       });
 
-      await controller.getStatus(REQUEST);
+      await expect(controller.getStatus(REQUEST)).resolves.toBeDefined();
 
-      for (const [name, fn] of Object.entries(syncRun)) {
-        expect(fn as jest.Mock).not.toHaveBeenCalled();
-        expect(name).toEqual(expect.any(String));
-      }
+      expect(syncRunAccesses).toEqual([]);
     });
 
     it('reports running and not done while tasks are still settling', async () => {
-      // Two children: 29 real sources. The old arithmetic tripped `done` at 16
-      // while a third of the refresh was still in flight.
+      // The other half of the old bug: with two children the real source count
+      // exceeds 16, so the old arithmetic tripped `done` while a third of the
+      // refresh was still in flight. Settled-vs-total is now the only test.
       const { controller } = makeController({
         ok: true,
         envelope: makeEnvelope({

@@ -140,6 +140,30 @@ describe('RefreshProgressService', () => {
       await expect(service.read('conn-1')).resolves.toEqual({ ok: false, reason: 'missing' });
     });
 
+    it.each(['pending', 'Running', '', 'idle'])(
+      'reports missing when the stored phase is %p, which is not a real phase',
+      async (phase) => {
+        // Anything outside the enum is not `running`, so the controller would
+        // pass it straight through as a terminal phase: `done: true`, and a
+        // phase value the client's own type says cannot exist.
+        const envelope = { ...makeEnvelope(), phase } as unknown as RefreshEnvelope;
+        const service = makeService(
+          makeRedis({ get: jest.fn().mockResolvedValue(JSON.stringify(envelope)) }),
+        );
+
+        await expect(service.read('conn-1')).resolves.toEqual({ ok: false, reason: 'missing' });
+      },
+    );
+
+    it('reports missing when tasks is not an array', async () => {
+      const envelope = { ...makeEnvelope(), tasks: 'nope' } as unknown as RefreshEnvelope;
+      const service = makeService(
+        makeRedis({ get: jest.fn().mockResolvedValue(JSON.stringify(envelope)) }),
+      );
+
+      await expect(service.read('conn-1')).resolves.toEqual({ ok: false, reason: 'missing' });
+    });
+
     it('reports unavailable when Redis throws, rather than propagating', async () => {
       const service = makeService(
         makeRedis({ get: jest.fn().mockRejectedValue(new Error('redis down')) }),

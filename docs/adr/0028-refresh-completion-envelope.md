@@ -48,11 +48,28 @@ Key `sync:refresh:<connectionId>`, written by `RefreshProgressService`:
 ```
 
 `phase` is `running | success | partial | failed`. `tasksTotal` is derived from the wired task
-list before anything runs — never a literal. `SyncService.runManualRefresh` opens the envelope
+list before anything runs — never a literal. Note that it is therefore *household-independent*
+(always the task count, 16 today): that a refresh has 16 tasks regardless of how many children
+or connections it fans out to is precisely what makes completion decidable, where counting
+source keys was not. `SyncService.runManualRefresh` opens the envelope
 before the roster task, bumps `tasksSettled`/`tasksFailed`/`tasks[]` as each task settles
 (fire-and-forget, so progress streams rather than landing in one update at the end), and closes
-it with an **awaited** write so a poll three seconds later cannot race it. A `try/catch` closes
-it `failed` if the orchestration itself throws.
+it with an **awaited** write so a poll three seconds later cannot race it (single-process — see
+Consequences). A `try/catch` closes it `failed` if the orchestration itself throws.
+
+Two details are load-bearing rather than incidental:
+
+- **A heartbeat re-writes the envelope every 60s while any task is outstanding.** Progress
+  writes alone do not prove liveness: all fifteen parallel tasks start in the same tick, so one
+  slow task can leave the envelope untouched for as long as it runs. Past `STALE_RUNNING_MS`
+  that is indistinguishable from a dead backend, and every client would be told the refresh had
+  finished while it was still working — the "trips `done` early" half of the original bug, in a
+  new costume. The heartbeat is what separates *slow* from *gone*, and it is stopped before the
+  terminal write so it cannot resurrect `running`.
+- **`currentTask` names the first task still outstanding, not the last one to start.** Every
+  parallel task is invoked in the same tick, so "last to start" pins the label to the final
+  entry of the list immediately and never moves it — the screen would claim to be syncing the
+  timetable for the entire refresh, including after the timetable had finished.
 
 `GET /sync/status` reads only the envelope. It no longer touches `sync_run`, which retires the
 `history:` prefix exclusion and the 30-minute window permanently. Its payload is a **superset** of
@@ -94,9 +111,11 @@ on `source`. A `'refresh'` row would appear in `FreshnessService.getAllSourceHea
 `getLatestSuccessfulRuns`, and in the retention rule's "keep the latest per source", each needing
 its own exclusion. That is exactly the scar the `history:` prefix left (ADR-0025), and this ADR
 would have added a second one. The envelope is ephemeral UI state with no audit value; it does not
-belong in the audit table. Choosing Redis left `freshness.service.ts`, `sync-run.service.ts`,
-`sync-run-retention.service.ts` and the Prisma schema **completely untouched** — their specs pass
-unchanged, which is the evidence that the isolation is real.
+belong in the audit table. Choosing Redis meant no change whatsoever to the *behaviour* of
+`freshness.service.ts`, `sync-run.service.ts` or `sync-run-retention.service.ts` — their specs
+pass unchanged, which is the evidence that the isolation is real. (The companion `source-health`
+scoping in this same change does touch two of those files and adds two `sync_run` indexes; that
+is a different fix that happened to ship alongside, not a cost of the envelope.)
 
 ### Server-Sent Events instead of polling
 
@@ -130,7 +149,13 @@ declared fallback — a separate change with its own tests.
   minutes, its terminal TTL 10 minutes, and the screen's other two exits cover the loss.
 - One more subsystem the status endpoint depends on. Mitigated by `unknown` never being fatal.
 - `phase: 'stale'` reports `done` for a refresh we cannot prove finished. That is deliberate:
-  releasing a user whose data may be incomplete beats holding one whose data is complete.
+  releasing a user whose data may be incomplete beats holding one whose data is complete. The
+  heartbeat is what keeps this from firing on a merely slow refresh.
+- The in-flight dedupe map and the refresh throttle are both per-process, so the "an awaited
+  terminal write cannot be raced" guarantee holds for one replica only. Two replicas can write
+  the same envelope key; scaling out needs a Redis lock, and the code says so at the map.
+- A terminal write that Redis itself rejects is swallowed, leaving the envelope `running` until
+  the staleness clock. Bounded in practice by the frontend's 120s cap.
 
 ## Related
 

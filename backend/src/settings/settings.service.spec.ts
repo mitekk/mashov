@@ -129,6 +129,60 @@ describe('SettingsService', () => {
   });
 
   describe('getSourceHealth scoping', () => {
+    // The leak this method was supposed to close. `student.findMany({ isActive:
+    // true })` enumerated every child in the database, and
+    // FreshnessService.getAllSourceHealth emits one `<source>:<guid>` entry per
+    // guid *unconditionally* -- so foreign child identifiers appeared in the
+    // response with status 'never_synced' even when no sync_run row for them
+    // existed anywhere. Scoping the sync_run reads alone did nothing about it.
+    it('enumerates per-student sources from the caller snapshot, not from every child', async () => {
+      const studentFindMany = jest.fn().mockResolvedValue([
+        { studentGuid: 'mine-1' },
+        { studentGuid: 'a-stranger-child' },
+      ]);
+      const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const loadSyncRuns = jest.fn().mockResolvedValue({
+        allRuns: new Map([['homework:mine-1', {}], ['notifications', {}]]),
+        successRuns: new Map([['behavior:mine-1', {}]]),
+      });
+
+      const service = new SettingsService(
+        makeMockPrisma({ studentFindMany }),
+        makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+      );
+
+      await service.getSourceHealth('conn-1');
+
+      expect(studentFindMany).not.toHaveBeenCalled();
+      expect(getAllSourceHealth).toHaveBeenCalledWith(['mine-1'], expect.anything());
+      const [guids] = getAllSourceHealth.mock.calls[0] as [string[]];
+      expect(guids).not.toContain('a-stranger-child');
+    });
+
+    it('ignores a colon-bearing key that is not a per-student source', async () => {
+      // mail_counts writes `mail_counts:<connectionId>` and schoolActivities
+      // writes `schoolActivities:<userId>`. Neither suffix is a student guid,
+      // and treating them as one would invent per-student rows for them.
+      const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const loadSyncRuns = jest.fn().mockResolvedValue({
+        allRuns: new Map([
+          ['mail_counts:conn-1', {}],
+          ['schoolActivities:user-9', {}],
+          ['history:2025:homework:old-guid', {}],
+        ]),
+        successRuns: new Map(),
+      });
+
+      const service = new SettingsService(
+        makeMockPrisma({}),
+        makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+      );
+
+      await service.getSourceHealth('conn-1');
+
+      expect(getAllSourceHealth).toHaveBeenCalledWith([], expect.anything());
+    });
+
     // Any signed-in user used to get every household's sources. Per-student
     // source keys embed the student GUID, so that leaked other families'
     // child identifiers through a settings screen.
@@ -163,9 +217,10 @@ describe('SettingsService', () => {
     // inside computeFreshness -- so one response made four full reads of an
     // unbounded table, held four pool connections, and timed out the request.
     it('loads the sync_run maps once and shares them with both reads', async () => {
-      const loadSyncRuns = jest
-        .fn()
-        .mockResolvedValue({ allRuns: new Map(), successRuns: new Map() });
+      const loadSyncRuns = jest.fn().mockResolvedValue({
+        allRuns: new Map([['homework:guid-1', {}]]),
+        successRuns: new Map(),
+      });
       const getAllSourceHealth = jest.fn().mockResolvedValue([]);
       const computeFreshness = jest.fn().mockResolvedValue({
         state: 'fresh',
@@ -181,9 +236,7 @@ describe('SettingsService', () => {
       });
 
       const service = new SettingsService(
-        makeMockPrisma({
-          studentFindMany: jest.fn().mockResolvedValue([{ studentGuid: 'guid-1' }]),
-        }),
+        makeMockPrisma({}),
         makeMockFreshnessService({
           loadSyncRuns,
           getAllSourceHealth,

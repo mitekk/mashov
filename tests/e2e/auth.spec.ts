@@ -136,12 +136,9 @@ async function readLastSchoolSemel(page: Page): Promise<string | null> {
  * flight. Playwright tears the route down when the test ends.
  */
 async function hangSyncRefresh(page: Page): Promise<void> {
-  await page.route('**/api/v1/sync/refresh', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 120_000));
-    await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS }).catch(() => {
-      // The test ended first; nothing left to answer.
-    });
-  });
+  // Never settles and leaves no timer behind: Playwright discards the pending
+  // handler when it unroutes at the end of the test.
+  await page.route('**/api/v1/sync/refresh', () => new Promise<void>(() => {}));
 }
 
 async function selectDefaultSchool(authPage: AuthPage): Promise<void> {
@@ -212,9 +209,9 @@ test.describe('Auth — sign-in flow', () => {
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
     });
-    await page.route('**/api/v1/sync/refresh', async (route) => {
-      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
-    });
+    // Held open: this test waits for the **/auth/syncing URL, and a resolved
+    // refresh can navigate away from it within a frame of mount.
+    await hangSyncRefresh(page);
 
     const authPage = new AuthPage(page);
     await authPage.navigate();
@@ -242,12 +239,11 @@ test.describe('Auth — sign-in flow', () => {
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
     });
-    await page.route('**/api/v1/sync/refresh', async (route) => {
+    await page.route('**/api/v1/sync/refresh', () => {
       syncRefreshCalls++;
       // Held open on purpose — see hangSyncRefresh: a resolved refresh means
       // the screen leaves before the skip button can be asserted.
-      await new Promise((resolve) => setTimeout(resolve, 120_000));
-      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS }).catch(() => {});
+      return new Promise<void>(() => {});
     });
 
     // The mocked login cannot issue the Set-Cookie the real backend sends, and
@@ -446,10 +442,7 @@ test.describe('Auth — sign-in flow', () => {
   test('leaves via the hard cap when neither endpoint ever answers', async ({ page }) => {
     // Both exits above are dead: the status endpoint never says done and the
     // refresh never returns. The cap is the last resort, and it has to work.
-    await page.route('**/api/v1/sync/status', async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 120_000));
-      await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS }).catch(() => {});
-    });
+    await page.route('**/api/v1/sync/status', () => new Promise<void>(() => {}));
     await hangSyncRefresh(page);
 
     await mockAuthenticatedSession(page);
@@ -469,6 +462,9 @@ test.describe('Auth — sign-in flow', () => {
           sourcesCompleted: 4,
           sourcesTotal: 21,
           phase: 'running',
+          // Arbitrary display data. tasksTotal is the wired task count and
+          // does not vary by household — that independence is the fix. The
+          // screen must render whatever the backend reports.
           tasksTotal: 21,
           tasksSettled: 4,
           tasksFailed: 0,
@@ -493,7 +489,7 @@ test.describe('Auth — sign-in flow', () => {
   });
 
   test('leaves when a partial refresh reports done with a failed source', async ({ page }) => {
-    // The production case end to end: one source failed, the refresh is over,
+    // The production case end to end: a source failed, the refresh is over,
     // and the user must not be held on the spinner for it.
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({

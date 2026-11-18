@@ -17,6 +17,10 @@ import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
 import type { RefreshEnvelope, RefreshProgressService } from './refresh-progress.service';
+import {
+  HEARTBEAT_INTERVAL_MS,
+  STALE_RUNNING_MS,
+} from './refresh-progress.service';
 
 function makeResult(status: 'success' | 'failed' = 'success'): SyncTaskRunResult {
   return {
@@ -298,13 +302,86 @@ describe('SyncService', () => {
       expect(new Set(settledCounts).size).toBeGreaterThan(2);
     });
 
-    it('names the task in flight so the screen can say what is happening', async () => {
+    it('names a task that is actually outstanding, not the last one registered', async () => {
+      // All fifteen parallel tasks are invoked in the same tick, so "the last
+      // task to start" pins currentTask to the final entry of buildTasks
+      // (`timetable`) within a microsecond and never moves again -- the screen
+      // would claim to be syncing the timetable for the whole refresh,
+      // including after the timetable finished. The label has to name
+      // something still in flight.
       const progress = makeRefreshProgress();
       const { service } = createService({}, progress);
 
       await service.refreshAll({ connectionId: 'conn-1' });
 
-      expect(progress.snapshots.some((snapshot) => snapshot.currentTask === 'students')).toBe(true);
+      const labels = progress.snapshots.map((snapshot) => snapshot.currentTask);
+      expect(labels).toContain('students');
+      expect(labels).toContain('notifications');
+      // Every reported label must be a task that had not settled at the time.
+      for (const snapshot of progress.snapshots) {
+        if (snapshot.currentTask === null) continue;
+        const entry = snapshot.tasks.find((task) => task.task === snapshot.currentTask);
+        expect(entry?.status).toBe('running');
+      }
+    });
+
+    it('keeps bumping the envelope while a slow task is still outstanding', async () => {
+      // Without a heartbeat, updatedAt only moves when a task starts or
+      // settles. Fifteen tasks start at once; if one then runs longer than
+      // STALE_RUNNING_MS after its last sibling settled, nothing touches the
+      // envelope and /sync/status reports `stale` -> done:true while the
+      // refresh is still working. That is the "trips done early" half of the
+      // original bug, in a new costume.
+      expect(HEARTBEAT_INTERVAL_MS).toBeLessThan(STALE_RUNNING_MS);
+
+      jest.useFakeTimers();
+      try {
+        let resolveSlow!: () => void;
+        const slow = new Promise<SyncTaskRunResult>((resolve) => {
+          resolveSlow = () => resolve(makeResult());
+        });
+        const progress = makeRefreshProgress();
+        const { service } = createService(
+          { mailInbox: { execute: jest.fn().mockReturnValue(slow) } },
+          progress,
+        );
+
+        const run = service.refreshAll({ connectionId: 'conn-1' });
+        await jest.advanceTimersByTimeAsync(0);
+
+        const settledWrites = progress.write.mock.calls.length;
+        await jest.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS * 3);
+        expect(progress.write.mock.calls.length).toBeGreaterThan(settledWrites);
+
+        const heartbeats = progress.snapshots.slice(settledWrites);
+        expect(heartbeats.every((snapshot) => snapshot.phase === 'running')).toBe(true);
+
+        resolveSlow();
+        await run;
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('stops the heartbeat once the refresh is over', async () => {
+      jest.useFakeTimers();
+      try {
+        const progress = makeRefreshProgress();
+        const { service } = createService({}, progress);
+
+        const run = service.refreshAll({ connectionId: 'conn-1' });
+        await jest.advanceTimersByTimeAsync(0);
+        await run;
+
+        const afterCompletion = progress.write.mock.calls.length;
+        await jest.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS * 5);
+
+        expect(progress.write.mock.calls.length).toBe(afterCompletion);
+        const last = progress.snapshots[progress.snapshots.length - 1];
+        expect(last.phase).toBe('success');
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('closes the envelope success when every task succeeded', async () => {
@@ -363,6 +440,24 @@ describe('SyncService', () => {
 
       expect(progress.open).not.toHaveBeenCalled();
       expect(progress.write).not.toHaveBeenCalled();
+    });
+
+    it('does not let a prefixed run join a live refresh for the same connection', async () => {
+      // The dedupe key is the connection alone. If a prefixed caller is ever
+      // added, a manual refresh arriving during a backfill would join the
+      // backfill's promise, return its result, and open no envelope at all --
+      // leaving /sync/status on `idle` for the whole duration.
+      const progress = makeRefreshProgress();
+      const { service, tasks } = createService({}, progress);
+
+      await Promise.all([
+        service.refreshAll({ connectionId: 'conn-1', sourcePrefix: 'history:2025:' }),
+        service.refreshAll({ connectionId: 'conn-1' }),
+      ]);
+
+      expect(tasks.homework.execute).toHaveBeenCalledTimes(2);
+      expect(progress.open).toHaveBeenCalledTimes(1);
+      expect(progress.open).toHaveBeenCalledWith('conn-1', EXPECTED_TASK_COUNT);
     });
 
     it('opens no envelope for a prefixed backfill run', async () => {

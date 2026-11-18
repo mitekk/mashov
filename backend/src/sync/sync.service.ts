@@ -15,7 +15,7 @@ import { ReleasesTask } from './tasks/releases.task';
 import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
-import { RefreshProgressService } from './refresh-progress.service';
+import { HEARTBEAT_INTERVAL_MS, RefreshProgressService } from './refresh-progress.service';
 import type { RefreshEnvelope } from './refresh-progress.service';
 import type {
   ManualSyncRefreshResponse,
@@ -24,9 +24,33 @@ import type {
   SyncTaskRunResult,
 } from './sync.types';
 
+/**
+ * The task the screen should name: the first one still outstanding.
+ *
+ * Every parallel task is invoked in the same tick, so "the last task to start"
+ * settles on the final entry of the list immediately and never moves — the UI
+ * would name one task for the entire refresh, including after it finished.
+ * Insertion order makes this stable and monotonic.
+ */
+function firstOutstanding(envelope: RefreshEnvelope): string | null {
+  return envelope.tasks.find((task) => task.status === 'running')?.task ?? null;
+}
+
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
+  /**
+   * Per-process, like the `@Throttle` budget on the controller.
+   *
+   * With more than one replica two tabs on the same connection can land on
+   * different processes: each opens its own envelope under the same Redis key,
+   * so `tasksSettled` can regress between polls and the slower replica's next
+   * heartbeat can overwrite the faster one's terminal write with `running`
+   * again. It self-heals when the second replica finishes, and the first
+   * client has already navigated — but the ADR's "an awaited terminal write
+   * cannot be raced" is a single-process guarantee. Deployment is currently
+   * single-replica; scaling out needs a Redis lock here, not a Map.
+   */
   private inFlightManualRefreshByConnection = new Map<string, Promise<ManualSyncRefreshResponse>>();
 
   constructor(
@@ -50,7 +74,12 @@ export class SyncService {
   ) {}
 
   async refreshAll(context: SyncExecutionContext = {}): Promise<ManualSyncRefreshResponse> {
-    const dedupeKey = context.connectionId ?? '__global__';
+    // The prefix is part of the key, not just the connection: a prefixed
+    // backfill and a live refresh for the same connection are different work
+    // with different output. Joined together, the manual refresh would return
+    // the backfill's result and open no envelope, leaving /sync/status on
+    // `idle` for as long as the backfill ran.
+    const dedupeKey = `${context.connectionId ?? '__global__'}::${context.sourcePrefix ?? ''}`;
     const existing = this.inFlightManualRefreshByConnection.get(dedupeKey);
     if (existing) {
       this.logger.debug(`Manual refresh already running for key=${dedupeKey}, joining existing request`);
@@ -86,9 +115,18 @@ export class SyncService {
         ? this.refreshProgress.open(context.connectionId, tasksTotal)
         : null;
 
+    // Proves liveness while a slow task holds the refresh open. Without it a
+    // task running longer than STALE_RUNNING_MS past its last sibling leaves
+    // the envelope untouched, and every polling client is told the refresh is
+    // over while it is still working.
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+
     try {
       if (envelope) {
         this.publish(envelope);
+        heartbeat = setInterval(() => this.publish(envelope), HEARTBEAT_INTERVAL_MS);
+        // Never hold the event loop open for a heartbeat.
+        heartbeat.unref?.();
       }
 
       // The roster goes first, on its own: every other task iterates
@@ -104,6 +142,13 @@ export class SyncService {
           tasks.map((task) => this.runTracked(envelope, task.name, task.fn)),
         )),
       ];
+      // Stopped before the terminal write, so no heartbeat can land after it
+      // and resurrect `phase: 'running'`.
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
+
       const hasFailures = taskResults.some((result) => result.status === 'failed');
       const refreshEndedAt = new Date();
 
@@ -131,12 +176,18 @@ export class SyncService {
       // `executeTask` swallows task failures, so reaching here means the
       // orchestration itself broke. Left alone the envelope would stay
       // `running` and only the staleness clock would release the client.
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
       if (envelope) {
         envelope.phase = 'failed';
         envelope.endedAt = new Date().toISOString();
         await this.publishAndWait(envelope);
       }
       throw error;
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
     }
   }
 
@@ -176,8 +227,8 @@ export class SyncService {
     fn: () => Promise<SyncTaskRunResult>,
   ): Promise<ManualSyncTaskResult> {
     if (envelope) {
-      envelope.currentTask = taskName;
       envelope.tasks.push({ task: taskName, status: 'running' });
+      envelope.currentTask = firstOutstanding(envelope);
       this.publish(envelope);
     }
 
@@ -192,6 +243,9 @@ export class SyncService {
       if (result.status === 'failed') {
         envelope.tasksFailed += 1;
       }
+      // Recomputed on every settle so the label advances through the parallel
+      // phase instead of naming whichever task happened to be registered last.
+      envelope.currentTask = firstOutstanding(envelope);
       this.publish(envelope);
     }
 

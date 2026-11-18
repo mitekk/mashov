@@ -1045,6 +1045,29 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
       });
       expect(connB).not.toBeNull();
 
+      // Both halves of the leak, so this cannot pass by accident:
+      //
+      // 1. A `Student` row for a child who is not the caller's. The previous
+      //    implementation built the per-student source list from
+      //    `student.findMany({ isActive: true })` and emitted one
+      //    `<source>:<guid>` entry per child *unconditionally* — so this guid
+      //    appeared in A's response with status 'never_synced' even with no
+      //    run row anywhere. (`beforeEach` truncates `student`, which is why
+      //    the earlier version of this test could not fail.)
+      // 2. A run row for that child attributed to household B's connection.
+      await prisma.student.create({
+        data: {
+          studentGuid: 'foreign-household-guid',
+          privateName: 'Not',
+          familyName: 'Yours',
+          fullName: 'Not Yours',
+          classCode: 'ז',
+          classNum: 1,
+          gender: 'F',
+          isActive: true,
+        },
+      });
+
       const now = new Date();
       await prisma.syncRun.create({
         data: {

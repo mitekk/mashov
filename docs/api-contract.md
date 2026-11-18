@@ -83,8 +83,39 @@ hardcoded `TOTAL_SYNC_SOURCES = 16`; source keys are per-student and per-connect
 target was unreachable for any household with a failing source and already passed for any
 household with two children.
 
-`GET /api/v1/settings/source-health` is scoped to the caller's active household connection and
-returns an empty `sources` array for a user with no connection.
+`sourcesCompleted`/`sourcesTotal` now carry *task* counts under *source* names. The task count is
+the wired task list (16 today) and does not vary with the number of children or connections —
+that independence is the fix. The UI string ("N / M מקורות הושלמו") is unchanged for
+compatibility.
+
+### `GET /api/v1/settings/source-health` — scoping
+
+Scoped to the caller's active household connection; a user with no connection gets an empty
+`sources` array and no database read. Two deliberate details:
+
+- **Runs with a NULL connection are included.** Every `@Cron` entrypoint calls its task's
+  `execute()` with no context, so `openRun` stores `householdConnectionId = null` for all
+  scheduled runs. Excluding those would report `never_synced` for a dozen sources whose crons
+  succeed every twelve minutes — turning the one page that answers "is syncing working" into a
+  page that always says no.
+- **Per-student source keys come from the caller's own snapshot**, not from
+  `student.findMany`. `FreshnessService.getAllSourceHealth` emits one `<source>:<guid>` entry per
+  guid it is handed whether or not a run exists, so passing every active child listed every
+  household's child identifiers regardless of how the `sync_run` reads were filtered.
+
+**Known residual.** `Student` has no household column, so per-student tasks iterate every child
+in the database and stamp those runs with whichever connection triggered the refresh (cron runs
+with none). A caller whose refresh has run can therefore still see a guid that is not theirs.
+Closing that needs `Student` scoped to a household — a schema change with its own ADR. What is
+gone is the unconditional enumeration, which leaked every child to every user regardless of sync
+activity.
+
+**Also unscoped, and not fixed here:** `overallState` and `contentFreshness` in the same response
+come from `computeContentFreshness()`, which reads *any* active connection and aggregates over
+every student. One household parked on an old school year therefore degrades everyone's
+`overallState`. And `GET /api/v1/settings/profile` has no user filter at all — it returns some
+arbitrary household's `displayName`, `email` and `cellphone`. Both predate this change and both
+need their own fix.
 
 ### Phase 1 Endpoints (all require Auth: Yes in Phase 2)
 

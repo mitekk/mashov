@@ -33,7 +33,15 @@ const HARD_CAP_MS = Number(process.env.NEXT_PUBLIC_SYNCING_HARD_CAP_MS) || 120_0
 const SLOW_NOTICE_MS = 15_000;
 
 const MIN_HARD_CAP_MS = 1_000;
-const MAX_HARD_CAP_MS = 600_000;
+/**
+ * The override can only ever *shorten* the cap.
+ *
+ * It ships in the production bundle, so a link could otherwise set it — and a
+ * param that lengthens a safety timeout is a way to park someone on this
+ * screen. Bounded above by the default, it cannot do anything worse than make
+ * the screen give up sooner.
+ */
+const MAX_HARD_CAP_MS = HARD_CAP_MS;
 
 /** Hebrew labels for the task names the backend reports in `currentTask`. */
 const TASK_LABELS: Record<string, string> = {
@@ -68,11 +76,13 @@ export default function SyncingPage() {
   const refreshTriggeredRef = useRef(false);
   const navigatedRef = useRef(false);
   const sawRunningRef = useRef(false);
+  const mountedRef = useRef(true);
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [navigated, setNavigated] = useState(false);
 
   // E2E needs a cap it can reach inside a test timeout, and a NEXT_PUBLIC_*
-  // value cannot vary per test in one shared stack. Clamped, and it only ever
-  // shortens or lengthens a client-side safety timer on this one screen.
+  // value is inlined at build time so it cannot vary per test in one shared
+  // stack. Clamped to [1s, the default], so it can only shorten the cap.
   const hardCapParam = Number(searchParams.get('hardCapMs'));
   const hardCapMs =
     Number.isFinite(hardCapParam) && hardCapParam > 0
@@ -103,11 +113,21 @@ export default function SyncingPage() {
   // Exit 2: the refresh request itself. `runManualRefresh` awaits every task
   // before responding, so a resolved POST means the work is done whatever the
   // progress store says.
+  // Owns the one timer this effect can create. The effect itself is single-shot
+  // via refreshTriggeredRef, so its own cleanup runs long before the timer is
+  // created inside the async `.catch` — the timer has to be owned by the
+  // component, not by one invocation's closure.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     if (refreshTriggeredRef.current) return;
     refreshTriggeredRef.current = true;
-
-    let slowTimer: ReturnType<typeof setTimeout> | undefined;
 
     triggerSyncRefresh()
       .then(() => leave())
@@ -124,16 +144,14 @@ export default function SyncingPage() {
             // The proxy gave up before the backend did. The refresh is very
             // likely still running, so keep polling — but stop pretending
             // everything is normal.
-            slowTimer = setTimeout(() => setShowSlowNotice(true), SLOW_NOTICE_MS);
+            slowTimerRef.current = setTimeout(() => {
+              if (mountedRef.current) setShowSlowNotice(true);
+            }, SLOW_NOTICE_MS);
             return;
           default:
-            setTriggerFailed(true);
+            if (mountedRef.current) setTriggerFailed(true);
         }
       });
-
-    return () => {
-      if (slowTimer) clearTimeout(slowTimer);
-    };
   }, [leave]);
 
   // Exit 1: the refresh reported a terminal phase — including `partial` and
@@ -153,11 +171,19 @@ export default function SyncingPage() {
     if (sawRunningRef.current && data?.phase === 'idle') leave();
   }, [data?.phase, leave]);
 
-  // Exit 3: the hard cap.
+  // Exit 3: the hard cap, anchored to mount.
+  //
+  // `leave` is deliberately read through a ref rather than listed as a
+  // dependency: it closes over `router`, and if that object's identity ever
+  // changed the effect would re-run and restart the clock from zero — a cap
+  // that silently is not a cap.
+  const leaveRef = useRef(leave);
+  leaveRef.current = leave;
+
   useEffect(() => {
-    const timer = setTimeout(leave, hardCapMs);
+    const timer = setTimeout(() => leaveRef.current(), hardCapMs);
     return () => clearTimeout(timer);
-  }, [hardCapMs, leave]);
+  }, [hardCapMs]);
 
   useEffect(() => {
     const timer = setTimeout(() => setShowSkip(true), SKIP_DELAY_MS);

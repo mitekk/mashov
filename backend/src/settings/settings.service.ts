@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { FreshnessService } from '../sync/freshness.service';
+import { FreshnessService, PER_STUDENT_SOURCES } from '../sync/freshness.service';
+import type { SyncRunSnapshot } from '../sync/freshness.service';
 
 @Injectable()
 export class SettingsService {
@@ -17,12 +18,21 @@ export class SettingsService {
    * handed them other families' child identifiers. The connection now filters
    * both `sync_run` reads.
    *
+   * The per-student source keys are derived from the caller's own snapshot
+   * rather than from `student.findMany`. That matters more than the query
+   * filter: `getAllSourceHealth` emits one `<source>:<guid>` row per guid it is
+   * handed *whether or not any run exists*, so passing every active child
+   * listed every household's child identifiers — with `status: 'never_synced'`
+   * — no matter how the sync_run reads were scoped.
+   *
    * Known residual, and the reason this is a narrowing rather than a fix:
-   * `Student` carries no household column, so the per-student tasks iterate
-   * every child in the database and stamp those runs with whichever connection
-   * triggered the refresh. Until `Student` is scoped, a caller's own rows can
-   * still name a child who is not theirs. That is a schema change with its own
-   * ADR; this stops the read itself from fanning out across households.
+   * `Student` carries no household column, so per-student tasks iterate every
+   * child in the database and stamp those runs with whichever connection
+   * triggered the refresh (and cron runs are stamped with none). A caller whose
+   * refresh has run can therefore still see a guid that is not theirs. Closing
+   * that needs `Student` scoped to a household — a schema change with its own
+   * ADR. What is gone is the unconditional enumeration, which leaked every
+   * child in the database to every user regardless of sync activity.
    */
   async getSourceHealth(householdConnectionId: string | null) {
     if (!householdConnectionId) {
@@ -34,16 +44,10 @@ export class SettingsService {
       };
     }
 
-    const studentGuids = (
-      await this.prisma.student.findMany({
-        where: { isActive: true },
-        select: { studentGuid: true },
-      })
-    ).map((student) => student.studentGuid);
-
     // One load of the sync_run maps, shared by both reads below. Fetching them
     // per call meant four round trips for this one response.
     const snapshot = await this.freshnessService.loadSyncRuns(householdConnectionId);
+    const studentGuids = this.studentGuidsIn(snapshot);
 
     const [sources, freshness] = await Promise.all([
       this.freshnessService.getAllSourceHealth(studentGuids, snapshot),
@@ -58,6 +62,30 @@ export class SettingsService {
       // would have caught the frozen school year.
       contentFreshness: freshness.contentFreshness,
     };
+  }
+
+  /**
+   * The students a snapshot actually mentions, read back out of its run keys.
+   *
+   * Only an exact `<perStudentSource>:<guid>` shape counts. `mail_counts:<connId>`
+   * and `schoolActivities:<userId>` carry a colon too but no student, and a
+   * `history:<year>:…` backfill key is not a live source at all.
+   */
+  private studentGuidsIn(snapshot: SyncRunSnapshot): string[] {
+    const guids = new Set<string>();
+
+    for (const key of [...snapshot.allRuns.keys(), ...snapshot.successRuns.keys()]) {
+      const separator = key.indexOf(':');
+      if (separator === -1) continue;
+
+      const base = key.slice(0, separator);
+      if (!(PER_STUDENT_SOURCES as readonly string[]).includes(base)) continue;
+
+      const guid = key.slice(separator + 1);
+      if (guid.length > 0 && !guid.includes(':')) guids.add(guid);
+    }
+
+    return [...guids];
   }
 
   async getProfile() {
