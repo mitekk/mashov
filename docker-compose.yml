@@ -111,6 +111,10 @@ services:
       # 90000): POST /sync/refresh runs every sync task before it responds, so the
       # ordinary bound above would 504 a slow-but-successful refresh.
       PROXY_SLOW_TIMEOUT_MS: ${PROXY_SLOW_TIMEOUT_MS:-}
+      # Bound for attachment downloads (/api/v1/{mail,children}/**/files/*,
+      # default 45000): a single file can walk many candidate upstream URLs at
+      # MASHOV_TIMEOUT_MS each before one answers.
+      PROXY_ATTACHMENT_TIMEOUT_MS: ${PROXY_ATTACHMENT_TIMEOUT_MS:-}
       NEXT_PUBLIC_API_URL: /api/v1
       NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
       # Opt-in only. Set to 1 by the e2e test commands and CI; must stay 0

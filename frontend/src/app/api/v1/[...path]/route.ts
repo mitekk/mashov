@@ -23,10 +23,30 @@ const SLOW_PATH_TIMEOUT_MS = Number(process.env.PROXY_SLOW_TIMEOUT_MS) || 90000;
 // the same longer bound as a manual sync rather than the 15s default.
 const SLOW_PATH_PREFIXES = ['/api/v1/sync/', '/api/v1/digest/runs'];
 
+/**
+ * Attachment downloads need a larger budget than the default, and a smaller one
+ * than a manual sync. A single mail attachment can legitimately walk up to 15
+ * candidate upstream URLs at MASHOV_TIMEOUT_MS (default 10s) each, plus a
+ * hydrate-and-retry, so the 15s default is a bound the backend cannot meet and
+ * the user sees a 504 on a download that would have succeeded.
+ */
+const ATTACHMENT_TIMEOUT_MS = Number(process.env.PROXY_ATTACHMENT_TIMEOUT_MS) || 45000;
+
+/**
+ * Matched as a predicate rather than a prefix: a `/api/v1/mail/conversations/`
+ * prefix would also widen the conversation-detail GET, which should keep the
+ * default bound. Only the file-download leaf gets the longer budget.
+ */
+const ATTACHMENT_PATH_PATTERN = /^\/api\/v1\/(?:mail|children)\/.+\/files\/[^/]+$/;
+
 function timeoutForPath(pathname: string): number {
-  return SLOW_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))
-    ? SLOW_PATH_TIMEOUT_MS
-    : PROXY_TIMEOUT_MS;
+  if (SLOW_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    return SLOW_PATH_TIMEOUT_MS;
+  }
+  if (ATTACHMENT_PATH_PATTERN.test(pathname)) {
+    return ATTACHMENT_TIMEOUT_MS;
+  }
+  return PROXY_TIMEOUT_MS;
 }
 
 const HOP_BY_HOP_HEADERS = [

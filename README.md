@@ -163,6 +163,7 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 | `MASHOV_TIMEOUT_MS` | wall-clock bound per Mashov request | `10000` |
 | `PROXY_TIMEOUT_MS` | bound per backend call from the frontend `/api/v1/*` proxy | `15000` |
 | `PROXY_SLOW_TIMEOUT_MS` | bound for long synchronous paths (`/api/v1/sync/*`) | `90000` |
+| `PROXY_ATTACHMENT_TIMEOUT_MS` | bound for attachment downloads (`/api/v1/{mail,children}/**/files/*`) | `45000` |
 | `ENABLE_E2E_AUTH_BYPASS` | **tests only** — `1` lets the e2e browser skip the auth guard. Must stay unset or `0` in production. | `0` |
 
 ### Daily digest to Telegram
