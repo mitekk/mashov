@@ -28,6 +28,12 @@ import {
   canSeeStudent,
   visibleStudentWhere,
 } from '../../backend/src/common/student-links';
+import {
+  UNSCOPED_SCHOOL_YEAR,
+  currentSchoolYearForStudent,
+  historyScopeForStudents,
+  yearScopeForStudents,
+} from '../../backend/src/common/school-year/school-year.scope';
 import { ConnectionService } from '../../backend/src/connection/connection.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { EncryptionService } from '../../backend/src/session/encryption.service';
@@ -46,6 +52,9 @@ const OWN_B = 'hh-guid-b';
 const SHARED = 'hh-guid-shared';
 const UNLINKED = 'hh-guid-unlinked';
 const ALL_GUIDS = [OWN_A, OWN_B, SHARED, UNLINKED];
+/** The unlinked child's current-year row, and their pre-migration one. */
+const UNLINKED_LESSON_ID = 9910;
+const UNLINKED_LEGACY_LESSON_ID = 9911;
 
 function migrationFile(): string {
   return path.join(
@@ -163,6 +172,35 @@ describe('Two parents, one school, shared children', () => {
         lessonDate: new Date('2026-11-10T00:00:00Z'),
         schoolYear: YEAR,
       })),
+    });
+
+    // The child nobody lists gets rows at the household's current year, and
+    // one at the pre-migration `schoolYear = 0`. Without them the fixture
+    // could show the child present in the list but never show whether their
+    // data is reachable -- the "card there, workspace empty" shape.
+    await prisma.homeworkItem.createMany({
+      data: [
+        {
+          studentGuid: UNLINKED,
+          lessonId: UNLINKED_LESSON_ID,
+          groupId: 500,
+          lesson: 1,
+          subjectName: 'היסטוריה',
+          homeworkText: 'קריאה',
+          lessonDate: new Date('2026-11-12T00:00:00Z'),
+          schoolYear: YEAR,
+        },
+        {
+          studentGuid: UNLINKED,
+          lessonId: UNLINKED_LEGACY_LESSON_ID,
+          groupId: 500,
+          lesson: 2,
+          subjectName: 'היסטוריה',
+          homeworkText: 'קריאה מלפני המיגרציה',
+          lessonDate: new Date('2026-09-02T00:00:00Z'),
+          schoolYear: UNSCOPED_SCHOOL_YEAR,
+        },
+      ],
     });
   }
 
@@ -287,6 +325,122 @@ describe('Two parents, one school, shared children', () => {
       await expect(
         prisma.student.findUnique({ where: { studentGuid: UNLINKED } }),
       ).resolves.not.toBeNull();
+    });
+  });
+
+  /**
+   * The child nobody lists, with rows of their own.
+   *
+   * `visibleStudentWhere` and `canSeeStudent` both admit a child with no
+   * links, because no link means "ownership unknown", not "nobody's" — so the
+   * card is on `/children`. Whether anything is IN that card is a separate
+   * question, answered by the year scope, and the two answers disagreeing is
+   * the failure this covers: a scope built only from the connections' own
+   * children contributes no branch for an unlinked one, so the parent opens a
+   * card with zero homework, zero subjects and no behaviour.
+   *
+   * It is not a corner case. The ownership backfill refuses to guess on a
+   * two-connection database, which is exactly the deployment this feature
+   * creates, so every child on such a box starts out unlinked.
+   */
+  describe('the child nobody lists, with rows of their own', () => {
+    /**
+     * Keeps the year fallback deterministic. `currentSchoolYearFor` with no
+     * caller reads the highest year across every active connection in the
+     * table, so a neighbouring suite's leftovers would otherwise decide what
+     * the unlinked child's year resolves to. Restored after each case.
+     */
+    let parked: string[] = [];
+
+    beforeEach(async () => {
+      const strays = await prisma.householdConnection.findMany({
+        where: { active: true, NOT: { id: { in: [CONN_A, CONN_B] } } },
+        select: { id: true },
+      });
+      parked = strays.map((row) => row.id);
+      await prisma.householdConnection.updateMany({
+        where: { id: { in: parked } },
+        data: { active: false },
+      });
+    });
+
+    afterEach(async () => {
+      await prisma.householdConnection.updateMany({
+        where: { id: { in: parked } },
+        data: { active: true },
+      });
+      parked = [];
+    });
+
+    async function homeworkVisibleTo(userId: string): Promise<number[]> {
+      const scope = await yearScopeForStudents(prisma as unknown as PrismaService, userId);
+      const rows = await prisma.homeworkItem.findMany({
+        where: { ...scope, studentGuid: { in: ALL_GUIDS } },
+        select: { lessonId: true },
+        orderBy: { lessonId: 'asc' },
+      });
+      return rows.map((row) => row.lessonId);
+    }
+
+    it('is in the list AND its rows are in the household year scope', async () => {
+      // Both halves, in one case on purpose: either alone is satisfied by a
+      // bug. A scope that admits nothing still passes "the child is visible",
+      // and a scope that admits everything still passes "the rows are there".
+      expect(await visibleTo(USER_A)).toContain(UNLINKED);
+      expect(await homeworkVisibleTo(USER_A)).toEqual([
+        9900, // SHARED, at A's own connection's year
+        // 9901 is OWN_B's, and correctly absent: the scope's per-connection
+        // branches are built from A's connections only.
+        UNLINKED_LESSON_ID,
+        UNLINKED_LEGACY_LESSON_ID,
+      ]);
+    });
+
+    // "Every year the household is on" needs ONE user with two schools, which
+    // this fixture is not -- CONN_A and CONN_B are two different parents, so
+    // each one's scope spans their own connection's year alone. That case lives
+    // in tests/integration/two-school-sync.test.ts.
+
+    it('resolves a per-child year that its rows are actually at', async () => {
+      // The per-child endpoints read ONE year, resolved from the child's
+      // routing stamp -- which an unlinked child does not have, so it falls
+      // back to the household's. The fallback has to land on a year the rows
+      // were written at, or the workspace is empty while the list is not.
+      const year = await currentSchoolYearForStudent(
+        prisma as unknown as PrismaService,
+        UNLINKED,
+      );
+      expect(year).toBe(YEAR);
+
+      const atThatYear = await prisma.homeworkItem.count({
+        where: { studentGuid: UNLINKED, schoolYear: { in: [year, UNSCOPED_SCHOOL_YEAR] } },
+      });
+      expect(atThatYear).toBe(2);
+    });
+
+    it('is in the history scope too, so the archive is not empty either', async () => {
+      const scope = await historyScopeForStudents(
+        prisma as unknown as PrismaService,
+        { get: () => undefined } as unknown as ConfigService,
+        USER_A,
+      );
+      const rows = await prisma.homeworkItem.findMany({
+        where: { ...scope, studentGuid: UNLINKED },
+        select: { lessonId: true },
+        orderBy: { lessonId: 'asc' },
+      });
+      expect(rows.map((row) => row.lessonId)).toEqual([
+        UNLINKED_LESSON_ID,
+        UNLINKED_LEGACY_LESSON_ID,
+      ]);
+    });
+
+    it('is admitted by the other parent on the same terms, deliberately', async () => {
+      // The flip side of "visible to anyone": an unlinked child is admitted
+      // because ownership is unknown, which is a deliberate choice and not an
+      // accident of the scope. B sees them on the same terms A does.
+      expect(await visibleTo(USER_B)).toContain(UNLINKED);
+      expect(await homeworkVisibleTo(USER_B)).toContain(UNLINKED_LESSON_ID);
     });
   });
 

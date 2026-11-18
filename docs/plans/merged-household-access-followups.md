@@ -275,7 +275,10 @@ e2e passed while nine routes had no ownership guard at all, because nothing asse
 the *general* property — the isolation specs named `getChildren` and
 `getChildWorkspace` individually.
 
-**Partly done** by `1dcb60e`, which needed the fixture to prove **B1**.
+**Status: DONE.** Started by `1dcb60e`, which needed the two-user fixture to prove
+**B1**, and finished by the route-enumeration suite, the unattributed-mail fixture,
+the unlinked child's rows and the two-sync cross-contamination test. Four findings
+came out of the work rather than out of review; they are the Minors below.
 
 **DoD**
 - [x] An integration fixture with **two `AppUser`s**, each with its own connection, in
@@ -283,9 +286,19 @@ the *general* property — the isolation specs named `getChildren` and
       school, four children (one each, one shared by both, one nobody lists).
 - [x] A fixture with a child **no connection lists** — the successor to
       `householdConnectionId: null`, and the case `canSeeStudent` has to admit.
-- [ ] That child carrying **current-year rows**, which is what C2 needed: the fixture
-      has the child but gives it no homework, so the "present in the list, empty when
-      opened" shape is still untested end to end.
+- [x] That child carrying **current-year rows**, which is what C2 needed. The
+      `household-isolation` fixture now gives the unlinked child a current-year homework
+      row and a pre-migration (`schoolYear = 0`) one, and four cases assert both halves
+      of the shape together: the child is in the list **and** their rows are in
+      `yearScopeForStudents`, the per-child fallback year lands on a year their rows were
+      written at, `historyScopeForStudents` admits them so the archive is not empty
+      either, and the other parent is admitted on the same terms. Asserting the two
+      halves in one case is deliberate — a scope admitting nothing still satisfies "the
+      child is visible", and one admitting everything still satisfies "the rows are
+      there". Verified red by deleting the unstamped branch from `yearScopeForStudents`.
+      The "every year the household is on" half needs ONE user with two schools, which
+      that fixture is not, so it lives in `tests/integration/two-school-sync.test.ts`
+      together with the per-child consequence recorded as a Minor below.
 - [x] A fixture with a `mail_conversation` at `householdConnectionId: null` that
       upstream no longer returns — the shape the sweep exists for.
       `tests/integration/mail-sweep-unattributed.test.ts`, **5 cases** against real
@@ -317,12 +330,32 @@ the *general* property — the isolation specs named `getChildren` and
       one case failed with "resolved without raising", the other 50 stayed green.
       `digest.controller.ts` also takes a `studentGuid`, but in a query or body and
       under ADR-0026's own rule — deliberately out of scope.
-- [ ] The cross-contamination test the plan asked for: seed two connections, two
-      students and two mailboxes, run `refreshAll` for both, assert zero contamination
-      in `student`, `mail_conversation`, `cachedNewCount` and the swept unread set.
-      B1's own DoD was met without it, by moving the routing stamp directly — the only
-      thing a sync changes about ownership — but that is not the same as running the
-      two syncs.
+- [x] The cross-contamination test the plan asked for —
+      `tests/integration/two-school-sync.test.ts`, **16 cases**. One household, two
+      schools **on different years** (2027 and 2026), two children, two mailboxes, then
+      `SyncService.refreshAll` per connection: the wired `SyncModule`, all sixteen tasks,
+      real Postgres, real Redis. Only the two transports are fakes — `MashovHttpClient`
+      and the private axios instance `MashovSessionService` logs in with, patched so the
+      roster is persisted by the real `persistRoster`, which is the code that stamps the
+      child and writes the link; stubbing `refreshRosterForConnection` would have skipped
+      exactly what B1 was about. The fake upstream answers **403** for a child outside the
+      asking account, as Mashov does. Asserted: each child stays stamped, linked and
+      active through the other school's refresh; every mail row and message carries the
+      mailbox it came from; each run sweeps only its own stale conversation; each
+      connection's `cachedNewCount` is its own and the household badge is their **sum**;
+      `mail_counts` records its own mailbox's `localCount`, not the union; each child's
+      homework is labelled with its own school's year; and the three per-school keys two
+      schools would collide on hold — `(householdConnectionId, upstreamNotificationId)`,
+      `(schoolCode, code)` for the achva taxonomy that answers "is this absence
+      justifiable?", and one `parent_profile` per school. The env-credential session is
+      fenced: the fake's shared `get` throws, and nothing reached it. Verified red three
+      ways: removing the presence sweep's "every connection must have refreshed" guard
+      (B's child deactivated by A's refresh, 3 cases), unscoping `mail_counts`'
+      `localUnreadCount` (the union, 1 case), and deleting the unstamped branch from
+      `yearScopeForStudents` (1 case). The two refreshes run twice in the steady-state
+      group on purpose: `mail_counts` and `mail_inbox` run in one `Promise.all`, so on a
+      first pass the count is taken either side of that mailbox's sweep, and the exact
+      form of the assertion was flaky until the second pass removed the race.
 
 ---
 
@@ -340,6 +373,29 @@ the *general* property — the isolation specs named `getChildren` and
   into the read scope once the backfill is known to have run. Not urgent — it needs a
   pre-ownership row that outlived its upstream — but it is a badge that disagrees with
   the list on the same screen, which is the class of bug `283c053` was about.
+- **A connection-scoped refresh fans out over every child in the database.** Each
+  per-student task reads `student.findMany({ where: { isActive: true } })` — not the
+  refreshing connection's children — so `POST /sync/refresh` for school A asks A's
+  account for school B's children and collects a 403 for each, across seven
+  per-student tasks. Nothing wrong is written, but the refresh of a school that worked
+  perfectly reports **`partial`**, which is what `/auth/syncing` shows the parent, and
+  each foreign child leaves a failed `sync_run` that `FreshnessService` then reads as
+  source ill-health. Asserted as current behaviour in
+  `tests/integration/two-school-sync.test.ts`. The fix is one `where` per task:
+  restrict the student list to the children the refreshing connection lists
+  (`visibleStudentWhere`-style, via `student_connection`), which also removes the
+  wasted upstream calls the owner-first ordering was added to avoid.
+- **An unlinked child's per-child reads resolve to one year, while the list admits
+  every year.** `yearScopeForStudents` gives a child with no links every year the
+  household is on, because nothing records which school wrote their rows — but
+  `currentSchoolYearForStudent` falls back to the household's highest year, so in a
+  household spanning 2027 and 2026 the rows written at 2026 are in the cross-child list
+  and absent from the child's own workspace. The same "card there, workspace empty"
+  shape the cross-child scope was fixed for, surviving in the per-child path. Asserted
+  in `tests/integration/two-school-sync.test.ts`. Only reachable while a child is
+  unlinked, which the backfill leaves them on a two-connection database until the next
+  roster refresh; the honest fix is for the per-child reads to accept the household's
+  year set for an unlinked child rather than one year.
 - `behavior-classifier.service.ts` — bare `catch { return false }` turns any DB error
   into "this absence is not justifiable". The default is defensible; swallowing the
   error unlogged is not.
