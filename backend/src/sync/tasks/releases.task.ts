@@ -2,6 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  orderConnectionsForStudent,
+  stampOwnershipIfChanged,
+} from '../connection-fanout';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
@@ -66,7 +70,8 @@ export class ReleasesTask {
     const fallbackSchoolYear = calendarSchoolYear(new Date());
 
     for (const student of students) {
-      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
+      const ordered = orderConnectionsForStudent(student, connections);
+      let schoolYear = ordered[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${ReleasesTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -76,7 +81,7 @@ export class ReleasesTask {
         const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
         let items: MashovStudentRelease[] = [];
 
-        for (const conn of connections) {
+        for (const conn of ordered) {
           try {
             const password = this.encryptionService.decrypt(conn.encryptedPassword);
             items = await this.mashovClient.getForConnection<MashovStudentRelease[]>(
@@ -89,6 +94,7 @@ export class ReleasesTask {
               { headers: { Referer: referer } },
             );
             schoolYear = conn.schoolYear;
+            await stampOwnershipIfChanged(this.prisma, student, conn, this.logger);
             break;
           } catch {
             /* try the next connection */

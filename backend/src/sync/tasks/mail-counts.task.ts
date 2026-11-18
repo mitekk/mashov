@@ -115,8 +115,13 @@ export class MailCountsTask {
 
         const unreadCount = data?.unreadConversations ?? 0;
 
+        // Scoped to this connection's own mailbox. Unscoped, each connection
+        // wrote the UNION of every household's unread into its own
+        // cachedNewCount -- so the badge, which sums those rows, reported the
+        // union once per school. Two schools, double the real number.
         const localUnreadCount = await this.prisma.mailConversation.count({
           where: {
+            householdConnectionId: conn ? conn.id : null,
             isUnread: true,
             NOT: { labels: { array_contains: ['archived'] } },
           },

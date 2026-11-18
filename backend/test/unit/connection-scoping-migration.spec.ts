@@ -20,6 +20,7 @@ const DOCKERFILE = join(__dirname, '..', '..', 'Dockerfile');
 const COLLAPSE = '20261120000000_connection_duplicate_collapse';
 const SCOPING = '20261120010000_connection_scoping';
 const UNIQUE_KEYS = '20261120020000_connection_unique_keys';
+const COLLISION_KEYS = '20261121000000_connection_collision_keys';
 
 function sqlOf(migration: string): string {
   return readFileSync(join(MIGRATIONS, migration, 'migration.sql'), 'utf8');
@@ -153,6 +154,64 @@ describe('connection scoping migrations', () => {
     });
   });
 
+  describe(COLLISION_KEYS, () => {
+    const body = code(sqlOf(COLLISION_KEYS));
+
+    it.each([
+      'notification_event_upstreamNotificationId_key',
+      'behavior_type_reference_code_key',
+      'school_activity_userId_schoolYear_activityId_key',
+    ])('drops the superseded index %s idempotently', (index) => {
+      expect(body).toMatch(new RegExp(`DROP INDEX IF EXISTS "${index}"`, 'i'));
+    });
+
+    it('creates the three composite keys', () => {
+      expect(body).toMatch(
+        /CREATE UNIQUE INDEX IF NOT EXISTS "notification_event_connection_upstream_id_key"/i,
+      );
+      expect(body).toMatch(
+        /CREATE UNIQUE INDEX IF NOT EXISTS "behavior_type_reference_schoolCode_code_key"/i,
+      );
+      expect(body).toMatch(
+        /CREATE UNIQUE INDEX IF NOT EXISTS "school_activity_user_connection_year_activity_key"/i,
+      );
+    });
+
+    it('names every index within Postgres\'s 63-byte identifier limit', () => {
+      // A longer name is silently truncated, so `db push` and this file would
+      // create differently-named indexes and neither would be idempotent.
+      const names = [...body.matchAll(/INDEX (?:IF NOT EXISTS )?"([^"]+)"/g)].map(
+        (match) => match[1],
+      );
+      expect(names.length).toBeGreaterThan(0);
+      for (const name of names) {
+        expect(Buffer.byteLength(name, 'utf8')).toBeLessThan(63);
+      }
+    });
+
+    it('creates no partial unique index', () => {
+      // Prisma cannot express `WHERE`, so `db push` would drop a partial index
+      // on the next boot and the constraint would silently disappear.
+      const creates = body.match(/CREATE UNIQUE INDEX[^;]*/gi) ?? [];
+      expect(creates).toHaveLength(3);
+      for (const statement of creates) {
+        expect(statement).not.toMatch(/\bWHERE\b/i);
+      }
+    });
+
+    it('drops each index before creating its replacement', () => {
+      // The replacement leads with a different column, so Postgres would
+      // happily keep both -- and the old one would still refuse the second
+      // school's row.
+      for (const table of ['notification_event', 'behavior_type_reference', 'school_activity']) {
+        const drop = body.search(new RegExp(`DROP INDEX IF EXISTS "${table}`, 'i'));
+        const create = body.search(new RegExp(`CREATE UNIQUE INDEX IF NOT EXISTS "${table}`, 'i'));
+        expect(drop).toBeGreaterThanOrEqual(0);
+        expect(create).toBeGreaterThan(drop);
+      }
+    });
+  });
+
   describe('boot chain', () => {
     const dockerfile = readFileSync(DOCKERFILE, 'utf8');
 
@@ -164,15 +223,18 @@ describe('connection scoping migrations', () => {
       expect(collapse).toBeLessThan(push);
     });
 
-    it.each([SCOPING, UNIQUE_KEYS])('executes %s after prisma db push', (migration) => {
-      const at = dockerfile.indexOf(`${migration}/migration.sql`);
-      const push = dockerfile.indexOf('prisma db push');
-      expect(at).toBeGreaterThan(push);
-    });
+    it.each([SCOPING, UNIQUE_KEYS, COLLISION_KEYS])(
+      'executes %s after prisma db push',
+      (migration) => {
+        const at = dockerfile.indexOf(`${migration}/migration.sql`);
+        const push = dockerfile.indexOf('prisma db push');
+        expect(at).toBeGreaterThan(push);
+      },
+    );
 
     it('starts the app only after every migration has run', () => {
       const app = dockerfile.indexOf('node dist/src/main.js');
-      for (const migration of [COLLAPSE, SCOPING, UNIQUE_KEYS]) {
+      for (const migration of [COLLAPSE, SCOPING, UNIQUE_KEYS, COLLISION_KEYS]) {
         expect(dockerfile.indexOf(`${migration}/migration.sql`)).toBeLessThan(app);
       }
     });

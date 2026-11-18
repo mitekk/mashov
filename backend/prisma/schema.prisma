@@ -175,11 +175,10 @@ model Student {
 
 model NotificationEvent {
   id                     String    @id @default(cuid())
-  /// A per-school counter, so two schools collide on it. Still `@unique`
-  /// outright; the composite key that fixes that lands with the task-5 code
-  /// that adapts the upsert, in
-  /// prisma/migrations/20261121000000_connection_collision_keys.
-  upstreamNotificationId Int?      @unique
+  /// A per-school counter, so two schools collide on it. Keyed with the
+  /// owning connection below; on its own it meant the second school's
+  /// notification silently replaced the first's.
+  upstreamNotificationId Int?
   fingerprint            String?   @unique
   eventType              Int
   eventText              String
@@ -196,6 +195,11 @@ model NotificationEvent {
   householdConnectionId String?
   connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
 
+  /// Named explicitly: the generated name is 67 characters, over Postgres's
+  /// 63-byte identifier limit, so it would be silently truncated and drift
+  /// `db push` from the committed migration -- the same trap
+  /// digest_reported_item_dedup_key already documents.
+  @@unique([householdConnectionId, upstreamNotificationId], map: "notification_event_connection_upstream_id_key")
   @@index([householdConnectionId])
   @@map("notification_event")
 }
@@ -368,7 +372,7 @@ model SubjectEnrollment {
 model BehaviorTypeReference {
   id               String   @id @default(cuid())
   schoolCode       Int      @default(0)
-  code             Int      @unique
+  code             Int
   name             String
   displayOrder     Int      @default(0)
   justifiable      Boolean  @default(false)
@@ -378,6 +382,7 @@ model BehaviorTypeReference {
   rawPayload       Json?
   updatedAt        DateTime @updatedAt
 
+  @@unique([schoolCode, code])
   @@map("behavior_type_reference")
 }
 
@@ -537,7 +542,9 @@ model SchoolActivity {
   householdConnectionId String?
   connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
 
-  @@unique([userId, schoolYear, activityId])
+  /// Named explicitly, for the same reason as above: the generated name is 70
+  /// characters.
+  @@unique([userId, householdConnectionId, schoolYear, activityId], map: "school_activity_user_connection_year_activity_key")
   @@index([userId, endAnswerDate])
   @@index([householdConnectionId])
   @@map("school_activity")

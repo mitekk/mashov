@@ -6,15 +6,30 @@ import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import { SyncRun } from '@prisma/client';
 
-// Helper to compute the expected fingerprint for an ID-less notification
-function computeFingerprint(userId: string, eventType: number, eventTime: string): string {
+/**
+ * The expected fingerprint for an ID-less notification.
+ *
+ * The owning connection is part of the hash input rather than of a new index:
+ * `fingerprint` stays uniquely indexed on its own and the two schools' hashes
+ * simply differ. `'shared'` is the shared env-session's stand-in, which has no
+ * connection.
+ */
+function computeFingerprint(
+  userId: string,
+  eventType: number,
+  eventTime: string,
+  connectionId = 'shared',
+): string {
   const dateKey = new Date(eventTime).toISOString().split('T')[0];
-  return crypto.createHash('sha256').update(`${userId}:${eventType}:${dateKey}`).digest('hex');
+  return crypto
+    .createHash('sha256')
+    .update(`${connectionId}:${userId}:${eventType}:${dateKey}`)
+    .digest('hex');
 }
 
 describe('NotificationsTask — deduplication fingerprint', () => {
   let task: NotificationsTask;
-  let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'get'>>;
+  let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'get' | 'getForConnection'>>;
   let mockPrisma: jest.Mocked<Pick<PrismaService, 'notificationEvent' | 'householdConnection'>>;
   let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun'>>;
   let mockEncryptionService: jest.Mocked<Pick<EncryptionService, 'decrypt'>>;
@@ -37,16 +52,21 @@ describe('NotificationsTask — deduplication fingerprint', () => {
   beforeEach(() => {
     mockMashovClient = {
       get: jest.fn(),
+      getForConnection: jest.fn(),
     };
     mockPrisma = {
       notificationEvent: {
         upsert: jest.fn(),
         findUnique: jest.fn(),
+        // The shared env session owns no connection, and a NULL cannot be
+        // looked up through a unique index, so that path is find-then-write.
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
         update: jest.fn(),
       } as unknown as jest.Mocked<PrismaService['notificationEvent']>,
       householdConnection: {
         findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
       } as unknown as jest.Mocked<PrismaService['householdConnection']>,
     };
     mockSyncRunService = {
@@ -77,19 +97,116 @@ describe('NotificationsTask — deduplication fingerprint', () => {
       };
 
       (mockMashovClient.get as jest.Mock).mockResolvedValue([notification]);
+      (mockPrisma.notificationEvent.findFirst as jest.Mock).mockResolvedValue({ id: 'local-1' });
+
+      await task.execute();
+
+      // On the shared env-session path the row has no owner, and a NULL
+      // cannot be looked up through a unique index, so the id lookup is
+      // find-then-write rather than an upsert. Same observable behaviour.
+      expect(mockPrisma.notificationEvent.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { householdConnectionId: null, upstreamNotificationId: 42 },
+        }),
+      );
+      expect(mockPrisma.notificationEvent.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'local-1' } }),
+      );
+      expect(mockPrisma.notificationEvent.findUnique).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ fingerprint: expect.anything() }) }),
+      );
+    });
+
+    it('keys on the owning connection when one is active', async () => {
+      // Two schools collide on upstreamNotificationId -- it is a per-school
+      // counter -- so the id alone meant the second school's notification
+      // silently replaced the first's.
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'conn-a',
+          schoolCode: 540175,
+          schoolYear: 2026,
+          username: 'parent-a',
+          encryptedPassword: 'enc',
+        },
+      ]);
+      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue([
+        {
+          id: 42,
+          userId: 'user-1',
+          eventTime: '2026-01-15T10:00:00Z',
+          eventType: 10,
+          eventText: 'Homework not completed',
+        },
+      ]);
       (mockPrisma.notificationEvent.upsert as jest.Mock).mockResolvedValue({ id: 'local-1' });
 
       await task.execute();
 
       expect(mockPrisma.notificationEvent.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { upstreamNotificationId: 42 },
+          where: {
+            householdConnectionId_upstreamNotificationId: {
+              householdConnectionId: 'conn-a',
+              upstreamNotificationId: 42,
+            },
+          },
         }),
       );
-      expect(mockPrisma.notificationEvent.create).not.toHaveBeenCalled();
-      expect(mockPrisma.notificationEvent.findUnique).not.toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining({ fingerprint: expect.anything() }) }),
+    });
+
+    it('does not let two schools sharing an upstream id collide', async () => {
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+        { id: 'conn-a', schoolCode: 540175, schoolYear: 2026, username: 'a', encryptedPassword: 'e' },
+        { id: 'conn-b', schoolCode: 999999, schoolYear: 2027, username: 'b', encryptedPassword: 'e' },
+      ]);
+      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue([
+        {
+          id: 7,
+          userId: 'user-1',
+          eventTime: '2026-01-15T10:00:00Z',
+          eventType: 10,
+          eventText: 'Same upstream id at both schools',
+        },
+      ]);
+      (mockPrisma.notificationEvent.upsert as jest.Mock).mockResolvedValue({ id: 'local' });
+
+      await task.execute();
+
+      const keys = (mockPrisma.notificationEvent.upsert as jest.Mock).mock.calls.map(
+        (call) => call[0].where.householdConnectionId_upstreamNotificationId,
       );
+      expect(keys).toEqual([
+        { householdConnectionId: 'conn-a', upstreamNotificationId: 7 },
+        { householdConnectionId: 'conn-b', upstreamNotificationId: 7 },
+      ]);
+    });
+
+    it('gives the two schools different fingerprints for the same ID-less event', async () => {
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+        { id: 'conn-a', schoolCode: 540175, schoolYear: 2026, username: 'a', encryptedPassword: 'e' },
+        { id: 'conn-b', schoolCode: 999999, schoolYear: 2027, username: 'b', encryptedPassword: 'e' },
+      ]);
+      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue([
+        {
+          userId: 'user-1',
+          eventTime: '2026-01-15T10:00:00Z',
+          eventType: 16,
+          eventText: 'Parent evening',
+        },
+      ]);
+      (mockPrisma.notificationEvent.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await task.execute();
+
+      const fingerprints = (mockPrisma.notificationEvent.create as jest.Mock).mock.calls.map(
+        (call) => call[0].data.fingerprint,
+      );
+      expect(fingerprints).toEqual([
+        computeFingerprint('user-1', 16, '2026-01-15T10:00:00Z', 'conn-a'),
+        computeFingerprint('user-1', 16, '2026-01-15T10:00:00Z', 'conn-b'),
+      ]);
+      expect(fingerprints[0]).not.toBe(fingerprints[1]);
     });
 
     it('does not compute a fingerprint when the notification has an id', async () => {
@@ -102,15 +219,16 @@ describe('NotificationsTask — deduplication fingerprint', () => {
       };
 
       (mockMashovClient.get as jest.Mock).mockResolvedValue([notification]);
-      (mockPrisma.notificationEvent.upsert as jest.Mock).mockResolvedValue({ id: 'local-2' });
+      (mockPrisma.notificationEvent.findFirst as jest.Mock).mockResolvedValue(null);
 
       await task.execute();
 
-      expect(mockPrisma.notificationEvent.upsert).toHaveBeenCalledWith(
+      expect(mockPrisma.notificationEvent.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { upstreamNotificationId: 99 },
+          data: expect.objectContaining({ upstreamNotificationId: 99 }),
         }),
       );
+      expect(mockPrisma.notificationEvent.findUnique).not.toHaveBeenCalled();
     });
   });
 
@@ -269,13 +387,15 @@ describe('NotificationsTask — deduplication fingerprint', () => {
       ];
 
       (mockMashovClient.get as jest.Mock).mockResolvedValue(notifications);
-      (mockPrisma.notificationEvent.upsert as jest.Mock)
+      // The shared env-session path is find-then-write, so the failure has to
+      // be injected there rather than on upsert.
+      (mockPrisma.notificationEvent.findFirst as jest.Mock)
         .mockRejectedValueOnce(new Error('constraint error'))
-        .mockResolvedValueOnce({ id: 'local-6' });
+        .mockResolvedValueOnce(null);
 
       await expect(task.execute()).resolves.not.toThrow();
 
-      expect(mockPrisma.notificationEvent.upsert).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.notificationEvent.findFirst).toHaveBeenCalledTimes(2);
       expect(mockSyncRunService.closeRun).toHaveBeenCalledWith(
         fakeSyncRun.id,
         'success',

@@ -31,12 +31,30 @@ export class BehaviorClassifierService {
     return DEFAULT_CLASSIFICATION_MAP.get(eventCode) ?? DEFAULT_CLASSIFICATION;
   }
 
-  async isJustifiable(achvaCode: number): Promise<boolean> {
+  /**
+   * Whether a school counts this behaviour code as excusing itself.
+   *
+   * Takes the school, because the taxonomy is school-local: the same code
+   * means different things at different schools, and `justifiable` is each
+   * school's own policy. Answering from the wrong school's row is how a
+   * child's unexcused absence quietly becomes an excused one.
+   *
+   * Falls back to the code alone when the school has no row yet -- a
+   * deployment whose achvas sync has not run for that school, or a row the
+   * ownership migration left at schoolCode 0. False is the safe default: it
+   * reports an absence as needing attention rather than silently excusing it.
+   */
+  async isJustifiable(schoolCode: number, achvaCode: number): Promise<boolean> {
     try {
-      const ref = await this.prisma.behaviorTypeReference.findUnique({
-        where: { code: achvaCode },
+      const scoped = await this.prisma.behaviorTypeReference.findUnique({
+        where: { schoolCode_code: { schoolCode, code: achvaCode } },
       });
-      return ref?.justifiable ?? false;
+      if (scoped) return scoped.justifiable;
+
+      const unscoped = await this.prisma.behaviorTypeReference.findFirst({
+        where: { schoolCode: 0, code: achvaCode },
+      });
+      return unscoped?.justifiable ?? false;
     } catch {
       return false;
     }

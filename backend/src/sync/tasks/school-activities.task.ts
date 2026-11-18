@@ -121,16 +121,27 @@ export class SchoolActivitiesTask {
               rawPayload: item as unknown as import('@prisma/client').Prisma.InputJsonValue,
             };
 
+            // The connection belongs in the key: activityId is a per-school
+            // counter -- literally 1 in the captured payload -- and userId is
+            // the merged household, so without it one school's consent request
+            // overwrites the other's. The digest reports consent deadlines, so
+            // the parent would simply never be told about one of them.
             await this.prisma.schoolActivity.upsert({
               where: {
-                userId_schoolYear_activityId: {
+                userId_householdConnectionId_schoolYear_activityId: {
                   userId,
+                  householdConnectionId: conn.id,
                   schoolYear: conn.schoolYear,
                   activityId: item.id,
                 },
               },
-              create: { userId, activityId: item.id, ...data },
-              update: data,
+              create: {
+                userId,
+                householdConnectionId: conn.id,
+                activityId: item.id,
+                ...data,
+              },
+              update: { ...data, householdConnectionId: conn.id },
             });
             upsertCount++;
             totalUpsertCount++;
