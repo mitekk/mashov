@@ -246,6 +246,97 @@ describe('AuthService', () => {
         }),
       );
     });
+
+    it('stamps the children with the connection it just created', async () => {
+      // Sign-in writes the roster itself rather than going through
+      // persistRoster, so it needs its own stamp. Without it the first login
+      // of a household leaves every child unowned until a sync cron happens to
+      // re-stamp them -- and MailInboxTask refuses to reconcile unread while
+      // any row is unstamped.
+      const loginWithChildren = {
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          children: [
+            {
+              childGuid: 'child-1',
+              familyName: 'Cohen',
+              privateName: 'Avi',
+              classCode: '10A',
+              classNum: 10,
+              gender: 'M',
+              groups: [1, 2],
+            },
+          ],
+        },
+      };
+      mockHttp.post = jest.fn().mockResolvedValue({ data: loginWithChildren });
+      mockPrisma.appUser.findUnique.mockResolvedValue(null);
+      mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.create.mockResolvedValue({ id: 'conn-new' });
+      mockPrisma.student.upsert.mockResolvedValue({});
+      mockRedis.incr.mockResolvedValue(1);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      const [{ create, update }] = mockPrisma.student.upsert.mock.calls[0] as [
+        { create: Record<string, unknown>; update: Record<string, unknown> },
+      ];
+      expect(create.householdConnectionId).toBe('conn-new');
+      expect(update.householdConnectionId).toBe('conn-new');
+    });
+
+    it('stamps the children with the existing connection on a return login', async () => {
+      const loginWithChildren = {
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          children: [
+            {
+              childGuid: 'child-1',
+              familyName: 'Cohen',
+              privateName: 'Avi',
+              classCode: '10A',
+              classNum: 10,
+              gender: 'M',
+              groups: [1, 2],
+            },
+          ],
+          inactiveChildren: [{ childGuid: 'child-gone' }],
+        },
+      };
+      mockHttp.post = jest.fn().mockResolvedValue({ data: loginWithChildren });
+      mockPrisma.appUser.findUnique.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.householdConnection.findFirst.mockResolvedValue({
+        id: 'conn-existing',
+        mashovUniqueId: 'uniq-0',
+      });
+      mockPrisma.householdConnection.update.mockResolvedValue({ id: 'conn-existing' });
+      mockPrisma.student.upsert.mockResolvedValue({});
+      mockPrisma.student.updateMany.mockResolvedValue({ count: 1 });
+      mockRedis.incr.mockResolvedValue(1);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      const [{ update }] = mockPrisma.student.upsert.mock.calls[0] as [
+        { update: Record<string, unknown> },
+      ];
+      expect(update.householdConnectionId).toBe('conn-existing');
+      // The deactivation sweep is scoped the same way persistRoster's is: one
+      // school must not be able to retire a child it does not own.
+      expect(mockPrisma.student.updateMany).toHaveBeenCalledWith({
+        where: {
+          studentGuid: { in: ['child-gone'] },
+          OR: [
+            { householdConnectionId: 'conn-existing' },
+            { householdConnectionId: null },
+          ],
+        },
+        data: { isActive: false },
+      });
+    });
   });
 
   describe('school year resolution', () => {
@@ -253,8 +344,8 @@ describe('AuthService', () => {
       mockHttp.post = jest.fn().mockResolvedValue({ data });
       mockPrisma.appUser.findUnique.mockResolvedValue(null);
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
-      mockPrisma.householdConnection.create.mockResolvedValue({});
-      mockPrisma.householdConnection.update.mockResolvedValue({});
+      mockPrisma.householdConnection.create.mockResolvedValue({ id: 'conn-new' });
+      mockPrisma.householdConnection.update.mockResolvedValue({ id: 'conn-existing' });
       mockPrisma.student.upsert.mockResolvedValue({});
       mockRedis.incr.mockResolvedValue(1);
     }
@@ -451,7 +542,13 @@ describe('AuthService', () => {
       await service.login(482273, 'user', 'pass', '127.0.0.1');
 
       expect(mockPrisma.student.updateMany).toHaveBeenCalledWith({
-        where: { studentGuid: { in: ['child-gone'] } },
+        where: {
+          studentGuid: { in: ['child-gone'] },
+          // Scoped as of the ownership stamp: `inactiveChildren` is
+          // school-local, so a login must not retire a child another school
+          // owns. NULL is included because it means "ownership unknown".
+          OR: [{ householdConnectionId: 'conn-new' }, { householdConnectionId: null }],
+        },
         data: { isActive: false },
       });
     });

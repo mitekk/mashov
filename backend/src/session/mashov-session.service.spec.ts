@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { MashovSessionService } from './mashov-session.service';
+import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { EncryptionService } from './encryption.service';
@@ -210,9 +211,30 @@ describe('MashovSessionService', () => {
       await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
 
       expect(prisma.student.updateMany).toHaveBeenCalledWith({
-        where: { studentGuid: { in: ['child-gone'] } },
+        where: {
+          studentGuid: { in: ['child-gone'] },
+          // Scoped to this connection's own children (or to not-yet-stamped
+          // ones). `inactiveChildren` is school-local, and another school can
+          // legitimately have a child with the same guid only in the sense that
+          // the guid is global — but a connection must not be able to
+          // deactivate a child it does not own.
+          OR: [{ householdConnectionId: 'conn-1' }, { householdConnectionId: null }],
+        },
         data: { isActive: false },
       });
+    });
+
+    it('stamps each child with the connection whose roster listed them', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      const [{ create, update }] = prisma.student.upsert.mock.calls[0] as [
+        { create: Record<string, unknown>; update: Record<string, unknown> },
+      ];
+      expect(create.householdConnectionId).toBe('conn-1');
+      expect(update.householdConnectionId).toBe('conn-1');
     });
 
     it('does not deactivate students in neither list', async () => {
@@ -419,6 +441,84 @@ describe('MashovSessionService', () => {
       mockHttp.post.mockRejectedValue(new Error('upstream down'));
 
       await expect(service.ensureStudentsAvailable('user-1')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('ownership stamping', () => {
+    it('does not blank an existing stamp on a shared-session login', async () => {
+      // The env-credential login has no connection to attribute rows to. It
+      // must leave the column alone rather than write null over a stamp a
+      // per-connection login already set -- blanking it would un-own every
+      // child on the next boot, and the mail sweep refuses to run while any
+      // row is unstamped.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.initialize();
+
+      expect(prisma.student.upsert).toHaveBeenCalled();
+      for (const call of prisma.student.upsert.mock.calls) {
+        const [{ create, update }] = call as [
+          { create: Record<string, unknown>; update: Record<string, unknown> },
+        ];
+        expect(update).not.toHaveProperty('householdConnectionId');
+        expect(create).not.toHaveProperty('householdConnectionId');
+      }
+    });
+
+    it('leaves the inactive sweep unscoped on a shared-session login', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(
+        loginPayload([CHILD], { inactiveChildren: [{ childGuid: 'child-gone' }] }),
+      );
+
+      await service.initialize();
+
+      expect(prisma.student.updateMany).toHaveBeenCalledWith({
+        where: { studentGuid: { in: ['child-gone'] } },
+        data: { isActive: false },
+      });
+    });
+
+    it('re-stamps and warns when a child turns up under another connection', async () => {
+      // A child who moved school. The stamp has to follow them or every
+      // per-student cron keeps asking the old school and getting a 403, but it
+      // is also the only trace that it happened -- nothing else in the schema
+      // records a move.
+      const { service, prisma } = makeHarness();
+      prisma.student.findMany.mockResolvedValue([
+        { studentGuid: 'child-1', householdConnectionId: 'conn-old' },
+      ]);
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      const [{ update }] = prisma.student.upsert.mock.calls[0] as [
+        { update: Record<string, unknown> },
+      ];
+      expect(update.householdConnectionId).toBe('conn-1');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('child-1'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('conn-old'));
+      warn.mockRestore();
+    });
+
+    it('does not warn when the stamp is unchanged', async () => {
+      const { service, prisma } = makeHarness();
+      prisma.student.findMany.mockResolvedValue([
+        { studentGuid: 'child-1', householdConnectionId: 'conn-1' },
+      ]);
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('moved'));
+      warn.mockRestore();
     });
   });
 

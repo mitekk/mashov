@@ -239,7 +239,13 @@ export class AuthService {
         select: { id: true, mashovUniqueId: true },
       }));
 
+    // Captured, not discarded: the children written below belong to THIS
+    // connection, and until they carry its id nothing in the schema says which
+    // household owns them.
+    let connectionId: string;
+
     if (existingConn) {
+      connectionId = existingConn.id;
       await this.prisma.householdConnection.update({
         where: { id: existingConn.id },
         data: {
@@ -257,7 +263,7 @@ export class AuthService {
         },
       });
     } else {
-      await this.prisma.householdConnection.create({
+      const created = await this.prisma.householdConnection.create({
         data: {
           schoolCode: Number(semel),
           schoolYear: year,
@@ -271,38 +277,30 @@ export class AuthService {
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });
+      connectionId = created.id;
     }
 
     // Persist students from login response
     const children = loginData.accessToken?.children ?? [];
     for (const child of children) {
+      const fields = {
+        privateName: child.privateName,
+        familyName: child.familyName,
+        fullName: `${child.privateName} ${child.familyName}`,
+        classCode: child.classCode,
+        classNum: child.classNum,
+        gender: child.gender,
+        groupsRaw: child.groups as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        isActive: true,
+        lastSeenInRosterAt: new Date(),
+        rawPayload: child as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        householdConnectionId: connectionId,
+      };
+
       await this.prisma.student.upsert({
         where: { studentGuid: child.childGuid },
-        create: {
-          studentGuid: child.childGuid,
-          privateName: child.privateName,
-          familyName: child.familyName,
-          fullName: `${child.privateName} ${child.familyName}`,
-          classCode: child.classCode,
-          classNum: child.classNum,
-          gender: child.gender,
-          groupsRaw: child.groups as unknown as import('@prisma/client').Prisma.InputJsonValue,
-          isActive: true,
-          lastSeenInRosterAt: new Date(),
-          rawPayload: child as unknown as import('@prisma/client').Prisma.InputJsonValue,
-        },
-        update: {
-          privateName: child.privateName,
-          familyName: child.familyName,
-          fullName: `${child.privateName} ${child.familyName}`,
-          classCode: child.classCode,
-          classNum: child.classNum,
-          gender: child.gender,
-          groupsRaw: child.groups as unknown as import('@prisma/client').Prisma.InputJsonValue,
-          isActive: true,
-          lastSeenInRosterAt: new Date(),
-          rawPayload: child as unknown as import('@prisma/client').Prisma.InputJsonValue,
-        },
+        create: { studentGuid: child.childGuid, ...fields },
+        update: fields,
       });
     }
 
@@ -311,7 +309,17 @@ export class AuthService {
     );
     if (inactiveGuids.length > 0) {
       await this.prisma.student.updateMany({
-        where: { studentGuid: { in: inactiveGuids } },
+        where: {
+          studentGuid: { in: inactiveGuids },
+          // Scoped like persistRoster's equivalent sweep: `inactiveChildren`
+          // is school-local, so one school must not be able to retire a child
+          // belonging to another. Not-yet-stamped rows are included because
+          // NULL means "ownership unknown", not "someone else's".
+          OR: [
+            { householdConnectionId: connectionId },
+            { householdConnectionId: null },
+          ],
+        },
         data: { isActive: false },
       });
     }

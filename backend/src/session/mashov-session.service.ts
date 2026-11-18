@@ -205,7 +205,9 @@ export class MashovSessionService {
       response.headers as Record<string, string | string[]>,
     );
 
-    await this.persistRoster(response.data, Number(semel), year);
+    // null: the shared env-credential session has no connection, so it
+    // reads the roster but must not claim ownership of it.
+    await this.persistRoster(response.data, Number(semel), year, null);
     await this.parseAndPersistHousehold(
       response.data,
       Number(semel),
@@ -553,6 +555,16 @@ export class MashovSessionService {
     data: LoginResponse,
     semel: number,
     year: number,
+    /**
+     * The connection whose login produced this roster, or `null` for the
+     * shared env-credential session, which has no connection to attribute
+     * children to.
+     *
+     * `null` means "leave the column alone", never "write null": blanking an
+     * existing stamp would un-own every child on the next boot, and
+     * MailInboxTask refuses to reconcile while any row is unstamped.
+     */
+    connectionId: string | null = null,
   ): Promise<RosterResult> {
     const children = data.accessToken?.children ?? [];
     const guids = children
@@ -563,10 +575,13 @@ export class MashovSessionService {
       guids.length > 0
         ? await this.prisma.student.findMany({
             where: { studentGuid: { in: guids } },
-            select: { studentGuid: true },
+            select: { studentGuid: true, householdConnectionId: true },
           })
         : [];
     const existingGuids = new Set(existing.map((row) => row.studentGuid));
+    const ownerByGuid = new Map(
+      existing.map((row) => [row.studentGuid, row.householdConnectionId]),
+    );
 
     let created = 0;
     let updated = 0;
@@ -578,6 +593,18 @@ export class MashovSessionService {
           `Skipping a child with no recognisable guid in the login payload for semel=${semel}`,
         );
         continue;
+      }
+
+      // A child who turns up under a different connection has moved school.
+      // The stamp has to follow them or every per-student cron keeps asking
+      // the old school and collecting a 403 every twelve minutes -- and this
+      // log line is the only trace of the move anywhere, since `Student`
+      // records no history.
+      const previousOwner = ownerByGuid.get(studentGuid) ?? null;
+      if (connectionId && previousOwner && previousOwner !== connectionId) {
+        this.logger.warn(
+          `Child ${studentGuid} moved from connection ${previousOwner} to ${connectionId}; re-stamping ownership`,
+        );
       }
 
       const fields = {
@@ -593,6 +620,7 @@ export class MashovSessionService {
         lastSeenInRosterAt: new Date(),
         rawPayload:
           child as unknown as import("@prisma/client").Prisma.InputJsonValue,
+        ...(connectionId ? { householdConnectionId: connectionId } : {}),
       };
 
       await this.prisma.student.upsert({
@@ -614,7 +642,22 @@ export class MashovSessionService {
     let deactivated = 0;
     if (inactiveGuids.length > 0) {
       const result = await this.prisma.student.updateMany({
-        where: { studentGuid: { in: inactiveGuids } },
+        where: {
+          studentGuid: { in: inactiveGuids },
+          // Scoped to this connection's own children, plus not-yet-stamped
+          // ones. `inactiveChildren` is school-local, so one school must not
+          // be able to deactivate a child it does not own. The shared
+          // env-session path has no connection and stays unscoped, which is
+          // the behaviour it has always had.
+          ...(connectionId
+            ? {
+                OR: [
+                  { householdConnectionId: connectionId },
+                  { householdConnectionId: null },
+                ],
+              }
+            : {}),
+        },
         data: { isActive: false },
       });
       deactivated = result.count;
@@ -917,7 +960,12 @@ export class MashovSessionService {
     // updated. See `isHistorical` for why the backfill is the one exception.
     const roster = isHistorical
       ? { created: 0, updated: 0, deactivated: 0 }
-      : await this.persistRoster(response.data, Number(semel), Number(year));
+      : await this.persistRoster(
+          response.data,
+          Number(semel),
+          Number(year),
+          connectionId ?? null,
+        );
     if (connectionId) {
       const key = this.sessionKey(connectionId, Number(year));
       this.lastRosterByConnection.set(key, roster);
