@@ -16,6 +16,7 @@ import { ReleasesTask } from '../../src/sync/tasks/releases.task';
 import { SchoolActivitiesTask } from '../../src/sync/tasks/school-activities.task';
 import { TimetableTask } from '../../src/sync/tasks/timetable.task';
 import { StudentsTask } from '../../src/sync/tasks/students.task';
+import { RefreshProgressService } from '../../src/sync/refresh-progress.service';
 
 const createMockTask = () => ({
   execute: jest.fn().mockResolvedValue({
@@ -88,6 +89,12 @@ describe('SyncService', () => {
         { provide: SchoolActivitiesTask, useValue: schoolActivitiesTask },
         { provide: TimetableTask, useValue: timetableTask },
         { provide: StudentsTask, useValue: studentsTask },
+        // Progress reporting is exercised in src/sync/sync.service.spec.ts;
+        // here it only has to exist so the refresh can run.
+        {
+          provide: RefreshProgressService,
+          useValue: { open: jest.fn(), write: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
 

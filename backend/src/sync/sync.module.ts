@@ -8,6 +8,7 @@ import { BehaviorClassifierService } from './behavior-classifier.service';
 import { FreshnessService } from './freshness.service';
 import { SyncRunRetentionService } from './sync-run-retention.service';
 import { RosterPresenceService } from './roster-presence.service';
+import { RefreshProgressService } from './refresh-progress.service';
 import { SyncService } from './sync.service';
 import { SyncController } from './sync.controller';
 import { NotificationsTask } from './tasks/notifications.task';
@@ -39,6 +40,7 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
     RosterPresenceService,
     BehaviorClassifierService,
     FreshnessService,
+    RefreshProgressService,
     SyncService,
     NotificationsTask,
     MailCountsTask,
@@ -67,6 +69,7 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
     RosterPresenceService,
     BehaviorClassifierService,
     FreshnessService,
+    RefreshProgressService,
     SyncService,
   ],
 })

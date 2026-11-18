@@ -15,6 +15,8 @@ import { ReleasesTask } from './tasks/releases.task';
 import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
 import { StudentsTask } from './tasks/students.task';
+import { RefreshProgressService } from './refresh-progress.service';
+import type { RefreshEnvelope } from './refresh-progress.service';
 import type {
   ManualSyncRefreshResponse,
   ManualSyncTaskResult,
@@ -44,6 +46,7 @@ export class SyncService {
     private readonly schoolActivitiesTask: SchoolActivitiesTask,
     private readonly timetableTask: TimetableTask,
     private readonly studentsTask: StudentsTask,
+    private readonly refreshProgress: RefreshProgressService,
   ) {}
 
   async refreshAll(context: SyncExecutionContext = {}): Promise<ManualSyncRefreshResponse> {
@@ -67,15 +70,81 @@ export class SyncService {
     );
 
     const refreshStartedAt = new Date();
+    const tasks = this.buildTasks(context);
+    // +1 for the roster, which runs on its own ahead of the rest. Derived from
+    // the wired list and known before anything runs: the status endpoint used
+    // to compare a count of successful `sync_run` sources against a hardcoded
+    // 16, a number nothing made reachable.
+    const tasksTotal = tasks.length + 1;
 
-    // The roster goes first, on its own: every other task iterates
-    // `prisma.student.findMany`, so a child who moved up a grade — or a child
-    // who is new — is invisible to them until this has landed.
-    const rosterResult = await this.executeTask('students', () =>
-      this.studentsTask.execute(context),
-    );
+    // Only a real, unprefixed, per-connection refresh owns an envelope. The
+    // global cron path has no connection to key it on, and a prefixed history
+    // backfill is not what the first-login screen is waiting for — it must not
+    // overwrite the envelope of a live refresh.
+    const envelope =
+      context.connectionId && context.sourcePrefix === undefined
+        ? this.refreshProgress.open(context.connectionId, tasksTotal)
+        : null;
 
-    const tasks: Array<{ name: string; fn: () => Promise<SyncTaskRunResult> }> = [
+    try {
+      if (envelope) {
+        this.publish(envelope);
+      }
+
+      // The roster goes first, on its own: every other task iterates
+      // `prisma.student.findMany`, so a child who moved up a grade — or a child
+      // who is new — is invisible to them until this has landed.
+      const rosterResult = await this.runTracked(envelope, 'students', () =>
+        this.studentsTask.execute(context),
+      );
+
+      const taskResults = [
+        rosterResult,
+        ...(await Promise.all(
+          tasks.map((task) => this.runTracked(envelope, task.name, task.fn)),
+        )),
+      ];
+      const hasFailures = taskResults.some((result) => result.status === 'failed');
+      const refreshEndedAt = new Date();
+
+      if (envelope) {
+        envelope.phase = hasFailures ? 'partial' : 'success';
+        envelope.endedAt = refreshEndedAt.toISOString();
+        envelope.currentTask = null;
+        // Awaited, not fired and forgotten: the client polls every few seconds
+        // and must not be able to read a `running` envelope after the response
+        // that completed it.
+        await this.publishAndWait(envelope);
+      }
+
+      const response: ManualSyncRefreshResponse = {
+        status: hasFailures ? 'partial' : 'success',
+        startedAt: refreshStartedAt.toISOString(),
+        endedAt: refreshEndedAt.toISOString(),
+        durationMs: refreshEndedAt.getTime() - refreshStartedAt.getTime(),
+        tasks: taskResults,
+      };
+
+      this.logger.log(`Manual refresh complete with status=${response.status}`);
+      return response;
+    } catch (error) {
+      // `executeTask` swallows task failures, so reaching here means the
+      // orchestration itself broke. Left alone the envelope would stay
+      // `running` and only the staleness clock would release the client.
+      if (envelope) {
+        envelope.phase = 'failed';
+        envelope.endedAt = new Date().toISOString();
+        await this.publishAndWait(envelope);
+      }
+      throw error;
+    }
+  }
+
+  /** The task list, built before anything runs so its length is known up front. */
+  private buildTasks(
+    context: SyncExecutionContext,
+  ): Array<{ name: string; fn: () => Promise<SyncTaskRunResult> }> {
+    return [
       { name: 'notifications', fn: () => this.notificationsTask.execute(context) },
       { name: 'mailCounts', fn: () => this.mailCountsTask.execute(context) },
       { name: 'mailInbox', fn: () => this.mailInboxTask.execute(context) },
@@ -92,24 +161,63 @@ export class SyncService {
       { name: 'schoolActivities', fn: () => this.schoolActivitiesTask.execute(context) },
       { name: 'timetable', fn: () => this.timetableTask.execute(context) },
     ];
+  }
 
-    const taskResults = [
-      rosterResult,
-      ...(await Promise.all(tasks.map((task) => this.executeTask(task.name, task.fn)))),
-    ];
-    const hasFailures = taskResults.some((result) => result.status === 'failed');
-    const refreshEndedAt = new Date();
+  /**
+   * Runs one task and reports its settlement into the envelope as it happens.
+   *
+   * Progress has to stream: a single update at the end would leave the screen
+   * at zero for the whole refresh, which is indistinguishable from the hang
+   * this replaced.
+   */
+  private async runTracked(
+    envelope: RefreshEnvelope | null,
+    taskName: string,
+    fn: () => Promise<SyncTaskRunResult>,
+  ): Promise<ManualSyncTaskResult> {
+    if (envelope) {
+      envelope.currentTask = taskName;
+      envelope.tasks.push({ task: taskName, status: 'running' });
+      this.publish(envelope);
+    }
 
-    const response: ManualSyncRefreshResponse = {
-      status: hasFailures ? 'partial' : 'success',
-      startedAt: refreshStartedAt.toISOString(),
-      endedAt: refreshEndedAt.toISOString(),
-      durationMs: refreshEndedAt.getTime() - refreshStartedAt.getTime(),
-      tasks: taskResults,
-    };
+    const result = await this.executeTask(taskName, fn);
 
-    this.logger.log(`Manual refresh complete with status=${response.status}`);
-    return response;
+    if (envelope) {
+      const entry = envelope.tasks.find((task) => task.task === taskName);
+      if (entry) {
+        entry.status = result.status;
+      }
+      envelope.tasksSettled += 1;
+      if (result.status === 'failed') {
+        envelope.tasksFailed += 1;
+      }
+      this.publish(envelope);
+    }
+
+    return result;
+  }
+
+  /**
+   * Fire-and-forget write. `write` serialises the envelope synchronously before
+   * it touches Redis, so the snapshot is accurate even though we do not await
+   * it — and a slow Redis cannot pace the refresh.
+   */
+  private publish(envelope: RefreshEnvelope): void {
+    void this.publishAndWait(envelope);
+  }
+
+  /**
+   * Awaited write for the terminal phase, with the same guarantee as the
+   * fire-and-forget one: progress reporting must never be able to fail the
+   * refresh it reports on, so a rejection here is swallowed too.
+   */
+  private async publishAndWait(envelope: RefreshEnvelope): Promise<void> {
+    try {
+      await this.refreshProgress.write(envelope);
+    } catch {
+      // `RefreshProgressService.write` already logs its own failures.
+    }
   }
 
   private async executeTask(
