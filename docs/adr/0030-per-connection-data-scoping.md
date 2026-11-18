@@ -103,37 +103,39 @@ are 67 and 70 characters, past Postgres's 63-byte identifier limit, so they woul
 truncated and `db push` would drift from the committed migration — the same trap
 `digest_reported_item_dedup_key` already documents.
 
-## Two known gaps, named rather than hidden
+## Two known defects, both recorded as follow-ups
 
-**Linking a school takes a child away from another household.** `Student.studentGuid`
-is globally unique and the child upsert's `update` branch re-stamps
-`householdConnectionId` unconditionally. Two parents of one child with separate
-Mashov accounts at the same school — separated or divorced parents, which is
-ordinary rather than exotic — means that when the second parent links, the
-child's row re-stamps to their connection, and the first parent's `/children`
-silently loses the child, their per-child endpoints 404, and their
-`UserItemState` read/archive flags become unreachable.
+**A child can be owned by only one connection, so the second parent to sync evicts the
+first.** `Student.studentGuid` is globally `@unique`, and the child upsert's `update`
+branch sets `householdConnectionId` unconditionally. Any two Mashov accounts that both
+list the same child therefore collide: whichever syncs second takes ownership, and the
+first user's `householdStudentWhere` stops matching, so the child disappears from
+their `/children` and every per-child route 404s.
 
-This is the practical face of the `studentGuid` limitation ADR-0029 records. It
-is left as-is deliberately: refusing the link would lock the second parent out
-entirely, and allowing it without re-stamping would show them a child they
-cannot open. Supporting both properly needs a child to belong to N households,
-which is a composite key across six tables. **It is a product decision, not an
-implementation detail, and it should be made before this is offered to
-separated parents.**
+This is not an exotic case. **ADR-0016** states as a live requirement that "two
+parents in the same household must be able to independently track what they have
+read", and **PRD open question 2** says two parents sharing one Mashov credential is
+unsupported because "each user creates their own connection" — i.e. the supported
+shape is two `AppUser`s, two connections, one school, the same children. That is
+exactly the shape this breaks.
+
+The root cause is that `householdConnectionId` was made to carry two different jobs:
+
+1. **Routing** — whose credentials to use upstream for this child. One value is fine;
+   any connection that lists the child will do, and a wrong guess self-corrects.
+2. **Visibility** — which users may see this child. One value is *wrong*; this has to
+   be a set, because a child can legitimately belong to several users.
+
+Conflating them is the defect. Recorded as **B1** in
+`docs/plans/merged-household-access-followups.md`.
 
 **The unstamped fallback is global.** `ConnectionScopeService.resolveOrFallback`
-resolves an unattributed row with `findFirst({ active: true })` and no `userId`,
-so on a deployment with several households one family's unstamped conversation
-can resolve to another family's credentials. Mashov will reject the request in
-almost every case, so the visible symptom is an empty list rather than
-someone else's data — but one family's credentials are being spent on another
-family's request, and for a mail mutation the upstream write lands in whichever
-account the fallback picked. The fallback should take the caller's `userId`
-wherever one is available; it does not yet.
-
-Both are bounded today because this is a one-household deployment. Neither is
-bounded by anything in the code.
+resolves an unattributed row with `findFirst({ active: true })` and no `userId`, so
+with several users one family's unstamped conversation can resolve to another's
+credentials. Mashov rejects it in almost every case, so the visible symptom is an
+empty list rather than someone else's data — but one user's credentials are spent on
+another's request, and for a mail mutation the upstream write lands in whichever
+account the fallback picked. Recorded as **B3**.
 
 ## Alternatives considered
 

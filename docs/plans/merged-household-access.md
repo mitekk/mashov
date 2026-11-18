@@ -1,5 +1,11 @@
 # Two schools, one session — merged household access
 
+> **Implemented** on `feat/merged-household-access` (steps 1–12).
+> Deferred work, and the four bugs the whole-branch review left open, are in
+> [merged-household-access-followups.md](merged-household-access-followups.md).
+> Decisions: [ADR-0029](../adr/0029-household-merge-and-login-adoption.md),
+> [ADR-0030](../adr/0030-per-connection-data-scoping.md).
+
 ## Context
 
 A parent has children at two different schools. Mashov issues a separate account per

@@ -31,12 +31,38 @@ Two further decisions were forced by the first:
   user or school column, and `ChildrenService.getChildren()` returned every active student row
   with no ownership check at all.
 
+## What "household" means here, and what it does not
+
+The word predates this ADR and was never defined as an entity. Every earlier use is a
+scale adjective — "a household deployment" (ADR-0001), "the household operator"
+(ADR-0002), "< 1 ms on the household scale" (ADR-0015) — and `HouseholdConnection`
+carries it in a model name with no doc comment.
+
+Two places do give it entity weight, and **both mean a household holds more than one
+user**:
+
+- **ADR-0016**: "Phase 2 introduces parent authentication, making household-global
+  state incorrect: two parents in the same household must be able to independently
+  track what they have read." This is a live requirement, not history.
+- **PRD open question 2**: two parents sharing one Mashov credential is unsupported;
+  "each user creates their own connection". The supported shape is therefore two
+  `AppUser`s, two connections, one school, **the same children**.
+
+So this ADR does **not** redefine "household". What it actually does is scope every
+read and write to the signed-in **user** — `AppSession.userId` — and call that scope
+a household because, for a single-parent deployment, the two coincide. Where they do
+not coincide the scoping is wrong, and item **B1** in
+`docs/plans/merged-household-access-followups.md` records the bug that results.
+
+A real `Household` entity above `AppUser`, with several users sharing one set of
+connections and children, is the shape ADR-0016 implies. It is not built here.
+
 ## Decision
 
-**`AppUser` *is* the household.** One `AppUser`, N connections. `AppSession.userId` and
-`request.user = { userId }` are unchanged.
+**One `AppUser`, N connections.** `AppSession.userId` and `request.user = { userId }`
+are unchanged, and every scoping predicate this work adds keys on that `userId`.
 
-**Not a `Household` entity above `AppUser`.** `userId` is the application's universal scoping
+**Why no `Household` entity was introduced *in this change*.** `userId` is the application's universal scoping
 key — `UserItemState.userId`, `DigestRecipient.userId`, every `*.service.ts` signature. Moving
 the session subject would rewrite the meaning of `userId` in every read/unread, archive and
 digest path, for a deployment with one household, and would invalidate ADR-0015, ADR-0019 and
@@ -78,28 +104,27 @@ The alternative — demanding a confirmation code out of band — has no channel
 no verified email or phone for a parent; `ParentProfile` holds whatever Mashov reports, which is
 the same account being claimed.
 
-## Deferred: merging two pre-existing households
+## Known defect: the merge half is missing, and the flow it blocks is legitimate
 
-The transaction this ADR's reversibility story implies — re-parent the
-connection, set `mergedIntoUserId`, revoke the orphan's `AppSession`s and their
-Redis mirrors, re-point `DigestRecipient`, copy non-conflicting `UserItemState`
-— **is not implemented.** `AppUser.mergedIntoUserId`, and the one-hop resolver
-in `AuthService` that reads it, exist and are tested; nothing writes the column.
+The transaction this ADR's reversibility story implies — re-parent the connection, set
+`mergedIntoUserId`, revoke the orphan's `AppSession`s *and* their Redis mirrors,
+re-point `DigestRecipient`, copy non-conflicting `UserItemState` — **is not
+implemented.** `AppUser.mergedIntoUserId` and the one-hop resolver in `AuthService`
+that reads it exist and are tested; nothing writes the column.
 
-The consequence is a real dead end. A parent who signs into school B *first*
-gets their own household (which this ADR says is correct — the app cannot know
-two Mashov accounts are one parent). If they later sign into school A and try
-to add B, `POST /school-links` answers `409 CONNECTION_ALREADY_LINKED`, because
-B's connection already has a `userId`. There is no in-app remedy.
+Signing into school B first and later adding B from school A's session is a
+**legitimate flow**, not an edge case: a parent has no reason to know which school to
+sign into first. It currently dead-ends on `409 CONNECTION_ALREADY_LINKED`, because
+B's connection already carries a `userId`, and there is no in-app remedy.
 
-The workaround until it is implemented: sign into B, unlink it from that
-household (`DELETE /school-links`, which sets `conn.userId = null` and keeps the
-row), then sign into A and add B. That works, and it loses B's locally-held
-read/unread and archive flags, which live on the orphan `AppUser`.
+Recorded as **B2** in `docs/plans/merged-household-access-followups.md`. The manual
+workaround until it is fixed — sign into B, `DELETE /school-links` to release it, then
+sign into A and add it — works, but discards B's read/unread and archive flags, which
+live on the orphan `AppUser`.
 
-When it is implemented, `ConnectionService.deleteOneConnection` must also clear
-`mergedIntoUserId`, or this ADR's claim that "unlink … so a later B login
-re-forms its own household" stays false — `resolveMergedOwner` would keep
+Whatever implements it must also clear `mergedIntoUserId` in
+`ConnectionService.deleteOneConnection`, or this ADR's claim that unlinking lets a
+later B login re-form its own household stays false: `resolveMergedOwner` would keep
 dragging B's next sign-in into the old household.
 
 ## Consequences
