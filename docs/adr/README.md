@@ -35,3 +35,4 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0025](0025-school-year-history-window.md) | `MASHOV_YEAR` Means the Earliest Year to Fetch, Never the Year in Scope | Accepted | Backend agent, Planner | 2026-11-17 |
 | [ADR-0026](0026-outbound-digest-delivery-and-llm-egress.md) | Outbound Digest Delivery — Pluggable Sender, Telegram First, and the Project's First Runtime LLM Call | Accepted | Backend agent, Planner | 2026-11-17 |
 | [ADR-0027](0027-derived-homework-deadlines.md) | Derived Homework Deadlines — Label the Estimate, Never Promise a Due Date | Accepted | Backend agent, Planner | 2026-11-17 |
+| [ADR-0028](0028-refresh-completion-envelope.md) | Refresh Completion Is an Envelope, Not a Source Threshold | Accepted | Backend agent, Frontend agent, Planner | 2026-11-18 |

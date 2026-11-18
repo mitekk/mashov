@@ -101,8 +101,10 @@ failures. The failed ledger rows are the counter.
 broken current-year homework sync — recreating ADR-0024's blindness by a new route.
 `history:<year>:homework:<guid>` matches no `SOURCE_THRESHOLDS` entry and no
 `startsWith('homework:')` test, so it is invisible to source health. That is correct: a finished
-historical year says nothing about whether live syncs work. `SyncController` excludes the prefix
-from `sourcesCompleted` for the same reason.
+historical year says nothing about whether live syncs work. `SyncController` used to exclude the
+prefix from `sourcesCompleted` for the same reason; as of ADR-0028 it derives completion from the
+refresh envelope in Redis and reads no `sync_run` rows at all, so that exclusion is gone — the
+reasoning above still governs every remaining `sync_run` reader.
 
 ### Why a historical login must not touch the present
 

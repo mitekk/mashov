@@ -300,6 +300,18 @@ describe('FreshnessService', () => {
     });
   });
 
+  describe('loadSyncRuns', () => {
+    it('passes the caller connection down to both reads', async () => {
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
+
+      await service.loadSyncRuns('conn-1');
+
+      expect(mockSyncRunService.getAllSourceHealth).toHaveBeenCalledWith('conn-1');
+      expect(mockSyncRunService.getLatestSuccessfulRuns).toHaveBeenCalledWith('conn-1');
+    });
+  });
+
   describe('getAllSourceHealth', () => {
     it('returns never_synced status when no runs exist for a source', async () => {
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());

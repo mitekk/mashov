@@ -321,6 +321,12 @@ model SyncRun {
   // getLatestSuccessfulRuns() filters on status and orders by endedAt, which
   // the index above cannot serve.
   @@index([status, endedAt])
+  // The caller-scoped source-health reads filter on householdConnectionId
+  // first. Neither index above is leading on it, so without these two Postgres
+  // falls back to a sequential scan plus a sort -- on the same unbounded table
+  // whose full reads timed out this endpoint once already.
+  @@index([householdConnectionId, source, startedAt])
+  @@index([householdConnectionId, status, endedAt])
   @@map("sync_run")
 }
 

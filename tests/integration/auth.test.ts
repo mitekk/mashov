@@ -29,6 +29,7 @@ import { AppSessionModule } from '../../backend/src/app-session/app-session.modu
 import { AuthModule } from '../../backend/src/auth/auth.module';
 import { ConnectionModule } from '../../backend/src/connection/connection.module';
 import { SyncModule } from '../../backend/src/sync/sync.module';
+import { SettingsModule } from '../../backend/src/settings/settings.module';
 import { ChildrenModule } from '../../backend/src/children/children.module';
 import { DashboardModule } from '../../backend/src/dashboard/dashboard.module';
 import { FeedModule } from '../../backend/src/feed/feed.module';
@@ -159,6 +160,7 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
         AuthModule,
         ConnectionModule,
         SyncModule,
+        SettingsModule,
         ChildrenModule,
         DashboardModule,
         FeedModule,
@@ -203,6 +205,42 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
     await prisma.$disconnect();
   });
 
+  /**
+   * Writes a refresh envelope exactly as `RefreshProgressService` would.
+   *
+   * `/sync/status` no longer derives completion from `sync_run` rows at all,
+   * so seeding rows proves nothing about it — the envelope is the contract.
+   */
+  async function seedRefreshEnvelope(
+    connectionId: string,
+    overrides: Partial<{
+      phase: string;
+      tasksTotal: number;
+      tasksSettled: number;
+      tasksFailed: number;
+      currentTask: string | null;
+      endedAt: string | null;
+      updatedAt: string;
+    }> = {},
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const envelope = {
+      refreshId: `refresh-${connectionId}`,
+      connectionId,
+      phase: 'running',
+      startedAt: now,
+      endedAt: null,
+      updatedAt: now,
+      tasksTotal: 16,
+      tasksSettled: 0,
+      tasksFailed: 0,
+      currentTask: null,
+      tasks: [],
+      ...overrides,
+    };
+    await redisService.set(`sync:refresh:${connectionId}`, JSON.stringify(envelope), 300);
+  }
+
   beforeEach(async () => {
     // Clean Phase 2 tables first (FK order)
     await prisma.appSession.deleteMany({});
@@ -218,10 +256,20 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
     await prisma.notificationEvent.deleteMany({});
     await prisma.householdConnection.deleteMany({});
     await prisma.student.deleteMany({});
+    await prisma.parentProfile.deleteMany({});
     await prisma.appUser.deleteMany({});
+
+    // Refresh progress lives in Redis, not in sync_run — one envelope per
+    // connection, keyed `sync:refresh:<connectionId>`. Leaking one between
+    // tests would make a later /sync/status read a previous test's refresh.
+    await redisService.scanDel('sync:refresh:*');
 
     loginMock.mockImplementation(buildMockLoginImpl(prisma, appSessionService) as unknown as typeof authService.login);
     rateLimitMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await redisService.scanDel('sync:refresh:*');
   });
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -810,7 +858,104 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
       expect(res.status).toBe(401);
     });
 
-    it('scopes sync status to the authenticated user connection', async () => {
+    it('reports the phase and counts of the caller own refresh envelope', async () => {
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'syncenvelope', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const user = await prisma.appUser.findFirst({ where: { username: 'syncenvelope' } });
+      const conn = await prisma.householdConnection.findFirst({
+        where: { userId: user!.id, active: true },
+      });
+      expect(conn).not.toBeNull();
+
+      await seedRefreshEnvelope(conn!.id, {
+        phase: 'running',
+        tasksTotal: 21,
+        tasksSettled: 9,
+        currentTask: 'homework',
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/sync/status')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.phase).toBe('running');
+      expect(res.body.done).toBe(false);
+      expect(res.body.sourcesCompleted).toBe(9);
+      expect(res.body.sourcesTotal).toBe(21);
+      expect(res.body.currentTask).toBe('homework');
+    });
+
+    it('reports done for a partial refresh, even though a source failed', async () => {
+      // The production report, as an integration assertion: 15 of 16 sources
+      // succeeded, one failed, and the old endpoint held the first-login
+      // screen on a target it could never reach.
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'syncpartial', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const user = await prisma.appUser.findFirst({ where: { username: 'syncpartial' } });
+      const conn = await prisma.householdConnection.findFirst({
+        where: { userId: user!.id, active: true },
+      });
+
+      await seedRefreshEnvelope(conn!.id, {
+        phase: 'partial',
+        tasksTotal: 16,
+        tasksSettled: 16,
+        tasksFailed: 1,
+        endedAt: new Date().toISOString(),
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/sync/status')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.done).toBe(true);
+      expect(res.body.phase).toBe('partial');
+      expect(res.body.tasksFailed).toBe(1);
+    });
+
+    it('reports idle when no refresh is in flight, whatever sync_run holds', async () => {
+      // Successful sync_run rows used to be the completion signal. They are
+      // now irrelevant to this endpoint, and this is what pins that down.
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'syncidle', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const user = await prisma.appUser.findFirst({ where: { username: 'syncidle' } });
+      const conn = await prisma.householdConnection.findFirst({
+        where: { userId: user!.id, active: true },
+      });
+
+      const now = new Date();
+      await prisma.syncRun.createMany({
+        data: Array.from({ length: 20 }, (_, index) => ({
+          source: `source_${index}`,
+          status: 'success',
+          startedAt: now,
+          endedAt: now,
+          householdConnectionId: conn!.id,
+        })),
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/sync/status')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.phase).toBe('idle');
+      expect(res.body.done).toBe(false);
+      expect(res.body.sourcesCompleted).toBe(0);
+    });
+
+    it('scopes the refresh envelope to the authenticated user connection', async () => {
       const loginA = await request(app.getHttpServer())
         .post('/api/v1/auth/login')
         .send({ semel: 540175, username: 'syncscope-a', password: 'pass' });
@@ -828,40 +973,16 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
       expect(connA).not.toBeNull();
       expect(connB).not.toBeNull();
 
-      const now = new Date();
-      const old = new Date(Date.now() - 31 * 60 * 1000);
-
-      await prisma.syncRun.createMany({
-        data: [
-          {
-            source: 'notifications',
-            status: 'success',
-            startedAt: now,
-            endedAt: now,
-            householdConnectionId: connA!.id,
-          },
-          {
-            source: 'mail_counts',
-            status: 'success',
-            startedAt: now,
-            endedAt: now,
-            householdConnectionId: connA!.id,
-          },
-          {
-            source: 'old_source',
-            status: 'success',
-            startedAt: old,
-            endedAt: old,
-            householdConnectionId: connA!.id,
-          },
-          {
-            source: 'notifications',
-            status: 'success',
-            startedAt: now,
-            endedAt: now,
-            householdConnectionId: connB!.id,
-          },
-        ],
+      await seedRefreshEnvelope(connA!.id, {
+        phase: 'running',
+        tasksTotal: 16,
+        tasksSettled: 2,
+      });
+      await seedRefreshEnvelope(connB!.id, {
+        phase: 'success',
+        tasksTotal: 16,
+        tasksSettled: 16,
+        endedAt: new Date().toISOString(),
       });
 
       const resA = await request(app.getHttpServer())
@@ -875,8 +996,223 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
         .get('/api/v1/sync/status')
         .set('Cookie', `mashov_session=${cookieB}`);
       expect(resB.status).toBe(200);
-      expect(resB.body.sourcesCompleted).toBe(1);
-      expect(resB.body.done).toBe(false);
+      expect(resB.body.sourcesCompleted).toBe(16);
+      expect(resB.body.done).toBe(true);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // GET /api/v1/settings/profile
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('GET /api/v1/settings/profile', () => {
+    it("returns the caller's own profile in contract shape", async () => {
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'profile-shape', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const user = await prisma.appUser.findFirst({ where: { username: 'profile-shape' } });
+      expect(user).not.toBeNull();
+
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: user!.mashovUserId,
+          displayName: 'My Own Name',
+          email: 'mine@example.com',
+          cellphone: '0500000001',
+          detailsState: 1,
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/settings/profile')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        upstreamUserId: user!.mashovUserId,
+        displayName: 'My Own Name',
+        email: 'mine@example.com',
+        cellphone: '0500000001',
+      });
+      expect(typeof res.body.schoolYear).toBe('number');
+      expect(typeof res.body.updatedAt).toBe('string');
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      const res = await request(app.getHttpServer()).get('/api/v1/settings/profile');
+      expect(res.status).toBe(401);
+    });
+
+    it("does not return another parent's name, email or phone", async () => {
+      // The leak: `parentProfile.findFirst()` had no user filter, so whichever
+      // row came back first was served to whoever asked.
+      const loginA = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'profile-a', password: 'pass' });
+      const cookieA = extractSessionCookie(loginA);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 888888, username: 'profile-b', password: 'pass' });
+
+      const userA = await prisma.appUser.findFirst({ where: { username: 'profile-a' } });
+      const userB = await prisma.appUser.findFirst({ where: { username: 'profile-b' } });
+      expect(userA!.mashovUserId).not.toBe(userB!.mashovUserId);
+
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: userB!.mashovUserId,
+          displayName: 'Someone Else',
+          email: 'stranger@example.com',
+          cellphone: '0509999999',
+          detailsState: 1,
+        },
+      });
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: userA!.mashovUserId,
+          displayName: 'Mine',
+          email: 'mine@example.com',
+          cellphone: '0500000001',
+          detailsState: 1,
+        },
+      });
+
+      const resA = await request(app.getHttpServer())
+        .get('/api/v1/settings/profile')
+        .set('Cookie', `mashov_session=${cookieA}`);
+
+      expect(resA.status).toBe(200);
+      expect(resA.body.upstreamUserId).toBe(userA!.mashovUserId);
+      const payload = JSON.stringify(resA.body);
+      expect(payload).not.toContain('stranger@example.com');
+      expect(payload).not.toContain('0509999999');
+      expect(payload).not.toContain('Someone Else');
+    });
+
+    it('returns null when the caller has no profile row yet, even if others do', async () => {
+      // Before scoping this returned the other household's profile instead.
+      const loginA = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'profile-none', password: 'pass' });
+      const cookieA = extractSessionCookie(loginA);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 888888, username: 'profile-other', password: 'pass' });
+
+      const other = await prisma.appUser.findFirst({ where: { username: 'profile-other' } });
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: other!.mashovUserId,
+          displayName: 'Someone Else',
+          email: 'stranger@example.com',
+          cellphone: '0509999999',
+          detailsState: 1,
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/settings/profile')
+        .set('Cookie', `mashov_session=${cookieA}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({});
+      expect(JSON.stringify(res.body)).not.toContain('stranger@example.com');
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // GET /api/v1/settings/source-health
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('GET /api/v1/settings/source-health', () => {
+    it('returns the contract shape for the authenticated caller', async () => {
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'health-shape', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/settings/source-health')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.sources)).toBe(true);
+      expect(res.body).toHaveProperty('overallState');
+      expect(res.body).toHaveProperty('lastFullSyncAt');
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      const res = await request(app.getHttpServer()).get('/api/v1/settings/source-health');
+      expect(res.status).toBe(401);
+    });
+
+    it("does not report another household's sources", async () => {
+      // The leak this scoping closes: per-student source keys are
+      // `<name>:<studentGuid>`, so an unscoped read handed any signed-in user
+      // other families' child identifiers.
+      const loginA = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'health-a', password: 'pass' });
+      const cookieA = extractSessionCookie(loginA);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 888888, username: 'health-b', password: 'pass' });
+
+      const userB = await prisma.appUser.findFirst({ where: { username: 'health-b' } });
+      const connB = await prisma.householdConnection.findFirst({
+        where: { userId: userB!.id, active: true },
+      });
+      expect(connB).not.toBeNull();
+
+      // Both halves of the leak, so this cannot pass by accident:
+      //
+      // 1. A `Student` row for a child who is not the caller's. The previous
+      //    implementation built the per-student source list from
+      //    `student.findMany({ isActive: true })` and emitted one
+      //    `<source>:<guid>` entry per child *unconditionally* — so this guid
+      //    appeared in A's response with status 'never_synced' even with no
+      //    run row anywhere. (`beforeEach` truncates `student`, which is why
+      //    the earlier version of this test could not fail.)
+      // 2. A run row for that child attributed to household B's connection.
+      await prisma.student.create({
+        data: {
+          studentGuid: 'foreign-household-guid',
+          privateName: 'Not',
+          familyName: 'Yours',
+          fullName: 'Not Yours',
+          classCode: 'ז',
+          classNum: 1,
+          gender: 'F',
+          isActive: true,
+        },
+      });
+
+      const now = new Date();
+      await prisma.syncRun.create({
+        data: {
+          source: 'homework:foreign-household-guid',
+          status: 'success',
+          startedAt: now,
+          endedAt: now,
+          fetchedCount: 3,
+          householdConnectionId: connB!.id,
+        },
+      });
+
+      const resA = await request(app.getHttpServer())
+        .get('/api/v1/settings/source-health')
+        .set('Cookie', `mashov_session=${cookieA}`);
+
+      expect(resA.status).toBe(200);
+      const payload = JSON.stringify(resA.body);
+      expect(payload).not.toContain('foreign-household-guid');
+      const reported = (resA.body.sources as Array<{ source: string }>).map((s) => s.source);
+      expect(reported).not.toContain('homework:foreign-household-guid');
     });
   });
 
@@ -913,6 +1249,50 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
       expect(runs.length).toBeGreaterThan(0);
       expect(runs.every((run) => run.householdConnectionId === connA!.id)).toBe(true);
       expect(runs.some((run) => run.householdConnectionId === connB!.id)).toBe(false);
+    });
+
+    it('leaves a terminal envelope that makes /sync/status report done', async () => {
+      // The production scenario, end to end and for real: in this harness
+      // every task fails (no usable ENCRYPTION_KEY), so not one source closes
+      // `success`. The old endpoint counted successful sources against 16 and
+      // would have reported 0/16 forever. The refresh now reports its own
+      // settlement, so the first-login screen is released.
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'refresh-envelope', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const user = await prisma.appUser.findFirst({ where: { username: 'refresh-envelope' } });
+      const conn = await prisma.householdConnection.findFirst({
+        where: { userId: user!.id, active: true },
+      });
+
+      const refreshRes = await request(app.getHttpServer())
+        .post('/api/v1/sync/refresh')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+      expect(refreshRes.status).toBe(200);
+
+      const raw = await redisService.get(`sync:refresh:${conn!.id}`);
+      expect(raw).not.toBeNull();
+      const envelope = JSON.parse(raw!) as {
+        phase: string;
+        tasksTotal: number;
+        tasksSettled: number;
+        endedAt: string | null;
+      };
+      expect(envelope.phase).toBe('partial');
+      expect(envelope.tasksSettled).toBe(envelope.tasksTotal);
+      expect(envelope.tasksTotal).toBeGreaterThan(0);
+      expect(envelope.endedAt).not.toBeNull();
+
+      const statusRes = await request(app.getHttpServer())
+        .get('/api/v1/sync/status')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+      expect(statusRes.status).toBe(200);
+      expect(statusRes.body.done).toBe(true);
+      expect(statusRes.body.phase).toBe('partial');
+      expect(statusRes.body.sourcesCompleted).toBe(statusRes.body.sourcesTotal);
+      expect(statusRes.body.tasksFailed).toBeGreaterThan(0);
     });
 
     it('returns 401 when unauthenticated', async () => {

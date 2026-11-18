@@ -1378,7 +1378,13 @@ describe("API Integration Tests (isNew refactor contract)", () => {
   });
 
   describe("Settings API", () => {
-    it("GET /api/v1/settings/source-health returns contract object", async () => {
+    // Source health is per-caller now: it resolves the requester's own
+    // household connection and filters both sync_run reads by it. This
+    // harness mounts no session guard, so an unauthenticated request reaches
+    // the handler directly -- and must be refused rather than answered with
+    // some other household's sources. The authenticated contract shape is
+    // covered in tests/integration/auth.test.ts, which has real logins.
+    it("GET /api/v1/settings/source-health refuses an unauthenticated caller", async () => {
       await prisma.syncRun.create({
         data: {
           source: "notifications",
@@ -1392,14 +1398,19 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       const res = await request(app.getHttpServer()).get(
         "/api/v1/settings/source-health",
       );
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty("sources");
-      expect(res.body).toHaveProperty("overallState");
-      expect(res.body).toHaveProperty("lastFullSyncAt");
-      expect(Array.isArray(res.body.sources)).toBe(true);
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
+      expect(JSON.stringify(res.body)).not.toContain("notifications");
     });
 
-    it("GET /api/v1/settings/profile returns merged profile data", async () => {
+    // Profile is per-caller now: ParentProfile is keyed on upstreamUserId
+    // (Mashov's credential.userId, stored as AppUser.mashovUserId at login),
+    // so a session is required to know which profile to read. This harness
+    // mounts no session guard, so the request reaches the handler directly and
+    // must be refused rather than handed a stranger's name, email and phone.
+    // The authenticated contract shape is covered in
+    // tests/integration/auth.test.ts, which has real logins.
+    it("GET /api/v1/settings/profile refuses an unauthenticated caller", async () => {
       await prisma.parentProfile.create({
         data: {
           upstreamUserId: "user-1",
@@ -1423,13 +1434,11 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       const res = await request(app.getHttpServer()).get(
         "/api/v1/settings/profile",
       );
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
-        upstreamUserId: "user-1",
-        schoolName: "Test School",
-        schoolYear: 2026,
-        schoolCode: 1234,
-      });
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe("UNAUTHORIZED");
+      const payload = JSON.stringify(res.body);
+      expect(payload).not.toContain("parent@example.com");
+      expect(payload).not.toContain("0500000000");
     });
   });
 

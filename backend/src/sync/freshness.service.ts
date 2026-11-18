@@ -35,6 +35,21 @@ const SOURCE_THRESHOLDS: SourceThreshold[] = [
   },
 ];
 
+/**
+ * The sources whose run keys carry a `:<studentGuid>` suffix.
+ *
+ * Exported because `SettingsService` has to recognise the same keys in order
+ * to work out which students a caller's snapshot actually mentions — two
+ * copies of this list would drift and silently stop reporting a source.
+ */
+export const PER_STUDENT_SOURCES = [
+  'homework',
+  'behavior',
+  'groups',
+  'lessons_count',
+  'message_board',
+] as const;
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
@@ -91,11 +106,16 @@ export class FreshnessService {
     private readonly schoolYearService: SchoolYearService,
   ) {}
 
-  /** Loads both per-source maps once, for callers that need more than one read. */
-  async loadSyncRuns(): Promise<SyncRunSnapshot> {
+  /**
+   * Loads both per-source maps once, for callers that need more than one read.
+   *
+   * `householdConnectionId` scopes the snapshot to one caller's connection;
+   * omitting it keeps the global view the dashboard freshness read wants.
+   */
+  async loadSyncRuns(householdConnectionId?: string): Promise<SyncRunSnapshot> {
     const [allRuns, successRuns] = await Promise.all([
-      this.syncRunService.getAllSourceHealth(),
-      this.syncRunService.getLatestSuccessfulRuns(),
+      this.syncRunService.getAllSourceHealth(householdConnectionId),
+      this.syncRunService.getLatestSuccessfulRuns(householdConnectionId),
     ]);
     return { allRuns, successRuns };
   }
@@ -289,7 +309,7 @@ export class FreshnessService {
         const sources = [baseSource];
 
         // Add per-student variants if applicable
-        if (['homework', 'behavior', 'groups', 'lessons_count', 'message_board'].includes(baseSource)) {
+        if ((PER_STUDENT_SOURCES as readonly string[]).includes(baseSource)) {
           for (const guid of studentGuids) {
             sources.push(`${baseSource}:${guid}`);
           }

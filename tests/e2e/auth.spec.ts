@@ -126,6 +126,21 @@ async function readLastSchoolSemel(page: Page): Promise<string | null> {
   return page.evaluate((key) => window.localStorage.getItem(key), LAST_SCHOOL_STORAGE_KEY);
 }
 
+/**
+ * Holds `POST /sync/refresh` open for the life of the test.
+ *
+ * A resolved refresh now *means* the sync finished — `runManualRefresh` awaits
+ * every task before responding — so the screen leaves for `/` as soon as the
+ * POST comes back. Any test that needs to observe the syncing screen itself
+ * (its progress text, its skip button) must therefore keep the request in
+ * flight. Playwright tears the route down when the test ends.
+ */
+async function hangSyncRefresh(page: Page): Promise<void> {
+  // Never settles and leaves no timer behind: Playwright discards the pending
+  // handler when it unroutes at the end of the test.
+  await page.route('**/api/v1/sync/refresh', () => new Promise<void>(() => {}));
+}
+
 async function selectDefaultSchool(authPage: AuthPage): Promise<void> {
   await authPage.fillSchool(MOCK_SCHOOLS[0].name);
   await authPage.selectSchoolOption(MOCK_SCHOOLS[0].semel);
@@ -194,9 +209,9 @@ test.describe('Auth — sign-in flow', () => {
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
     });
-    await page.route('**/api/v1/sync/refresh', async (route) => {
-      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
-    });
+    // Held open: this test waits for the **/auth/syncing URL, and a resolved
+    // refresh can navigate away from it within a frame of mount.
+    await hangSyncRefresh(page);
 
     const authPage = new AuthPage(page);
     await authPage.navigate();
@@ -224,9 +239,11 @@ test.describe('Auth — sign-in flow', () => {
     await page.route('**/api/v1/sync/status', async (route) => {
       await route.fulfill({ json: MOCK_SYNC_IN_PROGRESS });
     });
-    await page.route('**/api/v1/sync/refresh', async (route) => {
+    await page.route('**/api/v1/sync/refresh', () => {
       syncRefreshCalls++;
-      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
+      // Held open on purpose — see hangSyncRefresh: a resolved refresh means
+      // the screen leaves before the skip button can be asserted.
+      return new Promise<void>(() => {});
     });
 
     // The mocked login cannot issue the Set-Cookie the real backend sends, and
@@ -277,11 +294,12 @@ test.describe('Auth — sign-in flow', () => {
     });
 
     await page.route('**/api/v1/sync/status', async (route) => {
+      // Deliberately the pre-envelope payload shape, with an arbitrary
+      // sourcesTotal: the backwards-compatibility proof that a client reading
+      // only the legacy keys still renders real numbers.
       await route.fulfill({ json: { done: false, sourcesCompleted: 5, sourcesTotal: 13 } });
     });
-    await page.route('**/api/v1/sync/refresh', async (route) => {
-      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
-    });
+    await hangSyncRefresh(page);
 
     await mockAuthenticatedSession(page);
 
@@ -338,6 +356,164 @@ test.describe('Auth — sign-in flow', () => {
 
     // Should auto-redirect to home once done
     await page.waitForURL('**/', { timeout: 20_000 });
+    expect(page.url()).toMatch(/\/$/);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // The screen must be structurally incapable of hanging. Three independent
+  // exits, one test each: before this, `done` was the only way out and a
+  // single failed source made it unreachable.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  test('leaves the sync screen when the refresh resolves even if status never says done', async ({
+    page,
+  }) => {
+    await page.route('**/api/v1/auth/schools', async (route) => {
+      await route.fulfill({ json: MOCK_SCHOOLS });
+    });
+    await page.route('**/api/v1/auth/login', async (route) => {
+      await route.fulfill({ json: MOCK_LOGIN_SUCCESS });
+    });
+    // Never done — exactly what production reported: 15 of 16 sources, forever.
+    await page.route('**/api/v1/sync/status', async (route) => {
+      await route.fulfill({
+        json: { done: false, sourcesCompleted: 15, sourcesTotal: 16, phase: 'running' },
+      });
+    });
+    await page.route('**/api/v1/sync/refresh', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      await route.fulfill({ json: MOCK_SYNC_REFRESH_SUCCESS });
+    });
+
+    await mockAuthenticatedSession(page);
+    await seedAuthenticatedCookie(page);
+
+    const authPage = new AuthPage(page);
+    await authPage.navigate();
+    await selectDefaultSchool(authPage);
+    await authPage.fillCredentials('testparent', 'testpass');
+    await authPage.submit();
+
+    const syncingPage = new SyncingPage(page);
+    await syncingPage.waitForVisible();
+
+    // The refresh awaits every task before responding, so its resolution is
+    // completion — whatever the status endpoint believes.
+    await page.waitForURL('**/', { timeout: 15_000 });
+    expect(page.url()).toMatch(/\/$/);
+  });
+
+  test('shows an error and a continue button when the refresh request times out', async ({
+    page,
+  }) => {
+    // The slow-notice copy swaps ~15s after the proxy gives up.
+    test.setTimeout(60_000);
+
+    await page.route('**/api/v1/sync/status', async (route) => {
+      await route.fulfill({
+        json: { done: false, sourcesCompleted: 0, sourcesTotal: 16, phase: 'unknown' },
+      });
+    });
+    await page.route('**/api/v1/sync/refresh', async (route) => {
+      await route.fulfill({
+        status: 504,
+        json: { error: { code: 'UPSTREAM_TIMEOUT', message: 'Upstream timed out', details: [] } },
+      });
+    });
+
+    await mockAuthenticatedSession(page);
+    await seedAuthenticatedCookie(page);
+
+    const syncingPage = new SyncingPage(page);
+    await syncingPage.navigate();
+
+    await expect(syncingPage.error).toBeVisible({ timeout: 30_000 });
+    // The timeout copy specifically, not the generic failure copy: a 504 means
+    // the refresh is probably still running, and saying otherwise would be a
+    // lie the user can act on.
+    await expect(syncingPage.error).toContainText('יותר זמן מהרגיל');
+    await expect(syncingPage.continueButton).toBeVisible();
+
+    await syncingPage.clickContinue();
+    await page.waitForURL('**/', { timeout: 10_000 });
+    expect(page.url()).toMatch(/\/$/);
+  });
+
+  test('leaves via the hard cap when neither endpoint ever answers', async ({ page }) => {
+    // Both exits above are dead: the status endpoint never says done and the
+    // refresh never returns. The cap is the last resort, and it has to work.
+    await page.route('**/api/v1/sync/status', () => new Promise<void>(() => {}));
+    await hangSyncRefresh(page);
+
+    await mockAuthenticatedSession(page);
+    await seedAuthenticatedCookie(page);
+
+    await page.goto('/auth/syncing?hardCapMs=5000');
+
+    await page.waitForURL('**/', { timeout: 20_000 });
+    expect(page.url()).toMatch(/\/$/);
+  });
+
+  test('names the task in flight under the progress bar', async ({ page }) => {
+    await page.route('**/api/v1/sync/status', async (route) => {
+      await route.fulfill({
+        json: {
+          done: false,
+          sourcesCompleted: 4,
+          sourcesTotal: 21,
+          phase: 'running',
+          // Arbitrary display data. tasksTotal is the wired task count and
+          // does not vary by household — that independence is the fix. The
+          // screen must render whatever the backend reports.
+          tasksTotal: 21,
+          tasksSettled: 4,
+          tasksFailed: 0,
+          currentTask: 'homework',
+          tasks: [],
+        },
+      });
+    });
+    await hangSyncRefresh(page);
+
+    await mockAuthenticatedSession(page);
+    await seedAuthenticatedCookie(page);
+
+    const syncingPage = new SyncingPage(page);
+    await syncingPage.navigate();
+
+    await expect(syncingPage.progressText).toContainText('4 / 21');
+    await expect(syncingPage.currentTask).toBeVisible();
+    const label = await syncingPage.currentTask.textContent();
+    expect(label).toBeTruthy();
+    expect(label).not.toContain('homework');
+  });
+
+  test('leaves when a partial refresh reports done with a failed source', async ({ page }) => {
+    // The production case end to end: a source failed, the refresh is over,
+    // and the user must not be held on the spinner for it.
+    await page.route('**/api/v1/sync/status', async (route) => {
+      await route.fulfill({
+        json: {
+          done: true,
+          sourcesCompleted: 21,
+          sourcesTotal: 21,
+          phase: 'partial',
+          tasksTotal: 21,
+          tasksSettled: 21,
+          tasksFailed: 1,
+          currentTask: null,
+          tasks: [],
+        },
+      });
+    });
+    await hangSyncRefresh(page);
+
+    await mockAuthenticatedSession(page);
+    await seedAuthenticatedCookie(page);
+
+    await page.goto('/auth/syncing');
+
+    await page.waitForURL('**/', { timeout: 15_000 });
     expect(page.url()).toMatch(/\/$/);
   });
 });

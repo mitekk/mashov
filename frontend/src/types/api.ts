@@ -565,8 +565,40 @@ export interface LoginResponse {
 
 // ─── Sync Status ───────────────────────────────────────────────────────────
 
+/**
+ * `idle` — no refresh in flight. `stale` — a running refresh stopped reporting,
+ * so whoever owned it is gone. `unknown` — the backend could not read the
+ * progress store; the client keeps polling rather than treating it as failure.
+ */
+export type SyncStatusPhase =
+  | 'idle'
+  | 'running'
+  | 'stale'
+  | 'success'
+  | 'partial'
+  | 'failed'
+  | 'unknown';
+
+export interface SyncTaskProgress {
+  task: string;
+  status: 'running' | 'success' | 'failed';
+}
+
 export interface SyncStatus {
   done: boolean;
+  /** Legacy alias for `tasksSettled`, kept for older payloads. */
   sourcesCompleted: number;
+  /** Legacy alias for `tasksTotal`, kept for older payloads. */
   sourcesTotal: number;
+  // Everything below is optional on purpose: a payload from before the refresh
+  // envelope landed is still a valid SyncStatus.
+  phase?: SyncStatusPhase;
+  refreshId?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  tasksTotal?: number;
+  tasksSettled?: number;
+  tasksFailed?: number;
+  currentTask?: string | null;
+  tasks?: SyncTaskProgress[];
 }

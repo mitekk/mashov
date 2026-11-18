@@ -54,7 +54,7 @@ Phase 1 had no auth. Phase 2 is a breaking change — all API endpoints become p
 
 - **FR-10:** School connection is created automatically on first login — no separate connect-school form. The `household_connection` record is created from the Mashov login response (`accessToken.children[]`, `accessToken.schoolSettings`).
 - **FR-11:** Credentials are encrypted (AES-256-GCM, key from `CREDENTIAL_ENCRYPTION_KEY` env var) before storage. Raw credentials are never logged or returned in API responses.
-- **FR-12:** After first login, the initial sync starts immediately. The parent is shown the sync progress screen (`/auth/syncing`) which polls `GET /api/v1/sync/status` every 3 seconds. Once the first successful sync cycle completes, redirect to Home.
+- **FR-12:** After first login, the initial sync starts immediately. The parent is shown the sync progress screen (`/auth/syncing`) which polls `GET /api/v1/sync/status` every 2 seconds and shows the task in flight. The screen leaves for Home on whichever comes first: `done` from the poll, the `POST /api/v1/sync/refresh` request resolving, or a 120-second hard cap. Completion includes a *partial* refresh — a source that failed upstream is reported in settings, and must never hold the parent on this screen.
 - **FR-13:** Skip button on sync screen: goes to Home immediately after 10 seconds without waiting for sync to complete.
 
 ### School Account Management — Settings
@@ -151,7 +151,7 @@ Phase 1 had no auth. Phase 2 is a breaking change — all API endpoints become p
 | GET | `/api/v1/auth/me` | — | `{ mashovUserId, username, displayName, connectedSchool: { schoolName, schoolYear } \| null }` | Requires auth |
 | PUT | `/api/v1/connection` | `{ username?, password? }` | `{ ok: true }` | Update credentials |
 | DELETE | `/api/v1/connection` | — | `{ ok: true }` | Disconnect + delete all associated data |
-| GET | `/api/v1/sync/status` | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number }` | Used by sync progress screen |
+| GET | `/api/v1/sync/status` | — | `{ done, sourcesCompleted, sourcesTotal, phase, refreshId, startedAt, endedAt, tasksTotal, tasksSettled, tasksFailed, currentTask, tasks }` | Used by sync progress screen. `done` comes from the refresh envelope, not from a `sync_run` count; see `docs/api-contract.md` for the phase table |
 
 ---
 
@@ -189,9 +189,12 @@ Add: `userId` (FK → app_user, nullable during migration, required after)
 
 ### `/auth/syncing`
 - Progress screen: "Setting up your account…" with animated indicator
-- Polls `GET /api/v1/sync/status` every 3 seconds
-- Shows progress: "3 / 10 sources complete"
-- On done: redirect to Home
+- Polls `GET /api/v1/sync/status` every 2 seconds
+- Shows progress: "3 / 10 sources complete", plus the name of the task in flight
+- Leaves for Home on any one of: `done` from the poll (including a partial refresh), the
+  refresh request resolving, or a 120-second hard cap
+- On a refresh failure or proxy timeout: an explanation and a "continue" button, never a
+  spinner with no way forward
 - Skip button: goes to Home immediately (available after 10 seconds)
 
 ### Settings page additions

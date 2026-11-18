@@ -184,6 +184,41 @@ describe('SyncRunService', () => {
       expect(findMany).not.toHaveBeenCalled();
       expect(sqlOf(queryRaw)).toContain('DISTINCT ON (source)');
     });
+
+    // GET /api/v1/settings/source-health returned every household's sources to
+    // any signed-in user -- foreign student GUIDs included, because they are
+    // part of the source key.
+    it('filters to one connection when the caller is scoped', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(makeMockPrisma({ queryRaw }));
+
+      await service.getAllSourceHealth('conn-1');
+
+      expect(sqlOf(queryRaw)).toContain('"householdConnectionId" =');
+      expect(queryRaw.mock.calls[0].slice(1)).toEqual(['conn-1']);
+    });
+
+    // Every scheduled task calls execute() with no context, so a cron run
+    // stores householdConnectionId = NULL. Filtering those out would report
+    // `never_synced` for a system whose crons are working perfectly -- which
+    // is the one thing this endpoint exists to tell the truth about.
+    it('keeps unattributed cron runs in a scoped read', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(makeMockPrisma({ queryRaw }));
+
+      await service.getAllSourceHealth('conn-1');
+
+      expect(sqlOf(queryRaw)).toContain('"householdConnectionId" IS NULL');
+    });
+
+    it('does not filter when no connection is given', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(makeMockPrisma({ queryRaw }));
+
+      await service.getAllSourceHealth();
+
+      expect(sqlOf(queryRaw)).not.toContain('householdConnectionId');
+    });
   });
 
   describe('getLatestSuccessfulRuns', () => {
@@ -224,6 +259,28 @@ describe('SyncRunService', () => {
       await service.getLatestSuccessfulRuns();
 
       expect(sqlOf(queryRaw)).toContain('"endedAt" DESC NULLS LAST');
+    });
+
+    it('filters to one connection when the caller is scoped', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(makeMockPrisma({ queryRaw }));
+
+      await service.getLatestSuccessfulRuns('conn-1');
+
+      const sql = sqlOf(queryRaw);
+      expect(sql).toContain('"householdConnectionId" =');
+      expect(sql).toContain("status = 'success'");
+      expect(sql).toContain('"householdConnectionId" IS NULL');
+      expect(queryRaw.mock.calls[0].slice(1)).toEqual(['conn-1']);
+    });
+
+    it('does not filter when no connection is given', async () => {
+      const queryRaw = jest.fn().mockResolvedValue([]);
+      const service = new SyncRunService(makeMockPrisma({ queryRaw }));
+
+      await service.getLatestSuccessfulRuns();
+
+      expect(sqlOf(queryRaw)).not.toContain('householdConnectionId');
     });
   });
 });

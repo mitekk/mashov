@@ -53,7 +53,85 @@
 | GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, connectedSchool: { schoolName: string, schoolYear: number } \| null }` | 200, 401 | planned |
 | PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404 | planned |
 | DELETE | `/api/v1/connection` | Yes | — | `{ ok: true }` | 200, 401, 404 | planned |
-| GET | `/api/v1/sync/status` | Yes | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number }` | 200, 401 | planned |
+| GET | `/api/v1/sync/status` | Yes | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number, phase: "idle" \| "running" \| "stale" \| "success" \| "partial" \| "failed" \| "unknown", refreshId: string \| null, startedAt: string \| null, endedAt: string \| null, tasksTotal: number, tasksSettled: number, tasksFailed: number, currentTask: string \| null, tasks: Array<{ task: string, status: "running" \| "success" \| "failed" }> }` | 200, 401 | implemented |
+
+### `GET /api/v1/sync/status` — completion semantics
+
+`done` is the refresh's own report, read from the per-connection refresh envelope in Redis
+(`sync:refresh:<connectionId>`). It is **not** derived from `sync_run` rows, and this endpoint
+does not read that table at all.
+
+| Situation | `phase` | `done` |
+|---|---|---|
+| No active connection, or no envelope | `idle` | `false` |
+| Envelope `running` and fresh | `running` | `false` |
+| Envelope `running` but `updatedAt` older than 5 minutes | `stale` | `true` |
+| Every task succeeded | `success` | `true` |
+| At least one task failed | `partial` | `true` |
+| The refresh threw outside a task | `failed` | `true` |
+| Redis unreachable | `unknown` | `false` (never a 500) |
+
+`partial` is `done` on purpose: a failed source is per-source health, reported by
+`GET /api/v1/settings/source-health`, and never a reason to hold a user on the first-login
+screen. `stale` is `done` for the same reason in reverse — a backend killed mid-refresh must
+release every waiting client, not just one that happens to have its own timeout.
+
+`sourcesCompleted` and `sourcesTotal` are preserved aliases of `tasksSettled` and `tasksTotal`
+so clients written against the previous payload keep working. The previous implementation
+compared a count of distinct successful `sync_run` sources inside a 30-minute window against a
+hardcoded `TOTAL_SYNC_SOURCES = 16`; source keys are per-student and per-connection, so that
+target was unreachable for any household with a failing source and already passed for any
+household with two children.
+
+`sourcesCompleted`/`sourcesTotal` now carry *task* counts under *source* names. The task count is
+the wired task list (16 today) and does not vary with the number of children or connections —
+that independence is the fix. The UI string ("N / M מקורות הושלמו") is unchanged for
+compatibility.
+
+### `GET /api/v1/settings/source-health` — scoping
+
+Scoped to the caller's active household connection; a user with no connection gets an empty
+`sources` array and no database read. Two deliberate details:
+
+- **Runs with a NULL connection are included.** Every `@Cron` entrypoint calls its task's
+  `execute()` with no context, so `openRun` stores `householdConnectionId = null` for all
+  scheduled runs. Excluding those would report `never_synced` for a dozen sources whose crons
+  succeed every twelve minutes — turning the one page that answers "is syncing working" into a
+  page that always says no.
+- **Per-student source keys come from the caller's own snapshot**, not from
+  `student.findMany`. `FreshnessService.getAllSourceHealth` emits one `<source>:<guid>` entry per
+  guid it is handed whether or not a run exists, so passing every active child listed every
+  household's child identifiers regardless of how the `sync_run` reads were filtered.
+
+**Known residual.** `Student` has no household column, so per-student tasks iterate every child
+in the database and stamp those runs with whichever connection triggered the refresh (cron runs
+with none). A caller whose refresh has run can therefore still see a guid that is not theirs.
+Closing that needs `Student` scoped to a household — a schema change with its own ADR. What is
+gone is the unconditional enumeration, which leaked every child to every user regardless of sync
+activity.
+
+**Also unscoped, and not fixed here:** `overallState` and `contentFreshness` in the same response
+come from `computeContentFreshness()`, which reads *any* active connection and aggregates over
+every student. One household parked on an old school year therefore degrades everyone's
+`overallState`. That predates this change and needs its own fix.
+
+### `GET /api/v1/settings/profile` — scoping
+
+Requires a session (401 without one) and returns only the caller's own profile. It previously
+used `parentProfile.findFirst()` and `householdConnection.findFirst({ active: true })`, neither
+filtered by user, so any signed-in parent received *a* profile — some arbitrary household's
+`displayName`, `email` and `cellphone`, plus their school.
+
+`ParentProfile` has no `userId`. It is keyed on `upstreamUserId`, which is Mashov's
+`credential.userId` — the same value stored as `AppUser.mashovUserId` at login — so the caller's
+app-user row is the hop from a session to a profile. The household is filtered on `userId`
+directly.
+
+`displayName` falls back to `AppUser.displayName` when the profile row has none.
+`user-details.task` never writes `ParentProfile.displayName`, so for most callers it is null;
+unscoped, the page happened to show whichever profile came back first, and scoping it without the
+fallback would have left the name blank. Returns `null` (an empty body) when the caller has no
+profile row, rather than someone else's.
 
 ### Phase 1 Endpoints (all require Auth: Yes in Phase 2)
 
@@ -590,10 +668,13 @@ Note: If `bodyHtmlSanitized` is null in DB (not yet fetched), backend lazily fet
 
 ### GET /api/v1/settings/profile
 
+Scoped to the caller — see [the scoping note](#get-apiv1settingsprofile--scoping). `null` (an
+empty body) when the caller has no profile row.
+
 ```typescript
 {
-  upstreamUserId: string;
-  displayName: string;
+  upstreamUserId: string;                // Mashov credential.userId
+  displayName: string;                   // profile name, else the app user's
   email: string;
   cellphone: string;
   schoolName: string;
@@ -684,9 +765,9 @@ Every run writes a row, `status: "skipped_empty"` included. That is deliberate: 
 quiet child is indistinguishable from a broken job. `skipped_stale` is the stronger version of
 that — no items *and* the school data has not synced successfully for hours, so "nothing
 happened today" would be a wrong thing to imply. Digest runs are **not** recorded in `sync_run`
-— `GET /sync/status` counts distinct successful sources against a hardcoded
-`TOTAL_SYNC_SOURCES`, so digest rows there would skew the freshness percentage the dashboard
-shows.
+— the freshness and source-health reads treat every row there as a sync source, so digest rows
+would skew what the dashboard reports. (`GET /sync/status` no longer reads `sync_run` at all;
+it reads the refresh envelope. The reason to keep digest rows out stands regardless.)
 
 Scoped to the caller: a delivery row holds `messageText`, the rendered behavior remarks that
 were sent to a parent, so the history returns only children the caller has recipient rows for.
