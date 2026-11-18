@@ -5,6 +5,9 @@
 - **Deciders**: User, Backend agent
 - **Amends**: [ADR-0030](0030-per-connection-data-scoping.md) ("Two known defects"), first defect
 - **Implements the decision B1 was waiting on**: `docs/plans/merged-household-access-followups.md`
+- **Implemented by**: `1dcb60e`, migration
+  `20261122000000_student_connection_links`, and
+  `tests/integration/household-isolation.test.ts`
 
 ## Context and Problem Statement
 

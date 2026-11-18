@@ -19,6 +19,10 @@ cheaper to fix once its design question is settled.
 
 ### B1 — A child can belong to only one user, so the second parent to sync evicts the first
 
+**Status: FIXED** in `1dcb60e`, implementing
+[ADR-0031](../adr/0031-child-visibility-is-a-set-of-connections.md). The description
+below is kept as the record of what was wrong and why.
+
 **Severity**: high. Breaks a stated requirement, and the data loss is visible to a
 parent as their children vanishing.
 
@@ -86,18 +90,25 @@ The work, in the order it has to happen:
 **DoD**
 - [x] A decision is recorded as an ADR (amending ADR-0030's "two known defects") —
       [ADR-0031](../adr/0031-child-visibility-is-a-set-of-connections.md).
-- [ ] Unlinking one of two connections that share a child leaves the child, its homework,
-      behaviour, releases and digest rows intact for the other parent — asserted by test.
-- [ ] Two users with separate Mashov accounts at one school both see the shared
+- [x] Unlinking one of two connections that share a child leaves the child, its homework,
+      behaviour, releases and digest rows intact for the other parent — asserted by test
+      (`connection.service.spec.ts`, and against a real database in
+      `tests/integration/household-isolation.test.ts`).
+- [x] Two users with separate Mashov accounts at one school both see the shared
       children, simultaneously, with no sync ordering dependence.
-- [ ] Each user's read/unread and archive state stays independent (ADR-0016), asserted
+- [x] Each user's read/unread and archive state stays independent (ADR-0016), asserted
       by test rather than by inspection.
-- [ ] A sync cycle for either user leaves the other user's view unchanged — asserted
-      by running both users' `refreshAll` in sequence and in both orders.
-- [ ] `targetForStudent` still resolves to a connection that can actually serve the
+- [x] A sync cycle for either user leaves the other user's view unchanged — asserted by
+      moving the routing stamp in both directions and re-reading both users' visible
+      sets. **Not** by running the real `refreshAll` twice: that needs the two-household
+      sync fixture still open under **G1**, and the stamp is the only thing a sync
+      changes about ownership.
+- [x] `targetForStudent` still resolves to a connection that can actually serve the
       child, and the `homework.task` owner-first optimisation still makes exactly one
-      upstream call for a child whose owner answers.
-- [ ] An integration test covers it with the two-household fixture from **G1**.
+      upstream call for a child whose owner answers — both read the routing column,
+      which this change deliberately left alone.
+- [x] An integration test covers it with a two-household fixture
+      (`tests/integration/household-isolation.test.ts`, 8 cases against real Postgres).
 
 ---
 
@@ -264,19 +275,29 @@ e2e passed while nine routes had no ownership guard at all, because nothing asse
 the *general* property — the isolation specs named `getChildren` and
 `getChildWorkspace` individually.
 
+**Partly done** by `1dcb60e`, which needed the fixture to prove **B1**.
+
 **DoD**
-- [ ] An integration fixture with **two `AppUser`s**, each with its own connection, in
-      `tests/integration/` (`tsconfig.integration.json` already exists).
-- [ ] A fixture with a student at `householdConnectionId: null` **carrying
-      current-year rows**, which is what C2 needed and no test had.
+- [x] An integration fixture with **two `AppUser`s**, each with its own connection, in
+      `tests/integration/household-isolation.test.ts`: two users, two connections at one
+      school, four children (one each, one shared by both, one nobody lists).
+- [x] A fixture with a child **no connection lists** — the successor to
+      `householdConnectionId: null`, and the case `canSeeStudent` has to admit.
+- [ ] That child carrying **current-year rows**, which is what C2 needed: the fixture
+      has the child but gives it no homework, so the "present in the list, empty when
+      opened" shape is still untested end to end.
 - [ ] A fixture with a `mail_conversation` at `householdConnectionId: null` that
       upstream no longer returns — the shape the sweep exists for.
 - [ ] A test that enumerates the `children.controller.ts` routes taking a
       `studentGuid` and asserts each 404s for a foreign child, so route ten cannot
-      ship unguarded.
+      ship unguarded. **Still the most valuable item here**: the existing coverage
+      names the nine routes one by one, so route ten inherits nothing.
 - [ ] The cross-contamination test the plan asked for: seed two connections, two
       students and two mailboxes, run `refreshAll` for both, assert zero contamination
       in `student`, `mail_conversation`, `cachedNewCount` and the swept unread set.
+      B1's own DoD was met without it, by moving the routing stamp directly — the only
+      thing a sync changes about ownership — but that is not the same as running the
+      two syncs.
 
 ---
 
@@ -312,6 +333,24 @@ the *general* property — the isolation specs named `getChildren` and
   start on a machine with anything else on that port. Parameterising the host port
   (`${DB_PORT:-5432}:5432`) costs nothing; the e2e containers reach the db over the
   compose network and do not need the publish at all.
+- `tests/e2e/school-links.spec.ts:389` ("a successful link goes to the syncing screen
+  for that school") is **flaky**: it failed once on `syncing-heading` not being found
+  after `waitForURL` had already succeeded, then passed on an identical re-run. The page
+  renders the heading behind its first `['sync-status']` fetch, so the assertion is
+  racing that. Needs a `waitFor` on the page's loaded state rather than a bare
+  `toHaveText`.
+- The integration suite was **red on this branch** until `1dcb60e` and nobody noticed,
+  because the branch's verification ran unit + e2e only. Three independent causes, all
+  now fixed: `ChildrenService` had gained a sixth constructor argument;
+  `@@unique([schoolCode, username])` made the duplicate-connection fixture impossible to
+  INSERT (it now drops the index for the duration of the test, which is honest — the
+  duplicates it covers were written before the index existed); and six `api.test.ts`
+  cases still mocked the env-session `get`/`put` that the household work moved off.
+  Worth adding `npm run test:integration` to whatever gate runs before a merge.
+- The test services' `ENCRYPTION_KEY` in `docker-compose.yml` was
+  `test-encryption-key-32-chars-long!`, which is not hex, so `EncryptionService` threw
+  on every call. Nothing had noticed because nothing in the integration tests decrypted
+  a stored password until one needed a real `ConnectionTarget`. Now a valid 64-hex key.
 - `SessionModule` (`backend/src/session/session.module.ts`) is dead and not
   instantiable — it declares `MashovHttpClient`, whose only constructor argument is
   `MashovSessionService`, which that module neither provides nor imports. Nothing
