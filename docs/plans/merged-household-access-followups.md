@@ -288,10 +288,20 @@ the *general* property — the isolation specs named `getChildren` and
       opened" shape is still untested end to end.
 - [ ] A fixture with a `mail_conversation` at `householdConnectionId: null` that
       upstream no longer returns — the shape the sweep exists for.
-- [ ] A test that enumerates the `children.controller.ts` routes taking a
+- [x] A test that enumerates the `children.controller.ts` routes taking a
       `studentGuid` and asserts each 404s for a foreign child, so route ten cannot
-      ship unguarded. **Still the most valuable item here**: the existing coverage
-      names the nine routes one by one, so route ten inherits nothing.
+      ship unguarded — `tests/integration/children-route-guard.test.ts`, **25 routes,
+      51 cases**. The list is read out of Nest's own `PATH_METADATA`, so a new
+      `:studentGuid` route joins the suite the moment it is written; the counts are
+      cross-checked against the controller source, so a metadata read that ever
+      returns a partial list fails the suite instead of silently covering nothing.
+      Each route is called twice against real Postgres — as the other parent, which
+      must raise exactly `Student not found: <guid>`, and as the child's own parent,
+      which must not, so the suite cannot be satisfied by a service that 404s
+      unconditionally. Verified red by removing `requireStudent` from `getTimetable`:
+      one case failed with "resolved without raising", the other 50 stayed green.
+      `digest.controller.ts` also takes a `studentGuid`, but in a query or body and
+      under ADR-0026's own rule — deliberately out of scope.
 - [ ] The cross-contamination test the plan asked for: seed two connections, two
       students and two mailboxes, run `refreshAll` for both, assert zero contamination
       in `student`, `mail_conversation`, `cachedNewCount` and the swept unread set.
@@ -314,6 +324,13 @@ the *general* property — the isolation specs named `getChildren` and
   connections present in the list. Two schools whose short labels collide therefore
   show the collision-expanded full name on `/children` and the short colliding label
   on a page listing only one of them.
+- `npm run test:integration` was collecting the *other git worktrees'* copies of
+  `tests/integration/**` — `.worktrees/feat-attachment-viewer` is on an older commit,
+  so five of its suites failed to run and the gate was red for reasons that had
+  nothing to do with this branch. Fixed in passing: the compose command now passes
+  `--testPathIgnorePatterns=worktrees/`. Worth knowing because it was invisible
+  until a worktree went stale, and `npm run test:unit` runs from `backend/` so it
+  was never affected.
 - `sync-run.service.ts` — the docstring justifying why a scoped source-health read
   keeps `householdConnectionId IS NULL` rows says "every `@Cron` entrypoint calls
   `execute()` with no context". That is no longer true for `mail_inbox` and

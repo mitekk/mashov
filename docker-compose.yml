@@ -232,7 +232,7 @@ services:
       [
         "sh",
         "-c",
-        "apk add --no-cache openssl >/dev/null && cd backend && npm ci && npx prisma db push --force-reset --skip-generate && cd .. && npm ci && npx jest tests/integration --runInBand --testEnvironment=node --forceExit --testTimeout=30000",
+        "apk add --no-cache openssl >/dev/null && cd backend && npm ci && npx prisma db push --force-reset --skip-generate && cd .. && npm ci && npx jest tests/integration --runInBand --testEnvironment=node --forceExit --testTimeout=30000 --testPathIgnorePatterns=/node_modules/ --testPathIgnorePatterns=worktrees/",
       ]
     logging:
       driver: "json-file"
