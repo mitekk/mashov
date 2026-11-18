@@ -286,8 +286,23 @@ the *general* property — the isolation specs named `getChildren` and
 - [ ] That child carrying **current-year rows**, which is what C2 needed: the fixture
       has the child but gives it no homework, so the "present in the list, empty when
       opened" shape is still untested end to end.
-- [ ] A fixture with a `mail_conversation` at `householdConnectionId: null` that
+- [x] A fixture with a `mail_conversation` at `householdConnectionId: null` that
       upstream no longer returns — the shape the sweep exists for.
+      `tests/integration/mail-sweep-unattributed.test.ts`, **5 cases** against real
+      Postgres: a live conversation, a stale orphan stamped to each of two
+      connections, an unattributed stale orphan, and an unattributed one the parent
+      marked unread by hand. What it establishes is that the unattributed orphan is
+      **permanently unread on any deployment that has stamped mail at all** — a
+      connection-scoped run cannot match it (no value equals SQL NULL, which is
+      three-valued logic rather than a decision of the task's), the shared-session
+      run that does own it is gated off while stamped rows exist, and no walk can
+      ever re-stamp it because re-stamping happens in an upsert's `update` branch
+      and upstream has stopped returning it. The sweep clears it only on a
+      no-stamped-mail deployment, which that case covers, and leaves
+      `locallyMarkedUnreadAt` alone there. Verified red by dropping
+      `householdConnectionId` from the sweep's `where`: three of the five failed,
+      including the other connection's orphan being cleared. The consequence a
+      parent sees is recorded as a Minor below.
 - [x] A test that enumerates the `children.controller.ts` routes taking a
       `studentGuid` and asserts each 404s for a foreign child, so route ten cannot
       ship unguarded — `tests/integration/children-route-guard.test.ts`, **25 routes,
@@ -313,6 +328,18 @@ the *general* property — the isolation specs named `getChildren` and
 
 ## Minors
 
+- An **unattributed unread conversation is in no badge and in every list.** Each
+  `cachedNewCount` is scoped to its own connection and the badge sums those rows,
+  so a `mail_conversation` at `householdConnectionId: null` is counted nowhere —
+  while `MailService.householdMailScope` admits NULL as "ownership unknown", so the
+  same `/mail/summary` response lists it as unread. Asserted as current behaviour in
+  `tests/integration/mail-sweep-unattributed.test.ts`. It is only reachable for a row
+  upstream has stopped returning (a live one gets stamped on the next walk), and the
+  sweep cannot clear it for the reasons in G1, so the honest fixes are either to count
+  NULL rows into the shared-session row's `cachedNewCount` or to stop admitting them
+  into the read scope once the backfill is known to have run. Not urgent — it needs a
+  pre-ownership row that outlived its upstream — but it is a badge that disagrees with
+  the list on the same screen, which is the class of bug `283c053` was about.
 - `behavior-classifier.service.ts` — bare `catch { return false }` turns any DB error
   into "this absence is not justifiable". The default is defensible; swallowing the
   error unlogged is not.
