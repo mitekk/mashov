@@ -30,7 +30,14 @@ export class SettingsController {
   }
 
   @Get('profile')
-  async getProfile() {
-    return this.settingsService.getProfile();
+  async getProfile(@Req() req: Request) {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new UnauthorizedException({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated', details: [] },
+      });
+    }
+
+    return this.settingsService.getProfile(userId);
   }
 }

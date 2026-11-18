@@ -256,6 +256,7 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
     await prisma.notificationEvent.deleteMany({});
     await prisma.householdConnection.deleteMany({});
     await prisma.student.deleteMany({});
+    await prisma.parentProfile.deleteMany({});
     await prisma.appUser.deleteMany({});
 
     // Refresh progress lives in Redis, not in sync_run — one envelope per
@@ -997,6 +998,129 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
       expect(resB.status).toBe(200);
       expect(resB.body.sourcesCompleted).toBe(16);
       expect(resB.body.done).toBe(true);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // GET /api/v1/settings/profile
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe('GET /api/v1/settings/profile', () => {
+    it("returns the caller's own profile in contract shape", async () => {
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'profile-shape', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const user = await prisma.appUser.findFirst({ where: { username: 'profile-shape' } });
+      expect(user).not.toBeNull();
+
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: user!.mashovUserId,
+          displayName: 'My Own Name',
+          email: 'mine@example.com',
+          cellphone: '0500000001',
+          detailsState: 1,
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/settings/profile')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        upstreamUserId: user!.mashovUserId,
+        displayName: 'My Own Name',
+        email: 'mine@example.com',
+        cellphone: '0500000001',
+      });
+      expect(typeof res.body.schoolYear).toBe('number');
+      expect(typeof res.body.updatedAt).toBe('string');
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      const res = await request(app.getHttpServer()).get('/api/v1/settings/profile');
+      expect(res.status).toBe(401);
+    });
+
+    it("does not return another parent's name, email or phone", async () => {
+      // The leak: `parentProfile.findFirst()` had no user filter, so whichever
+      // row came back first was served to whoever asked.
+      const loginA = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'profile-a', password: 'pass' });
+      const cookieA = extractSessionCookie(loginA);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 888888, username: 'profile-b', password: 'pass' });
+
+      const userA = await prisma.appUser.findFirst({ where: { username: 'profile-a' } });
+      const userB = await prisma.appUser.findFirst({ where: { username: 'profile-b' } });
+      expect(userA!.mashovUserId).not.toBe(userB!.mashovUserId);
+
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: userB!.mashovUserId,
+          displayName: 'Someone Else',
+          email: 'stranger@example.com',
+          cellphone: '0509999999',
+          detailsState: 1,
+        },
+      });
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: userA!.mashovUserId,
+          displayName: 'Mine',
+          email: 'mine@example.com',
+          cellphone: '0500000001',
+          detailsState: 1,
+        },
+      });
+
+      const resA = await request(app.getHttpServer())
+        .get('/api/v1/settings/profile')
+        .set('Cookie', `mashov_session=${cookieA}`);
+
+      expect(resA.status).toBe(200);
+      expect(resA.body.upstreamUserId).toBe(userA!.mashovUserId);
+      const payload = JSON.stringify(resA.body);
+      expect(payload).not.toContain('stranger@example.com');
+      expect(payload).not.toContain('0509999999');
+      expect(payload).not.toContain('Someone Else');
+    });
+
+    it('returns null when the caller has no profile row yet, even if others do', async () => {
+      // Before scoping this returned the other household's profile instead.
+      const loginA = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'profile-none', password: 'pass' });
+      const cookieA = extractSessionCookie(loginA);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 888888, username: 'profile-other', password: 'pass' });
+
+      const other = await prisma.appUser.findFirst({ where: { username: 'profile-other' } });
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: other!.mashovUserId,
+          displayName: 'Someone Else',
+          email: 'stranger@example.com',
+          cellphone: '0509999999',
+          detailsState: 1,
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/settings/profile')
+        .set('Cookie', `mashov_session=${cookieA}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({});
+      expect(JSON.stringify(res.body)).not.toContain('stranger@example.com');
     });
   });
 

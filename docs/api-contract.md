@@ -113,9 +113,25 @@ activity.
 **Also unscoped, and not fixed here:** `overallState` and `contentFreshness` in the same response
 come from `computeContentFreshness()`, which reads *any* active connection and aggregates over
 every student. One household parked on an old school year therefore degrades everyone's
-`overallState`. And `GET /api/v1/settings/profile` has no user filter at all — it returns some
-arbitrary household's `displayName`, `email` and `cellphone`. Both predate this change and both
-need their own fix.
+`overallState`. That predates this change and needs its own fix.
+
+### `GET /api/v1/settings/profile` — scoping
+
+Requires a session (401 without one) and returns only the caller's own profile. It previously
+used `parentProfile.findFirst()` and `householdConnection.findFirst({ active: true })`, neither
+filtered by user, so any signed-in parent received *a* profile — some arbitrary household's
+`displayName`, `email` and `cellphone`, plus their school.
+
+`ParentProfile` has no `userId`. It is keyed on `upstreamUserId`, which is Mashov's
+`credential.userId` — the same value stored as `AppUser.mashovUserId` at login — so the caller's
+app-user row is the hop from a session to a profile. The household is filtered on `userId`
+directly.
+
+`displayName` falls back to `AppUser.displayName` when the profile row has none.
+`user-details.task` never writes `ParentProfile.displayName`, so for most callers it is null;
+unscoped, the page happened to show whichever profile came back first, and scoping it without the
+fallback would have left the name blank. Returns `null` (an empty body) when the caller has no
+profile row, rather than someone else's.
 
 ### Phase 1 Endpoints (all require Auth: Yes in Phase 2)
 
@@ -652,10 +668,13 @@ Note: If `bodyHtmlSanitized` is null in DB (not yet fetched), backend lazily fet
 
 ### GET /api/v1/settings/profile
 
+Scoped to the caller — see [the scoping note](#get-apiv1settingsprofile--scoping). `null` (an
+empty body) when the caller has no profile row.
+
 ```typescript
 {
-  upstreamUserId: string;
-  displayName: string;
+  upstreamUserId: string;                // Mashov credential.userId
+  displayName: string;                   // profile name, else the app user's
   email: string;
   cellphone: string;
   schoolName: string;

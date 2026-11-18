@@ -9,6 +9,12 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     },
     parentProfile: {
       findFirst: overrides.profileFindFirst ?? jest.fn().mockResolvedValue(null),
+      findUnique: overrides.profileFindUnique ?? jest.fn().mockResolvedValue(null),
+    },
+    appUser: {
+      findUnique:
+        overrides.appUserFindUnique ??
+        jest.fn().mockResolvedValue({ mashovUserId: 'mashov-1', displayName: 'App User' }),
     },
     householdConnection: {
       findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
@@ -84,8 +90,8 @@ describe('SettingsService', () => {
     it('returns merged profile + household fields in contract shape', async () => {
       const service = new SettingsService(
         makeMockPrisma({
-          profileFindFirst: jest.fn().mockResolvedValue({
-            upstreamUserId: 'user-1',
+          profileFindUnique: jest.fn().mockResolvedValue({
+            upstreamUserId: 'mashov-1',
             displayName: 'Parent Name',
             email: 'parent@example.com',
             cellphone: '050-1234567',
@@ -101,9 +107,9 @@ describe('SettingsService', () => {
         makeMockFreshnessService({}),
       );
 
-      const result = await service.getProfile();
+      const result = await service.getProfile('app-user-1');
       expect(result).toEqual({
-        upstreamUserId: 'user-1',
+        upstreamUserId: 'mashov-1',
         displayName: 'Parent Name',
         email: 'parent@example.com',
         cellphone: '050-1234567',
@@ -118,13 +124,115 @@ describe('SettingsService', () => {
     it('returns null when parent profile does not exist', async () => {
       const service = new SettingsService(
         makeMockPrisma({
-          profileFindFirst: jest.fn().mockResolvedValue(null),
+          profileFindUnique: jest.fn().mockResolvedValue(null),
         }),
         makeMockFreshnessService({}),
       );
 
-      const result = await service.getProfile();
+      const result = await service.getProfile('app-user-1');
       expect(result).toBeNull();
+    });
+
+    // `parentProfile.findFirst()` with no filter returned *a* profile, not the
+    // caller's: any signed-in user got some arbitrary household's displayName,
+    // email and cellphone. The household read was unfiltered the same way.
+    it("reads the profile keyed on the caller's own upstream id", async () => {
+      const profileFindUnique = jest.fn().mockResolvedValue({
+        upstreamUserId: 'mashov-1',
+        displayName: 'Parent Name',
+        email: 'parent@example.com',
+        cellphone: '050-1234567',
+        detailsState: 2,
+        updatedAt: new Date('2026-03-12T09:00:00Z'),
+      });
+      const householdFindFirst = jest.fn().mockResolvedValue({
+        schoolName: 'Test School',
+        schoolYear: 2026,
+        schoolCode: 1234,
+      });
+      const appUserFindUnique = jest
+        .fn()
+        .mockResolvedValue({ mashovUserId: 'mashov-1', displayName: 'App User' });
+      const profileFindFirst = jest.fn();
+
+      const service = new SettingsService(
+        makeMockPrisma({
+          appUserFindUnique,
+          profileFindUnique,
+          profileFindFirst,
+          householdFindFirst,
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      await service.getProfile('app-user-1');
+
+      expect(appUserFindUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'app-user-1' } }),
+      );
+      expect(profileFindUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { upstreamUserId: 'mashov-1' } }),
+      );
+      expect(householdFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: 'app-user-1', active: true } }),
+      );
+      // An unfiltered findFirst is how the leak worked; it must not be reachable.
+      expect(profileFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('returns null and reads nothing without a caller', async () => {
+      const appUserFindUnique = jest.fn();
+      const profileFindUnique = jest.fn();
+      const householdFindFirst = jest.fn();
+      const service = new SettingsService(
+        makeMockPrisma({ appUserFindUnique, profileFindUnique, householdFindFirst }),
+        makeMockFreshnessService({}),
+      );
+
+      await expect(service.getProfile(null)).resolves.toBeNull();
+      expect(appUserFindUnique).not.toHaveBeenCalled();
+      expect(profileFindUnique).not.toHaveBeenCalled();
+      expect(householdFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the caller no longer exists', async () => {
+      const profileFindUnique = jest.fn();
+      const service = new SettingsService(
+        makeMockPrisma({
+          appUserFindUnique: jest.fn().mockResolvedValue(null),
+          profileFindUnique,
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      await expect(service.getProfile('ghost')).resolves.toBeNull();
+      expect(profileFindUnique).not.toHaveBeenCalled();
+    });
+
+    // `user-details.task` never writes ParentProfile.displayName, so for most
+    // callers it is null. Before scoping, the page happened to show whichever
+    // profile findFirst returned; scoped to the caller it would go blank, so
+    // fall back to the name we do hold for them.
+    it("falls back to the app user's display name when the profile has none", async () => {
+      const service = new SettingsService(
+        makeMockPrisma({
+          appUserFindUnique: jest
+            .fn()
+            .mockResolvedValue({ mashovUserId: 'mashov-1', displayName: 'Real Name' }),
+          profileFindUnique: jest.fn().mockResolvedValue({
+            upstreamUserId: 'mashov-1',
+            displayName: null,
+            email: 'parent@example.com',
+            cellphone: '050-1234567',
+            detailsState: 2,
+            updatedAt: new Date('2026-03-12T09:00:00Z'),
+          }),
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      const result = await service.getProfile('app-user-1');
+      expect(result?.displayName).toBe('Real Name');
     });
   });
 

@@ -48,4 +48,23 @@ describe('SettingsController', () => {
       expect(settingsService.getSourceHealth).not.toHaveBeenCalled();
     });
   });
+
+  describe('getProfile', () => {
+    it('passes the caller id through', async () => {
+      const { controller, settingsService } = makeController({ id: 'conn-1' });
+
+      await controller.getProfile(REQUEST);
+
+      expect(settingsService.getProfile).toHaveBeenCalledWith('user-1');
+    });
+
+    it('rejects an unauthenticated caller rather than reading anything', async () => {
+      // Unscoped, this endpoint returned *a* parent's displayName, email and
+      // cellphone to anyone who asked.
+      const { controller, settingsService } = makeController({ id: 'conn-1' });
+
+      await expect(controller.getProfile({} as unknown as Request)).rejects.toThrow();
+      expect(settingsService.getProfile).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -88,11 +88,37 @@ export class SettingsService {
     return [...guids];
   }
 
-  async getProfile() {
+  /**
+   * The caller's own profile.
+   *
+   * This was `parentProfile.findFirst()` and
+   * `householdConnection.findFirst({ active: true })` — neither filtered by
+   * user. Any signed-in parent received *a* profile: some arbitrary
+   * household's `displayName`, `email` and `cellphone`, plus their school.
+   * More sensitive than the student identifiers that
+   * `getSourceHealth` was leaking, and on the same controller.
+   *
+   * `ParentProfile` has no `userId`; it is keyed on `upstreamUserId`, which is
+   * Mashov's `credential.userId` — the same value stored as
+   * `AppUser.mashovUserId` at login. So the caller's app-user row is the hop
+   * from a session to a profile, and the household is filtered by `userId`
+   * directly.
+   */
+  async getProfile(userId: string | null) {
+    if (!userId) return null;
+
+    const appUser = await this.prisma.appUser.findUnique({
+      where: { id: userId },
+      select: { mashovUserId: true, displayName: true },
+    });
+    if (!appUser) return null;
+
     const [profile, household] = await Promise.all([
-      this.prisma.parentProfile.findFirst(),
+      this.prisma.parentProfile.findUnique({
+        where: { upstreamUserId: appUser.mashovUserId },
+      }),
       this.prisma.householdConnection.findFirst({
-        where: { active: true },
+        where: { userId, active: true },
         orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
       }),
     ]);
@@ -101,7 +127,11 @@ export class SettingsService {
 
     return {
       upstreamUserId: profile.upstreamUserId,
-      displayName: profile.displayName ?? '',
+      // `user-details.task` never writes ParentProfile.displayName, so for most
+      // callers it is null. Unscoped, the page showed whichever profile
+      // findFirst happened to return; scoped, it would go blank — so fall back
+      // to the name login already recorded for this user.
+      displayName: profile.displayName ?? appUser.displayName ?? '',
       email: profile.email ?? '',
       cellphone: profile.cellphone ?? '',
       schoolName: household?.schoolName ?? '',
