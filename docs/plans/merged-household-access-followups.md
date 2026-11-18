@@ -56,17 +56,38 @@ open question 2** describes ("each user creates their own connection"). Today:
 `UserItemState` itself is unaffected (keyed per `AppUser`), so no read state is
 *lost* — it is only made unreachable while the other parent holds the stamp.
 
-**What this needs before it can be fixed**: a decision on how a child relates to
-users. Three shapes, with what each costs:
+**Shape — decided.** [ADR-0031](../adr/0031-child-visibility-is-a-set-of-connections.md):
+visibility becomes a `student_connection` many-to-many edge; `householdConnectionId` keeps
+routing only. The two alternatives and why they lost are in that ADR — in short, "derive it
+from the retained roster" is the same table with a name that invites pruning a parent's
+access away, and a `Household` above `AppUser` does not fix the defect at all, because two
+parents who have not merged still collide on one global `Student` row.
 
-| Shape | Cost |
-|---|---|
-| Keep one stamp for routing, add a separate many-to-many for visibility (e.g. `student_connection`) | One new table and a changed predicate in four read paths. Leaves `householdConnectionId` meaning exactly "who to ask upstream", which is what it is good at. |
-| Derive visibility instead of storing it — a user sees a child if any of their connections' last login roster listed them | No new table; needs the roster retained per connection, which it is not today. |
-| Introduce a real `Household` above `AppUser`, with several users sharing one connection set | The shape ADR-0016 implies, and the largest change: `userId` is the universal scoping key, so this touches every `*.service.ts` signature and invalidates the reasoning in ADR-0015/0019/0020. |
+The work, in the order it has to happen:
+
+1. `student_connection` (`studentGuid`, `householdConnectionId`, `firstSeenAt`,
+   `lastSeenInRosterAt`), `@@id` on the pair, indexed on the connection. Additive, so
+   push-safe; backfill one row per currently stamped child.
+2. The three roster writers upsert a link beside the stamp they already write:
+   `MashovSessionService.persistRoster`, `AuthService.persistLoginRoster`,
+   `SchoolLinksService.persistLink`.
+3. Four read predicates move from "the stamp is one of mine" to "a link to one of mine
+   exists": `ChildrenService.householdStudentWhere`, `ChildrenService.ownsStudent`,
+   `DashboardService.householdStudentWhere`, and the guid→year map in `school-year.scope.ts`.
+   No-link children stay readable by any caller, exactly as `ownsStudent` documents today.
+4. **`ConnectionService.deleteOneConnection` — the risky one.** It deletes the link row, and
+   the `Student` plus its per-child rows **only when no link remains**. A shared child
+   survives one parent unlinking. Done wrong this deletes the other parent's children and
+   their whole history, which is the same failure class the branch already fixed once for the
+   `NULL`-stamp predicate.
+5. Leave `targetForStudent`, `orderConnectionsForStudent` and `stampOwnershipIfChanged`
+   alone. The owner-first optimisation is routing, and routing is not what was broken.
 
 **DoD**
-- [ ] A decision is recorded as an ADR (amending ADR-0030's "two known defects").
+- [x] A decision is recorded as an ADR (amending ADR-0030's "two known defects") —
+      [ADR-0031](../adr/0031-child-visibility-is-a-set-of-connections.md).
+- [ ] Unlinking one of two connections that share a child leaves the child, its homework,
+      behaviour, releases and digest rows intact for the other parent — asserted by test.
 - [ ] Two users with separate Mashov accounts at one school both see the shared
       children, simultaneously, with no sync ordering dependence.
 - [ ] Each user's read/unread and archive state stays independent (ADR-0016), asserted

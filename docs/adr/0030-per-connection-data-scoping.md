@@ -127,7 +127,10 @@ The root cause is that `householdConnectionId` was made to carry two different j
    be a set, because a child can legitimately belong to several users.
 
 Conflating them is the defect. Recorded as **B1** in
-`docs/plans/merged-household-access-followups.md`.
+`docs/plans/merged-household-access-followups.md`, and **resolved by
+[ADR-0031](0031-child-visibility-is-a-set-of-connections.md)**, which splits the two jobs:
+visibility becomes a `student_connection` edge and this column keeps routing only. That
+decision is taken; the implementation is still open under B1.
 
 **The unstamped fallback is global.** `ConnectionScopeService.resolveOrFallback`
 resolves an unattributed row with `findFirst({ active: true })` and no `userId`, so
