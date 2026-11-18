@@ -24,18 +24,56 @@ model HouseholdConnection {
   lastLoginAt       DateTime?
   active            Boolean   @default(true)
   userId            String?
+  /// Who asserted "this Mashov account is mine" by linking it, and when.
+  /// Audit only -- never read for scoping. Adoption at sign-in means whoever
+  /// holds either school's password reaches the merged household, so the one
+  /// thing that must survive is a record of who opened that door. See ADR-0029.
+  linkedByUserId    String?
+  linkedAt          DateTime?
+  /// A parent-chosen short name for this school. `null` means derive one from
+  /// `schoolName`; see src/common/school-label.ts.
+  displayLabel      String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   user AppUser? @relation(fields: [userId], references: [id])
 
+  students         Student[]
+  conversations    MailConversation[]
+  messages         MailMessage[]
+  notifications    NotificationEvent[]
+  schoolActivities SchoolActivity[]
+  parentProfiles   ParentProfile[]
+
+  /// The identity of a Mashov account, and what makes adoption safe to race.
+  /// `auth.service.ts` already treats (school, username) as the identity key
+  /// and looked it up with `findFirst`; without the constraint two concurrent
+  /// sign-ins can both decide they are creating the connection.
+  ///
+  /// Full, not partial (`WHERE active`): Prisma cannot express a partial index,
+  /// so `prisma db push` would drop it on the next boot and the constraint
+  /// would vanish silently. The duplicates `20261117000000` deactivated rather
+  /// than deleted are collapsed by
+  /// prisma/migrations/20261120000000_connection_duplicate_collapse, which the
+  /// Dockerfile runs BEFORE `db push` for exactly this reason.
+  @@unique([schoolCode, username])
   @@map("household_connection")
 }
 
 model AppUser {
   id               String                @id @default(uuid())
   mashovUserId     String                @unique
+  /// The school of the credential that CREATED this row -- an origin marker,
+  /// not a scope. A household can hold connections to several schools, so this
+  /// answers "which account opened the account", nothing more. Read nowhere in
+  /// src/ outside the upstream school list; never use it to decide what a user
+  /// may see. Ownership lives on HouseholdConnection.userId.
   semel            Int
+  /// Set when this AppUser's only connection was absorbed into another
+  /// household, pointing at the household that now owns it. Sign-in follows it
+  /// exactly one hop; the row is kept because AppSession and UserItemState
+  /// reference it and the pointer is the audit trail. See ADR-0029.
+  mergedIntoUserId String?
   username         String
   displayName      String
   createdAt        DateTime              @default(now())
@@ -84,6 +122,13 @@ model ParentProfile {
   rawPayload     Json?
   updatedAt      DateTime @updatedAt
 
+  /// Which connection fetched this profile. `upstreamUserId` is a per-school
+  /// user id, so a two-school household has two rows -- both correct, and
+  /// `settings.service.ts` used to pick between them with `findFirst`.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([householdConnectionId])
   @@map("parent_profile")
 }
 
@@ -107,12 +152,33 @@ model Student {
   // stayed active forever while every per-student cron 403'd on them.
   lastSeenInRosterAt DateTime?
 
+  /// The connection whose login roster this child appeared in -- the household
+  /// ownership this schema went without, and the reason
+  /// `ChildrenService.getChildren()` returned every active row in the database.
+  ///
+  /// Nullable permanently, not transitionally: the shared env-credential
+  /// session legitimately writes unowned rows, and NULL means "ownership
+  /// unknown, re-stamp on the next roster refresh" rather than "no owner". A
+  /// required column would also make `prisma db push` impossible against the
+  /// populated production tables.
+  ///
+  /// `onDelete: SetNull`, so a raw connection delete can never cascade away a
+  /// child's history by accident -- `ConnectionService.deleteConnection` does
+  /// that work explicitly and scoped.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
   @@index([isActive, lastSeenInRosterAt])
+  @@index([householdConnectionId, isActive])
   @@map("student")
 }
 
 model NotificationEvent {
   id                     String    @id @default(cuid())
+  /// A per-school counter, so two schools collide on it. Still `@unique`
+  /// outright; the composite key that fixes that lands with the task-5 code
+  /// that adapts the upsert, in
+  /// prisma/migrations/20261121000000_connection_collision_keys.
   upstreamNotificationId Int?      @unique
   fingerprint            String?   @unique
   eventType              Int
@@ -127,22 +193,26 @@ model NotificationEvent {
   rawPayload             Json
   updatedAt              DateTime  @updatedAt
 
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([householdConnectionId])
   @@map("notification_event")
 }
 
 model MailConversation {
-  id                String   @id @default(cuid())
-  conversationId    String   @unique
-  subject           String
-  senderNamePreview String?
-  sendTime          DateTime
-  isUnread          Boolean  @default(false)
-  hasDrafts         Boolean  @default(false)
-  hasAttachments    Boolean  @default(false)
-  preventReply      Boolean  @default(false)
-  labels            Json     @default("[]")
-  rawPayload        Json?
-  lastFetchedAt     DateTime @default(now())
+  id                    String    @id @default(cuid())
+  conversationId        String    @unique
+  subject               String
+  senderNamePreview     String?
+  sendTime              DateTime
+  isUnread              Boolean   @default(false)
+  hasDrafts             Boolean   @default(false)
+  hasAttachments        Boolean   @default(false)
+  preventReply          Boolean   @default(false)
+  labels                Json      @default("[]")
+  rawPayload            Json?
+  lastFetchedAt         DateTime  @default(now())
   // The sendTime of the newest message the user had when they marked this
   // conversation read locally, or null if they never did. Mashov documents no
   // markAsRead endpoint, so upstream keeps reporting the message unread and the
@@ -151,7 +221,7 @@ model MailConversation {
   // Mashov timestamps are naive and parsed in the container's zone, so a UTC now()
   // would sit 2-3h behind the instants it is compared against and clear the
   // override for any mail read soon after it arrived.
-  locallyReadThroughAt DateTime?
+  locallyReadThroughAt  DateTime?
   // Set when the user explicitly marks the conversation unread, cleared when they mark
   // it read or archive it. MailInboxTask's reconciliation sweep skips these rows: for a
   // conversation upstream has stopped returning, the local row is the only record of
@@ -162,6 +232,15 @@ model MailConversation {
 
   messages MailMessage[]
 
+  /// The mailbox this conversation came from. `conversationId` is a global
+  /// UUID, so the table is the union of every household's mail and nothing
+  /// could tell the rows apart -- which is why MailInboxTask refused to run its
+  /// reconciliation sweep above one active connection at all.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([householdConnectionId, isUnread])
+  @@index([householdConnectionId, sendTime])
   @@map("mail_conversation")
 }
 
@@ -185,6 +264,16 @@ model MailMessage {
 
   conversation MailConversation @relation(fields: [conversationId], references: [conversationId])
 
+  /// Denormalised from the conversation rather than reached through the
+  /// relation. Prisma can express the join, but the column buys a join-free
+  /// `deleteMany` on unlink, a direct connection resolve from a bare
+  /// `messageId` for an attachment download, and symmetry with the conversation
+  /// row the same upsert loop already writes. Cost: one TEXT per message,
+  /// written by code already in that loop.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([householdConnectionId])
   @@map("mail_message")
 }
 
@@ -268,8 +357,17 @@ model SubjectEnrollment {
   @@map("subject_enrollment")
 }
 
+/// A school's own behaviour taxonomy, NOT global reference data.
+///
+/// `apis/get-api-achvas.md` carries `teacherId` and `commonBehaveId`: the codes
+/// are school-local, and `justifiable` is the school's own policy on whether an
+/// absence excuses itself. Keyed by `schoolCode` rather than by connection
+/// because it is school-level -- two parents at one school must not duplicate
+/// it -- and because `BehaviorClassifierService` answers "is this absence
+/// justifiable" from it and was answering from whichever school wrote last.
 model BehaviorTypeReference {
   id               String   @id @default(cuid())
+  schoolCode       Int      @default(0)
   code             Int      @unique
   name             String
   displayOrder     Int      @default(0)
@@ -432,8 +530,16 @@ model SchoolActivity {
   rawPayload        Json?
   updatedAt         DateTime  @updatedAt
 
+  /// `activityId` is a per-school counter -- it is literally `1` in the
+  /// captured payload -- and `userId` is now the merged household, so without
+  /// the connection in the key one school's consent request overwrites the
+  /// other's.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
   @@unique([userId, schoolYear, activityId])
   @@index([userId, endAnswerDate])
+  @@index([householdConnectionId])
   @@map("school_activity")
 }
 
