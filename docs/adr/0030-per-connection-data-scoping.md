@@ -103,6 +103,38 @@ are 67 and 70 characters, past Postgres's 63-byte identifier limit, so they woul
 truncated and `db push` would drift from the committed migration — the same trap
 `digest_reported_item_dedup_key` already documents.
 
+## Two known gaps, named rather than hidden
+
+**Linking a school takes a child away from another household.** `Student.studentGuid`
+is globally unique and the child upsert's `update` branch re-stamps
+`householdConnectionId` unconditionally. Two parents of one child with separate
+Mashov accounts at the same school — separated or divorced parents, which is
+ordinary rather than exotic — means that when the second parent links, the
+child's row re-stamps to their connection, and the first parent's `/children`
+silently loses the child, their per-child endpoints 404, and their
+`UserItemState` read/archive flags become unreachable.
+
+This is the practical face of the `studentGuid` limitation ADR-0029 records. It
+is left as-is deliberately: refusing the link would lock the second parent out
+entirely, and allowing it without re-stamping would show them a child they
+cannot open. Supporting both properly needs a child to belong to N households,
+which is a composite key across six tables. **It is a product decision, not an
+implementation detail, and it should be made before this is offered to
+separated parents.**
+
+**The unstamped fallback is global.** `ConnectionScopeService.resolveOrFallback`
+resolves an unattributed row with `findFirst({ active: true })` and no `userId`,
+so on a deployment with several households one family's unstamped conversation
+can resolve to another family's credentials. Mashov will reject the request in
+almost every case, so the visible symptom is an empty list rather than
+someone else's data — but one family's credentials are being spent on another
+family's request, and for a mail mutation the upstream write lands in whichever
+account the fallback picked. The fallback should take the caller's `userId`
+wherever one is available; it does not yet.
+
+Both are bounded today because this is a one-household deployment. Neither is
+bounded by anything in the code.
+
 ## Alternatives considered
 
 - **Reaching ownership through the conversation relation instead of a column on `mail_message`.**

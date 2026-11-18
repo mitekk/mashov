@@ -78,6 +78,30 @@ The alternative — demanding a confirmation code out of band — has no channel
 no verified email or phone for a parent; `ParentProfile` holds whatever Mashov reports, which is
 the same account being claimed.
 
+## Deferred: merging two pre-existing households
+
+The transaction this ADR's reversibility story implies — re-parent the
+connection, set `mergedIntoUserId`, revoke the orphan's `AppSession`s and their
+Redis mirrors, re-point `DigestRecipient`, copy non-conflicting `UserItemState`
+— **is not implemented.** `AppUser.mergedIntoUserId`, and the one-hop resolver
+in `AuthService` that reads it, exist and are tested; nothing writes the column.
+
+The consequence is a real dead end. A parent who signs into school B *first*
+gets their own household (which this ADR says is correct — the app cannot know
+two Mashov accounts are one parent). If they later sign into school A and try
+to add B, `POST /school-links` answers `409 CONNECTION_ALREADY_LINKED`, because
+B's connection already has a `userId`. There is no in-app remedy.
+
+The workaround until it is implemented: sign into B, unlink it from that
+household (`DELETE /school-links`, which sets `conn.userId = null` and keeps the
+row), then sign into A and add B. That works, and it loses B's locally-held
+read/unread and archive flags, which live on the orphan `AppUser`.
+
+When it is implemented, `ConnectionService.deleteOneConnection` must also clear
+`mergedIntoUserId`, or this ADR's claim that "unlink … so a later B login
+re-forms its own household" stays false — `resolveMergedOwner` would keep
+dragging B's next sign-in into the old household.
+
 ## Consequences
 
 **Good.** Either school's credentials reach the same merged household. Isolation is real for the
