@@ -1,9 +1,15 @@
 import {
+  Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
+  Post,
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
+import { IsInt, IsString, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
 import type { Request } from 'express';
 import { SchoolLinksService } from './school-links.service';
 import type { SchoolLink } from './school-links.service';
@@ -16,6 +22,20 @@ interface PaginatedSchoolLinks {
     total: number;
     totalPages: number;
   };
+}
+
+class CreateSchoolLinkDto {
+  @Type(() => Number)
+  @IsInt()
+  semel!: number;
+
+  @IsString()
+  @MinLength(1)
+  username!: string;
+
+  @IsString()
+  @MinLength(1)
+  password!: string;
 }
 
 /**
@@ -50,5 +70,28 @@ export class SchoolLinksController {
         totalPages: data.length === 0 ? 0 : 1,
       },
     };
+  }
+
+  /**
+   * Link another Mashov account.
+   *
+   * 201 with the created link, and deliberately without waiting for the sync:
+   * the children arrive in the login response, so the school is immediately
+   * usable, while the rest takes minutes the proxy would not hold open.
+   */
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  async create(
+    @Body() body: CreateSchoolLinkDto,
+    @Req() req: Request,
+  ): Promise<SchoolLink> {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new UnauthorizedException({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated', details: [] },
+      });
+    }
+
+    return this.schoolLinksService.createLink(userId, body);
   }
 }

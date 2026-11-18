@@ -84,6 +84,9 @@ export default function SyncingPage() {
   // value is inlined at build time so it cannot vary per test in one shared
   // stack. Clamped to [1s, the default], so it can only shorten the cap.
   const hardCapParam = Number(searchParams.get('hardCapMs'));
+  // Present when a school was just linked from /more. It changes what this
+  // screen is waiting for, what it says, and where the skip button goes.
+  const schoolId = searchParams.get('schoolId');
   const hardCapMs =
     Number.isFinite(hardCapParam) && hardCapParam > 0
       ? Math.min(Math.max(hardCapParam, MIN_HARD_CAP_MS), MAX_HARD_CAP_MS)
@@ -96,12 +99,18 @@ export default function SyncingPage() {
     setNavigated(true);
     // `replace`, not `push`: with `push` the back button re-mounts this screen
     // and burns the refresh endpoint's throttle budget.
-    router.replace('/');
-  }, [router]);
+    //
+    // A linked school lands on /children rather than on Home: that is the
+    // screen where the new children actually appear, and the parent came here
+    // from /more having asked for exactly that.
+    router.replace(schoolId ? '/children' : '/');
+  }, [router, schoolId]);
 
   const { data } = useQuery({
-    queryKey: ['sync-status'],
-    queryFn: getSyncStatus,
+    // Keyed by school, so a first-login poll and an add-school poll cannot
+    // read each other's cached status.
+    queryKey: ['sync-status', schoolId ?? 'all'],
+    queryFn: () => getSyncStatus(schoolId),
     staleTime: 0,
     enabled: !navigated,
     refetchInterval: (query) => {
@@ -129,7 +138,7 @@ export default function SyncingPage() {
     if (refreshTriggeredRef.current) return;
     refreshTriggeredRef.current = true;
 
-    triggerSyncRefresh()
+    triggerSyncRefresh(schoolId)
       .then(() => leave())
       .catch((error: unknown) => {
         switch (statusOf(error)) {
@@ -152,7 +161,7 @@ export default function SyncingPage() {
             if (mountedRef.current) setTriggerFailed(true);
         }
       });
-  }, [leave]);
+  }, [leave, schoolId]);
 
   // Exit 1: the refresh reported a terminal phase — including `partial` and
   // `stale`, which is the whole point of the fix.
@@ -208,9 +217,13 @@ export default function SyncingPage() {
     <div className="min-h-dvh flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm text-center space-y-8">
         <div className="space-y-3">
-          <h1 className="text-2xl font-bold text-foreground">מגדירים את החשבון שלך…</h1>
+          <h1 data-testid="syncing-heading" className="text-2xl font-bold text-foreground">
+            {schoolId ? 'מחברים את בית הספר…' : 'מגדירים את החשבון שלך…'}
+          </h1>
           <p className="text-sm text-muted-foreground">
-            אנחנו מסנכרנים את הנתונים שלך מבית הספר. זה עשוי לקחת כמה רגעים.
+            {schoolId
+              ? 'אנחנו מסנכרנים את הנתונים של בית הספר החדש. זה עשוי לקחת כמה רגעים.'
+              : 'אנחנו מסנכרנים את הנתונים שלך מבית הספר. זה עשוי לקחת כמה רגעים.'}
           </p>
         </div>
 

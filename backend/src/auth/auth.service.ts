@@ -106,10 +106,11 @@ export class AuthService {
 
     // Deliberately NOT keyed on the year — keying on it stranded existing
     // connections on the year they were created with, which is what froze
-    // production on 2025/26. School + username is the stable identity.
-    const existingConnBeforeLogin = await this.prisma.householdConnection.findFirst({
-      where: { schoolCode: Number(semel), username },
-      select: { id: true, mashovUniqueId: true },
+    // production on 2025/26. School + username is the stable identity, and it
+    // is now a unique key, so this is a findUnique rather than a findFirst.
+    const existingConnBeforeLogin = await this.prisma.householdConnection.findUnique({
+      where: { schoolCode_username: { schoolCode: Number(semel), username } },
+      select: { id: true, mashovUniqueId: true, userId: true },
     });
 
     let year = candidate.year;
@@ -211,12 +212,52 @@ export class AuthService {
       });
     }
 
+    const encryptedPassword = this.encryptionService.encrypt(password);
+
+    // ADOPTION.
+    //
+    // Mashov issues a separate account per school, with a different
+    // `credential.userId` for each. Without this, signing in with the second
+    // school's credentials creates a SECOND AppUser, a second session and a
+    // second household -- so a parent who linked school B from inside their
+    // session, then signed out and back in with B's password, would land in an
+    // empty app with no way back to their own children.
+    //
+    // The credentials have already been validated by Mashov above, so reaching
+    // here at all proves the caller holds this school's password. That is the
+    // whole authorisation: see ADR-0029 for the trust model and why unlink is
+    // the reversal.
+    if (this.adoptionEnabled() && existingConnBeforeLogin?.userId) {
+      const ownerId = existingConnBeforeLogin.userId;
+      this.logger.log(
+        `Adopting sign-in for semel=${semel} into existing household ${ownerId}`,
+      );
+
+      await this.prisma.householdConnection.update({
+        where: { id: existingConnBeforeLogin.id },
+        data: {
+          encryptedPassword,
+          schoolYear: year,
+          schoolName: schoolSettings?.schoolName,
+          upstreamUserId: mashovUserId,
+          lastLoginAt: new Date(),
+          active: true,
+          ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+        },
+      });
+
+      await this.persistLoginRoster(loginData, existingConnBeforeLogin.id);
+
+      const sessionToken = await this.appSessionService.createSession(ownerId, ip);
+      // `false` is correct: this household has signed in before, and the
+      // first-login sync screen would be wrong -- the data is already here.
+      return { sessionToken, isFirstLogin: false };
+    }
+
     // Upsert AppUser
     const existingUser = await this.prisma.appUser.findUnique({
       where: { mashovUserId },
     });
-
-    const encryptedPassword = this.encryptionService.encrypt(password);
 
     const appUser = await this.prisma.appUser.upsert({
       where: { mashovUserId },
@@ -234,13 +275,16 @@ export class AuthService {
 
     const isFirstLogin = existingUser === null;
 
+    // The household this session belongs to. Normally the AppUser just
+    // upserted -- but if this user's only connection was absorbed into another
+    // household, follow the pointer exactly ONE hop. One hop, not a loop: a
+    // cycle would hang the login, and a chain long enough to matter means the
+    // data is already wrong. Bailing to the original is the safe answer,
+    // because it is the household whose password was just proven.
+    const ownerId = await this.resolveMergedOwner(appUser.id, appUser.mergedIntoUserId);
+
     // Upsert HouseholdConnection with userId
-    const existingConn =
-      existingConnBeforeLogin ??
-      (await this.prisma.householdConnection.findFirst({
-        where: { schoolCode: Number(semel), username },
-        select: { id: true, mashovUniqueId: true },
-      }));
+    const existingConn = existingConnBeforeLogin;
 
     // Captured, not discarded: the children written below belong to THIS
     // connection, and until they carry its id nothing in the schema says which
@@ -261,7 +305,7 @@ export class AuthService {
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
-          userId: appUser.id,
+          userId: ownerId,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });
@@ -276,14 +320,83 @@ export class AuthService {
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
-          userId: appUser.id,
+          userId: ownerId,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });
       connectionId = created.id;
     }
 
-    // Persist students from login response
+    await this.persistLoginRoster(loginData, connectionId);
+
+    // Create session
+    const sessionToken = await this.appSessionService.createSession(ownerId, ip);
+
+    return { sessionToken, isFirstLogin };
+  }
+
+  /**
+   * Is sign-in allowed to attach to an existing household?
+   *
+   * On by default: without it, linking a second school is a trap -- the parent
+   * can add it, but signing back in with its password drops them into an empty
+   * app. The switch exists so the behaviour can be turned off in one env var
+   * if adoption ever proves to be the wrong call, not as an opt-in.
+   */
+  private adoptionEnabled(): boolean {
+    const raw = process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
+    if (raw === undefined || raw.trim().length === 0) return true;
+    return raw.trim().toLowerCase() !== 'false';
+  }
+
+  /**
+   * Follow a merge pointer exactly one hop.
+   *
+   * A cycle -- including a self-pointer -- would hang the login, and a chain
+   * long enough to matter means the data is already wrong. Bailing to the
+   * original is the safe answer: it is the household whose password was just
+   * proven.
+   */
+  private async resolveMergedOwner(
+    appUserId: string,
+    mergedIntoUserId: string | null,
+  ): Promise<string> {
+    if (!mergedIntoUserId || mergedIntoUserId === appUserId) return appUserId;
+
+    const target = await this.prisma.appUser.findUnique({
+      where: { id: mergedIntoUserId },
+      select: { id: true, mergedIntoUserId: true },
+    });
+
+    if (!target) {
+      this.logger.warn(
+        `AppUser ${appUserId} points at merged household ${mergedIntoUserId}, which does not exist; keeping its own`,
+      );
+      return appUserId;
+    }
+
+    // One hop only. A pointer that itself points on is a chain we refuse to
+    // walk rather than risk looping.
+    if (target.mergedIntoUserId && target.mergedIntoUserId !== target.id) {
+      this.logger.warn(
+        `Merge chain from ${appUserId} via ${mergedIntoUserId} goes further; stopping at the first hop`,
+      );
+    }
+
+    return target.id;
+  }
+
+  /**
+   * The children from a login response, stamped with the connection that
+   * fetched them.
+   *
+   * Shared by the normal path and by adoption, so the two cannot drift about
+   * what a login persists.
+   */
+  private async persistLoginRoster(
+    loginData: MashovLoginResponse,
+    connectionId: string,
+  ): Promise<void> {
     const children = loginData.accessToken?.children ?? [];
     for (const child of children) {
       const fields = {
@@ -326,11 +439,6 @@ export class AuthService {
         data: { isActive: false },
       });
     }
-
-    // Create session
-    const sessionToken = await this.appSessionService.createSession(appUser.id, ip);
-
-    return { sessionToken, isFirstLogin };
   }
 
   /**

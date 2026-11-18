@@ -68,6 +68,11 @@ services:
       # other value, including unset, leaves the sweep on -- it is what keeps
       # the badge matching Mashov's own unreadConversations.
       MAIL_SWEEP_ENABLED: ${MAIL_SWEEP_ENABLED:-}
+      # Whether signing in with a school's credentials attaches to the
+      # household that already linked it. `false` restores the pre-merge
+      # behaviour, where each school's Mashov account gets its own household --
+      # which makes linking a second school a dead end. See ADR-0029.
+      MASHOV_ENABLE_SCHOOL_LINK_ADOPTION: ${MASHOV_ENABLE_SCHOOL_LINK_ADOPTION:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       # Per-child daily digest -> Telegram. Off by default, and silent even
       # when on: DIGEST_DRY_RUN renders and logs without sending. See ADR-0026.

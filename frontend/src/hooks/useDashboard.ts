@@ -14,7 +14,10 @@ export function useDashboard() {
 export function useSyncRefresh() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: triggerSyncRefresh,
+    // Explicitly argument-free: the header's refresh button refreshes the
+    // whole household, and passing the function directly would make its
+    // optional schoolId a required mutate() variable.
+    mutationFn: () => triggerSyncRefresh(),
     onSuccess: async () => {
       // Keep mutation pending until active queries have been invalidated and refetched.
       await Promise.all([

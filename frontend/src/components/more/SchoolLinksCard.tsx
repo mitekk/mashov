@@ -1,5 +1,6 @@
 import React from 'react';
-import { School } from 'lucide-react';
+import Link from 'next/link';
+import { Plus, School } from 'lucide-react';
 import type { SchoolLink } from '@/types/api';
 
 interface SchoolLinksCardProps {
@@ -58,6 +59,17 @@ export function SchoolLinksCard({ links }: SchoolLinksCardProps) {
           </div>
         </div>
       ))}
+
+      <Link
+        href="/more/schools/new"
+        data-testid="settings-add-school-btn"
+        className="flex items-center gap-3 p-4 text-sm font-medium text-primary hover:bg-accent/50 transition-colors"
+      >
+        <span className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+          <Plus className="w-4 h-4" aria-hidden="true" />
+        </span>
+        הוספת בית ספר
+      </Link>
     </div>
   );
 }
