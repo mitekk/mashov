@@ -15,7 +15,10 @@ import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSourceHealth, useProfile } from '@/hooks/useSettings';
 import { useSchoolLinks } from '@/hooks/useSchoolLinks';
 import { useMe } from '@/hooks/useAuth';
-import { deleteConnection } from '@/api/connection';
+import { deleteAllSchoolLinks, deleteSchoolLink } from '@/api/schoolLinks';
+import { invalidateHouseholdScopedQueries } from '@/lib/query-invalidation';
+import { useSelectedChild } from '@/hooks/useSelectedChild';
+import type { ChildrenResponse, SchoolLink } from '@/types/api';
 import { signOut } from '@/api/auth';
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? '1.0.0';
@@ -28,15 +31,45 @@ export default function MorePage() {
   const { data: profile } = useProfile();
   const { data: me } = useMe();
   const { data: schoolLinks } = useSchoolLinks();
+  const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
 
   // Disconnect confirm modal
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  // The single school a per-row "ניתוק" is asking about, or null.
+  const [pendingUnlink, setPendingUnlink] = useState<SchoolLink | null>(null);
+
+  const schoolCount = schoolLinks?.length ?? 1;
+  const isLastSchool = (pendingUnlink && schoolCount <= 1) || schoolCount <= 1;
 
   const disconnectMutation = useMutation({
-    mutationFn: deleteConnection,
+    mutationFn: deleteAllSchoolLinks,
     onSuccess: () => {
+      // The household has no schools left, so every cached answer is about
+      // data that no longer exists. `clear()` is right here and nowhere else.
       queryClient.clear();
       router.push('/auth/sign-in');
+    },
+  });
+
+  const unlinkOneMutation = useMutation({
+    mutationFn: (link: SchoolLink) => deleteSchoolLink(link.id),
+    onSuccess: (_result, link) => {
+      // The removed school's children are captured BEFORE invalidating,
+      // because afterwards the cache no longer knows which children were
+      // whose -- and a selected child who has just been deleted would leave
+      // the workspace pointed at a guid that now 404s.
+      const children = queryClient.getQueryData<ChildrenResponse>(['children']);
+      const removedGuids = (children?.data ?? [])
+        .filter((child) => child.schoolId === link.id)
+        .map((child) => child.studentGuid);
+      if (selectedChildGuid && removedGuids.includes(selectedChildGuid)) {
+        setSelectedChildGuid(null);
+      }
+
+      // Invalidated, never cleared: the parent still has a household and the
+      // shell renders from ['me'], so clearing would flash it through null.
+      invalidateHouseholdScopedQueries(queryClient);
+      setPendingUnlink(null);
     },
   });
 
@@ -69,7 +102,14 @@ export default function MorePage() {
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               {schoolLinks.length === 1 ? 'בית ספר מחובר' : 'בתי ספר מחוברים'}
             </h2>
-            <SchoolLinksCard links={schoolLinks} />
+            <SchoolLinksCard
+              links={schoolLinks}
+              onUnlink={(link) =>
+                // The last school is the sign-out-and-wipe case, so it routes
+                // to the bulk confirm, which says so.
+                schoolLinks.length <= 1 ? setShowDisconnectConfirm(true) : setPendingUnlink(link)
+              }
+            />
           </section>
         )}
 
@@ -129,6 +169,44 @@ export default function MorePage() {
       </div>
 
       {/* Disconnect confirmation modal */}
+      {pendingUnlink && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="unlink-modal-title"
+          data-testid="settings-unlink-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-xl space-y-4">
+            <h2 id="unlink-modal-title" className="text-base font-bold text-foreground">
+              {`לנתק את "${pendingUnlink.schoolName}"?`}
+            </h2>
+            {/* The blast radius, named. The old copy said "כל המידע יימחק",
+                which is now a lie: the other school's data stays. */}
+            <p className="text-sm text-muted-foreground">
+              {`יימחקו כל הנתונים של ${childrenPhrase(pendingUnlink.childrenCount)} בבית הספר הזה — שיעורי בית, התנהגות, הודעות ודואר.`}
+              {remainingSchoolsPhrase(schoolLinks ?? [], pendingUnlink)}
+            </p>
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setPendingUnlink(null)}
+                className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
+              >
+                ביטול
+              </button>
+              <button
+                data-testid={`settings-unlink-confirm-btn-${pendingUnlink.semel}`}
+                onClick={() => unlinkOneMutation.mutate(pendingUnlink)}
+                disabled={unlinkOneMutation.isPending}
+                className="flex-1 rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground hover:opacity-90 transition-opacity disabled:opacity-60"
+              >
+                {unlinkOneMutation.isPending ? 'מנתק...' : 'ניתוק'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showDisconnectConfirm && (
         <div
           role="dialog"
@@ -138,10 +216,12 @@ export default function MorePage() {
         >
           <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-xl space-y-4">
             <h2 id="disconnect-modal-title" className="text-base font-bold text-foreground">
-              ניתוק מבית הספר
+              {schoolCount > 1 ? 'ניתוק מכל בתי הספר' : 'ניתוק מבית הספר'}
             </h2>
             <p className="text-sm text-muted-foreground">
-              האם אתה בטוח? כל המידע יימחק.
+              {isLastSchool
+                ? 'זה בית הספר היחיד המחובר. ניתוק שלו ימחק את כל המידע ויוציא אותך מהחשבון.'
+                : 'יימחקו כל הנתונים של כל בתי הספר, ותצאו מהחשבון.'}
             </p>
             <div className="flex gap-3 pt-1">
               <button
@@ -167,4 +247,26 @@ export default function MorePage() {
       )}
     </AppShell>
   );
+}
+
+/** Hebrew counts one, two and many differently. */
+function childrenPhrase(count: number): string {
+  if (count === 0) return 'הילדים';
+  if (count === 1) return 'הילד';
+  if (count === 2) return '2 הילדים';
+  return `${count} הילדים`;
+}
+
+/**
+ * Which schools survive the unlink, named.
+ *
+ * Naming them is the point: "the other school's data stays" is abstract, while
+ * "הנתונים של אורט רמון יישארו" is something a parent can check against what
+ * they meant to do.
+ */
+function remainingSchoolsPhrase(links: SchoolLink[], removing: SchoolLink): string {
+  const remaining = links.filter((link) => link.id !== removing.id);
+  if (remaining.length === 0) return '';
+  const names = remaining.map((link) => `"${link.schoolName}"`).join(' ו');
+  return ` הנתונים של ${names} יישארו.`;
 }

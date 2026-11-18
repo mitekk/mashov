@@ -54,6 +54,7 @@ function makeService(
     schoolYear?: unknown;
     validator?: unknown;
     sync?: unknown;
+    connectionService?: unknown;
   } = {},
 ) {
   return new SchoolLinksService(
@@ -70,6 +71,10 @@ function makeService(
     }) as never,
     (overrides.validator ?? { validate: jest.fn() }) as never,
     (overrides.sync ?? { refreshAll: jest.fn().mockResolvedValue({ status: 'success' }) }) as never,
+    (overrides.connectionService ?? {
+      updateConnection: jest.fn().mockResolvedValue({ ok: true }),
+      deleteConnection: jest.fn().mockResolvedValue({ ok: true }),
+    }) as never,
   );
 }
 

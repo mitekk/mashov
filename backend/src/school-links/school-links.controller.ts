@@ -1,14 +1,17 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
+  Put,
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
-import { IsInt, IsString, MinLength } from 'class-validator';
+import { IsInt, IsOptional, IsString, MinLength } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request } from 'express';
 import { SchoolLinksService } from './school-links.service';
@@ -36,6 +39,18 @@ class CreateSchoolLinkDto {
   @IsString()
   @MinLength(1)
   password!: string;
+}
+
+class UpdateSchoolLinkDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  username?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  password?: string;
 }
 
 /**
@@ -93,5 +108,50 @@ export class SchoolLinksController {
     }
 
     return this.schoolLinksService.createLink(userId, body);
+  }
+
+  /** Re-validate and store new credentials for one school. */
+  @Put(':id')
+  @HttpCode(HttpStatus.OK)
+  async update(
+    @Param('id') id: string,
+    @Body() body: UpdateSchoolLinkDto,
+    @Req() req: Request,
+  ): Promise<SchoolLink> {
+    const userId = this.requireUser(req);
+    return this.schoolLinksService.updateLink(userId, id, body);
+  }
+
+  /**
+   * Unlink one school, deleting only its data.
+   *
+   * 204 with no body, per .claude/rules/api.md. The session is NOT revoked:
+   * the parent still has a household, and signing them out of it because one
+   * of two schools went away would be a worse outcome than the unlink they
+   * asked for.
+   */
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(@Param('id') id: string, @Req() req: Request): Promise<void> {
+    const userId = this.requireUser(req);
+    await this.schoolLinksService.deleteLink(userId, id);
+  }
+
+  /** Unlink every school. The household keeps its AppUser and its session. */
+  @Delete()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removeAll(@Req() req: Request): Promise<void> {
+    const userId = this.requireUser(req);
+    await this.schoolLinksService.deleteLink(userId);
+  }
+
+  private requireUser(req: Request): string {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new UnauthorizedException({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated', details: [] },
+      });
+    }
+    return userId;
   }
 }

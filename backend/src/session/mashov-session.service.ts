@@ -843,6 +843,42 @@ export class MashovSessionService {
     }
   }
 
+  /**
+   * Forget everything cached for one connection.
+   *
+   * There was no eviction anywhere, so a deleted connection's upstream cookies
+   * lived in this process until a restart -- and a parent who unlinked a
+   * school and re-linked it would be served a session authenticated with
+   * credentials that no longer existed in the database.
+   *
+   * Every cache here is keyed `connectionId:year`, so the prefix catches every
+   * year the connection ever logged in at, including a history backfill's.
+   */
+  invalidateConnection(connectionId: string): void {
+    const prefix = `${connectionId}:`;
+    let evicted = 0;
+
+    for (const map of [
+      this.connectionSessions,
+      this.lastRosterByConnection,
+      this.lastLoginByConnection,
+    ] as Array<Map<string, unknown>>) {
+      for (const key of [...map.keys()]) {
+        if (key.startsWith(prefix)) {
+          map.delete(key);
+          evicted += 1;
+        }
+      }
+    }
+
+    // Keyed on the bare connection id, not `connectionId:year`.
+    this.inFlightRosterRefresh.delete(connectionId);
+
+    this.logger.debug(
+      `Evicted ${evicted} cached session entr${evicted === 1 ? 'y' : 'ies'} for connection ${connectionId}`,
+    );
+  }
+
   /** Cache key for everything a connection login produces: both ends matter. */
   private sessionKey(connectionId: string, year: number): string {
     return `${connectionId}:${Number(year)}`;

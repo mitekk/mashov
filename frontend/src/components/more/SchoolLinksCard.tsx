@@ -5,6 +5,7 @@ import type { SchoolLink } from '@/types/api';
 
 interface SchoolLinksCardProps {
   links: SchoolLink[];
+  onUnlink: (link: SchoolLink) => void;
 }
 
 /**
@@ -19,7 +20,7 @@ interface SchoolLinksCardProps {
  * leaving it alongside the per-school ids would give two elements answering
  * "which school?".
  */
-export function SchoolLinksCard({ links }: SchoolLinksCardProps) {
+export function SchoolLinksCard({ links, onUnlink }: SchoolLinksCardProps) {
   if (links.length === 0) return null;
 
   return (
@@ -57,6 +58,14 @@ export function SchoolLinksCard({ links }: SchoolLinksCardProps) {
               </p>
             )}
           </div>
+          <button
+            type="button"
+            data-testid={`settings-school-unlink-btn-${link.semel}`}
+            onClick={() => onUnlink(link)}
+            className="flex-shrink-0 rounded-lg px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/5 transition-colors"
+          >
+            ניתוק
+          </button>
         </div>
       ))}
 

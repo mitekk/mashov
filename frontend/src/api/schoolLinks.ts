@@ -18,3 +18,11 @@ export function createSchoolLink(body: CreateSchoolLinkRequest): Promise<SchoolL
     body: JSON.stringify(body),
   });
 }
+
+export function deleteSchoolLink(id: string): Promise<void> {
+  return apiFetch<void>(`/school-links/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function deleteAllSchoolLinks(): Promise<void> {
+  return apiFetch<void>('/school-links', { method: 'DELETE' });
+}

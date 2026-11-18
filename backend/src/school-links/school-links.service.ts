@@ -2,6 +2,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -9,6 +10,7 @@ import { RedisService } from '../redis/redis.service';
 import { EncryptionService } from '../session/encryption.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
 import { SyncService } from '../sync/sync.service';
+import { ConnectionService } from '../connection/connection.service';
 import { MashovCredentialValidatorService } from '../common/mashov-login/mashov-credential-validator.service';
 import { resolveSchoolLabels } from '../common/school-label';
 
@@ -66,6 +68,7 @@ export class SchoolLinksService {
     private readonly schoolYearService: SchoolYearService,
     private readonly validator: MashovCredentialValidatorService,
     private readonly syncService: SyncService,
+    private readonly connectionService: ConnectionService,
   ) {}
 
   /**
@@ -184,6 +187,67 @@ export class SchoolLinksService {
       throw new Error(`Link ${connectionId} vanished immediately after being created`);
     }
     return created;
+  }
+
+  /**
+   * Re-validate and store new credentials for one school.
+   *
+   * Delegates to ConnectionService, which already owned this logic and its
+   * UPSTREAM_ERROR / INVALID_CREDENTIALS split.
+   */
+  async updateLink(
+    userId: string,
+    connectionId: string,
+    body: { username?: string; password?: string },
+  ): Promise<SchoolLink> {
+    await this.assertOwned(userId, connectionId);
+    await this.connectionService.updateConnection(
+      userId,
+      body.username,
+      body.password,
+      connectionId,
+    );
+
+    const links = await this.listLinks(userId);
+    const updated = links.find((link) => link.id === connectionId);
+    if (!updated) {
+      throw new NotFoundException({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'No such school is connected to this account',
+          details: [],
+        },
+      });
+    }
+    return updated;
+  }
+
+  /** Unlink one school, or every school. */
+  async deleteLink(userId: string, connectionId?: string): Promise<void> {
+    if (connectionId) await this.assertOwned(userId, connectionId);
+    await this.connectionService.deleteConnection(userId, connectionId);
+  }
+
+  /**
+   * 404 for a school this household does not have.
+   *
+   * 404 rather than 403: a 403 would confirm the id names a real connection,
+   * which is exactly what a stranger holding an id must not learn.
+   */
+  private async assertOwned(userId: string, connectionId: string): Promise<void> {
+    const owned = await this.prisma.householdConnection.findFirst({
+      where: { id: connectionId, userId },
+      select: { id: true },
+    });
+    if (!owned) {
+      throw new NotFoundException({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'No such school is connected to this account',
+          details: [],
+        },
+      });
+    }
   }
 
   /**

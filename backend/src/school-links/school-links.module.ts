@@ -5,6 +5,7 @@ import { MashovSessionModule } from '../session/mashov-session.module';
 import { SchoolYearModule } from '../common/school-year/school-year.module';
 import { MashovLoginModule } from '../common/mashov-login/mashov-login.module';
 import { SyncModule } from '../sync/sync.module';
+import { ConnectionModule } from '../connection/connection.module';
 import { SchoolLinksController } from './school-links.controller';
 import { SchoolLinksService } from './school-links.service';
 
@@ -16,6 +17,7 @@ import { SchoolLinksService } from './school-links.service';
     SchoolYearModule,
     MashovLoginModule,
     SyncModule,
+    ConnectionModule,
   ],
   controllers: [SchoolLinksController],
   providers: [SchoolLinksService],
