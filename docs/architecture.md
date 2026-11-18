@@ -441,7 +441,7 @@ Tasks are ordered by dependency. Each task is scoped for a single agent session.
 | Route | Page | Notes |
 |-------|------|-------|
 | `/auth/sign-in` | Mashov credential login | School selector (from `/api/schools`) + username + password; single generic error on failure |
-| `/auth/syncing` | Sync progress screen | Polls `GET /api/v1/sync/status` every 3s; shown after first successful login |
+| `/auth/syncing` | Sync progress screen | Polls `GET /api/v1/sync/status` every 2s; shown after first successful login. Three independent exits: `done` from the poll, the `POST /sync/refresh` promise resolving, and a 120s hard cap — it cannot hang on any one of them failing |
 
 Next.js `middleware.ts` at root: reads session cookie, calls backend `/api/v1/auth/me` (or lightweight session-check), redirects unauthenticated requests to `/auth/sign-in?next=<original-path>`.
 
@@ -539,7 +539,7 @@ Configurable at startup — exactly one of:
 4. **[MVP]** Create `AppSessionModule`: `AppSessionService` with `createSession()`, `validateSession()` (Redis cache-aside + DB), `revokeSession()` (DB + Redis DEL), `revokeAllSessionsForUser()`, `cleanupExpiredSessions()`; `AppSessionGuard` applied globally; session cookie middleware; rolling TTL debounced to 60s DB writes
 5. **[MVP]** Create `AuthModule` / `AuthController`: `POST /api/v1/auth/login` (validate against Mashov API, upsert `app_user`, create session, redirect to `/auth/syncing` on first login), `DELETE /api/v1/auth/session`, `GET /api/v1/auth/me`; rate limiting on login endpoint (5 failed attempts/IP/15min via Redis)
 6. **[MVP]** Create `ConnectionModule` / `ConnectionController`: `PUT /api/v1/connection`, `DELETE /api/v1/connection`; AES-256-GCM credential encryption using `CREDENTIAL_ENCRYPTION_KEY` env var; `POST /api/v1/connection` is implicit at login (first-time connection created from Mashov login response)
-7. **[MVP]** Update `SyncController`: `GET /api/v1/sync/status` (for polling from `/auth/syncing`); scope `POST /api/v1/sync/refresh` to authenticated user's connection
+7. **[MVP]** Update `SyncController`: `GET /api/v1/sync/status` (for polling from `/auth/syncing`, backed by the per-connection refresh envelope in Redis rather than a `sync_run` count); scope `POST /api/v1/sync/refresh` to authenticated user's connection
 8. **[MVP]** Apply `AppSessionGuard` globally — all `/api/v1/*` routes require valid session cookie except `POST /api/v1/auth/login`, `/health`
 
 ### Backend — Data Migration
@@ -556,7 +556,7 @@ Configurable at startup — exactly one of:
 
 13. **[MVP]** Create Next.js `middleware.ts`: read session cookie, call `GET /api/v1/auth/me`, redirect unauthenticated requests to `/auth/sign-in?next=<path>`; exclude `/auth/*` routes from protection
 14. **[MVP]** Build `/auth/sign-in` page: fetch school list from Mashov `/api/schools` on load; render school selector (search/autocomplete) + username + password + submit → `POST /api/v1/auth/login`; on success redirect to `/auth/syncing` (first login) or Home (returning user); show single generic error message on failure ("Invalid credentials, please try again"); minimalistic design matching app style
-15. **[MVP]** Build `/auth/syncing` page: "Setting up your account…" progress screen; poll `GET /api/v1/sync/status` every 3s; show "N / M sources complete"; on `done: true` redirect to Home; skip button after 10s
+15. **[MVP]** Build `/auth/syncing` page: "Setting up your account…" progress screen; poll `GET /api/v1/sync/status` every 2s; show "N / M sources complete" plus the task in flight; leave for Home on `done: true`, on the refresh request resolving, or at the hard cap; skip button after 10s
 16. **[MVP]** Update Settings page (`/more`): add connected school name + year (read-only), "Update credentials" inline form, "Disconnect account" confirmation modal, "Sign out" button
 17. **[MVP]** Add app shell auth UI: show user `displayName` or initials in header; handle 401 responses with toast "Session expired — sign in again" + redirect to `/auth/sign-in`
 

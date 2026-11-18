@@ -53,7 +53,38 @@
 | GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, connectedSchool: { schoolName: string, schoolYear: number } \| null }` | 200, 401 | planned |
 | PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404 | planned |
 | DELETE | `/api/v1/connection` | Yes | — | `{ ok: true }` | 200, 401, 404 | planned |
-| GET | `/api/v1/sync/status` | Yes | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number }` | 200, 401 | planned |
+| GET | `/api/v1/sync/status` | Yes | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number, phase: "idle" \| "running" \| "stale" \| "success" \| "partial" \| "failed" \| "unknown", refreshId: string \| null, startedAt: string \| null, endedAt: string \| null, tasksTotal: number, tasksSettled: number, tasksFailed: number, currentTask: string \| null, tasks: Array<{ task: string, status: "running" \| "success" \| "failed" }> }` | 200, 401 | implemented |
+
+### `GET /api/v1/sync/status` — completion semantics
+
+`done` is the refresh's own report, read from the per-connection refresh envelope in Redis
+(`sync:refresh:<connectionId>`). It is **not** derived from `sync_run` rows, and this endpoint
+does not read that table at all.
+
+| Situation | `phase` | `done` |
+|---|---|---|
+| No active connection, or no envelope | `idle` | `false` |
+| Envelope `running` and fresh | `running` | `false` |
+| Envelope `running` but `updatedAt` older than 5 minutes | `stale` | `true` |
+| Every task succeeded | `success` | `true` |
+| At least one task failed | `partial` | `true` |
+| The refresh threw outside a task | `failed` | `true` |
+| Redis unreachable | `unknown` | `false` (never a 500) |
+
+`partial` is `done` on purpose: a failed source is per-source health, reported by
+`GET /api/v1/settings/source-health`, and never a reason to hold a user on the first-login
+screen. `stale` is `done` for the same reason in reverse — a backend killed mid-refresh must
+release every waiting client, not just one that happens to have its own timeout.
+
+`sourcesCompleted` and `sourcesTotal` are preserved aliases of `tasksSettled` and `tasksTotal`
+so clients written against the previous payload keep working. The previous implementation
+compared a count of distinct successful `sync_run` sources inside a 30-minute window against a
+hardcoded `TOTAL_SYNC_SOURCES = 16`; source keys are per-student and per-connection, so that
+target was unreachable for any household with a failing source and already passed for any
+household with two children.
+
+`GET /api/v1/settings/source-health` is scoped to the caller's active household connection and
+returns an empty `sources` array for a user with no connection.
 
 ### Phase 1 Endpoints (all require Auth: Yes in Phase 2)
 
@@ -684,9 +715,9 @@ Every run writes a row, `status: "skipped_empty"` included. That is deliberate: 
 quiet child is indistinguishable from a broken job. `skipped_stale` is the stronger version of
 that — no items *and* the school data has not synced successfully for hours, so "nothing
 happened today" would be a wrong thing to imply. Digest runs are **not** recorded in `sync_run`
-— `GET /sync/status` counts distinct successful sources against a hardcoded
-`TOTAL_SYNC_SOURCES`, so digest rows there would skew the freshness percentage the dashboard
-shows.
+— the freshness and source-health reads treat every row there as a sync source, so digest rows
+would skew what the dashboard reports. (`GET /sync/status` no longer reads `sync_run` at all;
+it reads the refresh envelope. The reason to keep digest rows out stands regardless.)
 
 Scoped to the caller: a delivery row holds `messageText`, the rendered behavior remarks that
 were sent to a parent, so the history returns only children the caller has recipient rows for.
