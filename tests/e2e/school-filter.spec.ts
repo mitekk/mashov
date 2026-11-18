@@ -71,6 +71,19 @@ async function seed(
   page: Page,
   options: { schools: typeof SCHOOL_A[]; children: Array<Record<string, unknown>> },
 ): Promise<void> {
+  // Registered FIRST, so every specific route below takes precedence.
+  //
+  // Any endpoint this spec does not anticipate would otherwise reach the real
+  // backend, answer 401, and send apiFetch's global handler to /auth/sign-in --
+  // which looks exactly like a missing chip. These specs are about the school
+  // surfaces, not about which other queries the app shell happens to issue, so
+  // an unmatched call gets a benign empty payload rather than an eviction.
+  await page.route('**/api/v1/**', (route) =>
+    route.fulfill({
+      json: { data: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } },
+    }),
+  );
+
   await page.route('**/api/v1/auth/me', (route) =>
     route.fulfill({
       json: {
@@ -91,6 +104,26 @@ async function seed(
   await page.route('**/api/v1/mail/summary', (route) =>
     route.fulfill({ json: { newConversations: 0, recentConversations: [], lastSyncAt: null } }),
   );
+  // The app shell fetches the dashboard on EVERY page, so this is not optional
+  // even on /children: a wrong-shaped payload here takes the whole layout
+  // down, heading and all.
+  await page.route('**/api/v1/dashboard', (route) =>
+    route.fulfill({
+      json: {
+        freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
+        summary: {
+          newConversations: 0,
+          recentHomeworkCount: 0,
+          recentBehaviorCount: 0,
+          childrenCount: 0,
+        },
+        feed: [],
+        children: [],
+        school: { schoolName: '', schoolYear: 2026 },
+      },
+    }),
+  );
+
   await page.route('**/api/v1/settings/source-health', (route) =>
     route.fulfill({ json: { sources: [], overallState: 'fresh', lastFullSyncAt: null } }),
   );
