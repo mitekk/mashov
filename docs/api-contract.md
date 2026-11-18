@@ -50,10 +50,113 @@
 | GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | planned |
 | POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
-| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, connectedSchool: { schoolName: string, schoolYear: number } \| null }` | 200, 401 | planned |
-| PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404 | planned |
-| DELETE | `/api/v1/connection` | Yes | — | `{ ok: true }` | 200, 401, 404 | planned |
+| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, connectedSchool: ConnectedSchool \| null, schools: MeSchool[] }` | 200, 401 | planned |
+| PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404 | **deprecated** |
+| DELETE | `/api/v1/connection` | Yes | — | `{ ok: true }` | 200, 401, 404 | **deprecated** |
+
+### School identity on the data
+
+Every cross-child response carries the school each item belongs to, so the UI can label and
+filter it. `schoolId` is the owning connection; `schoolShortLabel` is resolved **server-side as
+a set**, so two schools in one cluster can never present the same chip (deriving it in the
+client would put that collision rule in two languages).
+
+| Response | Added fields |
+|---|---|
+| `GET /children` → `ChildListItem` | `schoolId`, `schoolName`, `schoolShortLabel`, `semel` |
+| `GET /dashboard` → `children[]` | `schoolId`, `schoolShortLabel` |
+| `GET /dashboard` → `feed[]`, `GET /feed` → `data[]` | `schoolId`, `schoolShortLabel` |
+| `GET /mail/conversations` → `data[]` | `schoolId`, `schoolShortLabel` |
+
+All four are `string \| null`. `null` is a real value and means **no badge**: an unstamped child,
+whose ownership is not yet known, and mail, which is household-wide and genuinely has no child.
+Clients must treat it as "unknown", never as a school named "null", and must leave such an item
+**visible** under every school filter — hiding it behind a chip it can never match would make it
+unreachable.
+
+`GET /mail/conversations` also accepts `?schoolId=` to narrow to one mailbox.
+
+Every school-aware UI surface renders nothing while `me.schools.length < 2`, so a one-school
+household's markup is unchanged by all of the above.
+
+### Connected schools
+
+A household holds up to **4** school connections (see ADR-0029). `me.schools` is the cheap read
+every page's school badge needs — `['me']` is already cached by the app shell — while
+`/school-links` carries the management-only fields. One service method feeds both, so they
+cannot disagree about which schools a household has.
+
+`connectedSchool` is **deprecated**: it is `schools[0]` and cannot describe a household with two
+schools. `PUT`/`DELETE /connection` are deprecated aliases over the same service methods as
+`/school-links`; `PUT` means "the most recently used school" and `DELETE` means "every school",
+the only things they can mean since both predate a household having more than one.
+
+| Method | Path | Auth | Request | Response | Codes |
+|---|---|---|---|---|---|
+| GET | `/api/v1/school-links` | Yes | — | `{ data: SchoolLink[], pagination }` | 200, 401 |
+| POST | `/api/v1/school-links` | Yes | `{ semel, username, password }` | `SchoolLink` | 201, 400, 401, 409, 422, 429, 502 |
+| PUT | `/api/v1/school-links/:id` | Yes | `{ username?, password? }` | `SchoolLink` | 200, 400, 401, 404, 502 |
+| DELETE | `/api/v1/school-links/:id` | Yes | — | — | 204, 401, 404 |
+| DELETE | `/api/v1/school-links` | Yes | — | — | 204, 401 |
+
+```ts
+interface MeSchool {
+  id: string; semel: number; schoolName: string;
+  shortLabel: string;   // resolved server-side as a SET, so two schools never share one
+  schoolYear: number;
+}
+
+interface SchoolLink extends MeSchool {
+  username: string;     // never the password, in any form
+  childrenCount: number;
+  isPrimary: boolean;   // the most recently used school; a display hint, never a scope
+  lastLoginAt: string | null;
+  lastSyncAt: string | null;   // null => the first sync has not SUCCEEDED yet
+  active: boolean;
+}
+```
+
+`POST /api/v1/school-links` is rate-limited to **5 attempts per 15 minutes per user** — not per
+IP: it brute-forces upstream Mashov credentials from inside an authenticated session, which
+sign-in's IP limit does not cover. It does **not** wait for a sync; the children arrive in the
+login response and the rest is fired in the background.
+
+Its failures, each with the message the UI shows:
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `INVALID_CREDENTIALS` | 401 | Mashov rejected the school's username or password. **Not** an expired session — `apiFetch` skips its sign-in redirect for this code specifically. |
+| `UPSTREAM_ERROR` | 502 | Mashov unreachable. Never reported as bad credentials. |
+| `SCHOOL_ALREADY_LINKED` | 409 | A second account at an already-linked school. Refused: it would duplicate every child. |
+| `CONNECTION_ALREADY_LINKED` | 409 | This exact account is already linked, here or to another household. |
+| `NO_CHILDREN_FOUND` | 422 | No children in the account — usually a student's credentials rather than a parent's. **Nothing is persisted.** |
+| `NO_ACTIVE_CHILDREN` | 422 | Every child in the account is inactive. **Nothing is persisted.** |
+| `LIMIT_REACHED` | 409 | Already at 4 active connections. |
+| `RATE_LIMITED` | 429 | More than 5 attempts in 15 minutes. |
+
+A `404` — never a `403` — is returned for a `:id` belonging to another household, on every verb.
+A `403` would confirm the id names a real connection.
 | GET | `/api/v1/sync/status` | Yes | — | `{ done: boolean, sourcesCompleted: number, sourcesTotal: number, phase: "idle" \| "running" \| "stale" \| "success" \| "partial" \| "failed" \| "unknown", refreshId: string \| null, startedAt: string \| null, endedAt: string \| null, tasksTotal: number, tasksSettled: number, tasksFailed: number, currentTask: string \| null, tasks: Array<{ task: string, status: "running" \| "success" \| "failed" }> }` | 200, 401 | implemented |
+
+Both `GET /api/v1/sync/status` and `POST /api/v1/sync/refresh` accept an optional
+`?schoolId=<connectionId>`, and `404` on one belonging to another household. Omitted, they
+cover **every** active connection: refresh runs them sequentially (concurrency 1 — two
+simultaneous Mashov logins from one household invites a rate limit), and status aggregates one
+envelope per connection.
+
+The aggregation is worst-wins, so `done` means **every** school has stopped rather than
+whichever one finished first — releasing the first-login screen early would land the parent on a
+Home page missing half their children. `tasksTotal`, `tasksSettled` and `tasksFailed` are summed,
+and a `schools: SyncStatusSchool[]` breakdown lets the UI name the school it is waiting on:
+
+```ts
+interface SyncStatusSchool {
+  schoolId: string; semel: number; schoolName: string | null;
+  phase: SyncStatusPhase;
+  tasksTotal: number; tasksSettled: number; tasksFailed: number;
+  currentTask: string | null;
+}
+```
 
 ### `GET /api/v1/sync/status` — completion semantics
 
