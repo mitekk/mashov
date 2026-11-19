@@ -89,13 +89,18 @@ export class SchoolLinksService {
     userId: string,
     input: { semel: number; username: string; password: string },
   ): Promise<SchoolLink> {
-    await this.checkRateLimit(userId);
-
     const semel = Number(input.semel);
 
     // Checked before reaching upstream: no point spending a Mashov login, or
-    // a rate-limit slot, on a school that cannot be added.
-    await this.assertLinkable(userId, semel, input.username);
+    // a rate-limit slot, on a school that cannot be added. Split in two
+    // because only the first half is free: it reads this household's own rows
+    // and so costs nothing to refuse, while the foreign-owner check queries
+    // across every household and must stay behind the limit.
+    await this.assertLinkableFromOwnLinks(userId, semel, input.username);
+
+    await this.checkRateLimit(userId);
+
+    await this.assertNoForeignOwner(userId, semel, input.username);
 
     // This school's year is resolved independently. It can legitimately differ
     // from the household's other school -- that is the whole reason the year
@@ -257,14 +262,19 @@ export class SchoolLinksService {
   }
 
   /**
-   * Why a school might not be addable.
+   * Why a school might not be addable, judged from the caller's OWN links.
    *
    * CONNECTION_ALREADY_LINKED is the same account twice. SCHOOL_ALREADY_LINKED
    * is a second account at a school the household already has -- the schema
    * permits it, but it would duplicate every child and break the
    * one-chip-per-school model, so it is refused rather than half-supported.
+   *
+   * Separate from `assertNoForeignOwner` so the call site can run this one
+   * before the rate limit: every refusal here is decided from rows the caller
+   * already owns, which tells them nothing they did not know and costs no
+   * upstream call.
    */
-  private async assertLinkable(
+  private async assertLinkableFromOwnLinks(
     userId: string,
     semel: number,
     username: string,
@@ -303,7 +313,21 @@ export class SchoolLinksService {
         },
       });
     }
+  }
 
+  /**
+   * Refuse an account another household already owns.
+   *
+   * Behind the rate limit on purpose, unlike the checks above: this lookup is
+   * an existence oracle on `(schoolCode, username)` across every household on
+   * the deployment, so an authenticated caller who could probe it without
+   * bound could enumerate parent usernames school by school.
+   */
+  private async assertNoForeignOwner(
+    userId: string,
+    semel: number,
+    username: string,
+  ): Promise<void> {
     // A connection that exists but belongs to nobody -- unlinked earlier, or
     // created by a first sign-in that was never adopted -- is re-parented
     // rather than refused, which is what makes unlink-then-relink work.

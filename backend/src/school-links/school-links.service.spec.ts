@@ -497,6 +497,49 @@ describe('SchoolLinksService.createLink', () => {
       expect(upsert).not.toHaveBeenCalled();
     });
 
+    it('does not spend a rate-limit slot on a local refusal', async () => {
+      // Five attempts at an already-linked school used to lock linking for
+      // fifteen minutes without a single upstream call. The checks that read
+      // only this household's own rows are free, so they run first.
+      const { prisma } = makePrisma({
+        existing: [{ id: 'conn-a', schoolCode: 999999, username: 'mother' }],
+      });
+      const incr = jest.fn().mockResolvedValue(1);
+      const service = makeService(prisma, {
+        redis: { incr, expire: jest.fn() },
+        validator: { validate: jest.fn() },
+      });
+
+      await expect(
+        service.createLink('user-1', { semel: 999999, username: 'father', password: 'pw' }),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'SCHOOL_ALREADY_LINKED' } },
+      });
+      expect(incr).not.toHaveBeenCalled();
+    });
+
+    it('does spend a rate-limit slot on a foreign-owner refusal', async () => {
+      // The other half of the split, and the reason it is a split rather than
+      // a reorder: the orphan lookup is an existence oracle on
+      // (schoolCode, username) across every household on the deployment, so
+      // an authenticated attacker must not be able to probe it unbounded to
+      // enumerate parent usernames per school. That one check stays behind
+      // the limit.
+      const { prisma } = makePrisma({ orphanUserId: 'someone-else' });
+      const incr = jest.fn().mockResolvedValue(1);
+      const service = makeService(prisma, {
+        redis: { incr, expire: jest.fn() },
+        validator: { validate: jest.fn() },
+      });
+
+      await expect(
+        service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' }),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
+      });
+      expect(incr).toHaveBeenCalledWith('ratelimit:school-link:user-1');
+    });
+
     it('rate-limits to five attempts per fifteen minutes', async () => {
       // This endpoint brute-forces upstream credentials from inside an
       // authenticated session, which sign-in's per-IP limit does not cover.
