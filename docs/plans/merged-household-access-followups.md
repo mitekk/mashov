@@ -10,10 +10,13 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: **B2** and **B4**, **R8**–**R12** and **R17**, the two
+What is open: **B2** and **B4**, **R8**–**R10** and **R17**, the two
 operational tasks the plan itself deferred (**T13**–**T14**), the **G2** coverage gap,
-and the minors. **G1**, **B1**, **B3**, **R4**, **R7**, **R14** and **R15** are done and kept
-as record.
+and the minors. **G1**, **B1**, **B3**, **R4**, **R7**, **R11**, **R12**, **R14** and
+**R15** are done and kept as record. With batch 6 closed, the refresh envelope's
+`status` means what it says: `partial` exactly when something in the household
+actually failed, rather than `success` for a school that threw and `partial` for one
+that synced perfectly.
 
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
@@ -46,16 +49,17 @@ stays true.
 | 3.5 | **R16** + B3's remaining bullet | **done** | One household's release request went upstream under the other's decrypted password — R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closed both: a foreign stamp is now no stamp, and the fallback under it prefers the caller's connection at the stamped school. `targetFor` took the same optional caller while in there. |
 | 4 | **R4** + **R15** | **done** | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rode along: the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. The freshness card now takes the caller and selects children by the visibility edge; the badge is the caller's `cachedNewCount` sum plus the unattributed rows, added once by `unreadBadge` in `common/mail-scope.ts` — one rule, one home, for the two readers that each had their own copy of it. |
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | **done** | The only frontend items. R14 left a parent looking at an empty mailbox with no way forward, which was the worst *experience* open. The chip is now a server-side `?schoolId=` filter — which admits the unattributed rows, so the list follows the same NULL rule as batch 4's badge — the add-school form clears and re-gates on an edited selection, and the bulk-disconnect modal defaults to the plural copy instead of promising a one-school wipe. |
-| 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
+| 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | **done** | All three were the refresh envelope lying to the parent — R12 said `success` when a school failed, the minor said `partial` when one succeeded. Closed together, because fixing either alone only makes the others more visible. Three helpers now carry it: `studentScopeForContext` scopes every per-student task to the refreshing connection's children, `reportNoConnectionTarget` opens and fails a run for a connection-scoped refresh with no usable target, and the controller aggregates the envelope worst-wins over `PHASE_RANK`. R11's hole turned out to be in six tasks, not the four recorded. |
 | 7 | **R8**, **R9**, **R10**, **R17** | open | Four independent small correctness fixes in the auth/link path; one session, four tests. R17 is a two-line reorder. |
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
 | 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1, 2, 3, 3.5, 4 and 5 are done: no open item puts one household's data on
-another's *screen*, none puts a household's *request* in another's Mashov account, and
-no reader left answers from the whole table, and no frontend item is open. **Batch 6 is next.**
-Batches 6 and 7 are each self-contained; 7 can run in parallel with anything.
+Batches 1, 2, 3, 3.5, 4, 5 and 6 are done: no open item puts one household's data on
+another's *screen*, none puts a household's *request* in another's Mashov account, no
+reader left answers from the whole table, no frontend item is open, and the refresh
+envelope no longer misreports what happened. **Batch 7 is next.** Batch 7 is
+self-contained and can run in parallel with anything.
 
 ---
 
@@ -672,9 +676,31 @@ just-deactivated connection therefore reports a clean sync and leaves no trace i
 either way.
 
 **DoD**
-- [ ] An empty target list on a connection-scoped run is reported, not silently
-      successful — a `skipped` status or a `sync_run` recording why.
-- [ ] A test covers a targeted refresh of a deactivated connection.
+- [x] An empty target list on a connection-scoped run is reported, not silently
+      successful — a `skipped` status or a `sync_run` recording why. The `sync_run`
+      route was taken: `reportNoConnectionTarget` in
+      `backend/src/sync/connection-fanout.ts` opens a run for the requested
+      connection, closes it `failed` with the reason, warns, and returns `failed`
+      with one failure counted. `skipped` would have had to be threaded through
+      `SyncTaskStatus`, `ManualSyncTaskResult`, `RefreshTaskProgress` and the
+      frontend's mirror types, and would have put a fourth value into
+      `sync_run.status`, which every reader — `getAllSourceHealth`,
+      `getLatestSuccessfulRuns`, the retention rule — partitions as
+      success/not-success.
+- [x] A test covers a targeted refresh of a deactivated connection.
+      `connection-fanout.spec.ts` covers the helper; `achvas`, `notifications`,
+      `mail-counts` and `mail-inbox`'s own specs each assert that a targeted
+      `execute({ connectionId })` against a deactivated connection returns `failed`,
+      opens exactly one run, closes it `failed`, and never touches the http client.
+
+**The hole was in six tasks, not four.** Beyond the `achvas` /
+`notifications` / `user-details` / `mail-counts` the cause above names,
+`mail-inbox.task.ts` has the identical
+`connectionList = useSharedSession ? [null] : connections`, and
+`school-activities.task.ts` loops `connections` with no shared-session fallback at
+all. All six take the same helper. The nine per-student tasks need nothing: with
+`connections` empty their inner `ordered` loop already throws
+`every connection failed for <guid>` and closes a failed run per child.
 
 ### R12 — `POST /sync/refresh` returns only the first school's envelope
 
@@ -694,8 +720,28 @@ this one makes a *failed* school report `success`. Fixing R12 alone would make t
 first more visible, so do them together.
 
 **DoD**
-- [ ] `status` is `'partial'` if any result is, and the counts are summed.
-- [ ] `sync.controller.spec.ts` covers one-of-two-failing.
+- [x] `status` is `'partial'` if any result is, and the counts are summed. Worst-wins
+      over the per-school statuses, reduced with the `PHASE_RANK` already in
+      `sync.controller.ts` rather than a second ranking table; `tasks` is `flatMap`
+      over the schools, the shape `getStatus` already uses, so the per-task counts
+      arrive whole rather than summed into a lossy total; `startedAt` earliest,
+      `endedAt` latest, `durationMs` the difference. `ManualSyncStatus` gained
+      `'failed'` for a school that threw and has no `partial` to report, mirrored in
+      the frontend's `SyncRefreshStatus` — which also finally declares the `schools`
+      array the backend has returned since this branch. With one school every field
+      is byte-identical to before, so the six e2e MOCK constants and old clients keep
+      working.
+- [x] `sync.controller.spec.ts` covers one-of-two-failing — `partial` when A is
+      `success` and B is `partial`, both schools' tasks in `tasks`, the span across
+      both, `schools[1].status === 'failed'` with overall `'failed'` when B throws
+      while A succeeds, a rejection when every school throws, and the single-school
+      response unchanged.
+
+**A throwing school no longer discards a working one.** The loop now catches per
+connection, so `results[index]?.status ?? 'failed'` — unreachable before, because one
+school throwing 500d the whole endpoint — is the path that records it. If *every*
+connection throws the error is rethrown: a refresh that achieved nothing must stay a
+500, or `SyncingPageClient`'s `default:` branch stops reporting a failed trigger.
 
 ### Two sub-findings too small for an item of their own
 
@@ -1169,18 +1215,28 @@ because `household-isolation`'s shared `cleanup()` deletes connections by
   list on the same screen, which is the class of bug `283c053` was about.
   `tests/integration/mail-sweep-unattributed.test.ts` asserted it as current behaviour
   and now asserts the two agree.
-- **A connection-scoped refresh fans out over every child in the database.** Each
+- ~~**A connection-scoped refresh fans out over every child in the database.** Each
   per-student task reads `student.findMany({ where: { isActive: true } })` — not the
   refreshing connection's children — so `POST /sync/refresh` for school A asks A's
   account for school B's children and collects a 403 for each, across seven
   per-student tasks. Nothing wrong is written, but the refresh of a school that worked
   perfectly reports **`partial`**, which is what `/auth/syncing` shows the parent, and
   each foreign child leaves a failed `sync_run` that `FreshnessService` then reads as
-  source ill-health. Asserted as current behaviour in
-  `tests/integration/two-school-sync.test.ts`. The fix is one `where` per task:
-  restrict the student list to the children the refreshing connection lists
-  (`visibleStudentWhere`-style, via `student_connection`), which also removes the
-  wasted upstream calls the owner-first ordering was added to avoid.
+  source ill-health.~~ **Done** (batch 6, with R11 and R12). The fix is the one
+  proposed: `studentScopeForContext` in `backend/src/sync/connection-fanout.ts` is now
+  the single `where` all nine per-student tasks use, scoped via `student_connection` by
+  the existing `connectionStudentWhere` — the ADR-0031 visibility edge the
+  `inactiveChildren` sweeps already use, so a child no connection lists is still
+  admitted, which must stay or a deployment whose ownership backfill has not run would
+  stop fetching for every child. The global `@Cron` path passes no `connectionId` and
+  keeps every active child, unchanged. `tests/integration/two-school-sync.test.ts`
+  asserted this as current behaviour and now asserts the inverse: A's run never
+  mentions B's child, reports `success` with no failed task, and leaves no failed
+  `sync_run` for B's child; the foreign request count went from one per own-child
+  request to zero. Its `seed()` now parks children the fixture did not create — the
+  suite runs last against a DB nine earlier suites have written to, and the
+  unlinked-child edge would otherwise make `success` hostage to another suite's
+  leftovers.
 - **An unlinked child's per-child reads resolve to one year, while the list admits
   every year.** `yearScopeForStudents` gives a child with no links every year the
   household is on, because nothing records which school wrote their rows — but
