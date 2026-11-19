@@ -750,15 +750,62 @@ describe('AuthService login adoption', () => {
   it('creates no second AppUser for the adopted school', async () => {
     // The structural fix. `AppUser.mashovUserId` is unique and comes from the
     // per-school credential, so an upsert here would fork the household.
+    //
+    // Genuinely cross-school: the AppUser for THIS credential is a different
+    // household from the one that owns the connection. That is the only shape
+    // adoption is for, and the gate has to let it through.
     mockPrisma.householdConnection.findUnique.mockResolvedValue({
       id: 'conn-b',
       mashovUniqueId: 'uniq',
       userId: 'household-1',
     });
+    mockPrisma.appUser.findUnique.mockResolvedValue({
+      id: 'household-2',
+      mashovUserId: 'mashov-uid-1',
+      displayName: 'Test Parent',
+      mergedIntoUserId: null,
+    });
 
-    await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+    const result = await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
 
     expect(mockPrisma.appUser.upsert).not.toHaveBeenCalled();
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'household-1',
+      '127.0.0.1',
+    );
+    expect(result.isFirstLogin).toBe(false);
+  });
+
+  it('refreshes displayName when the connection already belongs to this household', async () => {
+    // A returning single-school sign-in is NOT an adoption: the connection
+    // belongs to the very AppUser this credential maps to. Taking the adoption
+    // branch here returns before the upsert, which is the only place
+    // `displayName` is refreshed from the credential -- so a name the school
+    // later corrects would never reach the app.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-a',
+      mashovUniqueId: 'uniq',
+      userId: 'household-1',
+    });
+    mockPrisma.appUser.findUnique.mockResolvedValue({
+      id: 'household-1',
+      mashovUserId: 'mashov-uid-1',
+      displayName: 'Stale Name',
+      mergedIntoUserId: null,
+    });
+    mockPrisma.appUser.upsert.mockResolvedValue({
+      id: 'household-1',
+      mergedIntoUserId: null,
+    });
+
+    const result = await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockPrisma.appUser.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: { username: 'parent-b', displayName: 'Test Parent' },
+      }),
+    );
+    expect(result.isFirstLogin).toBe(false);
   });
 
   it('still refreshes the connection and its roster on an adopted login', async () => {

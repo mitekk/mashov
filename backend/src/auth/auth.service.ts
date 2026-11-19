@@ -231,7 +231,18 @@ export class AuthService {
     // here at all proves the caller holds this school's password. That is the
     // whole authorisation: see ADR-0029 for the trust model and why unlink is
     // the reversal.
-    if (this.adoptionEnabled() && existingConnBeforeLogin?.userId) {
+    // Read before the branch, because the branch needs it: an adoption is a
+    // connection owned by a household that is NOT the one this credential maps
+    // to. Without the comparison the branch fires on every returning sign-in
+    // and returns before the upsert below, which is the only place
+    // `displayName` is refreshed from the credential.
+    const existingUser = await this.prisma.appUser.findUnique({
+      where: { mashovUserId },
+    });
+    const ownsConnection =
+      existingUser != null && existingConnBeforeLogin?.userId === existingUser.id;
+
+    if (this.adoptionEnabled() && existingConnBeforeLogin?.userId && !ownsConnection) {
       const ownerId = existingConnBeforeLogin.userId;
       this.logger.log(
         `Adopting sign-in for semel=${semel} into existing household ${ownerId}`,
@@ -259,10 +270,6 @@ export class AuthService {
     }
 
     // Upsert AppUser
-    const existingUser = await this.prisma.appUser.findUnique({
-      where: { mashovUserId },
-    });
-
     const appUser = await this.prisma.appUser.upsert({
       where: { mashovUserId },
       create: {
