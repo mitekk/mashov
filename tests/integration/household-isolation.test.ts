@@ -35,6 +35,9 @@ import {
   yearScopeForStudents,
 } from '../../backend/src/common/school-year/school-year.scope';
 import { ConnectionService } from '../../backend/src/connection/connection.service';
+import { ConnectionScopeService } from '../../backend/src/common/connection-scope/connection-scope.service';
+import { MailService } from '../../backend/src/mail/mail.service';
+import type { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { EncryptionService } from '../../backend/src/session/encryption.service';
 import type { SchoolYearService } from '../../backend/src/common/school-year/school-year.service';
@@ -529,3 +532,237 @@ function splitSql(sql: string): string[] {
   if (buffer.trim()) statements.push(buffer.trim());
   return statements;
 }
+
+/**
+ * Two mailboxes, two households — the mail read and mutate paths.
+ *
+ * `MailService` is built against real Postgres with the real
+ * `ConnectionScopeService`, because the property under test is not "the
+ * service filters a list": it is that a foreign `conversationId` never
+ * resolves to the connection that owns it and so never reaches
+ * `putForTarget` under that household's credentials. With a mocked scope the
+ * grouping is whatever the mock says, and the grouping is the whole hazard.
+ *
+ * The http client is a spy that resolves. A guard that only works because the
+ * upstream call fails is not a guard.
+ */
+describe('Two mailboxes, two households', () => {
+  const MAIL_SEMEL = 778898;
+  const MAIL_USER_A = 'hhm-user-a';
+  const MAIL_USER_B = 'hhm-user-b';
+  const MAIL_CONN_A = 'hhm-conn-a';
+  const MAIL_CONN_B = 'hhm-conn-b';
+  const CONV_A = 'hhm-conv-a';
+  const CONV_B = 'hhm-conv-b';
+  const CONV_NULL = 'hhm-conv-null';
+  const MAIL_CONVERSATIONS = [CONV_A, CONV_B, CONV_NULL];
+
+  let prisma: PrismaClient;
+  let upstream: {
+    getForTarget: jest.Mock;
+    getResponseForTarget: jest.Mock;
+    putForTarget: jest.Mock;
+    deleteForTarget: jest.Mock;
+  };
+
+  beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    await prisma.$connect();
+  });
+
+  afterAll(async () => {
+    await cleanup();
+    await prisma.$disconnect();
+  });
+
+  async function cleanup(): Promise<void> {
+    await prisma.mailMessage.deleteMany({
+      where: { conversationId: { in: MAIL_CONVERSATIONS } },
+    });
+    await prisma.mailConversation.deleteMany({
+      where: { conversationId: { in: MAIL_CONVERSATIONS } },
+    });
+    await prisma.householdConnection.deleteMany({ where: { schoolCode: MAIL_SEMEL } });
+    await prisma.appUser.deleteMany({ where: { id: { in: [MAIL_USER_A, MAIL_USER_B] } } });
+  }
+
+  function makeMailService(): MailService {
+    upstream = {
+      getForTarget: jest.fn().mockResolvedValue({}),
+      getResponseForTarget: jest
+        .fn()
+        .mockResolvedValue({ data: new ArrayBuffer(0), headers: {}, status: 200 }),
+      putForTarget: jest.fn().mockResolvedValue(1),
+      deleteForTarget: jest.fn().mockResolvedValue({}),
+    };
+
+    const scope = new ConnectionScopeService(
+      prisma as unknown as PrismaService,
+      { decrypt: (value: string) => value } as unknown as EncryptionService,
+    );
+
+    return new MailService(
+      prisma as unknown as PrismaService,
+      upstream as unknown as MashovHttpClient,
+      scope,
+    );
+  }
+
+  async function seedMail(): Promise<void> {
+    await cleanup();
+
+    for (const [id, username] of [
+      [MAIL_USER_A, 'mailbox-parent-a'],
+      [MAIL_USER_B, 'mailbox-parent-b'],
+    ]) {
+      await prisma.appUser.create({
+        data: {
+          id,
+          mashovUserId: `upstream-${id}`,
+          username,
+          displayName: username,
+          semel: MAIL_SEMEL,
+        },
+      });
+    }
+
+    for (const [id, userId, username, lastLoginAt] of [
+      [MAIL_CONN_A, MAIL_USER_A, 'mailbox-parent-a', new Date('2026-11-01T00:00:00Z')],
+      // The more recently used connection, so an unscoped fallback would pick
+      // it for A's unstamped rows.
+      [MAIL_CONN_B, MAIL_USER_B, 'mailbox-parent-b', new Date('2026-11-18T00:00:00Z')],
+    ] as Array<[string, string, string, Date]>) {
+      await prisma.householdConnection.create({
+        data: {
+          id,
+          userId,
+          username,
+          schoolCode: MAIL_SEMEL,
+          schoolYear: YEAR,
+          encryptedPassword: 'enc',
+          schoolName: 'בית ספר דואר',
+          active: true,
+          lastLoginAt,
+          cachedNewCount: 99,
+        },
+      });
+    }
+
+    const conversation = (conversationId: string, stamp: string | null) => ({
+      conversationId,
+      subject: `נושא ${conversationId}`,
+      senderNamePreview: 'מורה',
+      sendTime: new Date('2026-11-10T08:00:00Z'),
+      isUnread: true,
+      labels: [],
+      lastFetchedAt: new Date('2026-11-10T08:05:00Z'),
+      householdConnectionId: stamp,
+    });
+
+    await prisma.mailConversation.createMany({
+      data: [
+        conversation(CONV_A, MAIL_CONN_A),
+        conversation(CONV_B, MAIL_CONN_B),
+        // Ownership unknown, which this branch admits for everyone rather than
+        // hiding from both parents.
+        conversation(CONV_NULL, null),
+      ],
+    });
+  }
+
+  /** B's row exactly as the database holds it, for a byte-for-byte compare. */
+  async function rowB() {
+    return prisma.mailConversation.findUnique({ where: { conversationId: CONV_B } });
+  }
+
+  function noUpstreamCall(): void {
+    expect(upstream.getForTarget).not.toHaveBeenCalled();
+    expect(upstream.putForTarget).not.toHaveBeenCalled();
+    expect(upstream.deleteForTarget).not.toHaveBeenCalled();
+    expect(upstream.getResponseForTarget).not.toHaveBeenCalled();
+  }
+
+  beforeEach(seedMail);
+
+  it("lists only the caller's own mail, plus the unattributed row", async () => {
+    const mail = makeMailService();
+
+    const forA = await mail.getConversations(1, 100, 'all', undefined, MAIL_USER_A);
+    const idsA = forA.data.map((item) => item.conversationId);
+
+    expect(idsA).toContain(CONV_A);
+    expect(idsA).toContain(CONV_NULL);
+    expect(idsA).not.toContain(CONV_B);
+  });
+
+  it('shows the unattributed conversation to both households', async () => {
+    // NULL means "ownership unknown, re-stamp on the next walk". Excluding it
+    // would empty the inbox on a deployment that has not re-synced since the
+    // ownership migration.
+    const mail = makeMailService();
+
+    for (const userId of [MAIL_USER_A, MAIL_USER_B]) {
+      const list = await mail.getConversations(1, 100, 'all', undefined, userId);
+      expect(list.data.map((item) => item.conversationId)).toContain(CONV_NULL);
+    }
+  });
+
+  it("404s a schoolId that belongs to the other household", async () => {
+    const mail = makeMailService();
+
+    await expect(
+      mail.getConversations(1, 100, 'all', MAIL_CONN_B, MAIL_USER_A),
+    ).rejects.toMatchObject({ status: 404 });
+
+    // ...and serves the caller's own.
+    const own = await mail.getConversations(1, 100, 'all', MAIL_CONN_A, MAIL_USER_A);
+    expect(own.data.map((item) => item.conversationId)).toEqual([CONV_A]);
+  });
+
+  it("404s the other household's conversation detail with no upstream call", async () => {
+    const mail = makeMailService();
+
+    await expect(mail.getConversationDetail(CONV_B, MAIL_USER_A)).rejects.toMatchObject({
+      status: 404,
+    });
+    noUpstreamCall();
+  });
+
+  const MUTATIONS: Array<{
+    name: string;
+    call: (mail: MailService, ids: string[]) => Promise<{ updated: number }>;
+  }> = [
+    { name: 'archive', call: (mail, ids) => mail.archive(ids, MAIL_USER_A) },
+    { name: 'unarchive', call: (mail, ids) => mail.unarchive(ids, MAIL_USER_A) },
+    { name: 'markUnread', call: (mail, ids) => mail.markUnread(ids, MAIL_USER_A) },
+    {
+      name: 'markConversationsRead',
+      call: (mail, ids) => mail.markConversationsRead(ids, MAIL_USER_A),
+    },
+  ];
+
+  it.each(MUTATIONS)(
+    "$name refuses the other household's conversation, locally and upstream",
+    async ({ call }) => {
+      const before = await rowB();
+      const mail = makeMailService();
+
+      await expect(call(mail, [CONV_B])).resolves.toEqual({ updated: 0 });
+
+      expect(await rowB()).toEqual(before);
+      noUpstreamCall();
+    },
+  );
+
+  it.each(MUTATIONS)('$name acts on the own id in a mixed list', async ({ call }) => {
+    const before = await rowB();
+    const mail = makeMailService();
+
+    await expect(call(mail, [CONV_A, CONV_B])).resolves.toEqual({ updated: 1 });
+
+    expect(await rowB()).toEqual(before);
+    for (const callArgs of upstream.putForTarget.mock.calls) {
+      expect(callArgs[1]).toEqual([CONV_A]);
+    }
+  });
+});

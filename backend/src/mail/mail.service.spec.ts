@@ -1347,3 +1347,215 @@ describe('MailService', () => {
     });
   });
 });
+
+/**
+ * Two households on one box. Every read and every mutation below is issued by
+ * household A's user against household B's conversation.
+ *
+ * The property under test is not only "A does not see B's mail": it is that no
+ * request leaves the process under B's credentials. `groupConversationsByConnection`
+ * resolves a foreign conversation to the connection that owns it, so an
+ * unscoped mutation archived B's mail *in B's Mashov account*.
+ */
+describe('MailService household scoping', () => {
+  const CALLER = 'user-mine';
+  const MINE = 'conn-mine';
+  const THEIRS = 'conn-theirs';
+
+  /** The caller owns conn-mine and nothing else. */
+  const ownConnections = () => jest.fn().mockResolvedValue([{ id: MINE }]);
+
+  /** `findFirst` as the ownership assert sees it: conn-mine is the caller's. */
+  const ownedSchoolLookup = () =>
+    jest.fn(({ where } = { where: {} }) =>
+      Promise.resolve(
+        where?.userId && where?.id ? (where.id === MINE ? { id: MINE } : null) : null,
+      ),
+    );
+
+  const rows = [
+    { conversationId: 'conv-mine', householdConnectionId: MINE },
+    { conversationId: 'conv-theirs', householdConnectionId: THEIRS },
+    { conversationId: 'conv-unstamped', householdConnectionId: null },
+  ];
+
+  function makeService(overrides: Partial<Record<string, jest.Mock>> = {}) {
+    const putForTarget = jest.fn().mockResolvedValue({});
+    const getForTarget = jest.fn().mockResolvedValue({});
+    const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = makeMockPrisma({
+      householdFindMany: ownConnections(),
+      householdFindFirst: ownedSchoolLookup(),
+      conversationFindMany: jest.fn(({ where } = { where: {} }) => {
+        const ids: string[] | undefined = where?.conversationId?.in;
+        return Promise.resolve(
+          ids === undefined ? rows : rows.filter((row) => ids.includes(row.conversationId)),
+        );
+      }),
+      conversationCount: jest.fn().mockResolvedValue(0),
+      conversationUpdateMany,
+      ...overrides,
+    });
+    const client = makeMockMashovClient({ putForTarget, getForTarget });
+    return {
+      service: new MailService(prisma, client, makeMockScope()),
+      prisma,
+      putForTarget,
+      getForTarget,
+      conversationUpdateMany,
+    };
+  }
+
+  describe('getConversations', () => {
+    it("restricts the list to the caller's own mailboxes", async () => {
+      const conversationFindMany = jest.fn().mockResolvedValue([]);
+      const { service } = makeService({ conversationFindMany });
+
+      await service.getConversations(1, 20, 'all', undefined, CALLER);
+
+      const [args] = conversationFindMany.mock.calls[0] as [
+        { where: { AND: Array<Record<string, unknown>> } },
+      ];
+      expect(args.where.AND[0]).toEqual({
+        OR: [{ householdConnectionId: { in: [MINE] } }, { householdConnectionId: null }],
+      });
+    });
+
+    it('404s a schoolId belonging to another household', async () => {
+      // 404 and not 403, as /school-links and /sync/* already answer: a 403
+      // would confirm the id names a real connection.
+      const conversationFindMany = jest.fn().mockResolvedValue([]);
+      const { service } = makeService({ conversationFindMany });
+
+      await expect(
+        service.getConversations(1, 20, 'all', THEIRS, CALLER),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(conversationFindMany).not.toHaveBeenCalled();
+    });
+
+    it("serves the caller's own schoolId", async () => {
+      const conversationFindMany = jest.fn().mockResolvedValue([]);
+      const { service } = makeService({ conversationFindMany });
+
+      await expect(service.getConversations(1, 20, 'all', MINE, CALLER)).resolves.toMatchObject({
+        data: [],
+      });
+    });
+
+    it('checks nothing when there is no caller', async () => {
+      // The digest and the crons are server-side and deliberately global.
+      const conversationFindMany = jest.fn().mockResolvedValue([]);
+      const { service } = makeService({ conversationFindMany });
+
+      await expect(service.getConversations(1, 20, 'all', THEIRS)).resolves.toMatchObject({
+        data: [],
+      });
+    });
+  });
+
+  describe('getConversationDetail', () => {
+    it("404s another household's conversation without calling upstream", async () => {
+      const { service, getForTarget } = makeService({
+        conversationFindUnique: jest
+          .fn()
+          .mockResolvedValue(makeConversation({ householdConnectionId: THEIRS })),
+      });
+
+      await expect(service.getConversationDetail('conv-theirs', CALLER)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(getForTarget).not.toHaveBeenCalled();
+    });
+
+    it('serves an unstamped conversation, which is ownership-unknown and not theirs', async () => {
+      const { service } = makeService({
+        conversationFindUnique: jest
+          .fn()
+          .mockResolvedValue(makeConversation({ householdConnectionId: null })),
+        messageFindMany: jest.fn().mockResolvedValue([
+          {
+            messageId: 'msg-1',
+            conversationId: 'conv-unstamped',
+            senderId: '1',
+            senderName: 'Principal',
+            subject: 'Parent meeting',
+            bodyHtmlSanitized: '<p>hello</p>',
+            bodyTextPreview: 'hello',
+            sendTime: NOW,
+            isNew: false,
+            recipients: [],
+            files: [],
+            preventReply: false,
+            sentViaEmail: false,
+            sentViaSms: false,
+          },
+        ]),
+      });
+
+      await expect(service.getConversationDetail('conv-unstamped', CALLER)).resolves.toMatchObject(
+        { conversationId: 'conv-upstream-1' },
+      );
+    });
+  });
+
+  describe('downloadMessageAttachment', () => {
+    it("404s an attachment in another household's conversation", async () => {
+      const { service, getForTarget } = makeService({
+        conversationFindUnique: jest
+          .fn()
+          .mockResolvedValue(makeConversation({ householdConnectionId: THEIRS })),
+      });
+
+      await expect(
+        service.downloadMessageAttachment('conv-theirs', 'msg-1', 'file-1', CALLER),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(getForTarget).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('mutations', () => {
+    const MUTATIONS: Array<{
+      name: string;
+      call: (service: MailService, ids: string[]) => Promise<{ updated: number }>;
+    }> = [
+      { name: 'markConversationsRead', call: (s, ids) => s.markConversationsRead(ids, CALLER) },
+      { name: 'markUnread', call: (s, ids) => s.markUnread(ids, CALLER) },
+      { name: 'archive', call: (s, ids) => s.archive(ids, CALLER) },
+      { name: 'unarchive', call: (s, ids) => s.unarchive(ids, CALLER) },
+    ];
+
+    it.each(MUTATIONS)(
+      "$name neither writes nor calls upstream for another household's id",
+      async ({ call }) => {
+        const { service, putForTarget, conversationUpdateMany } = makeService();
+
+        await expect(call(service, ['conv-theirs'])).resolves.toEqual({ updated: 0 });
+        expect(putForTarget).not.toHaveBeenCalled();
+        expect(conversationUpdateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(MUTATIONS)('$name acts on the caller\'s own ids in a mixed list', async ({ call }) => {
+      const { service, putForTarget, conversationUpdateMany } = makeService();
+
+      await call(service, ['conv-mine', 'conv-theirs']);
+
+      for (const callArgs of putForTarget.mock.calls) {
+        expect(callArgs[1]).toEqual(['conv-mine']);
+      }
+      for (const callArgs of conversationUpdateMany.mock.calls) {
+        const where = (callArgs[0] as { where: Record<string, unknown> }).where;
+        const ids = (where.conversationId as { in?: string[] } | undefined)?.in;
+        if (ids) expect(ids).not.toContain('conv-theirs');
+      }
+    });
+
+    it.each(MUTATIONS)('$name still acts on an unstamped id', async ({ call }) => {
+      const { service, conversationUpdateMany } = makeService();
+
+      await call(service, ['conv-unstamped']);
+
+      expect(conversationUpdateMany).toHaveBeenCalled();
+    });
+  });
+});

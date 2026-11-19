@@ -205,7 +205,7 @@ database with more than one active connection
 **DoD**
 - [x] `targetFor*` accept an optional `userId` and the fallback is scoped to it when
       present.
-- [ ] Callers that have a `userId` pass it: `ChildrenService` (every per-child route
+- [x] Callers that have a `userId` pass it: `ChildrenService` (every per-child route
       already holds one — **25** of them take a `studentGuid`, enumerated by
       `tests/integration/children-route-guard.test.ts`; the "nine" this item used to
       say was the count an earlier review named, not the route count),
@@ -276,15 +276,15 @@ branch added `householdMailScope` and wired it into `getSummary` only.
   household's Mashov credentials**.
 
 **DoD**
-- [ ] Every `MailService` method that reads or mutates conversations takes the caller's
+- [x] Every `MailService` method that reads or mutates conversations takes the caller's
       `userId` and applies `householdMailScope`, the controller passes it, and
       `?schoolId=` 404s on a connection the caller does not own.
-- [ ] A test seeds two households and asserts the list, the detail, archive/unarchive
+- [x] A test seeds two households and asserts the list, the detail, archive/unarchive
       and `markUnread` all refuse the other household's `conversationId`, and that a
       foreign `?schoolId=` 404s. `tests/integration/household-isolation.test.ts` is the
       natural home; `mail-sweep-unattributed.test.ts` already has a two-mailbox fixture
       to copy.
-- [ ] B3's `userId`-threading bullet is ticked by the same change.
+- [x] B3's `userId`-threading bullet is ticked by the same change.
 
 ### R2 — Unlinking a school 500s for any parent who has ever opened a conversation
 

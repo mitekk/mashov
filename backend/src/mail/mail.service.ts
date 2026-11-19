@@ -6,6 +6,7 @@ import { MashovHttpClient } from '../session/mashov-http.client';
 import type { ConnectionTarget } from '../session/connection-target';
 import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { resolveSchoolLabels } from '../common/school-label';
+import { activeConnectionIdsFor } from '../common/student-links';
 import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
@@ -156,8 +157,15 @@ export class MailService {
     filter: 'all' | 'new' | 'archived',
     /** Narrows to one school's mailbox; omitted, every mailbox. */
     schoolId?: string,
+    userId?: string,
   ) {
-    const where = this.buildInboxWhere(filter, schoolId);
+    await this.assertOwnedSchool(schoolId, userId);
+    // Two predicates, not one merged object: the household scope is an `OR`
+    // and so is nothing in `buildInboxWhere`, so merging them would let one
+    // overwrite the other.
+    const where: Prisma.MailConversationWhereInput = {
+      AND: [await this.householdMailScope(userId), this.buildInboxWhere(filter, schoolId)],
+    };
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
         where,
@@ -216,7 +224,7 @@ export class MailService {
     };
   }
 
-  async getConversationDetail(conversationId: string) {
+  async getConversationDetail(conversationId: string, userId?: string) {
     const conversation = await this.prisma.mailConversation.findUnique({
       where: { conversationId },
     });
@@ -224,6 +232,7 @@ export class MailService {
     if (!conversation) {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
+    await this.assertVisible(conversationId, conversation.householdConnectionId, userId);
 
     // Check if full messages with body exist in DB
     const existingMessages = await this.prisma.mailMessage.findMany({
@@ -235,7 +244,7 @@ export class MailService {
     );
 
     if (!hasRenderableBody) {
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
     }
 
     const messages = await this.prisma.mailMessage.findMany({
@@ -290,6 +299,7 @@ export class MailService {
     conversationId: string,
     messageId: string,
     fileId: string,
+    userId?: string,
   ): Promise<DownloadedFile> {
     const conversation = await this.prisma.mailConversation.findUnique({
       where: { conversationId },
@@ -297,25 +307,26 @@ export class MailService {
     if (!conversation) {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
+    await this.assertVisible(conversationId, conversation.householdConnectionId, userId);
 
     const referer = `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`;
     // Resolved once for the whole download, including the retry below: the
     // message's own stamp, so a bare messageId is enough and no join is
     // needed.
-    const target = await this.scope.targetForMessage(messageId).catch(() =>
-      this.scope.targetForConversation(conversationId),
+    const target = await this.scope.targetForMessage(messageId, userId).catch(() =>
+      this.scope.targetForConversation(conversationId, userId),
     );
 
     let message = await this.getMessageInConversation(conversationId, messageId);
     if (!message) {
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
       message = await this.getMessageInConversation(conversationId, messageId);
     }
     if (!message) throw new NotFoundException(`Message not found: ${messageId}`);
 
     let attachment = this.findMessageAttachment(message.files, fileId);
     if (!attachment) {
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
       const refreshedMessage = await this.getMessageInConversation(conversationId, messageId);
       attachment = this.findMessageAttachment(refreshedMessage?.files, fileId);
     }
@@ -336,7 +347,7 @@ export class MailService {
       );
     } catch {
       // Attachment URLs may be short-lived; refresh from upstream and retry once.
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
       const refreshedMessage = await this.getMessageInConversation(conversationId, messageId);
       const refreshedAttachment = this.findMessageAttachment(refreshedMessage?.files, fileId);
       if (!refreshedAttachment) {
@@ -409,11 +420,12 @@ export class MailService {
       preventReply: boolean;
       locallyReadThroughAt: Date | null;
     },
+    userId?: string,
   ): Promise<boolean> {
     try {
       const upstream = await this.mashovClient.getForTarget<UpstreamConversationDetail>(
         `/api/mail/conversations/${conversationId}`,
-        await this.scope.targetForConversation(conversationId),
+        await this.scope.targetForConversation(conversationId, userId),
         {
           headers: {
             Referer: `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`,
@@ -532,20 +544,123 @@ export class MailService {
    * No caller means no filter -- the digest and cron paths are server-side and
    * deliberately global.
    */
-  private async householdMailScope(userId?: string) {
-    if (!userId) return {};
-
-    const connections = await this.prisma.householdConnection.findMany({
-      where: { userId, active: true },
-      select: { id: true },
-    });
+  private async householdMailScope(userId?: string): Promise<Prisma.MailConversationWhereInput> {
+    const own = await this.ownConnectionIds(userId);
+    if (own === null) return {};
 
     return {
-      OR: [
-        { householdConnectionId: { in: connections.map((row) => row.id) } },
-        { householdConnectionId: null },
-      ],
+      OR: [{ householdConnectionId: { in: own } }, { householdConnectionId: null }],
     };
+  }
+
+  /**
+   * The caller's active connection ids, or `null` when there is no caller.
+   *
+   * `null` is not an empty list: it means "unscoped", which is what the crons
+   * and the digest need. An empty array is a real caller who has connected no
+   * school, and admits only the unstamped rows.
+   *
+   * Delegates to `activeConnectionIdsFor` rather than issuing its own query,
+   * so mail's notion of "the caller's connections" is the same one the student
+   * visibility edge uses and the two cannot drift.
+   */
+  private async ownConnectionIds(userId?: string): Promise<string[] | null> {
+    if (!userId) return null;
+    return activeConnectionIdsFor(this.prisma, userId);
+  }
+
+  /**
+   * Whether a caller may act on a row with this stamp.
+   *
+   * NULL is admitted, as it is everywhere else on this branch: it means
+   * "ownership unknown, re-stamp on the next walk", and excluding it would
+   * empty the inbox on a deployment that has not re-synced since the
+   * ownership migration.
+   */
+  private canSee(householdConnectionId: string | null, own: string[] | null): boolean {
+    if (own === null) return true;
+    if (householdConnectionId === null) return true;
+    return own.includes(householdConnectionId);
+  }
+
+  /** A conversation the caller may not act on is a 404, never a 403. */
+  private async assertVisible(
+    conversationId: string,
+    householdConnectionId: string | null,
+    userId?: string,
+  ): Promise<void> {
+    if (this.canSee(householdConnectionId, await this.ownConnectionIds(userId))) return;
+    // The same message as the not-found case on purpose: a distinguishable
+    // answer would confirm the id names a real conversation.
+    throw new NotFoundException(`Conversation not found: ${conversationId}`);
+  }
+
+  /**
+   * The requested ids the caller may act on, in the caller's order, with
+   * their stamps.
+   *
+   * A foreign id is filtered out silently and the mutation reports the honest
+   * `updated` count -- which is already how an id with no local row at all
+   * behaves, since `groupConversationsByConnection` drops it. What matters is
+   * that no local write happens for it and, above all, that no upstream call
+   * goes out under the other household's credentials.
+   *
+   * With no caller every id is kept, including ids with no local row: that is
+   * the list today's unscoped `updateMany` is given, and the crons must keep
+   * behaving exactly as they did.
+   */
+  private async visibleConversations(
+    conversationIds: string[],
+    userId?: string,
+  ): Promise<Array<{ conversationId: string; householdConnectionId: string | null }>> {
+    if (conversationIds.length === 0) return [];
+    const own = await this.ownConnectionIds(userId);
+
+    const rows = await this.prisma.mailConversation.findMany({
+      where: { conversationId: { in: conversationIds } },
+      select: { conversationId: true, householdConnectionId: true },
+    });
+    const stampByConversation = new Map(
+      rows.map((row) => [row.conversationId, row.householdConnectionId ?? null]),
+    );
+
+    const visible: Array<{ conversationId: string; householdConnectionId: string | null }> = [];
+    for (const conversationId of conversationIds) {
+      if (!stampByConversation.has(conversationId)) {
+        if (own === null) visible.push({ conversationId, householdConnectionId: null });
+        continue;
+      }
+      const householdConnectionId = stampByConversation.get(conversationId) ?? null;
+      if (this.canSee(householdConnectionId, own)) {
+        visible.push({ conversationId, householdConnectionId });
+      }
+    }
+    return visible;
+  }
+
+  /**
+   * A `schoolId` belonging to another household is a 404, not a 403.
+   *
+   * The same reasoning as `SyncController.resolveConnections`: a 403 would
+   * confirm the id exists. No caller means no check, which keeps the
+   * server-side paths unchanged.
+   */
+  private async assertOwnedSchool(schoolId?: string, userId?: string): Promise<void> {
+    if (!schoolId || !userId) return;
+
+    const owned = await this.prisma.householdConnection.findFirst({
+      where: { id: schoolId, userId, active: true },
+      select: { id: true },
+    });
+    if (owned) return;
+
+    throw new NotFoundException({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'No such school is connected to this account',
+        details: [],
+      },
+    });
   }
 
   private buildInboxWhere(
@@ -782,9 +897,13 @@ export class MailService {
     return fallbackMatch?.[1] ?? null;
   }
 
-  async markConversationsRead(conversationIds: string[]) {
+  async markConversationsRead(conversationIds: string[], userId?: string) {
+    const visible = await this.visibleConversations(conversationIds, userId);
+    const visibleIds = visible.map((row) => row.conversationId);
+    if (visibleIds.length === 0) return { updated: 0 };
+
     await this.prisma.mailConversation.updateMany({
-      where: { conversationId: { in: conversationIds } },
+      where: { conversationId: { in: visibleIds } },
       data: { isUnread: false, locallyMarkedUnreadAt: null },
     });
 
@@ -801,11 +920,11 @@ export class MailService {
     // keeps both sides in one parsing domain.
     const [conversations, messages] = await Promise.all([
       this.prisma.mailConversation.findMany({
-        where: { conversationId: { in: conversationIds } },
+        where: { conversationId: { in: visibleIds } },
         select: { conversationId: true, sendTime: true },
       }),
       this.prisma.mailMessage.findMany({
-        where: { conversationId: { in: conversationIds } },
+        where: { conversationId: { in: visibleIds } },
         select: { conversationId: true, sendTime: true },
       }),
     ]);
@@ -832,10 +951,10 @@ export class MailService {
 
     await this.updateCachedNewCount();
 
-    return { updated: conversationIds.length };
+    return { updated: visibleIds.length };
   }
 
-  async markUnread(conversationIds: string[]) {
+  async markUnread(conversationIds: string[], userId?: string) {
     const eligibleConversations = await this.prisma.mailConversation.findMany({
       where: {
         conversationId: { in: conversationIds },
@@ -843,7 +962,11 @@ export class MailService {
       },
       select: { conversationId: true },
     });
-    const eligibleConversationIds = eligibleConversations.map((item) => item.conversationId);
+    const visible = await this.visibleConversations(
+      eligibleConversations.map((item) => item.conversationId),
+      userId,
+    );
+    const eligibleConversationIds = visible.map((row) => row.conversationId);
 
     if (eligibleConversationIds.length === 0) {
       return { updated: 0 };
@@ -860,6 +983,7 @@ export class MailService {
         this.mashovClient.putForTarget('/api/mail/conversations/markAsUnread', subset, target, {
           headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
         }),
+      userId,
     );
 
     const updated = await this.prisma.mailConversation.updateMany({
@@ -878,15 +1002,23 @@ export class MailService {
     return { updated: updated.count };
   }
 
-  async archive(conversationIds: string[]) {
-    await this.forEachConnectionSubset(conversationIds, 'archive', (subset, target) =>
-      this.mashovClient.putForTarget('/api/mail/conversations/move/archive', subset, target, {
-        headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-      }),
+  async archive(conversationIds: string[], userId?: string) {
+    const visible = await this.visibleConversations(conversationIds, userId);
+    const visibleIds = visible.map((row) => row.conversationId);
+    if (visibleIds.length === 0) return { updated: 0 };
+
+    await this.forEachConnectionSubset(
+      visibleIds,
+      'archive',
+      (subset, target) =>
+        this.mashovClient.putForTarget('/api/mail/conversations/move/archive', subset, target, {
+          headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+        }),
+      userId,
     );
 
     const updated = await this.prisma.mailConversation.updateMany({
-      where: { conversationId: { in: conversationIds } },
+      where: { conversationId: { in: visibleIds } },
       data: {
         isUnread: false,
         labels: ['archived'] as unknown as Prisma.InputJsonValue,
@@ -899,7 +1031,7 @@ export class MailService {
     return { updated: updated.count };
   }
 
-  async unarchive(conversationIds: string[]) {
+  async unarchive(conversationIds: string[], userId?: string) {
     // No unarchive endpoint is documented in apis/; markAsUnread is the closest upstream
     // lever we have. It answers with the number of conversations it actually marked
     // (apis/put-api-mail-conversations-markAsUnread.md), which is what tells us whether
@@ -908,7 +1040,11 @@ export class MailService {
     // Collapsing them to one boolean would let one school's failed call
     // suppress the other school's *confirmed* unread -- the two mailboxes know
     // nothing about each other, and their answers must not be mixed.
-    const grouped = await this.scope.groupConversationsByConnection(conversationIds);
+    const visible = await this.visibleConversations(conversationIds, userId);
+    const visibleIds = visible.map((row) => row.conversationId);
+    if (visibleIds.length === 0) return { updated: 0 };
+
+    const grouped = await this.scope.groupConversationsByConnection(visibleIds);
     let totalUpdated = 0;
 
     for (const [connectionId, subset] of grouped) {
@@ -916,7 +1052,7 @@ export class MailService {
       try {
         const target = connectionId
           ? await this.scope.targetFor(connectionId)
-          : await this.scope.targetForConversation(subset[0]);
+          : await this.scope.targetForConversation(subset[0], userId);
         const marked = await this.mashovClient.putForTarget<unknown>(
           '/api/mail/conversations/markAsUnread',
           subset,
@@ -967,6 +1103,7 @@ export class MailService {
     conversationIds: string[],
     label: string,
     call: (subset: string[], target: ConnectionTarget) => Promise<unknown>,
+    userId?: string,
   ): Promise<void> {
     const grouped = await this.scope.groupConversationsByConnection(conversationIds);
 
@@ -974,7 +1111,7 @@ export class MailService {
       try {
         const target = connectionId
           ? await this.scope.targetFor(connectionId)
-          : await this.scope.targetForConversation(subset[0]);
+          : await this.scope.targetForConversation(subset[0], userId);
         await call(subset, target);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);

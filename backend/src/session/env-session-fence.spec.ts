@@ -298,7 +298,7 @@ describe('the shared env session is fenced off from user-facing reads', () => {
       await bodyless.getConversationDetail('conv-1');
 
       expect(client.getForTarget).toHaveBeenCalled();
-      expect(scope.targetForConversation).toHaveBeenCalledWith('conv-1');
+      expect(scope.targetForConversation).toHaveBeenCalledWith('conv-1', undefined);
       assertFenceIntact(client);
     });
 
