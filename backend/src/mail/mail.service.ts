@@ -137,16 +137,38 @@ export class MailService {
     page: number,
     limit: number,
     filter: 'all' | 'new' | 'archived',
-    /** Narrows to one school's mailbox; omitted, every mailbox. */
+    /**
+     * Narrows to one school's mailbox, plus the mail whose ownership is not
+     * yet known; omitted, every mailbox.
+     */
     schoolId?: string,
     userId?: string,
   ) {
     await this.assertOwnedSchool(schoolId, userId);
-    // Two predicates, not one merged object: the household scope is an `OR`
-    // and so is nothing in `buildInboxWhere`, so merging them would let one
-    // overwrite the other.
+    // Separate predicates, not one merged object: the household scope is an
+    // `OR`, the school filter is an `OR`, and `buildInboxWhere` returns a flat
+    // object, so merging any two of them would let one overwrite the other.
+    //
+    // The school filter admits `householdConnectionId: null` alongside the
+    // chosen school, because ownership-unknown is not somebody else's mail --
+    // it is mail whose stamp the next walk will fill in. That is the
+    // branch-wide rule (`matchesSchoolFilter`, `unreadBadge`): hiding such a
+    // row behind a chip it can never match would make it unreachable.
     const where: Prisma.MailConversationWhereInput = {
-      AND: [await this.householdMailScope(userId), this.buildInboxWhere(filter, schoolId)],
+      AND: [
+        await this.householdMailScope(userId),
+        this.buildInboxWhere(filter),
+        ...(schoolId
+          ? [
+              {
+                OR: [
+                  { householdConnectionId: schoolId },
+                  { householdConnectionId: null },
+                ],
+              } satisfies Prisma.MailConversationWhereInput,
+            ]
+          : []),
+      ],
     };
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
@@ -733,16 +755,19 @@ export class MailService {
     });
   }
 
+  /**
+   * The `filter`/`labels` half of the inbox predicate.
+   *
+   * The school filter is deliberately NOT here: it is an `OR`, and this
+   * returns a flat object that `getConversations` combines by `AND`.
+   */
   private buildInboxWhere(
     filter: 'all' | 'new' | 'archived',
-    schoolId?: string,
   ): Prisma.MailConversationWhereInput {
-    const school = schoolId ? { householdConnectionId: schoolId } : {};
     if (filter === 'archived') {
-      return { ...school, labels: { array_contains: ['archived'] } };
+      return { labels: { array_contains: ['archived'] } };
     }
     return {
-      ...school,
       ...(filter === 'new' ? { isUnread: true } : {}),
       NOT: { labels: { array_contains: ['archived'] } },
     };

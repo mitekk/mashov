@@ -18,12 +18,18 @@ export function fetchConversations(
   page = 1,
   limit = 20,
   filter: 'all' | 'new' | 'archived' = 'all',
+  /**
+   * A `HouseholdConnection.id`, not a semel: the chip is keyed by semel, and
+   * the caller resolves it through `me.schools` before getting here.
+   */
+  schoolId?: string,
 ): Promise<ConversationsResponse> {
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
     filter,
   });
+  if (schoolId) params.set('schoolId', schoolId);
   return apiFetch<ConversationsResponse>(`/mail/conversations?${params.toString()}`);
 }
 

@@ -95,6 +95,10 @@ remove. The rows at `householdConnectionId: null` are the ones the backfill refu
 about, and the read scope has always shown them to everyone as "ownership unknown"; the badge
 now answers the same question the list does.
 
+**Amended (batch 5, R14).** The chip-scoped *list* read follows the same NULL rule: `?schoolId=`
+matches that connection's conversations plus the ones no connection owns, so the list and the
+badge agree about an unattributed row under every chip.
+
 **Bad.** Every per-school table carries an extra nullable `TEXT`, and `mail_message` carries it
 denormalised from its conversation — bought deliberately, for a join-free `deleteMany` on unlink
 and a direct connection resolve from a bare `messageId` during an attachment download.

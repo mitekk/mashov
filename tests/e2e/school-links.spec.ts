@@ -278,6 +278,48 @@ test.describe('School links — unlinking', () => {
     await expect(page.getByText('זה בית הספר היחיד המחובר')).toBeVisible();
   });
 
+  test('the bulk disconnect with two schools says both are going', async ({ page }) => {
+    await seed(page, {
+      schools: [SCHOOL_A, SCHOOL_B],
+      links: [link(SCHOOL_A), link(SCHOOL_B)],
+    });
+    const more = new MorePage(page);
+    await more.navigate();
+
+    await more.bulkDisconnectButton.click();
+
+    await expect(page.getByText('יימחקו כל הנתונים של כל בתי הספר')).toBeVisible();
+    await expect(page.getByText('זה בית הספר היחיד המחובר')).toHaveCount(0);
+  });
+
+  test('the bulk disconnect never understates itself before the count is known', async ({
+    page,
+  }) => {
+    // `schoolCount = schoolLinks?.length ?? 1` told a household it was
+    // disconnecting its only school whenever the modal opened before
+    // ['school-links'] resolved -- while `deleteAllSchoolLinks` wipes every
+    // school either way.
+    await seed(page, {
+      schools: [SCHOOL_A, SCHOOL_B],
+      links: [link(SCHOOL_A), link(SCHOOL_B)],
+    });
+    // Held open and never fulfilled, which makes the unresolved cache a
+    // certainty rather than a race: this is the state the old default got
+    // wrong, and the only one that can distinguish the two branches.
+    await page.route('**/api/v1/school-links', async (route) => {
+      if (route.request().method() === 'GET') return;
+      await route.fallback();
+    });
+    const more = new MorePage(page);
+    await more.navigate();
+
+    await expect(more.bulkDisconnectButton).toHaveText('ניתוק מכל בתי הספר');
+    await more.bulkDisconnectButton.click();
+
+    await expect(page.locator('#disconnect-modal-title')).toHaveText('ניתוק מכל בתי הספר');
+    await expect(page.getByText('יימחקו כל הנתונים של כל בתי הספר')).toBeVisible();
+  });
+
   test('unlinking every school returns to sign-in', async ({ page }) => {
     await seed(page, { schools: [SCHOOL_A], links: [link(SCHOOL_A)] });
     const more = new MorePage(page);
@@ -384,6 +426,27 @@ test.describe('School links — adding', () => {
         expect(page.url()).toContain('/more/schools/new');
       });
     }
+  });
+
+  test('a school edited out of the input cannot be submitted', async ({ page }) => {
+    // Typing over the picked school used to leave the selection in place, so
+    // the form submitted a school the input was no longer showing -- and the
+    // failure came back naming a school the parent never chose.
+    await seed(page, { schools: [SCHOOL_A], links: [link(SCHOOL_A)] });
+    await page.route('**/api/v1/auth/schools', (route) =>
+      route.fulfill({
+        json: [{ semel: SCHOOL_B.semel, name: SCHOOL_B.schoolName, years: [2026] }],
+      }),
+    );
+
+    await page.goto('/more/schools/new');
+    await page.getByTestId('add-school-selector').click();
+    await page.getByTestId(`school-option-${SCHOOL_B.semel}`).click();
+    await expect(page.getByTestId('add-school-submit-btn')).toBeEnabled();
+
+    await page.getByTestId('add-school-selector').fill('תיכון ר');
+
+    await expect(page.getByTestId('add-school-submit-btn')).toBeDisabled();
   });
 
   test('a successful link goes to the syncing screen for that school', async ({ page }) => {

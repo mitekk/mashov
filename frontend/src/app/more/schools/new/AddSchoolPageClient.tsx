@@ -106,6 +106,11 @@ export default function AddSchoolPageClient() {
           <SchoolAutocomplete
             value={selectedSchool}
             onSelect={setSelectedSchool}
+            // Typing over the picked school drops the selection. Without this
+            // the form submitted a school the input was no longer showing, and
+            // the `INVALID_CREDENTIALS` that came back named a school the
+            // parent never chose.
+            onClear={() => setSelectedSchool(null)}
             inputTestId="add-school-selector"
             optionTestIdPrefix="school-option"
             // Shown but unselectable: preventing the error beats reporting it,
@@ -165,7 +170,10 @@ export default function AddSchoolPageClient() {
           <button
             type="submit"
             data-testid="add-school-submit-btn"
-            disabled={linkMutation.isPending}
+            // Gated on the selection as well as the mutation: `onClear` above
+            // is what makes an edited input lose the school, and this is what
+            // stops the form submitting the nothing that is left.
+            disabled={linkMutation.isPending || !selectedSchool}
             className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60"
           >
             {linkMutation.isPending ? 'מתחבר...' : 'חיבור בית הספר'}

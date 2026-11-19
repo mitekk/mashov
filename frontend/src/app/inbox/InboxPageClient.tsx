@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils';
 import { SchoolFilterChips } from '@/components/school/SchoolFilterChips';
 import { useMe } from '@/hooks/useAuth';
 import {
-  matchesSchoolFilter,
+  ALL_SCHOOLS,
   parseSchoolFilter,
   serializeSchoolFilter,
   type SchoolFilter,
@@ -46,7 +46,26 @@ function InboxPageContent() {
   const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
 
   const { data: summary } = useMailSummary();
-  const { data: me } = useMe();
+  const { data: me, isError: isMeError } = useMe();
+
+  // Both params coexist: /inbox?filter=new&school=540175 is a valid state, and
+  // each row of chips owns its own key.
+  const schoolFilter = parseSchoolFilter(searchParams.get('school'), me?.schools ?? []);
+  const hasSchoolFilter = schoolFilter !== ALL_SCHOOLS;
+  // The chip and the URL are keyed by semel, while `?schoolId=` wants a
+  // `HouseholdConnection.id`. `me.schools` carries both, so the mapping lives
+  // here rather than in the query param.
+  const schoolConnectionId = me?.schools.find((school) => school.semel === schoolFilter)?.id;
+  // A school-scoped deep link waits for `me`: without the gate the first fetch
+  // goes out unfiltered and flashes another school's mail before the semel can
+  // be resolved to a connection id.
+  // `!isMeError` matters: `useMe` has `retry: false`, so a failure that is not
+  // a 401 leaves `data` undefined for good. Without it the gate would read
+  // "errored" as "still loading" and spin for ever, with no error affordance,
+  // because the conversations query that owns `isError` never ran.
+  const isAwaitingMe = Boolean(searchParams.get('school'))
+    && me === undefined
+    && !isMeError;
   const {
     data,
     isLoading,
@@ -55,22 +74,31 @@ function InboxPageContent() {
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
-  } = useConversations(activeFilter);
+  } = useConversations(activeFilter, schoolConnectionId, { enabled: !isAwaitingMe });
+  // The gate covers the FIRST paint only. `['me']` refetches whenever a new
+  // component observes it -- and the chips mount and unmount with it -- so
+  // under a failing `/auth/me` its status flickers between 'error' and
+  // 'pending'; a gate that re-closed on that flicker would hide a list that
+  // already has its pages.
+  const isGatedFirstPaint = isAwaitingMe && data === undefined;
   const { mutate: markRead, isPending: isMarkReadPending } = useMarkRead();
   const { mutate: markUnread, isPending: isMarkUnreadPending } = useMarkUnread();
   const { mutate: archive, isPending: isArchivePending } = useArchive();
   const { mutate: unarchive, isPending: isUnarchivePending } = useUnarchive();
 
-  const allConversations = useMemo(
+  // The server's own pages, already narrowed to the chip: everything below --
+  // the selection, "select all visible", the counts and the load-more -- reads
+  // the same list the parent is looking at.
+  const conversations = useMemo(
     () => data?.pages.flatMap((page) => page.data) ?? [],
     [data],
   );
 
-  // Both params coexist: /inbox?filter=new&school=540175 is a valid state, and
-  // each row of chips owns its own key.
-  const schoolFilter = parseSchoolFilter(searchParams.get('school'), me?.schools ?? []);
-
   function setSchoolFilter(next: SchoolFilter) {
+    // Cleared exactly as `setFilter` clears it: the bulk bar's count reads the
+    // raw id array, so a selection carried across a chip change read
+    // "נבחרו 2" above an archive button that then acted on one row.
+    setSelectedConversationIds([]);
     const params = new URLSearchParams(searchParams.toString());
     const value = serializeSchoolFilter(next);
     if (value === null) params.delete('school');
@@ -79,13 +107,6 @@ function InboxPageContent() {
     router.replace(query ? `/inbox?${query}` : '/inbox');
   }
 
-  const conversations = useMemo(
-    () =>
-      allConversations.filter((conversation) =>
-        matchesSchoolFilter(schoolFilter, semelOf(conversation.schoolId, me?.schools)),
-      ),
-    [allConversations, schoolFilter, me?.schools],
-  );
   const isBulkActionPending = isMarkReadPending
     || isMarkUnreadPending
     || isArchivePending
@@ -309,20 +330,45 @@ function InboxPageContent() {
       )}
 
       <div className="section-stack">
-        {isLoading && <LoadingState message="טוען הודעות..." />}
-        {isError && <ErrorState onRetry={() => void refetch()} />}
-        {!isLoading && !isError && (
+        {/* The gate is part of the condition, not merely of the query: a
+            disabled TanStack v5 query reports `isLoading === false`, so
+            without it a gated first paint would fall through to the empty
+            state. */}
+        {(isLoading || isGatedFirstPaint) && <LoadingState message="טוען הודעות..." />}
+        {!isGatedFirstPaint && isError && <ErrorState onRetry={() => void refetch()} />}
+        {!isLoading && !isGatedFirstPaint && !isError && (
           conversations.length === 0 ? (
-            <EmptyState
-              icon={<Mail className="w-10 h-10" />}
-              title={
-                activeFilter === 'new'
-                  ? 'אין הודעות שלא נקראו'
-                  : activeFilter === 'archived'
-                    ? 'אין פריטים בארכיון'
-                    : 'תיבת הדואר ריקה'
-              }
-            />
+            hasSchoolFilter ? (
+              // A distinct state from "no mail at all". Told the generic copy,
+              // a parent concludes the mailbox is broken rather than that they
+              // are looking through a filter.
+              <div className="space-y-3">
+                <EmptyState
+                  icon={<Mail className="w-10 h-10" />}
+                  title="אין דואר מבית הספר הזה"
+                  subtitle="אפשר להציג את הדואר מכל בתי הספר"
+                />
+                <button
+                  type="button"
+                  data-testid="inbox-school-filter-reset-btn"
+                  onClick={() => setSchoolFilter(ALL_SCHOOLS)}
+                  className="mx-auto block text-sm font-medium text-primary underline underline-offset-4 hover:text-primary/80 transition-colors"
+                >
+                  הצג הכל
+                </button>
+              </div>
+            ) : (
+              <EmptyState
+                icon={<Mail className="w-10 h-10" />}
+                title={
+                  activeFilter === 'new'
+                    ? 'אין הודעות שלא נקראו'
+                    : activeFilter === 'archived'
+                      ? 'אין פריטים בארכיון'
+                      : 'תיבת הדואר ריקה'
+                }
+              />
+            )
           ) : (
             <ConversationList
               conversations={conversations}
@@ -359,17 +405,3 @@ export default function InboxPage() {
   );
 }
 
-/**
- * A connection id resolved to its semel.
- *
- * The filter is keyed by semel because that is what survives unlinking and
- * re-linking a school and what belongs in a shareable URL, while a
- * conversation carries the connection id it was fetched with.
- */
-function semelOf(
-  schoolId: string | null,
-  schools: Array<{ id: string; semel: number }> | undefined,
-): number | null {
-  if (!schoolId) return null;
-  return schools?.find((school) => school.id === schoolId)?.semel ?? null;
-}

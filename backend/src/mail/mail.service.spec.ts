@@ -1599,6 +1599,39 @@ describe('MailService household scoping', () => {
       });
     });
 
+    it.each(['all', 'new', 'archived'] as const)(
+      "carries the school filter as its own AND element, admitting NULL (%s)",
+      async (filter) => {
+        // Its own element and not merged into `buildInboxWhere`'s return: both
+        // are `OR`s, and a spread lets one overwrite the other. NULL rides
+        // along because ownership-unknown is not somebody else's -- the same
+        // rule `unreadBadge` follows.
+        const conversationFindMany = jest.fn().mockResolvedValue([]);
+        const { service } = makeService({ conversationFindMany });
+
+        await service.getConversations(1, 20, filter, MINE, CALLER);
+
+        const [args] = conversationFindMany.mock.calls[0] as [
+          { where: { AND: Array<Record<string, unknown>> } },
+        ];
+        expect(args.where.AND).toContainEqual({
+          OR: [{ householdConnectionId: MINE }, { householdConnectionId: null }],
+        });
+      },
+    );
+
+    it('leaves the where free of a school predicate with no schoolId', async () => {
+      const conversationFindMany = jest.fn().mockResolvedValue([]);
+      const { service } = makeService({ conversationFindMany });
+
+      await service.getConversations(1, 20, 'all', undefined, CALLER);
+
+      const [args] = conversationFindMany.mock.calls[0] as [
+        { where: { AND: Array<Record<string, unknown>> } },
+      ];
+      expect(args.where.AND).toHaveLength(2);
+    });
+
     it('checks nothing when there is no caller', async () => {
       // The digest and the crons are server-side and deliberately global.
       const conversationFindMany = jest.fn().mockResolvedValue([]);

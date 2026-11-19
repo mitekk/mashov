@@ -1128,9 +1128,15 @@ describe('Two mailboxes, two households', () => {
       mail.getConversations(1, 100, 'all', MAIL_CONN_B, MAIL_USER_A),
     ).rejects.toMatchObject({ status: 404 });
 
-    // ...and serves the caller's own.
+    // ...and serves the caller's own, plus the unattributed row: the chip
+    // narrows to one school's mail AND the mail whose ownership is not yet
+    // known, rather than hiding the latter behind a chip it can never match.
     const own = await mail.getConversations(1, 100, 'all', MAIL_CONN_A, MAIL_USER_A);
-    expect(own.data.map((item) => item.conversationId)).toEqual([CONV_A]);
+    // Order-independent: all three fixture conversations share one `sendTime`,
+    // so `orderBy: { sendTime: 'desc' }` leaves the order between them undefined.
+    expect(own.data.map((item) => item.conversationId).sort()).toEqual(
+      [CONV_A, CONV_NULL].sort(),
+    );
   });
 
   it("404s the other household's conversation detail with no upstream call", async () => {

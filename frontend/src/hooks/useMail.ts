@@ -22,10 +22,26 @@ export function useMailSummary() {
   });
 }
 
-export function useConversations(filter: 'all' | 'new' | 'archived') {
+/**
+ * The inbox page, optionally narrowed to one school.
+ *
+ * `schoolId` is part of the key, so the school filter is a different query
+ * rather than a client-side pass over one fetched page -- which is what makes
+ * pagination and the totals be over the filtered set. Switching chips
+ * therefore refetches instead of re-filtering.
+ *
+ * The four mutation hooks below invalidate the bare `['conversations']`
+ * prefix, which still covers every chip.
+ */
+export function useConversations(
+  filter: 'all' | 'new' | 'archived',
+  schoolId?: string,
+  options?: { enabled?: boolean },
+) {
   return useInfiniteQuery({
-    queryKey: ['conversations', filter],
-    queryFn: ({ pageParam }: { pageParam: unknown }) => fetchConversations(Number(pageParam), 20, filter),
+    queryKey: ['conversations', filter, schoolId ?? null],
+    queryFn: ({ pageParam }: { pageParam: unknown }) => fetchConversations(Number(pageParam), 20, filter, schoolId),
+    enabled: options?.enabled ?? true,
     initialPageParam: 1,
     getNextPageParam: (lastPage) => (
       lastPage.pagination.page < lastPage.pagination.totalPages

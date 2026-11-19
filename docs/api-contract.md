@@ -74,11 +74,14 @@ asking, never to the other parent's, so the id is always resolvable against `me.
 
 All four are `string \| null`. `null` is a real value and means **no badge**: an unstamped child,
 whose ownership is not yet known, and mail, which is household-wide and genuinely has no child.
-Clients must treat it as "unknown", never as a school named "null", and must leave such an item
+Clients must treat it as "unknown", never as a school named "null". Such an item stays
 **visible** under every school filter — hiding it behind a chip it can never match would make it
-unreachable.
+unreachable — and for the inbox the **server** guarantees that, because `?schoolId=` is the
+filter the chip sends.
 
-`GET /mail/conversations` also accepts `?schoolId=` to narrow to one mailbox.
+`GET /mail/conversations` also accepts `?schoolId=` (a `HouseholdConnection.id`) to narrow to one
+mailbox. It matches that connection's conversations **plus the unattributed ones**, and 404s a
+connection belonging to another household.
 
 Every school-aware UI surface renders nothing while `me.schools.length < 2`, so a one-school
 household's markup is unchanged by all of the above.

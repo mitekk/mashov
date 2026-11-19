@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { ChildrenPage } from './pages/ChildrenPage';
+import { InboxPage } from './pages/InboxPage';
 
 /**
  * The school filter, and the rule that makes the whole feature safe to ship:
@@ -245,5 +246,163 @@ test.describe('School filter', () => {
     await page.goto(`/children?school=${SCHOOL_B.semel}`);
 
     await expect(children.childCard('guid-null')).toBeVisible();
+  });
+});
+
+/** One inbox row, stamped to a school or to nobody. */
+function conversationRow(
+  conversationId: string,
+  school: typeof SCHOOL_A | null,
+): Record<string, unknown> {
+  return {
+    conversationId,
+    subject: `נושא ${conversationId}`,
+    senderNamePreview: 'מורה',
+    sendTime: '2026-11-10T08:00:00Z',
+    isNew: true,
+    hasAttachments: false,
+    preventReply: false,
+    labels: [],
+    lastFetchedAt: '2026-11-10T08:05:00Z',
+    schoolId: school?.id ?? null,
+    schoolShortLabel: school?.shortLabel ?? null,
+  };
+}
+
+/** A full first page of A's mail, so B's row cannot fit on it. */
+const A_PAGE_1 = Array.from({ length: 20 }, (_, index) =>
+  conversationRow(`conv-a-${index + 1}`, SCHOOL_A),
+);
+const B_CONVERSATION = conversationRow('conv-b-1', SCHOOL_B);
+
+/**
+ * The conversations endpoint, answering the `schoolId` the client sends.
+ *
+ * Reading the query string is the whole point: the catch-all in `seed` matches
+ * by URL glob alone, so a handler that ignored `?schoolId=` would answer the
+ * filtered request with page 1 of everything -- and make a client-side filter,
+ * which never sends the param at all, look green.
+ */
+async function routeConversations(
+  page: Page,
+  options: {
+    unfiltered: Array<Array<Record<string, unknown>>>;
+    bySchool: Record<string, Array<Record<string, unknown>>>;
+  },
+): Promise<void> {
+  await page.route('**/api/v1/mail/conversations*', async (route) => {
+    const url = new URL(route.request().url());
+    const schoolId = url.searchParams.get('schoolId');
+    const pageNumber = Number(url.searchParams.get('page') ?? '1');
+    const pages = schoolId === null
+      ? options.unfiltered
+      : [options.bySchool[schoolId] ?? []];
+    const data = pages[pageNumber - 1] ?? [];
+    await route.fulfill({
+      json: {
+        data,
+        pagination: {
+          page: pageNumber,
+          limit: 20,
+          total: pages.flat().length,
+          totalPages: pages.length,
+        },
+      },
+    });
+  });
+}
+
+test.describe('School filter — inbox', () => {
+  test('reaches a school whose mail is not on page 1', async ({ page }) => {
+    // The defect this fixes: filtering client-side over one fetched page left
+    // B's mail behind an empty state with no way to load page 2, because the
+    // load-more button lives inside the list the empty branch replaces.
+    await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1, [B_CONVERSATION]],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1, [SCHOOL_B.id]: [B_CONVERSATION] },
+    });
+    const inbox = new InboxPage(page);
+    await inbox.navigate();
+    await expect(inbox.conversationItem('conv-a-1')).toBeVisible();
+    await expect(inbox.conversationItem('conv-b-1')).toHaveCount(0);
+
+    await inbox.filterBySchool(SCHOOL_B.semel);
+
+    await expect(inbox.conversationItem('conv-b-1')).toBeVisible();
+    await expect(inbox.conversationItem('conv-a-1')).toHaveCount(0);
+  });
+
+  test('switching chips drops a selection made under the previous one', async ({ page }) => {
+    // The bulk bar's count reads the raw id array, so a selection carried
+    // across a chip change showed "נבחרו 2" above an archive button that then
+    // acted on one row -- a count disagreeing with a destructive action.
+    await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1, [SCHOOL_B.id]: [B_CONVERSATION] },
+    });
+    const inbox = new InboxPage(page);
+    await inbox.navigate();
+    await inbox.toggleConversationSelection('conv-a-1');
+    await expect(inbox.bulkActionsBar).toBeVisible();
+
+    await inbox.filterBySchool(SCHOOL_B.semel);
+
+    await expect(inbox.bulkActionsBar).toHaveCount(0);
+  });
+
+  test('a school-scoped deep link still renders when /auth/me fails', async ({ page }) => {
+    // The deep-link gate waits for `me`, and `useMe` has `retry: false`: a
+    // non-401 failure leaves `data` undefined forever, so a gate that reads
+    // "undefined" as "still loading" spins for ever -- with the error state
+    // suppressed, because the query that owns `isError` never ran.
+    await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1, [SCHOOL_B.id]: [B_CONVERSATION] },
+    });
+    await page.route('**/api/v1/auth/me', (route) =>
+      route.fulfill({
+        status: 502,
+        json: { error: { code: 'UPSTREAM_ERROR', message: 'upstream', details: [] } },
+      }),
+    );
+    const inbox = new InboxPage(page);
+    await page.goto(`/inbox?school=${SCHOOL_B.semel}`);
+
+    // No `me` means no chips and no resolvable school, so the unfiltered
+    // mailbox is the honest answer -- never an indefinite spinner.
+    await expect(inbox.conversationItem('conv-a-1')).toBeVisible();
+  });
+
+  test('a school with no mail gets its own empty state', async ({ page }) => {
+    // Told the generic "the mailbox is empty", a parent concludes the school
+    // is broken rather than that they are looking through a filter.
+    await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1, [SCHOOL_B.id]: [] },
+    });
+
+    await page.goto(`/inbox?school=${SCHOOL_B.semel}`);
+
+    await expect(page.getByText('אין דואר מבית הספר הזה')).toBeVisible();
+  });
+
+  test('the filtered empty state clears the filter', async ({ page }) => {
+    await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1, [SCHOOL_B.id]: [] },
+    });
+    const inbox = new InboxPage(page);
+    await page.goto(`/inbox?school=${SCHOOL_B.semel}`);
+    await expect(page.getByTestId('inbox-school-filter-reset-btn')).toBeVisible();
+
+    await page.getByTestId('inbox-school-filter-reset-btn').click();
+
+    await expect(inbox.conversationItem('conv-a-1')).toBeVisible();
+    expect(page.url()).not.toContain('school=');
   });
 });

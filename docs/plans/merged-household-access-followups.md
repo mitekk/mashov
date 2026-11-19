@@ -10,9 +10,10 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: **B2** and **B4**, **R7**–**R12**, **R14** and **R17**, the two
+What is open: **B2** and **B4**, **R8**–**R12** and **R17**, the two
 operational tasks the plan itself deferred (**T13**–**T14**), the **G2** coverage gap,
-and the minors. **G1**, **B1**, **B3**, **R4** and **R15** are done and kept as record.
+and the minors. **G1**, **B1**, **B3**, **R4**, **R7**, **R14** and **R15** are done and kept
+as record.
 
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
@@ -44,17 +45,17 @@ stays true.
 | 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor, and **N1** found while reading | **done** | One missing household predicate across four readers, on the `userId` threading batch 1 established. Closed the last place another household's data reached a screen. The mail scope moved to `common/mail-scope.ts` and the chip labels to `common/school-chips.ts`, so `/children`, `/dashboard`, `/feed` and the inbox now answer from one scoping path and one label resolution instead of four. |
 | 3.5 | **R16** + B3's remaining bullet | **done** | One household's release request went upstream under the other's decrypted password — R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closed both: a foreign stamp is now no stamp, and the fallback under it prefers the caller's connection at the stamped school. `targetFor` took the same optional caller while in there. |
 | 4 | **R4** + **R15** | **done** | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rode along: the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. The freshness card now takes the caller and selects children by the visibility edge; the badge is the caller's `cachedNewCount` sum plus the unattributed rows, added once by `unreadBadge` in `common/mail-scope.ts` — one rule, one home, for the two readers that each had their own copy of it. |
-| 5 | **R7**, **R14** + the `MorePageClient` dead term | open | The only frontend items. R14 leaves a parent looking at an empty mailbox with no way forward, which is the worst *experience* left open. Needs an e2e run, so it is cheapest on its own. |
+| 5 | **R7**, **R14** + the `MorePageClient` dead term | **done** | The only frontend items. R14 left a parent looking at an empty mailbox with no way forward, which was the worst *experience* open. The chip is now a server-side `?schoolId=` filter — which admits the unattributed rows, so the list follows the same NULL rule as batch 4's badge — the add-school form clears and re-gates on an edited selection, and the bulk-disconnect modal defaults to the plural copy instead of promising a one-school wipe. |
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
 | 7 | **R8**, **R9**, **R10**, **R17** | open | Four independent small correctness fixes in the auth/link path; one session, four tests. R17 is a two-line reorder. |
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
 | 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1, 2, 3, 3.5 and 4 are done: no open item puts one household's data on
+Batches 1, 2, 3, 3.5, 4 and 5 are done: no open item puts one household's data on
 another's *screen*, none puts a household's *request* in another's Mashov account, and
-no reader left answers from the whole table. **Batch 5 is next.** Batches 5–7 are each
-self-contained; 7 can run in parallel with anything.
+no reader left answers from the whole table, and no frontend item is open. **Batch 6 is next.**
+Batches 6 and 7 are each self-contained; 7 can run in parallel with anything.
 
 ---
 
@@ -582,7 +583,7 @@ choose.
 `SchoolAutocomplete` without `onClear`. Its own prop doc says the prop exists because
 "editing the text after picking a school would leave the selection in place and submit
 a school the input is no longer showing"; the mismatch branch at
-`SchoolAutocomplete.tsx:174` calls `onClear?.()`, a no-op here. `SignInPageClient`
+`SchoolAutocomplete.tsx:88` calls `onClear?.()`, a no-op here. `SignInPageClient`
 passes it; this page does not.
 
 **Description.** Select a school, then edit the text: the input shows the typed text
@@ -591,9 +592,14 @@ with the wrong `semel` and fails `INVALID_CREDENTIALS` against a school the pare
 never picked — the one error message in the table that will read as a lie.
 
 **DoD**
-- [ ] `AddSchoolPageClient` passes `onClear`.
-- [ ] `tests/e2e/school-links.spec.ts` covers select-then-edit: the submit button is
+- [x] `AddSchoolPageClient` passes `onClear`.
+- [x] `tests/e2e/school-links.spec.ts` covers select-then-edit: the submit button is
       disabled, or the request carries the typed school.
+
+**Done** (batch 5). `onClear` clears `selectedSchool`, and the submit button gates on
+`!selectedSchool` as well as `isPending` — the prop alone would have left submit enabled with
+nothing selected, since the button was only ever disabled while the mutation was in flight. The
+`'יש לבחור בית ספר'` guard in `handleSubmit` stays as defence, now unreachable by click.
 
 ### R8 — A returning sign-in takes the adoption branch, so `displayName` never updates
 
@@ -693,7 +699,7 @@ first more visible, so do them together.
 
 ### Two sub-findings too small for an item of their own
 
-- `frontend/src/components/.../MorePageClient.tsx:42` —
+- ~~`frontend/src/app/more/MorePageClient.tsx:42` —
   `isLastSchool = (pendingUnlink && schoolCount <= 1) || schoolCount <= 1` reduces to
   `schoolCount <= 1`, and since the per-row modal only opens when
   `schoolLinks.length > 1` the `pendingUnlink` term is dead.
@@ -703,7 +709,11 @@ first more visible, so do them together.
   slow network, or just after `invalidateHouseholdScopedQueries` — is told
   "זה בית הספר היחיד המחובר" and shown the singular button, while two schools will be
   wiped. The default should be the safe branch, or the modal should not open until the
-  count is known.
+  count is known.~~ **Done** (batch 5). `isLastSchool` is now
+  `schoolLinks !== undefined && schoolLinks.length <= 1`: an unresolved cache takes the
+  plural branch, because being told "all schools will be deleted" with one school linked
+  is merely odd while the reverse understates a destructive action. The term drops with
+  it. Copy only — the mutation was `deleteAllSchoolLinks` on both branches.
 - ~~`MailService.updateCachedNewCount()` called with **no argument** iterates every
   active connection in the database, writing to other households' rows on each of the
   caller's mail actions. The values it writes are per-connection and correct, so this
@@ -783,13 +793,22 @@ unreachable without clearing the chip. The pagination counts shown elsewhere are
 computed on the unfiltered totals too.
 
 **DoD**
-- [ ] The school chip is a server-side filter: `fetchConversations` passes `schoolId`
+- [x] The school chip is a server-side filter: `fetchConversations` passes `schoolId`
       and the query key includes it, so pagination and counts are over the filtered
       set. (**R1** already made `?schoolId=` 404 on a foreign connection, so the
       param is safe to send.)
-- [ ] The empty state distinguishes "no mail at all" from "no mail at this school",
+- [x] The empty state distinguishes "no mail at all" from "no mail at this school",
       and keeps a way to load more or clear the filter.
-- [ ] An e2e case selects a school whose mail is not on page 1 and asserts it appears.
+- [x] An e2e case selects a school whose mail is not on page 1 and asserts it appears.
+
+**Done** (batch 5). The chip maps its semel to a `HouseholdConnection.id` through `me.schools`
+and rides in the query key, so switching chips refetches rather than re-filtering and the
+pagination counts are the filtered ones. Server-side, the school predicate is its own third
+element of the existing `AND` — never spread into `buildInboxWhere`, because both are `OR`s —
+and it admits `householdConnectionId: null` alongside the chosen school, which is what closes
+the `?schoolId=` minor below. A school-scoped deep link waits for `me` before fetching, so it
+cannot flash another school's mail. With the filter server-side there is no page 2 to reach, so
+the filtered empty state carries only its own copy and a clear-filter button.
 
 ---
 
@@ -1118,17 +1137,16 @@ because `household-isolation`'s shared `cleanup()` deletes connections by
   the database holds at most one active connection; recorded rather than done, because
   it is the branch-wide NULL rule and not a mail decision. Stated in `canSee`'s comment
   in `backend/src/mail/mail.service.ts`.
-- **A `?schoolId=` view excludes unattributed conversations.** The household scope's
+- ~~**A `?schoolId=` view excludes unattributed conversations.** The household scope's
   `OR [own, null]` ANDed with `{ householdConnectionId: schoolId }` can match no NULL
   row, so an unattributed conversation is in the unfiltered list and in no per-school
-  one. Same family as the entry below. No frontend caller is affected —
-  `InboxPageClient` filters by school client-side and never sends `schoolId` — so it is
-  API-surface only. Pinned as current behaviour in
-  `tests/integration/household-isolation.test.ts`. **Correction (third review):** that
-  client-side filter has a consequence of its own, recorded as **R14** — it can make a
-  school's mail unreachable rather than merely unfiltered. Sending `schoolId` is part of
-  R14's fix, so the exclusion above stops being API-surface-only at that point and the
-  two have to be resolved together.
+  one. No frontend caller is affected — `InboxPageClient` filters by school client-side
+  and never sends `schoolId` — so it is API-surface only. **Correction (third review):**
+  that client-side filter has a consequence of its own, recorded as **R14**, and sending
+  `schoolId` is part of R14's fix, so the two have to be resolved together.~~ **Done**
+  (batch 5, with R14). The school predicate is now `OR [schoolId, null]`, so the chip
+  shows the unattributed rows rather than hiding them, and the integration case that
+  pinned the exclusion asserts the inclusion instead.
 - **Opening a conversation can leave one connection's `cachedNewCount` stale for up to
   five minutes.** Hydrating on open recomputes `isUnread` and no count, which is
   pre-existing; what changed in batch 1 is that the user's next mail action elsewhere
@@ -1224,12 +1242,18 @@ because `household-isolation`'s shared `cleanup()` deletes connections by
   documented in `README.md` and `.env.example`. `DB_PORT=5433 npm run test:integration`
   is what the integration gate for batch 1 was run with, and `DB_PORT=5433 npm run
   test:e2e` the e2e suite (171 tests).
-- `tests/e2e/school-links.spec.ts:389` ("a successful link goes to the syncing screen
-  for that school") is **flaky**: it failed once on `syncing-heading` not being found
+- `tests/e2e/school-links.spec.ts` ("a successful link goes to the syncing screen
+  for that school") is **failing**: it failed once on `syncing-heading` not being found
   after `waitForURL` had already succeeded, then passed on an identical re-run. The page
   renders the heading behind its first `['sync-status']` fetch, so the assertion is
   racing that. Needs a `waitFor` on the page's loaded state rather than a bare
-  `toHaveText`.
+  `toHaveText`. **Correction (batch 5):** it is not load flake. Batch 5 failed
+  it in three runs and passed it in two, and two of the failures were with
+  `school-links.spec.ts` running **alone** — so "passes on a re-run" and "passes under
+  no parallel load" are both wrong as diagnoses. One of the failures was in a run made
+  *before* that batch touched any source, with the spec file's own diff insert-only, so
+  it is not batch 5's doing either. Roughly a 60% failure rate, cause still unconfirmed.
+  Not chased in batch 5, which it did not block; it needs an owner of its own.
 - The integration suite was **red on this branch** until `1dcb60e` and nobody noticed,
   because the branch's verification ran unit + e2e only. Three independent causes, all
   now fixed: `ChildrenService` had gained a sixth constructor argument;

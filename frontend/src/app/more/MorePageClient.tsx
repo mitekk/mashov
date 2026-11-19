@@ -38,8 +38,21 @@ export default function MorePage() {
   // The single school a per-row "ניתוק" is asking about, or null.
   const [pendingUnlink, setPendingUnlink] = useState<SchoolLink | null>(null);
 
-  const schoolCount = schoolLinks?.length ?? 1;
-  const isLastSchool = (pendingUnlink && schoolCount <= 1) || schoolCount <= 1;
+  // `undefined` -- ['school-links'] not resolved yet -- takes the PLURAL
+  // branch. Being told "all schools will be deleted" with one school linked is
+  // merely odd; the reverse tells a two-school household it is disconnecting
+  // its only school while `deleteAllSchoolLinks` wipes both. The old
+  // `pendingUnlink &&` term was dead: the per-row modal only opens above one
+  // school.
+  // `undefined` -- ['school-links'] not resolved yet -- takes the PLURAL
+  // branch, and it drives every word of the bulk disconnect: the label, the
+  // modal's heading and its body. Being told "all schools will be deleted"
+  // with one school linked is merely odd; the reverse tells a two-school
+  // household it is disconnecting its only school while `deleteAllSchoolLinks`
+  // wipes both. The old `pendingUnlink &&` term was dead -- the per-row modal
+  // only opens above one school -- and the old `?? 1` default was the half
+  // that was wrong.
+  const isLastSchool = schoolLinks !== undefined && schoolLinks.length <= 1;
 
   const disconnectMutation = useMutation({
     mutationFn: deleteAllSchoolLinks,
@@ -156,7 +169,7 @@ export default function MorePage() {
             onClick={() => setShowDisconnectConfirm(true)}
             className="w-full rounded-xl border border-destructive/40 px-4 py-3 text-sm font-medium text-destructive hover:bg-destructive/5 transition-colors"
           >
-            {(schoolLinks?.length ?? 1) > 1 ? 'ניתוק מכל בתי הספר' : 'ניתוק מבית הספר'}
+            {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
           </button>
         </section>
 
@@ -216,7 +229,7 @@ export default function MorePage() {
         >
           <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-xl space-y-4">
             <h2 id="disconnect-modal-title" className="text-base font-bold text-foreground">
-              {schoolCount > 1 ? 'ניתוק מכל בתי הספר' : 'ניתוק מבית הספר'}
+              {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
             </h2>
             <p className="text-sm text-muted-foreground">
               {isLastSchool
