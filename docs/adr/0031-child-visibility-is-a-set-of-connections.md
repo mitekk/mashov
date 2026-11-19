@@ -61,6 +61,10 @@ comment is rewritten to say only that. `ConnectionScopeService.targetForStudent`
 `orderConnectionsForStudent` and `stampOwnershipIfChanged` are untouched, so a stamped child
 still costs exactly one upstream call per task.
 
+**Amended (`3afde47`).** `targetForStudent` is no longer untouched: a stamp outside the
+caller's own connections is now treated as no stamp (**R16**). Routing still reads the
+stamp, so the one-call-per-task property above still holds.
+
 The four visibility readers move from "the stamp is one of mine" to "a link to one of mine
 exists". The three roster writers that already stamp — `MashovSessionService.persistRoster`,
 `AuthService.persistLoginRoster`, `SchoolLinksService.persistLink` — upsert a link row beside
@@ -115,6 +119,11 @@ That is `ownsStudent`'s existing rule, carried over unchanged.
   better end state. Rejected *for now* because it additionally rewrites
   `ConnectionScopeService` and the fan-out, which this decision deliberately leaves alone.
   Revisit if the stamp and the links are ever observed to disagree in a way that matters.
+  **That condition was met once** (**R16**: a parent's release request went upstream under
+  the other parent's credentials) and was answered in `3afde47` by bounding the stamp to the
+  caller and preferring their connection at the stamped school — a `schoolCode` proxy inside
+  the existing resolver, not the link-derived rewrite this alternative proposes. The
+  rejection therefore still stands.
 
 - **A real `Household` entity above `AppUser`, with several users sharing one connection
   set.** Rejected **because it does not fix the defect.** Two parents who have not

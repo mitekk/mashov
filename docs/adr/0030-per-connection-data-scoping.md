@@ -140,6 +140,10 @@ empty list rather than someone else's data — but one user's credentials are sp
 another's request, and for a mail mutation the upstream write lands in whichever
 account the fallback picked. Recorded as **B3**.
 
+**Amended (`3afde47`).** That bound is now enforced rather than assumed: a stamp outside
+the caller's household is treated as no stamp, so the stamped branch no longer resolves
+another user's credentials either (**R16**, B3's last bullet).
+
 ## Alternatives considered
 
 - **Reaching ownership through the conversation relation instead of a column on `mail_message`.**

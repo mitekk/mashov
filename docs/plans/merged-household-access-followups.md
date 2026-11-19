@@ -10,8 +10,9 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: **B2–B4** and **R1–R12**, the two operational tasks the plan itself
-deferred (**T13–T14**), and the minors. **G1** and **B1** are done and kept as record.
+What is open: **B2** and **B4**, **R4**, **R7**–**R12**, **R14**, **R15** and **R17**,
+the two operational tasks the plan itself deferred (**T13**–**T14**), the **G2**
+coverage gap, and the minors. **G1**, **B1** and **B3** are done and kept as record.
 
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
@@ -38,7 +39,7 @@ stays true.
 
 | # | Items | Status | Why here |
 |---|---|---|---|
-| 1 | **R1** + **B3** + `updateCachedNewCount()` | **done**, 1 bullet left | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's remaining bullet — the stamped branch of `resolveOrFallback` generally — was recorded as having no known reachable path; the fourth review found one, fixed as **R16** in batch 3.5. |
+| 1 | **R1** + **B3** + `updateCachedNewCount()` | **done** | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's last bullet — the stamped branch of `resolveOrFallback` generally — was recorded as having no known reachable path; the fourth review found one, and it closed as **R16** in batch 3.5. |
 | 2 | **R2** | **done** | A permanently broken unlink. Fixed with the stamp, the relation-filtered delete, one transaction for the whole unlink, and an index on `mail_message.conversationId`. |
 | 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor, and **N1** found while reading | **done** | One missing household predicate across four readers, on the `userId` threading batch 1 established. Closed the last place another household's data reached a screen. The mail scope moved to `common/mail-scope.ts` and the chip labels to `common/school-chips.ts`, so `/children`, `/dashboard`, `/feed` and the inbox now answer from one scoping path and one label resolution instead of four. |
 | 3.5 | **R16** + B3's remaining bullet | **done** | One household's release request went upstream under the other's decrypted password — R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closed both: a foreign stamp is now no stamp, and the fallback under it prefers the caller's connection at the stamped school. `targetFor` took the same optional caller while in there. |
@@ -47,6 +48,7 @@ stays true.
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
 | 7 | **R8**, **R9**, **R10**, **R17** | open | Four independent small correctness fixes in the auth/link path; one session, four tests. R17 is a two-line reorder. |
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
+| 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
 Batches 1, 2, 3 and 3.5 are done: no open item puts one household's data on another's
@@ -222,6 +224,9 @@ account the fallback picked.
 Unstamped rows exist whenever the ownership backfill refused, which it does on any
 database with more than one active connection
 (`20261120010000_connection_scoping/migration.sql`).
+
+**Status: FIXED** in `885738a` (the `userId` threading, batch 1), `674ff50` (the
+attachment leak) and `3afde47` (the stamped branch, with **R16**).
 
 **DoD**
 - [x] `targetFor*` accept an optional `userId` and the fallback is scoped to it when
@@ -1029,6 +1034,30 @@ came out of the work rather than out of review; they are the Minors below.
       group on purpose: `mail_counts` and `mail_inbox` run in one `Promise.all`, so on a
       first pass the count is taken either side of that mailbox's sweep, and the exact
       form of the assertion was flaky until the second pass removed the race.
+
+### G2 — The school preference in `resolveOrFallback` is proved only against the fake
+
+**Severity**: coverage, not behaviour. The assertion is real — the unit spec's
+`makePrisma.matches()` filters on `schoolCode` as of `3afde47`, so the case would fail
+if the preference were dropped — but it is in-memory only.
+
+**Description.** `3afde47`'s fallback **prefers the caller's active connection at the
+stamped school** before the generic `lastLoginAt desc` pick, which is what makes B3's
+own postcondition ("lands on the caller's connection at the same school") true in a
+two-school household rather than only in a one-school one. That preference has a unit
+case and no integration case. The three integration cases added with **R16** are
+one-school, so they would still pass with the preference removed.
+
+Left out of batch 3.5 deliberately rather than bolted onto a closed item: an
+integration version needs a second `schoolCode` and its own nested seed and cleanup,
+because `household-isolation`'s shared `cleanup()` deletes connections by
+`schoolCode: SEMEL` alone and would leave the second school's rows behind.
+
+**DoD**
+- [ ] An integration case on real Postgres: one household with connections at two
+      schools, a child stamped to the *other* parent at school A, and A's resolve
+      landing on the caller's school-A connection rather than their more recently used
+      school-B one. Its own seed and cleanup, scoped to both school codes.
 
 ---
 
