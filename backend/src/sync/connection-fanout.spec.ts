@@ -1,7 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import type { SyncRunService } from './sync-run.service';
 import {
   orderConnectionsForStudent,
+  reportNoConnectionTarget,
   stampOwnershipIfChanged,
   studentScopeForContext,
 } from './connection-fanout';
@@ -353,5 +355,95 @@ describe('studentScopeForContext', () => {
     // The school-year rollover path sets schoolYear and no connection, so it
     // must keep the whole table exactly as the cron does.
     expect(studentScopeForContext({ schoolYear: 2027 })).toEqual({ isActive: true });
+  });
+});
+
+describe('reportNoConnectionTarget', () => {
+  /**
+   * The silent-success end of R11.
+   *
+   * In the tasks whose loop IS the connection loop, `useSharedSession` is
+   * `!context.connectionId && connections.length === 0`, so it is `false` once
+   * a connection is named -- but the target list is then `[]` if that
+   * connection is inactive or has `userId: null`. The loop body never ran: no
+   * `syncRun`, nothing fetched, `status: 'success'` with every count zero. A
+   * targeted refresh of a just-deactivated connection reported a clean sync and
+   * left no trace anywhere.
+   */
+  function makeSyncRunService() {
+    const openRun = jest.fn().mockResolvedValue({ id: 'run-1' });
+    const closeRun = jest.fn().mockResolvedValue({ id: 'run-1' });
+    return { service: { openRun, closeRun } as unknown as SyncRunService, openRun, closeRun };
+  }
+
+  const logger = new Logger('test');
+
+  beforeEach(() => {
+    jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('opens a run for the requested connection', async () => {
+    const { service, openRun } = makeSyncRunService();
+
+    await reportNoConnectionTarget(service, logger, 'achvas', 'conn-gone');
+
+    expect(openRun).toHaveBeenCalledWith('achvas', 'conn-gone');
+  });
+
+  it('closes that run failed, with the reason in it', async () => {
+    // The `sync_run` route rather than a `skipped` status: `skipped` would need
+    // threading through SyncTaskStatus, ManualSyncTaskResult,
+    // RefreshTaskProgress and the frontend's mirror types, and would put a
+    // fourth value into `sync_run.status`, which every reader partitions as
+    // success/not-success.
+    const { service, closeRun } = makeSyncRunService();
+
+    await reportNoConnectionTarget(service, logger, 'achvas', 'conn-gone');
+
+    expect(closeRun).toHaveBeenCalledWith(
+      'run-1',
+      'failed',
+      expect.objectContaining({
+        errorMessage:
+          'achvas: connection conn-gone is not an active, user-owned connection; nothing was fetched',
+      }),
+    );
+  });
+
+  it('returns a failed result with one failure counted', async () => {
+    // So the envelope reports `partial` rather than a clean sync, which is the
+    // whole point: for a connection that cannot be used, "this source is
+    // unhealthy for this connection" is true.
+    const { service } = makeSyncRunService();
+
+    const result = await reportNoConnectionTarget(service, logger, 'achvas', 'conn-gone');
+
+    expect(result).toEqual({
+      status: 'failed',
+      summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
+      errorMessages: [
+        'achvas: connection conn-gone is not an active, user-owned connection; nothing was fetched',
+      ],
+    });
+  });
+
+  it('warns, so the operator sees it without querying sync_run', async () => {
+    const { service } = makeSyncRunService();
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    await reportNoConnectionTarget(service, logger, 'achvas', 'conn-gone');
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('conn-gone'));
+  });
+
+  it('names the source it was called for', async () => {
+    const { service, openRun } = makeSyncRunService();
+
+    const result = await reportNoConnectionTarget(service, logger, 'mail_counts', 'conn-x');
+
+    expect(openRun).toHaveBeenCalledWith('mail_counts', 'conn-x');
+    expect(result.errorMessages[0]).toContain('mail_counts');
   });
 });

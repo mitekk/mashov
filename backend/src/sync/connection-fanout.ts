@@ -2,7 +2,8 @@ import { Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { connectionStudentWhere, linkStudentsToConnection } from '../common/student-links';
-import type { SyncExecutionContext } from './sync.types';
+import type { SyncRunService } from './sync-run.service';
+import type { SyncExecutionContext, SyncTaskRunResult } from './sync.types';
 
 /** The minimum a per-student task knows about a child. */
 export interface FanoutStudent {
@@ -71,6 +72,49 @@ export function studentScopeForContext(context: SyncExecutionContext): Prisma.St
   return {
     isActive: true,
     ...(context.connectionId ? connectionStudentWhere(context.connectionId) : {}),
+  };
+}
+
+/**
+ * A connection-scoped run with no usable target: reported, never silently green.
+ *
+ * In the tasks whose loop IS the connection loop, `useSharedSession` is
+ * `!context.connectionId && connections.length === 0`, so it is `false` once a
+ * connection is named -- but the target list is then `[]` if that connection is
+ * inactive or has `userId: null`. The loop body never ran: no `syncRun`,
+ * nothing fetched, `status: 'success'` with every count zero. A targeted
+ * refresh of a just-deactivated connection reported a clean sync and left no
+ * trace anywhere, which is a silent success that makes a real failure
+ * undiagnosable. The pre-branch code fell through to the shared env session and
+ * opened a run either way.
+ *
+ * Reported as a `sync_run` closed `failed` rather than as a new `skipped`
+ * status: `skipped` would have to be threaded through `SyncTaskStatus`,
+ * `ManualSyncTaskResult`, `RefreshTaskProgress` and the frontend's mirror
+ * types, and would put a fourth value into `sync_run.status`, which every
+ * reader -- `getAllSourceHealth`, `getLatestSuccessfulRuns`, the retention rule
+ * -- partitions as success/not-success. `failed` needs no type surgery, and for
+ * a connection that cannot be used "this source is unhealthy for this
+ * connection" is true. The parent then sees `partial` rather than a clean sync.
+ */
+export async function reportNoConnectionTarget(
+  syncRunService: SyncRunService,
+  logger: Logger,
+  source: string,
+  connectionId: string,
+): Promise<SyncTaskRunResult> {
+  const message =
+    `${source}: connection ${connectionId} is not an active, user-owned connection; ` +
+    `nothing was fetched`;
+
+  const syncRun = await syncRunService.openRun(source, connectionId);
+  await syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: message });
+  logger.warn(message);
+
+  return {
+    status: 'failed',
+    summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
+    errorMessages: [message],
   };
 }
 

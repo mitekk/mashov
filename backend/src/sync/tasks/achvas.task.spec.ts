@@ -193,4 +193,45 @@ describe('AchvasTask', () => {
     );
     expect(mashovClient.get).not.toHaveBeenCalled();
   });
+  describe('a targeted refresh of a connection that is not usable', () => {
+  /**
+   * R11: a targeted refresh of a connection that cannot be used.
+   *
+   * `useSharedSession` is false once `context.connectionId` is set, but the
+   * target list is then `[]` if that connection is inactive or has
+   * `userId: null`. The loop body never ran, so the task returned
+   * `status: 'success'` with every count zero and left no `sync_run` -- a
+   * silent success that made a real failure undiagnosable.
+   */
+  beforeEach(() => {
+      prisma.householdConnection.findMany.mockResolvedValue([]);
+    });
+
+    it('reports the run as failed rather than a clean sync', async () => {
+      const result = await task.execute({ connectionId: 'conn-gone' });
+
+      expect(result.status).toBe('failed');
+      expect(result.summary.failedCount).toBe(1);
+    });
+
+    it('opens exactly one run and closes it failed, with the reason', async () => {
+      await task.execute({ connectionId: 'conn-gone' });
+
+      expect(syncRunService.openRun).toHaveBeenCalledTimes(1);
+      expect(syncRunService.openRun).toHaveBeenCalledWith(expect.any(String), 'conn-gone');
+      expect(syncRunService.closeRun).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ errorMessage: expect.stringContaining('conn-gone') }),
+      );
+    });
+
+    it('never reaches upstream', async () => {
+      await task.execute({ connectionId: 'conn-gone' });
+
+      expect(mashovClient.get).not.toHaveBeenCalled();
+      expect(mashovClient.getForConnection).not.toHaveBeenCalled();
+    });
+  });
+
 });

@@ -4,6 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
+import { reportNoConnectionTarget } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 interface MashovAchva {
@@ -70,6 +71,18 @@ export class AchvasTask {
     const bySchool = new Map<number, (typeof connections)[number]>();
     for (const conn of connections) {
       if (!bySchool.has(conn.schoolCode)) bySchool.set(conn.schoolCode, conn);
+    }
+
+    // R11: a named connection with no usable target. `useSharedSession` is
+    // false here, so the loop below would not run at all -- no run, nothing
+    // fetched, `success` with every count zero.
+    if (context.connectionId && bySchool.size === 0) {
+      return reportNoConnectionTarget(
+        this.syncRunService,
+        this.logger,
+        AchvasTask.SOURCE,
+        context.connectionId,
+      );
     }
 
     const useSharedSession = !context.connectionId && bySchool.size === 0;

@@ -5,6 +5,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
+import { reportNoConnectionTarget } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 /** `apis/get-api-schoolActivities-permitted.md`. */
@@ -56,6 +57,18 @@ export class SchoolActivitiesTask {
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
     });
+
+    // R11: a named connection with no usable target. This task has no
+    // shared-session fallback at all, so the loop below simply would not run
+    // -- no run, nothing fetched, `success` with every count zero.
+    if (context.connectionId && connections.length === 0) {
+      return reportNoConnectionTarget(
+        this.syncRunService,
+        this.logger,
+        SchoolActivitiesTask.SOURCE,
+        context.connectionId,
+      );
+    }
 
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
