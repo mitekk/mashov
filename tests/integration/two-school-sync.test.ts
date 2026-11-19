@@ -355,6 +355,20 @@ describe('Two schools in one household, synced one after the other', () => {
     await cleanup();
     studentRequests = [];
 
+    // Park every child this fixture did not create. The suite runs last under
+    // `--runInBand` against a DB nine earlier suites have written to, and a
+    // connection-scoped refresh now admits a child no connection lists
+    // (ADR-0031's deliberate edge, via `connectionStudentWhere`). One stray
+    // unlinked active student would therefore be fetched for -- collecting a
+    // 403 and a failed task -- and would make `status: 'success'` hostage to
+    // another suite's leftovers. Consistent with what `cleanup()` already
+    // assumes: it deletes `syncRun`, `mailMessage`, `mailConversation`,
+    // `notificationEvent` and `parentProfile` globally.
+    await prisma.student.updateMany({
+      where: { NOT: { studentGuid: { in: [CHILD_A, CHILD_B] } } },
+      data: { isActive: false },
+    });
+
     const encryption = app.get(EncryptionService);
 
     await prisma.appUser.create({
@@ -519,31 +533,28 @@ describe('Two schools in one household, synced one after the other', () => {
       expect(counts[CONN_A]).toBeLessThanOrEqual(2);
     });
 
-    it("fetches no data for school B's child, and reports the attempt as a failure", async () => {
-      // Every per-student task iterates the whole `student` table, not the
-      // refreshing connection's children, so a connection-scoped refresh asks
-      // its own account for the other school's child and collects a 403 per
-      // task. Characterised, not endorsed: recorded as a Minor in
-      // docs/plans/merged-household-access-followups.md.
-      expect(studentRequests.some((entry) => entry === `${CHILD_B}@${CONN_A}`)).toBe(true);
+    it("never asks about school B's child, and so reports a clean sync", async () => {
+      // Each per-student task now reads `studentScopeForContext(context)`, so a
+      // connection-scoped refresh iterates the children THIS connection lists
+      // rather than the whole `student` table. A's run never mentions B's
+      // child, and nothing in A's household failed.
+      expect(studentRequests.some((entry) => entry === `${CHILD_B}@${CONN_A}`)).toBe(false);
       expect(studentRequests.every((entry) => !entry.endsWith(`@${CONN_B}`))).toBe(true);
 
-      // What the parent is shown for it: the refresh of a school that worked
-      // perfectly reports `partial`, and `/auth/syncing` reads this.
-      expect(refreshResult.status).toBe('partial');
-      expect(
-        refreshResult.tasks.filter((task) => task.status === 'failed').map((task) => task.task).sort(),
-      ).toEqual(['behavior', 'groups', 'homework', 'lessonsCount', 'messageBoard', 'timetable']);
+      // What the parent is shown for it. This used to be `partial` for a school
+      // that had synced perfectly, which is what `/auth/syncing` reads.
+      expect(refreshResult.status).toBe('success');
+      expect(refreshResult.tasks.filter((task) => task.status === 'failed')).toEqual([]);
 
-      // No row was written for B's child by A's run, which is the part that
-      // matters: the 403 costs a call and a red `sync_run`, not wrong data.
+      // And no trace of the attempt: the failed `sync_run` per foreign child is
+      // gone too, so `FreshnessService` stops reading it as source ill-health.
       await expect(
         prisma.homeworkItem.count({ where: { studentGuid: CHILD_B } }),
       ).resolves.toBe(0);
       const failedForB = await prisma.syncRun.count({
         where: { status: 'failed', source: { endsWith: `:${CHILD_B}` } },
       });
-      expect(failedForB).toBeGreaterThan(0);
+      expect(failedForB).toBe(0);
     });
   });
 
@@ -764,10 +775,10 @@ describe('Two schools in one household, synced one after the other', () => {
       // dailyBehave and outBehave sit behind feature flags that are off -- one
       // own child per run, two runs per pass, two passes.
       expect(ownChildRequests.length).toBe(7 * 1 * 2 * 2);
-      // The foreign calls are the ones the Minor is about: they happen because
-      // the task list iterates every student, not because the ordering is
-      // wrong. Each is one call and then a failure, never a second attempt.
-      expect(foreignChildRequests.length).toBe(ownChildRequests.length);
+      // There are none. The owner-first ordering made each foreign call cost
+      // one 403 instead of two; scoping the student list to the refreshing
+      // connection's children removes them entirely.
+      expect(foreignChildRequests.length).toBe(0);
     });
 
     it('keeps both schools\' notifications, which share an upstream id', async () => {

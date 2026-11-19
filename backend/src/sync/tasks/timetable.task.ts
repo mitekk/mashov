@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   orderConnectionsForStudent,
   stampOwnershipIfChanged,
+  studentScopeForContext,
 } from '../connection-fanout';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
@@ -79,7 +80,9 @@ export class TimetableTask {
         errorMessages: [message],
       };
     }
-    const students = await this.prisma.student.findMany({ where: { isActive: true } });
+    const students = await this.prisma.student.findMany({
+      where: studentScopeForContext(context),
+    });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
     let failedCount = 0;

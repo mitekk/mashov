@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   orderConnectionsForStudent,
   stampOwnershipIfChanged,
+  studentScopeForContext,
 } from '../connection-fanout';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
@@ -61,7 +62,9 @@ export class ReleasesTask {
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
     });
-    const students = await this.prisma.student.findMany({ where: { isActive: true } });
+    const students = await this.prisma.student.findMany({
+      where: studentScopeForContext(context),
+    });
 
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;

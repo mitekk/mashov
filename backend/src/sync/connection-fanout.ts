@@ -1,6 +1,8 @@
 import { Logger } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { linkStudentsToConnection } from '../common/student-links';
+import { connectionStudentWhere, linkStudentsToConnection } from '../common/student-links';
+import type { SyncExecutionContext } from './sync.types';
 
 /** The minimum a per-student task knows about a child. */
 export interface FanoutStudent {
@@ -42,6 +44,34 @@ export function orderConnectionsForStudent<T extends FanoutConnection>(
   if (!owner) return [...connections];
 
   return [owner, ...connections.filter((conn) => conn.id !== ownerId)];
+}
+
+/**
+ * What one task's per-student loop iterates: the refreshing connection's children.
+ *
+ * Every per-student task used to read `{ isActive: true }` -- the whole table,
+ * not the connection being refreshed. So `POST /sync/refresh?schoolId=A` asked
+ * A's Mashov account about school B's children, collected a 403 for each
+ * across seven per-student endpoints, and reported `partial` for a school that
+ * had synced perfectly. `/auth/syncing` shows the parent that, and each
+ * foreign child left a failed `sync_run` that `FreshnessService` reads as
+ * source ill-health.
+ *
+ * Scoped by the ADR-0031 visibility edge rather than by `householdConnectionId`,
+ * which is the rule the `inactiveChildren` sweeps already use: it admits a
+ * child no connection lists, because no links means "ownership unknown, link on
+ * the next roster refresh" and not "nobody's". That edge is deliberate and must
+ * stay -- excluding unlinked children would stop fetching for every child on a
+ * deployment whose ownership backfill has not run.
+ *
+ * The global `@Cron` path passes no `connectionId` and so keeps every active
+ * child, unchanged.
+ */
+export function studentScopeForContext(context: SyncExecutionContext): Prisma.StudentWhereInput {
+  return {
+    isActive: true,
+    ...(context.connectionId ? connectionStudentWhere(context.connectionId) : {}),
+  };
 }
 
 /**

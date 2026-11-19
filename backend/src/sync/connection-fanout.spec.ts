@@ -1,6 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { orderConnectionsForStudent, stampOwnershipIfChanged } from './connection-fanout';
+import {
+  orderConnectionsForStudent,
+  stampOwnershipIfChanged,
+  studentScopeForContext,
+} from './connection-fanout';
 
 const CONN_A = { id: 'conn-a', schoolCode: 540175, schoolYear: 2026 };
 const CONN_B = { id: 'conn-b', schoolCode: 999999, schoolYear: 2027 };
@@ -311,5 +315,43 @@ describe('stampOwnershipIfChanged evidence requirement', () => {
     );
 
     expect(update).toHaveBeenCalled();
+  });
+});
+
+describe('studentScopeForContext', () => {
+  it('keeps every active child when no connection is named', () => {
+    // The @Cron path. It passes no connectionId and must still sweep the whole
+    // table, or the global cycle stops fetching for anybody.
+    expect(studentScopeForContext({})).toEqual({ isActive: true });
+  });
+
+  it("narrows to the refreshing connection's children when one is named", () => {
+    // The minor this exists for: a refresh scoped to school A used to ask A's
+    // Mashov account about school B's children, collect a 403 each, and report
+    // `partial` for a school that synced perfectly.
+    expect(studentScopeForContext({ connectionId: 'conn-a' })).toEqual({
+      isActive: true,
+      OR: [
+        { links: { some: { householdConnectionId: 'conn-a' } } },
+        { links: { none: {} } },
+      ],
+    });
+  });
+
+  it('still admits a child no connection lists', () => {
+    // ADR-0031's deliberate edge: no links means "ownership unknown, link on
+    // the next roster refresh", not "nobody's". Excluding them would stop
+    // fetching for every child on a deployment whose backfill has not run.
+    const scope = studentScopeForContext({ connectionId: 'conn-a' }) as {
+      OR: Array<Record<string, unknown>>;
+    };
+
+    expect(scope.OR).toContainEqual({ links: { none: {} } });
+  });
+
+  it('ignores a schoolYear-only context', () => {
+    // The school-year rollover path sets schoolYear and no connection, so it
+    // must keep the whole table exactly as the cron does.
+    expect(studentScopeForContext({ schoolYear: 2027 })).toEqual({ isActive: true });
   });
 });

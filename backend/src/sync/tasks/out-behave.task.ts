@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   orderConnectionsForStudent,
   stampOwnershipIfChanged,
+  studentScopeForContext,
 } from '../connection-fanout';
 import { SyncRunService } from '../sync-run.service';
 import { BehaviorClassifierService } from '../behavior-classifier.service';
@@ -91,7 +92,9 @@ export class OutBehaveTask {
         errorMessages: [message],
       };
     }
-    const students = await this.prisma.student.findMany({ where: { isActive: true } });
+    const students = await this.prisma.student.findMany({
+      where: studentScopeForContext(context),
+    });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
     let failedCount = 0;
