@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -22,6 +23,25 @@ interface MashovLoginResponse {
   credential?: {
     userId?: string;
   };
+}
+
+/**
+ * A P2002 raised by the `(schoolCode, username)` unique index, and only that
+ * one. Prisma reports `meta.target` as the field list on Postgres and as the
+ * constraint name on some other providers, so both shapes are accepted.
+ */
+function isTakenUsernameConflict(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+    return false;
+  }
+  const target = err.meta?.target;
+  if (Array.isArray(target)) {
+    return target.some((field) => String(field).toLowerCase().includes('username'));
+  }
+  if (typeof target === 'string') {
+    return target.toLowerCase().includes('username');
+  }
+  return false;
 }
 
 @Injectable()
@@ -162,15 +182,34 @@ export class ConnectionService {
 
     const encryptedPassword = this.encryptionService.encrypt(currentPassword);
 
-    await this.prisma.householdConnection.update({
-      where: { id: connection.id },
-      data: {
-        username: newUsername,
-        encryptedPassword,
-        lastLoginAt: new Date(),
-        ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
-      },
-    });
+    try {
+      await this.prisma.householdConnection.update({
+        where: { id: connection.id },
+        data: {
+          username: newUsername,
+          encryptedPassword,
+          lastLoginAt: new Date(),
+          ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+        },
+      });
+    } catch (err) {
+      // `@@unique([schoolCode, username])`: the new username may already be
+      // the other parent's account at this school, or an orphan row left by an
+      // earlier unlink. Narrowed to that one constraint on purpose -- this
+      // update also writes `encryptedPassword`, `lastLoginAt` and
+      // `mashovUniqueId`, and a blanket P2002 -> 409 would one day label a
+      // different collision "username taken".
+      if (isTakenUsernameConflict(err)) {
+        throw new ConflictException({
+          error: {
+            code: 'CONNECTION_ALREADY_LINKED',
+            message: 'This account is already linked',
+            details: [],
+          },
+        });
+      }
+      throw err;
+    }
 
     return { ok: true };
   }

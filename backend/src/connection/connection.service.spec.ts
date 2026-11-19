@@ -6,6 +6,7 @@ import {
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError, CanceledError } from 'axios';
+import { Prisma } from '@prisma/client';
 import { ConnectionService } from './connection.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../session/encryption.service';
@@ -184,6 +185,49 @@ describe('ConnectionService', () => {
       await service.updateConnection('user-1', 'newuser');
 
       expect(mockEncryption.decrypt).toHaveBeenCalledWith('enc-old');
+    });
+
+    it('answers 409 CONNECTION_ALREADY_LINKED when that username is taken at the school', async () => {
+      // `@@unique([schoolCode, username])` means the other parent's account --
+      // or an orphan row left by an earlier unlink -- raises P2002 out of this
+      // update. Unguarded, the request 500s; the rules say 409 with an
+      // envelope the frontend can key on.
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(existingConn);
+      mockHttp.post = jest.fn().mockResolvedValue({ data: {} });
+      mockPrisma.householdConnection.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: '5.0.0',
+          meta: { target: ['schoolCode', 'username'] },
+        }),
+      );
+
+      await expect(
+        service.updateConnection('user-1', 'takenuser', 'newpass'),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: {
+          error: { code: 'CONNECTION_ALREADY_LINKED', message: 'This account is already linked' },
+        },
+      });
+    });
+
+    it('lets a P2002 on any other constraint propagate', async () => {
+      // A blanket P2002 -> 409 in a method that also writes
+      // `encryptedPassword`, `lastLoginAt` and `mashovUniqueId` would
+      // mislabel a future constraint as a taken username.
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(existingConn);
+      mockHttp.post = jest.fn().mockResolvedValue({ data: {} });
+      const other = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: '5.0.0',
+        meta: { target: ['mashovUniqueId'] },
+      });
+      mockPrisma.householdConnection.update.mockRejectedValue(other);
+
+      await expect(service.updateConnection('user-1', 'newuser', 'newpass')).rejects.toBe(
+        other,
+      );
     });
 
     it('throws 400 when Mashov rejects new credentials', async () => {
