@@ -305,15 +305,23 @@ model MailMessage {
   conversation MailConversation @relation(fields: [conversationId], references: [conversationId])
 
   /// Denormalised from the conversation rather than reached through the
-  /// relation. Prisma can express the join, but the column buys a join-free
-  /// `deleteMany` on unlink, a direct connection resolve from a bare
+  /// relation. The column buys a direct connection resolve from a bare
   /// `messageId` for an attachment download, and symmetry with the conversation
   /// row the same upsert loop already writes. Cost: one TEXT per message,
   /// written by code already in that loop.
+  ///
+  /// It is NOT what the unlink deletes by: a message written by the
+  /// conversation-detail fetch carried no stamp at all before R2, so the unlink
+  /// reaches messages through `conversation` and keeps this column only as a
+  /// second arm. See ConnectionService.prepareConnectionDeletion.
   householdConnectionId String?
   connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
 
   @@index([householdConnectionId])
+  /// Postgres does not index a foreign key's referencing column. Without this,
+  /// both the unlink's relation-filtered delete and the FK check on
+  /// `mail_conversation`'s delete sequential-scan this table under lock.
+  @@index([conversationId])
   @@map("mail_message")
 }
 
