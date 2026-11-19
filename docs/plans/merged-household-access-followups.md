@@ -15,28 +15,31 @@ deferred (**T13–T14**), and the minors. **G1** and **B1** are done and kept as
 
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
-recorded here. **R1**, **R2** and B3's attachment leak are done, so *both* batches that
-gate production are closed.
+recorded here. **R1**, **R2** and B3's attachment leak are done. **R3** is
+the one cross-household read still open, so it is the next gate, not a cleanup.
 
 ## Pick-up order
 
 Each batch is one session's work and leaves the tree green on its own. Within a batch
 the items share a seam, so splitting them costs more than doing them together.
+**Status is the per-item DoD boxes, not a guess** — tick them as you go and this table
+stays true.
 
-| # | Items | Why here |
-|---|---|---|
-| 1 | **R1** + **B3** + `updateCachedNewCount()` | The only finding where one household writes another's data upstream with their credentials. B3's `userId`-threading bullet is the same edit. **Done**, including the stamped-branch attachment leak the third review found (`674ff50`). B3's one remaining bullet — the stamped branch of `resolveOrFallback` generally — has no known reachable path and is not a production gate. |
-| 2 | **R2** | A permanently broken unlink, independent of everything else, and small. |
-| 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor | One missing predicate across four readers. Needs the `userId` threading batch 1 establishes. |
-| 4 | **R4** | Same visibility-edge fix as batch 3, in a service with no callers in common. Could ride along with batch 3 if that one goes quickly. |
-| 5 | **R12** + the "connection-scoped refresh fans out over every child" minor | Both are the refresh envelope lying to the parent, in opposite directions. **R11** fits here too. |
-| 6 | **R8**, **R9**, **R10** | Three independent small correctness fixes in the auth/link path; one session, three tests. |
-| 7 | **R7**, **R14** + the `MorePageClient` dead term | The only frontend items, and R14 needs the `?schoolId=` exclusion minor settled with it. Needs an e2e run, so it is cheapest on its own. |
-| 8 | **B2**, **B4** | Pre-existing bugs with no dependency on the above. |
-| 9 | **T13**, then **T14** | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. |
+| # | Items | Status | Why here |
+|---|---|---|---|
+| 1 | **R1** + **B3** + `updateCachedNewCount()` | **done**, 1 bullet left | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's remaining bullet — the stamped branch of `resolveOrFallback` generally — has no known reachable path and is not a production gate. |
+| 2 | **R2** | **done** | A permanently broken unlink. Fixed with the stamp, the relation-filtered delete, one transaction for the whole unlink, and an index on `mail_message.conversationId`. |
+| 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor | open | One missing household predicate across four readers, on the `userId` threading batch 1 established. **R3 is the last place another household's data still reaches a screen** — `dashboard.service.ts:190` and `feed.service.ts:78` still read `mailConversation` with no household predicate — so this is the next production gate. |
+| 4 | **R4** | open | Same visibility-edge fix as batch 3, in a service with no callers in common. Can ride along with batch 3 if that goes quickly. |
+| 5 | **R7**, **R14** + the `MorePageClient` dead term | open | The only frontend items. R14 leaves a parent looking at an empty mailbox with no way forward, which is the worst *experience* left open. Needs an e2e run, so it is cheapest on its own. |
+| 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
+| 7 | **R8**, **R9**, **R10** | open | Three independent small correctness fixes in the auth/link path; one session, three tests. |
+| 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
+| 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1 and 2 are the two to do before this branch goes anywhere near production.
-Batches 3–7 are each self-contained; 6 and 7 can run in parallel with anything.
+Batches 1 and 2 are done. **Batch 3 is next**, and is the last open item that puts one
+household's data on another's screen. Batches 4–7 are each self-contained; 7 can run in
+parallel with anything.
 
 ---
 
