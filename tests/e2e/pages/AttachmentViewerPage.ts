@@ -22,6 +22,7 @@ export class AttachmentViewerPage {
   readonly imagePreview: Locator;
   readonly pdfPreview: Locator;
   readonly textPreview: Locator;
+  readonly docxPreview: Locator;
   readonly unsupportedCard: Locator;
   readonly unsupportedDownloadButton: Locator;
 
@@ -47,6 +48,9 @@ export class AttachmentViewerPage {
     this.imagePreview = page.getByTestId('attachment-preview-image');
     this.pdfPreview = page.getByTestId('attachment-preview-pdf');
     this.textPreview = page.getByTestId('attachment-preview-text');
+    // The docx render lives in an open shadow root; Playwright's testid and
+    // text engines pierce it, so no special selector is needed.
+    this.docxPreview = page.getByTestId('attachment-preview-docx');
     this.unsupportedCard = page.getByTestId('attachment-preview-unsupported');
     this.unsupportedDownloadButton = page.getByTestId('attachment-unsupported-download-button');
 
