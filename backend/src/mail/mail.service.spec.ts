@@ -40,7 +40,7 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
       aggregate:
         overrides.householdAggregate ??
         jest.fn().mockResolvedValue({ _sum: { cachedNewCount: null }, _count: { _all: 0 } }),
-      // updateCachedNewCount now refreshes every active connection in turn.
+      // The caller's own connections, for the household scope.
       findMany: overrides.householdFindMany ?? jest.fn().mockResolvedValue([]),
       update: householdUpdate,
       updateMany: householdUpdate,
@@ -731,7 +731,13 @@ describe('MailService', () => {
           conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
           householdUpdate,
           conversationCount: jest.fn().mockResolvedValue(3),
-          householdFindMany: jest.fn().mockResolvedValue([{ id: 'household-1' }]),
+          // The conversation acted on, and the mailbox it belongs to: the
+          // refresh now writes the rows the action touched and no others.
+          conversationFindMany: jest
+            .fn()
+            .mockResolvedValue([
+              { conversationId: 'conv-1', householdConnectionId: 'household-1', sendTime: NOW },
+            ]),
         }),
         makeMockMashovClient({}),
         makeMockScope(),
@@ -759,15 +765,16 @@ describe('MailService', () => {
           conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
           householdUpdate,
           conversationCount,
-          householdFindMany: jest
-            .fn()
-            .mockResolvedValue([{ id: 'conn-a' }, { id: 'conn-b' }]),
+          conversationFindMany: jest.fn().mockResolvedValue([
+            { conversationId: 'conv-a1', householdConnectionId: 'conn-a', sendTime: NOW },
+            { conversationId: 'conv-b1', householdConnectionId: 'conn-b', sendTime: NOW },
+          ]),
         }),
         makeMockMashovClient({}),
         makeMockScope(),
       );
 
-      await service.markConversationsRead(['conv-1']);
+      await service.markConversationsRead(['conv-a1', 'conv-b1']);
 
       const written = householdUpdate.mock.calls.map((call) => ({
         id: call[0].where.id,
@@ -777,6 +784,37 @@ describe('MailService', () => {
         { id: 'conn-a', count: 16 },
         { id: 'conn-b', count: 7 },
       ]);
+    });
+
+    it('refreshes only the connections the action touched', async () => {
+      // With no argument this swept every active connection in the database:
+      // one write per household per mail action, including households the
+      // caller cannot see. An unstamped row contributes nothing, which changes
+      // no count -- no connection owns it, so the sweep never moved its number
+      // either.
+      const householdUpdate = jest.fn().mockResolvedValue({ count: 1 });
+      const householdFindMany = jest
+        .fn()
+        .mockResolvedValue([{ id: 'conn-a' }, { id: 'conn-b' }, { id: 'conn-c' }]);
+      const service = new MailService(
+        makeMockPrisma({
+          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          householdUpdate,
+          householdFindMany,
+          conversationCount: jest.fn().mockResolvedValue(4),
+          conversationFindMany: jest.fn().mockResolvedValue([
+            { conversationId: 'conv-a1', householdConnectionId: 'conn-a', sendTime: NOW },
+            { conversationId: 'conv-a2', householdConnectionId: 'conn-a', sendTime: NOW },
+            { conversationId: 'conv-null', householdConnectionId: null, sendTime: NOW },
+          ]),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await service.archive(['conv-a1', 'conv-a2', 'conv-null']);
+
+      expect(householdUpdate.mock.calls.map((call) => call[0].where.id)).toEqual(['conn-a']);
     });
   });
 
@@ -862,7 +900,11 @@ describe('MailService', () => {
           conversationUpdateMany,
           householdUpdate,
           conversationCount: jest.fn().mockResolvedValue(7),
-          householdFindMany: jest.fn().mockResolvedValue([{ id: 'household-1' }]),
+          conversationFindMany: jest
+            .fn()
+            .mockResolvedValue([
+              { conversationId: 'conv-archived-1', householdConnectionId: 'household-1' },
+            ]),
         }),
         makeMockMashovClient({ put: mashovPut }),
         makeMockScope(),

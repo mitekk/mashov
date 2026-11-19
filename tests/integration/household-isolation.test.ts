@@ -754,6 +754,25 @@ describe('Two mailboxes, two households', () => {
     },
   );
 
+  it.each(MUTATIONS)(
+    "$name leaves the other household's cached badge count alone",
+    async ({ call }) => {
+      // `updateCachedNewCount()` with no argument rewrote the column on every
+      // active connection in the database, so one parent acting on one
+      // conversation wrote into every other household's row -- for a number
+      // that could not have changed.
+      const mail = makeMailService();
+
+      await call(mail, [CONV_A]);
+
+      const connB = await prisma.householdConnection.findUnique({
+        where: { id: MAIL_CONN_B },
+        select: { cachedNewCount: true },
+      });
+      expect(connB?.cachedNewCount).toBe(99);
+    },
+  );
+
   it.each(MUTATIONS)('$name acts on the own id in a mixed list', async ({ call }) => {
     const before = await rowB();
     const mail = makeMailService();

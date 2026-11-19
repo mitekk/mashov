@@ -528,11 +528,12 @@ first more visible, so do them together.
   `isLastSchool = (pendingUnlink && schoolCount <= 1) || schoolCount <= 1` reduces to
   `schoolCount <= 1`, and since the per-row modal only opens when
   `schoolLinks.length > 1` the `pendingUnlink` term is dead.
-- `MailService.updateCachedNewCount()` called with **no argument** iterates every
+- ~~`MailService.updateCachedNewCount()` called with **no argument** iterates every
   active connection in the database, writing to other households' rows on each of the
   caller's mail actions. The values it writes are per-connection and correct, so this
   is write amplification and a cross-tenant write, not wrong data. Natural to fix
-  inside R1.
+  inside R1.~~ **Done** — the parameter is now required and each mutation passes the
+  distinct stamps of the rows it touched.
 
 ---
 

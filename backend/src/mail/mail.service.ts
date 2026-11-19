@@ -949,7 +949,7 @@ export class MailService {
       });
     }
 
-    await this.updateCachedNewCount();
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
     return { updated: visibleIds.length };
   }
@@ -997,7 +997,7 @@ export class MailService {
       data: { isUnread: true, locallyReadThroughAt: null, locallyMarkedUnreadAt: new Date() },
     });
 
-    await this.updateCachedNewCount();
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
     return { updated: updated.count };
   }
@@ -1026,7 +1026,7 @@ export class MailService {
       },
     });
 
-    await this.updateCachedNewCount();
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
     return { updated: updated.count };
   }
@@ -1086,9 +1086,29 @@ export class MailService {
       totalUpdated += updated.count;
     }
 
-    await this.updateCachedNewCount();
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
     return { updated: totalUpdated };
+  }
+
+  /**
+   * The distinct mailboxes a set of acted-on rows belongs to.
+   *
+   * An unstamped row contributes nothing, which is behaviour-preserving: no
+   * connection owns it, so its unread state was never in any
+   * `cachedNewCount`, and the old table-wide sweep did not move a count for it
+   * either.
+   */
+  private touchedConnectionIds(
+    rows: Array<{ householdConnectionId: string | null }>,
+  ): string[] {
+    return [
+      ...new Set(
+        rows
+          .map((row) => row.householdConnectionId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
   }
 
   /**
@@ -1130,20 +1150,15 @@ export class MailService {
    * and the cron fight over one number. Unscoped -- one count written to one
    * arbitrary row -- is what made the badge report the union of both schools.
    *
-   * With no argument it refreshes every active connection plus the unowned
-   * (shared-session) rows, which is what a mail action needs: the ids it
-   * touched may span schools.
+   * Takes the connections the action actually touched -- which may span
+   * schools, so it is a list rather than one id. It used to be called with no
+   * argument and then refreshed every active connection in the database, so
+   * one parent archiving one conversation rewrote every other household's
+   * count too: write amplification and a cross-tenant write for a number that
+   * could not have changed.
    */
-  private async updateCachedNewCount(connectionIds?: string[]): Promise<void> {
-    const connections =
-      connectionIds === undefined
-        ? await this.prisma.householdConnection.findMany({
-            where: { active: true },
-            select: { id: true },
-          })
-        : connectionIds.map((id) => ({ id }));
-
-    for (const connection of connections) {
+  private async updateCachedNewCount(connectionIds: string[]): Promise<void> {
+    for (const connection of connectionIds.map((id) => ({ id }))) {
       await this.prisma.householdConnection.update({
         where: { id: connection.id },
         data: {
