@@ -39,6 +39,12 @@ const MINIMAL_PDF = [
  * `fixtures/README.md`. */
 const SAMPLE_DOCX = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.docx'));
 
+/** The same, but crafted: a `javascript:` hyperlink relationship and a font
+ * name that breaks out of its CSS declaration to fetch a beacon. */
+const HOSTILE_DOCX = fs.readFileSync(path.join(__dirname, 'fixtures', 'hostile.docx'));
+
+const BEACON_HOST = 'evil.example';
+
 /** Text the fixture carries, used to prove the parse actually happened rather
  * than just the container mounting. */
 const DOCX_HEADING = 'אישור הורים לטיול השנתי';
@@ -57,11 +63,13 @@ const FILES = [
   { fileId: 'file-timeout', fileName: 'slow.pdf' },
   { fileId: 'file-docx', fileName: 'form.docx' },
   { fileId: 'file-docx-corrupt', fileName: 'broken.docx' },
+  { fileId: 'file-docx-hostile', fileName: 'hostile.docx' },
 ];
 
 const XLSX_FILE = FILES[3];
 const DOCX_FILE = FILES[6];
 const CORRUPT_DOCX_FILE = FILES[7];
+const HOSTILE_DOCX_FILE = FILES[8];
 
 const MOCK_ME = {
   mashovUserId: 'e2e-parent-1',
@@ -119,6 +127,15 @@ async function fulfillAttachment(route: Route): Promise<void> {
         contentType: DOCX_CONTENT_TYPE,
         headers: { 'content-disposition': 'attachment; filename="form.docx"' },
         body: SAMPLE_DOCX,
+      });
+      return;
+
+    case 'file-docx-hostile':
+      await route.fulfill({
+        status: 200,
+        contentType: DOCX_CONTENT_TYPE,
+        headers: { 'content-disposition': 'attachment; filename="hostile.docx"' },
+        body: HOSTILE_DOCX,
       });
       return;
 
@@ -481,6 +498,80 @@ test.describe('Attachment viewer', () => {
     // document's text.
     const frame = page.frameLocator('[data-testid="attachment-print-frame"]');
     await expect(frame.locator('body')).toContainText(DOCX_HEADING);
+  });
+
+  test('strips a javascript: hyperlink a crafted .docx carries', async ({ page }) => {
+    await gotoHomework(page, [HOSTILE_DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx-hostile');
+    await expect(viewer.docxPreview).toContainText('לחצו כאן לאישור');
+
+    // The library assigns `a.href` straight from the document's relationships
+    // with no scheme check, and this render lives in the app's origin — one tap
+    // would run script with the session cookie attached. Its own stylesheet
+    // renders anchors with `color: inherit`, so the trap does not even look
+    // like a link.
+    const anchors = await page.evaluate(() => {
+      const host = document.querySelector('[data-testid="attachment-preview-docx"]');
+      return Array.from(host?.shadowRoot?.querySelectorAll('a') ?? []).map((a) => ({
+        href: a.getAttribute('href'),
+        rel: a.getAttribute('rel'),
+        target: a.getAttribute('target'),
+      }));
+    });
+
+    expect(anchors.length).toBeGreaterThan(0);
+    for (const anchor of anchors) {
+      expect(anchor.href ?? '').not.toContain('javascript:');
+    }
+
+    // And the click is inert, rather than merely looking inert.
+    await viewer.docxPreview.getByText('לחצו כאן לאישור').click();
+    const pwned = await page.evaluate(
+      () => (window as unknown as { __docxPwned?: number }).__docxPwned ?? 0,
+    );
+    expect(pwned).toBe(0);
+  });
+
+  test('does not let a crafted .docx call home through injected css', async ({ page }) => {
+    const beaconRequests: string[] = [];
+    await page.route(`**://${BEACON_HOST}/**`, async (route) => {
+      beaconRequests.push(route.request().url());
+      await route.abort();
+    });
+
+    await gotoHomework(page, [HOSTILE_DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx-hostile');
+    await expect(viewer.docxPreview).toContainText('מסמך בדיקה');
+
+    // A font name with no whitespace is not quoted by the library, so it
+    // escapes its declaration and injects a whole rule. CSS cannot execute
+    // here, but a url() is a read receipt — plus IP and user-agent — on an
+    // authenticated session, from a document no school sent.
+    await expect(viewer.printButton).toBeVisible();
+    await viewer.printButton.click();
+    await expect(viewer.printFrame).toBeAttached();
+    await page.waitForTimeout(500);
+
+    expect(beaconRequests).toEqual([]);
+  });
+
+  test('renders the second .docx after the first one failed', async ({ page }) => {
+    // The failure state must not strand the files behind it: the host element
+    // the renderer needs stays mounted even while the error card is showing.
+    await gotoHomework(page, [CORRUPT_DOCX_FILE, DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx-corrupt');
+    await expect(viewer.error).toBeVisible();
+
+    await viewer.nextButton.click();
+    await expect(viewer.title).toHaveText('form.docx');
+    await expect(viewer.docxPreview).toContainText(DOCX_HEADING);
+    await expect(viewer.printButton).toBeVisible();
   });
 
   test('navigates between several files with the buttons and the counter tracks', async ({

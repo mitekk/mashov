@@ -8,6 +8,7 @@
 
 import DOMPurify from 'dompurify';
 
+import { sanitizeDocxCss } from '@/lib/docx-safety';
 import { isSvg, previewKindFor } from '@/lib/mime';
 
 /**
@@ -111,6 +112,12 @@ const PRINT_PAGE_STYLE = '@page{margin:10mm}html,body{margin:0;padding:0}';
  * defaults for the parts that matter: `<script>`, `on*` handlers and
  * `javascript:` URLs are dropped, while `data:` images (what `useBase64URL`
  * produces) are kept.
+ *
+ * The generated stylesheet gets its own treatment, in `lib/docx-safety.ts`:
+ * DOMPurify never sees it, because it is inserted as `<style>` text rather
+ * than parsed as markup, and what matters there is injected *rules* — a
+ * `url()` fetched from this frame is a read receipt on an authenticated
+ * session.
  */
 function sanitizeDocxHtml(html: string): string {
   return DOMPurify.sanitize(html, {
@@ -118,18 +125,6 @@ function sanitizeDocxHtml(html: string): string {
     FORBID_ATTR: ['srcdoc'],
     ALLOW_DATA_ATTR: false,
   });
-}
-
-/**
- * Neutralize the generated stylesheet before it goes inside `<style>`.
- *
- * The CSS is machine-generated, but it interpolates names taken from the
- * document — a style or class name carrying `</style>` would close the element
- * early and everything after it would be parsed as markup. There is no legal
- * `<` in CSS here, so dropping it costs nothing.
- */
-function sanitizeDocxCss(css: string): string {
-  return css.replace(/</g, '');
 }
 
 function docxPrintDocument(render: DocxRender, fileName: string): string {

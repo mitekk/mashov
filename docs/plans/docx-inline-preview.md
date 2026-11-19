@@ -285,3 +285,24 @@ regenerate it.
 - **An ADR** recording the choice of in-page DOM rendering over a frame and over
   server-side conversion. The repo has `docs/adr/` and an `/adr` skill; this
   decision has the lasting consequences that warrant one.
+
+## Corrections found while executing this plan
+
+Two of the constraints above were wrong, and the review caught both. They are
+left in place rather than edited, because the plan is a record of what was
+believed at the time — but do not carry either one forward.
+
+**Constraint 1 proves less than it claims.** "`docx-preview` builds DOM nodes
+from XML rather than injecting an HTML string, so it does not need a frame" is
+true and relevant, but it closes *markup* injection only. The library assigns
+`a.href` straight from `word/_rels/document.xml.rels` with no scheme check, and
+it interpolates document-controlled font names into the stylesheet it
+generates. The in-page render therefore needs sanitizing of its own — which
+this plan gave only to the print path, the less exposed of the two. See
+`frontend/src/lib/docx-safety.ts`.
+
+**Step 4's size ceiling measures the wrong thing.** `blob.size` is the
+compressed archive; the parse cost tracks the *uncompressed* `word/document.xml`,
+which deflates by two orders of magnitude. A file well under the cap can still
+freeze the main thread for minutes. The implementation reads the zip's central
+directory for that one entry instead, before inflating anything.
