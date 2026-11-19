@@ -15,8 +15,8 @@ deferred (**T13–T14**), and the minors. **G1** and **B1** are done and kept as
 
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
-recorded here. **R1** and **R2** are done, so of the two batches that gate production
-only B3's new bullet remains.
+recorded here. **R1**, **R2** and B3's attachment leak are done, so *both* batches that
+gate production are closed.
 
 ## Pick-up order
 
@@ -25,7 +25,7 @@ the items share a seam, so splitting them costs more than doing them together.
 
 | # | Items | Why here |
 |---|---|---|
-| 1 | **R1** + **B3** + `updateCachedNewCount()` | The only finding where one household writes another's data upstream with their credentials. B3's `userId`-threading bullet is the same edit. **Done except B3's new bullet** — the stamped-branch attachment leak the third review found, which is the last open piece of this batch and still a pre-production one. |
+| 1 | **R1** + **B3** + `updateCachedNewCount()` | The only finding where one household writes another's data upstream with their credentials. B3's `userId`-threading bullet is the same edit. **Done**, including the stamped-branch attachment leak the third review found (`674ff50`). B3's one remaining bullet — the stamped branch of `resolveOrFallback` generally — has no known reachable path and is not a production gate. |
 | 2 | **R2** | A permanently broken unlink, independent of everything else, and small. |
 | 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor | One missing predicate across four readers. Needs the `userId` threading batch 1 establishes. |
 | 4 | **R4** | Same visibility-edge fix as batch 3, in a service with no callers in common. Could ride along with batch 3 if that one goes quickly. |
@@ -238,11 +238,28 @@ credentials and the message genuinely belong together — the request is well-fo
 the file comes back. That shape exists on any database where the ownership backfill
 refused, which is every deployment with more than one active connection.
 
-- [ ] `targetForMessage` (and the stamped branch generally, where a caller is known)
-      refuses a stamp outside the caller's own connections rather than resolving it, or
-      `downloadAttachment` checks the message's stamp against the caller before
-      resolving. A test asserts household B cannot download an attachment on a
-      NULL-stamped conversation whose message is stamped to A.
+- [x] `downloadMessageAttachment` checks the message's stamp against the caller before
+      resolving, the second of the two options — `canSee` on
+      `message.householdConnectionId`, so NULL stays admitted and the 404 reuses the
+      genuinely-missing-message phrasing. Fixed in `674ff50`. The row the check reads is
+      kept in step with the one the attachment came from, since the retry's hydration
+      can re-stamp it.
+      **3 integration cases** in `tests/integration/household-isolation.test.ts` against
+      real Postgres with the real `ConnectionScopeService` and a spy http client: B's
+      download of a message stamped to A under an unstamped conversation 404s with *no
+      upstream call*, A is still served, and an unstamped message is still served to
+      either household. Red before the fix was worse than predicted — the call
+      **resolved**, i.e. B got the file. Plus 2 unit cases, verified red by deleting the
+      guard (the foreign-stamp case failed, the other 73 stayed green).
+- [ ] The stamped branch of `resolveOrFallback` itself still ignores `userId`, so
+      `targetForStudent` and `targetForConversation` can still resolve a foreign stamp
+      when their callers' own ownership checks do not bound it. No path like the
+      attachment one is known to remain — `assertVisible` bounds the conversation
+      callers, and a shared child's stamp is the other parent's *by design* (ADR-0031),
+      which is R4/R6's territory rather than a leak. Recorded as the remaining general
+      case: the fix is to treat "stamped outside the caller's connections" as unstamped
+      and fall through to the `userId`-scoped fallback, which for a shared child lands
+      on the caller's own connection at the same school.
 
 ---
 
