@@ -1247,10 +1247,24 @@ because `household-isolation`'s shared `cleanup()` deletes connections by
   asserted this as current behaviour and now asserts the inverse: A's run never
   mentions B's child, reports `success` with no failed task, and leaves no failed
   `sync_run` for B's child; the foreign request count went from one per own-child
-  request to zero. Its `seed()` now parks children the fixture did not create — the
-  suite runs last against a DB nine earlier suites have written to, and the
-  unlinked-child edge would otherwise make `success` hostage to another suite's
-  leftovers.
+  request to zero. Its `seed()` now parks the *unlinked* stray children the fixture
+  did not create — the suite runs last against a DB nine earlier suites have written
+  to, and the unlinked-child edge would otherwise make `success` hostage to another
+  suite's leftovers; a stray that IS linked is already excluded by the predicate and
+  is left alone.
+
+  **The caveat, since the fix is conditional.** The wasted-403 symptom is gone for
+  **linked** children only. A child with no `student_connection` rows is still
+  admitted, so a connection-scoped refresh still asks about them, still collects a
+  403 per per-student task, and still reports **`partial`** for a school that synced
+  perfectly — until the next roster sync links them. That is the ADR-0031 trade-off
+  and not a residual bug: excluding unlinked children would stop fetching for every
+  child on a deployment whose ownership backfill has not run, which is far worse than
+  a wasted call. It is asserted rather than assumed — the
+  `'an unlinked child is still fetched for, at the cost of a partial'` group in
+  `tests/integration/two-school-sync.test.ts` pins all of it, including that a linked
+  foreign child is still excluded. The permanent close for the residue is the
+  ownership backfill reaching every child, not a change here.
 - **An unlinked child's per-child reads resolve to one year, while the list admits
   every year.** `yearScopeForStudents` gives a child with no links every year the
   household is on, because nothing records which school wrote their rows — but

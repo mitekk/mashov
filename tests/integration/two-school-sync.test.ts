@@ -355,17 +355,26 @@ describe('Two schools in one household, synced one after the other', () => {
     await cleanup();
     studentRequests = [];
 
-    // Park every child this fixture did not create. The suite runs last under
-    // `--runInBand` against a DB nine earlier suites have written to, and a
-    // connection-scoped refresh now admits a child no connection lists
-    // (ADR-0031's deliberate edge, via `connectionStudentWhere`). One stray
-    // unlinked active student would therefore be fetched for -- collecting a
-    // 403 and a failed task -- and would make `status: 'success'` hostage to
-    // another suite's leftovers. Consistent with what `cleanup()` already
-    // assumes: it deletes `syncRun`, `mailMessage`, `mailConversation`,
-    // `notificationEvent` and `parentProfile` globally.
+    // Park the stray children this fixture did not create -- but only the
+    // UNLINKED ones, which are exactly the hazard. A connection-scoped refresh
+    // admits a child no connection lists (ADR-0031's deliberate edge, via
+    // `connectionStudentWhere`), so one stray unlinked active student from an
+    // earlier suite would be fetched for, collect a 403, and make
+    // `status: 'success'` hostage to another suite's leftovers. A stray that IS
+    // linked, to some other suite's connection, is already excluded by the
+    // predicate and is left alone -- a fixture should not deactivate rows it
+    // has no quarrel with. The suite runs last under `--runInBand`, and this is
+    // consistent with what `cleanup()` already assumes: it deletes `syncRun`,
+    // `mailMessage`, `mailConversation`, `notificationEvent` and
+    // `parentProfile` globally.
+    //
+    // The edge itself is not swept under the carpet: the group below asserts
+    // that an unlinked child IS still fetched for, and what it costs.
     await prisma.student.updateMany({
-      where: { NOT: { studentGuid: { in: [CHILD_A, CHILD_B] } } },
+      where: {
+        NOT: { studentGuid: { in: [CHILD_A, CHILD_B] } },
+        links: { none: {} },
+      },
       data: { isActive: false },
     });
 
@@ -555,6 +564,82 @@ describe('Two schools in one household, synced one after the other', () => {
         where: { status: 'failed', source: { endsWith: `:${CHILD_B}` } },
       });
       expect(failedForB).toBe(0);
+    });
+  });
+
+  /**
+   * What the per-student scoping does NOT fix, asserted rather than assumed.
+   *
+   * `studentScopeForContext` scopes a connection-scoped refresh by the
+   * ADR-0031 visibility edge, and that edge admits a child with no
+   * `student_connection` rows -- "ownership unknown, link on the next roster
+   * refresh", not "nobody's". Excluding them would stop fetching for every
+   * child on a deployment whose ownership backfill has not run, which is a far
+   * worse failure than a wasted call.
+   *
+   * So the wasted-403 symptom is gone for LINKED children only. An unlinked
+   * one still costs one call per per-student task and still drags the school's
+   * refresh to `partial`, until the next roster sync links them. This group
+   * pins that, so the residue is a known quantity rather than a surprise.
+   */
+  describe('an unlinked child is still fetched for, at the cost of a partial', () => {
+    const UNLINKED = 'ts-guid-no-links';
+    let refreshResult: Awaited<ReturnType<SyncService['refreshAll']>>;
+
+    beforeEach(async () => {
+      await prisma.student.create({
+        data: {
+          studentGuid: UNLINKED,
+          privateName: 'ילד',
+          familyName: 'ללא קישור',
+          fullName: 'ילד ללא קישור',
+          classCode: 'ח',
+          classNum: 3,
+          gender: 'F',
+          isActive: true,
+          householdConnectionId: null,
+        },
+      });
+      refreshResult = await sync.refreshAll({ connectionId: CONN_A });
+    });
+
+    afterEach(async () => {
+      await prisma.homeworkItem.deleteMany({ where: { studentGuid: UNLINKED } });
+      await prisma.student.deleteMany({ where: { studentGuid: UNLINKED } });
+    });
+
+    it('asks school A about them, because ownership unknown is not somebody else\'s', async () => {
+      expect(studentRequests).toContain(`${UNLINKED}@${CONN_A}`);
+    });
+
+    it("still never asks about school B's child, who IS linked elsewhere", async () => {
+      // The scoping still does its job: a linked foreign child is excluded by
+      // the predicate, which is the case the minor was actually about.
+      expect(studentRequests).not.toContain(`${CHILD_B}@${CONN_A}`);
+    });
+
+    it('drags the school to partial, which is the residue the fix leaves', async () => {
+      // One 403 per per-student task for this child. Not wrong data -- A's own
+      // child synced -- but the parent is told `partial` for a school that
+      // worked, until the next roster sync links the child.
+      expect(refreshResult.status).toBe('partial');
+      expect(
+        refreshResult.tasks.filter((task) => task.status === 'failed').map((task) => task.task).sort(),
+      ).toEqual([
+        'behavior',
+        'groups',
+        'homework',
+        'lessonsCount',
+        'messageBoard',
+        'releases',
+        'timetable',
+      ]);
+    });
+
+    it('writes nothing for them', async () => {
+      await expect(
+        prisma.homeworkItem.count({ where: { studentGuid: UNLINKED } }),
+      ).resolves.toBe(0);
     });
   });
 
