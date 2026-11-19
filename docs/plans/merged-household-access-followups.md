@@ -49,7 +49,7 @@ stays true.
 | 3.5 | **R16** + B3's remaining bullet | **done** | One household's release request went upstream under the other's decrypted password — R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closed both: a foreign stamp is now no stamp, and the fallback under it prefers the caller's connection at the stamped school. `targetFor` took the same optional caller while in there. |
 | 4 | **R4** + **R15** | **done** | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rode along: the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. The freshness card now takes the caller and selects children by the visibility edge; the badge is the caller's `cachedNewCount` sum plus the unattributed rows, added once by `unreadBadge` in `common/mail-scope.ts` — one rule, one home, for the two readers that each had their own copy of it. |
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | **done** | The only frontend items. R14 left a parent looking at an empty mailbox with no way forward, which was the worst *experience* open. The chip is now a server-side `?schoolId=` filter — which admits the unattributed rows, so the list follows the same NULL rule as batch 4's badge — the add-school form clears and re-gates on an edited selection, and the bulk-disconnect modal defaults to the plural copy instead of promising a one-school wipe. |
-| 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | **done** | All three were the refresh envelope lying to the parent — R12 said `success` when a school failed, the minor said `partial` when one succeeded. Closed together, because fixing either alone only makes the others more visible. Three helpers now carry it: `studentScopeForContext` scopes every per-student task to the refreshing connection's children, `reportNoConnectionTarget` opens and fails a run for a connection-scoped refresh with no usable target, and the controller aggregates the envelope worst-wins over `PHASE_RANK`. R11's hole turned out to be in six tasks, not the four recorded. |
+| 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | **done** | All three were the refresh envelope lying to the parent — R12 said `success` when a school failed, the minor said `partial` when one succeeded. Closed together, because fixing either alone only makes the others more visible. Three helpers now carry it: `studentScopeForContext` scopes every per-student task to the refreshing connection's children, `reportNoConnectionTarget` opens and fails a run for a connection-scoped refresh with no usable target, and the controller aggregates the envelope worst-wins over `PHASE_RANK`. R11's hole turned out to be in seven tasks, not the four recorded — six connection-loop tasks plus `releases`, the one per-student task missing the `every connection failed` guard. |
 | 7 | **R8**, **R9**, **R10**, **R17** | open | Four independent small correctness fixes in the auth/link path; one session, four tests. R17 is a two-line reorder. |
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
 | 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
@@ -693,14 +693,28 @@ either way.
       `execute({ connectionId })` against a deactivated connection returns `failed`,
       opens exactly one run, closes it `failed`, and never touches the http client.
 
-**The hole was in six tasks, not four.** Beyond the `achvas` /
+**The hole was in seven tasks, not four.** Beyond the `achvas` /
 `notifications` / `user-details` / `mail-counts` the cause above names,
 `mail-inbox.task.ts` has the identical
 `connectionList = useSharedSession ? [null] : connections`, and
 `school-activities.task.ts` loops `connections` with no shared-session fallback at
-all. All six take the same helper. The nine per-student tasks need nothing: with
-`connections` empty their inner `ordered` loop already throws
-`every connection failed for <guid>` and closes a failed run per child.
+all. All six take the same helper.
+
+Eight of the nine per-student tasks needed nothing: with `connections` empty their
+inner `ordered` loop already throws `every connection failed for <guid>` and closes
+a failed run per child. **`releases.task.ts` was the exception**, found by the
+batch's own review: it had no `answered` flag and no post-loop throw, so `items`
+stayed `[]` and it closed the run **`success`** with `fetchedCount: 0` *per child*.
+That is worse than the six connection-loop tasks above, which at least left no row
+at all — a green `releases:<guid>` is what `FreshnessService.getAllSourceHealth`
+reads as a *fresh* `releases` source, so a real outage was undiagnosable in exactly
+the window R11 is about. The pre-change `two-school-sync` fixture is independent
+evidence: its failed-task list for school B's child was
+`['behavior','groups','homework','lessonsCount','messageBoard','timetable']` —
+`releases` 403'd for that child too and still was not in it. It now carries the same
+guard as the other eight, which closes the global-cron half as well, and
+`releases.task.spec.ts` pins both halves plus the case that must NOT fire: a child
+who simply filed nothing is still a success, because the account answered.
 
 ### R12 — `POST /sync/refresh` returns only the first school's envelope
 

@@ -83,6 +83,7 @@ export class ReleasesTask {
       try {
         const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
         let items: MashovStudentRelease[] = [];
+        let answered = false;
 
         for (const conn of ordered) {
           try {
@@ -96,6 +97,7 @@ export class ReleasesTask {
               password,
               { headers: { Referer: referer } },
             );
+            answered = true;
             schoolYear = conn.schoolYear;
             await stampOwnershipIfChanged(
                 this.prisma,
@@ -109,6 +111,21 @@ export class ReleasesTask {
           } catch {
             /* try the next connection */
           }
+        }
+
+        // Every connection failed -- or, on a connection-scoped refresh of a
+        // connection that is no longer usable, there was none to try. The
+        // other eight per-student tasks have had this guard all along; this
+        // one closed the run `success` with `fetchedCount: 0` instead, which
+        // is the silent success R11 is about and worse than the six
+        // connection-loop tasks it names: those left no row at all, whereas a
+        // green `releases:<guid>` is what `FreshnessService` reads as a FRESH
+        // `releases` source. An empty 200 does not reach here -- the child who
+        // simply filed nothing is a success, because the account answered.
+        if (!answered) {
+          throw new Error(
+            `every connection failed for ${student.studentGuid} (tried ${ordered.length})`,
+          );
         }
 
         const rows = Array.isArray(items) ? items : [];
