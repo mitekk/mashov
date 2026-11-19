@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Eye, EyeOff, Archive } from 'lucide-react';
+import { Eye, EyeOff, Archive, Paperclip } from 'lucide-react';
 import type { BehaviorItem as BehaviorItemType } from '@/types/api';
 import { BucketBadge, Badge } from '@/components/ui/Badge';
 import { formatShortDate } from '@/lib/dates';
@@ -49,6 +49,12 @@ export function BehaviorItem({
         <BucketBadge bucket={item.bucket} />
         {item.justifiable && (
           <Badge variant="secondary">מוצדק</Badge>
+        )}
+        {item.files.length > 0 && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Paperclip className="w-3 h-3" aria-hidden="true" />
+            {item.files.length}
+          </span>
         )}
         {item.isNew && (
           <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">

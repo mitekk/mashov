@@ -20,6 +20,17 @@ export interface ApiError {
   };
 }
 
+/**
+ * A downloadable file attached to a mail message, homework item or behavior
+ * event. All three upstream payloads carry exactly these two fields — no MIME
+ * type and no size — which is why the viewer reads the type from the download
+ * response's `Content-Type` header instead.
+ */
+export interface Attachment {
+  fileId: string;
+  fileName: string;
+}
+
 // ─── Freshness ─────────────────────────────────────────────────────────────
 
 export type FreshnessState = 'fresh' | 'syncing' | 'stale' | 'degraded';
@@ -184,10 +195,7 @@ export interface SchoolActivity {
 
 // ─── Homework ──────────────────────────────────────────────────────────────
 
-export interface HomeworkFile {
-  fileId: string;
-  fileName: string;
-}
+export type HomeworkFile = Attachment;
 
 export interface HomeworkItem {
   id: string;
@@ -212,10 +220,7 @@ export type HomeworkDetailResponse = HomeworkItem;
 
 export type BehaviorBucket = 'attention' | 'positive' | 'neutral';
 
-export interface BehaviorFile {
-  fileId: string;
-  fileName: string;
-}
+export type BehaviorFile = Attachment;
 
 export interface BehaviorItem {
   id: string;
@@ -324,10 +329,7 @@ export interface MessageRecipient {
   isGroup: boolean;
 }
 
-export interface ConversationAttachment {
-  fileId: string;
-  fileName: string;
-}
+export type ConversationAttachment = Attachment;
 
 export interface ConversationMessage {
   messageId: string;

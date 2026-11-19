@@ -1,21 +1,22 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
   Eye,
   EyeOff,
   Archive,
-  Paperclip,
 } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
+import { AttachmentList } from '@/components/attachments/AttachmentList';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { useChildHomeworkDetail } from '@/hooks/useChild';
 import { useChildren } from '@/hooks/useChildren';
 import { useMarkNew } from '@/hooks/useMarkNew';
 import { useArchive } from '@/hooks/useArchive';
+import { homeworkAttachmentHref } from '@/lib/attachment-routes';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { cn } from '@/lib/utils';
 import { formatShortDate } from '@/lib/dates';
@@ -30,6 +31,12 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
   const { data, isLoading, isError, refetch } = useChildHomeworkDetail(studentGuid, homeworkId);
   const { data: childrenData } = useChildren();
   const listHref = buildChildSectionHref(studentGuid, 'homework');
+
+  // Memoized: this identity feeds the viewer's query key.
+  const buildAttachmentHref = useMemo(
+    () => homeworkAttachmentHref(studentGuid, homeworkId),
+    [studentGuid, homeworkId],
+  );
 
   const invalidateKeys = [
     ['dashboard'],
@@ -174,24 +181,7 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
                 {data.remark}
               </p>
             )}
-            {data.files.length > 0 && (
-              <div className="rounded-xl border border-border/80 bg-muted/35 p-3">
-                <p className="mb-2 text-xs font-medium text-foreground">קבצים מצורפים</p>
-                <div className="space-y-1.5">
-                  {data.files.map((file) => (
-                    <a
-                      key={file.fileId}
-                      href={`/api/v1/children/${studentGuid}/homework/${homeworkId}/files/${encodeURIComponent(file.fileId)}`}
-                      download={file.fileName}
-                      className="flex items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
-                    >
-                      <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
-                      <span className="truncate underline-offset-2 hover:underline">{file.fileName}</span>
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
+            <AttachmentList files={data.files} buildHref={buildAttachmentHref} />
           </article>
         )}
       </div>

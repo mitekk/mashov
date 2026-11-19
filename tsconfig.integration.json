@@ -12,7 +12,9 @@
     "sourceMap": true,
     "outDir": "./dist-test",
     "baseUrl": ".",
-    "paths": {}
+    "paths": {
+      "@/*": ["frontend/src/*"]
+    }
   },
   "include": [
     "tests/integration/**/*.ts",
