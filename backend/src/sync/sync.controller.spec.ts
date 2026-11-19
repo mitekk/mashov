@@ -5,6 +5,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { RefreshProgressService, STALE_RUNNING_MS } from './refresh-progress.service';
 import type { RefreshEnvelope, RefreshReadResult } from './refresh-progress.service';
 import type { RedisService } from '../redis/redis.service';
+import type { ManualSyncRefreshResponse, ManualSyncTaskResult } from './sync.types';
 
 /**
  * The real staleness rule, not a copy of it.
@@ -495,7 +496,148 @@ describe('SyncController across two schools', () => {
       expect(refreshAll).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * R12. The endpoint used to return `{ ...results[0], schools }`, so `status`,
+   * `tasks` and every per-task count described school A alone. A household
+   * where A succeeds and B comes back `partial` was told `success`.
+   */
+  describe('refresh across two schools, aggregated', () => {
+    it('reports partial when either school is partial', async () => {
+      const refreshAll = jest.fn(async ({ connectionId }: { connectionId: string }) =>
+        connectionId === 'conn-a'
+          ? makeRefresh({ status: 'success', tasks: [makeTask('homework', 'success')] })
+          : makeRefresh({ status: 'partial', tasks: [makeTask('homework', 'failed')] }),
+      );
+      const { controller } = makeControllerWithService(refreshAll, TWO);
+
+      const response = await controller.refresh(REQUEST);
+
+      expect(response.status).toBe('partial');
+    });
+
+    it("carries both schools' tasks, not just the first school's", async () => {
+      // `/more`'s refresh button reported a clean sync off A's task list while
+      // B's failures were simply absent from the response.
+      const refreshAll = jest.fn(async ({ connectionId }: { connectionId: string }) =>
+        connectionId === 'conn-a'
+          ? makeRefresh({ status: 'success', tasks: [makeTask('homework', 'success')] })
+          : makeRefresh({ status: 'partial', tasks: [makeTask('mailInbox', 'failed')] }),
+      );
+      const { controller } = makeControllerWithService(refreshAll, TWO);
+
+      const response = await controller.refresh(REQUEST);
+
+      expect(response.tasks.map((task) => [task.task, task.status])).toEqual([
+        ['homework', 'success'],
+        ['mailInbox', 'failed'],
+      ]);
+    });
+
+    it('spans the refresh as the parent experienced it', async () => {
+      // Earliest start, latest end, and the difference -- the same choice
+      // `getStatus` makes over its per-school envelopes.
+      const refreshAll = jest.fn(async ({ connectionId }: { connectionId: string }) =>
+        connectionId === 'conn-a'
+          ? makeRefresh({
+              startedAt: '2026-11-19T09:00:00.000Z',
+              endedAt: '2026-11-19T09:00:10.000Z',
+            })
+          : makeRefresh({
+              startedAt: '2026-11-19T09:00:10.000Z',
+              endedAt: '2026-11-19T09:00:25.000Z',
+            }),
+      );
+      const { controller } = makeControllerWithService(refreshAll, TWO);
+
+      const response = await controller.refresh(REQUEST);
+
+      expect(response.startedAt).toBe('2026-11-19T09:00:00.000Z');
+      expect(response.endedAt).toBe('2026-11-19T09:00:25.000Z');
+      expect(response.durationMs).toBe(25_000);
+    });
+
+    it("does not discard a working school's result when the other throws", async () => {
+      // The worst form of it: one school throwing made the whole endpoint 500
+      // and threw the other school's successful refresh away -- which is why
+      // `results[index]?.status ?? 'failed'` was unreachable.
+      const refreshAll = jest.fn(async ({ connectionId }: { connectionId: string }) => {
+        if (connectionId === 'conn-b') throw new Error('login refused');
+        return makeRefresh({ status: 'success', tasks: [makeTask('homework', 'success')] });
+      });
+      const { controller } = makeControllerWithService(refreshAll, TWO);
+
+      const response = await controller.refresh(REQUEST);
+
+      expect(response.status).toBe('failed');
+      expect(response.tasks.map((task) => task.task)).toEqual(['homework']);
+      expect(response.schools).toEqual([
+        { schoolId: 'conn-a', semel: 540175, schoolName: 'אורט רמון', status: 'success' },
+        { schoolId: 'conn-b', semel: 999999, schoolName: 'תיכון רמון', status: 'failed' },
+      ]);
+    });
+
+    it('still rejects when every school throws', async () => {
+      // A refresh that achieved nothing must stay a 500, or
+      // `SyncingPageClient`'s `default:` branch stops reporting a failed
+      // trigger.
+      const refreshAll = jest.fn().mockRejectedValue(new Error('login refused'));
+      const { controller } = makeControllerWithService(refreshAll, TWO);
+
+      await expect(controller.refresh(REQUEST)).rejects.toThrow('login refused');
+    });
+
+    it('leaves the single-school response exactly as it was', async () => {
+      // Byte-identical to today for one school, so the six e2e MOCK constants
+      // and old clients keep working.
+      const single = makeRefresh({ status: 'success', tasks: [makeTask('homework', 'success')] });
+      const refreshAll = jest.fn().mockResolvedValue(single);
+      const { controller } = makeControllerWithService(refreshAll, [TWO[0]]);
+
+      const response = await controller.refresh(REQUEST);
+
+      expect(response).toEqual({
+        ...single,
+        schools: [
+          { schoolId: 'conn-a', semel: 540175, schoolName: 'אורט רמון', status: 'success' },
+        ],
+      });
+    });
+  });
 });
+
+function makeTask(
+  task: string,
+  status: 'success' | 'failed',
+): ManualSyncTaskResult {
+  return {
+    task,
+    status,
+    summary: {
+      fetchedCount: 1,
+      createdCount: 1,
+      updatedCount: 0,
+      failedCount: status === 'failed' ? 1 : 0,
+    },
+    errorMessages: status === 'failed' ? ['403'] : [],
+    startedAt: '2026-11-19T09:00:00.000Z',
+    endedAt: '2026-11-19T09:00:01.000Z',
+    durationMs: 1_000,
+  };
+}
+
+function makeRefresh(
+  overrides: Partial<ManualSyncRefreshResponse> = {},
+): ManualSyncRefreshResponse {
+  return {
+    status: 'success',
+    startedAt: '2026-11-19T09:00:00.000Z',
+    endedAt: '2026-11-19T09:00:10.000Z',
+    durationMs: 10_000,
+    tasks: [],
+    ...overrides,
+  };
+}
 
 function makeControllerWithService(
   refreshAll: jest.Mock,

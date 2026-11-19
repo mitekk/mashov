@@ -1,5 +1,6 @@
 import {
   Controller,
+  Logger,
   Post,
   Get,
   HttpCode,
@@ -11,7 +12,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { SyncService } from './sync.service';
-import type { ManualSyncRefreshResponse } from './sync.types';
+import type { ManualSyncRefreshResponse, ManualSyncStatus } from './sync.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefreshProgressService } from './refresh-progress.service';
 import type { RefreshEnvelope, RefreshTaskProgress } from './refresh-progress.service';
@@ -94,6 +95,8 @@ const PHASE_RANK: Record<SyncStatusPhase, number> = {
 
 @Controller('sync')
 export class SyncController {
+  private readonly logger = new Logger(SyncController.name);
+
   constructor(
     private readonly syncService: SyncService,
     private readonly prisma: PrismaService,
@@ -116,22 +119,61 @@ export class SyncController {
     // Sequential, concurrency 1. Two simultaneous Mashov logins from one
     // household is asking for a rate limit, and `refreshAll` already dedupes
     // per connection so there is nothing to gain from overlapping them.
-    const results: ManualSyncRefreshResponse[] = [];
+    //
+    // Caught per connection: one school's hard failure used to 500 the whole
+    // endpoint and throw the other school's successful refresh away, which is
+    // why the `?? 'failed'` below was unreachable.
+    const results: Array<ManualSyncRefreshResponse | null> = [];
+    let firstError: unknown;
     for (const connection of connections) {
-      results.push(await this.syncService.refreshAll({ connectionId: connection.id }));
+      try {
+        results.push(await this.syncService.refreshAll({ connectionId: connection.id }));
+      } catch (error) {
+        firstError ??= error;
+        results.push(null);
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Refresh of connection ${connection.id} threw: ${message}`);
+      }
     }
 
-    // The single-school response shape is unchanged, so existing clients and
-    // the six e2e MOCK constants keep working; `schools` is additive.
-    const first = results[0];
+    const settled = results.filter((result): result is ManualSyncRefreshResponse => !!result);
+    // A refresh that achieved nothing stays a 500, or `SyncingPageClient`'s
+    // `default:` branch stops reporting a failed trigger.
+    if (settled.length === 0) throw firstError;
+
+    const schools = connections.map((connection, index) => ({
+      schoolId: connection.id,
+      semel: connection.schoolCode,
+      schoolName: connection.schoolName,
+      status: (results[index]?.status ?? 'failed') as ManualSyncStatus,
+    }));
+
+    // Every legacy field described the FIRST connection only: `status`,
+    // `tasks`, the per-task counts. A household where A succeeded and B came
+    // back `partial` was told `success`.
+    //
+    // Worst-wins over the per-school statuses, reduced with the same
+    // `PHASE_RANK` `getStatus` uses rather than a second ranking table. The
+    // span is earliest start to latest end -- the refresh as the parent
+    // experienced it, matching `getStatus`'s choice over its envelopes. With
+    // one school all of this is byte-identical to before, so existing clients
+    // and the six e2e MOCK constants keep working; `schools` is additive.
+    const startedAt = settled
+      .map((result) => result.startedAt)
+      .reduce((earliest, value) => (value < earliest ? value : earliest));
+    const endedAt = settled
+      .map((result) => result.endedAt)
+      .reduce((latest, value) => (value > latest ? value : latest));
+
     return {
-      ...first,
-      schools: connections.map((connection, index) => ({
-        schoolId: connection.id,
-        semel: connection.schoolCode,
-        schoolName: connection.schoolName,
-        status: results[index]?.status ?? 'failed',
-      })),
+      status: schools
+        .map((school) => school.status)
+        .reduce((worst, status) => (PHASE_RANK[status] > PHASE_RANK[worst] ? status : worst)),
+      startedAt,
+      endedAt,
+      durationMs: new Date(endedAt).getTime() - new Date(startedAt).getTime(),
+      tasks: settled.flatMap((result) => result.tasks),
+      schools,
     };
   }
 

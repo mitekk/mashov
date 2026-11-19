@@ -458,7 +458,12 @@ export interface BehaviorBulkArchiveRequest {
 // ─── Sync ──────────────────────────────────────────────────────────────────
 
 export type SyncTaskStatus = 'success' | 'failed';
-export type SyncRefreshStatus = 'success' | 'partial';
+/**
+ * `failed` is a school whose refresh threw: `POST /sync/refresh` runs one per
+ * connection and aggregates worst-wins, so a school that never returned has no
+ * `partial` to report.
+ */
+export type SyncRefreshStatus = 'success' | 'partial' | 'failed';
 
 export interface SyncTaskSummary {
   fetchedCount: number;
@@ -477,12 +482,28 @@ export interface SyncTaskResult {
   durationMs: number;
 }
 
-export interface SyncRefreshResponse {
+/** One school's own outcome, so a two-school household is not one number. */
+export interface SyncRefreshSchool {
+  schoolId: string;
+  semel: number;
+  schoolName: string | null;
   status: SyncRefreshStatus;
+}
+
+export interface SyncRefreshResponse {
+  /**
+   * Worst-wins across every school in the household, and `tasks` is the
+   * concatenation of theirs. Both described the first connection alone until
+   * the envelope was aggregated.
+   */
+  status: SyncRefreshStatus;
+  /** Earliest start and latest end across the schools: the span the parent waited. */
   startedAt: string;
   endedAt: string;
   durationMs: number;
   tasks: SyncTaskResult[];
+  /** One entry per refreshed connection. Additive; no caller reads it yet. */
+  schools: SyncRefreshSchool[];
 }
 
 // ─── Timetable ─────────────────────────────────────────────────────────────

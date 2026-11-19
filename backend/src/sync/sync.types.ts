@@ -1,5 +1,10 @@
 export type SyncTaskStatus = 'success' | 'failed';
-export type ManualSyncStatus = 'success' | 'partial';
+/**
+ * `failed` is the school that threw: `POST /sync/refresh` aggregates one
+ * `refreshAll` per connection, and a connection whose refresh never returned
+ * has no `partial` to report.
+ */
+export type ManualSyncStatus = 'success' | 'partial' | 'failed';
 
 export interface SyncExecutionContext {
   connectionId?: string;
