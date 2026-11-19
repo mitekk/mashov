@@ -85,6 +85,16 @@ school's policy. Unlink deletes one school's data and leaves the other's — and
 `studentRelease`, `schoolActivity` and the `student` rows themselves, all three of which leaked
 before. A stamped child costs one upstream call per task instead of N.
 
+**Amended (batch 4, R15).** "The sum of both mailboxes" is no longer the whole badge: it is
+the sum of the **caller's** mailboxes **plus the conversations no connection owns**, counted
+once by the reader (`unreadBadge` in `backend/src/common/mail-scope.ts`). Each
+`cachedNewCount` still counts its own connection's stamped rows and nothing else, which is
+what keeps this decision's arithmetic intact — having the writers count NULL as well would
+count such a row once per connection, the union-counted-twice failure this ADR exists to
+remove. The rows at `householdConnectionId: null` are the ones the backfill refused to guess
+about, and the read scope has always shown them to everyone as "ownership unknown"; the badge
+now answers the same question the list does.
+
 **Bad.** Every per-school table carries an extra nullable `TEXT`, and `mail_message` carries it
 denormalised from its conversation — bought deliberately, for a join-free `deleteMany` on unlink
 and a direct connection resolve from a bare `messageId` during an attachment download.

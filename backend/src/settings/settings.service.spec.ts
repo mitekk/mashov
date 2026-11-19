@@ -352,13 +352,16 @@ describe('SettingsService', () => {
         }) as never,
       );
 
-      await service.getSourceHealth('conn-1');
+      await service.getSourceHealth('conn-1', 'user-1');
 
       expect(loadSyncRuns).toHaveBeenCalledTimes(1);
+      // The snapshot stays per connection: source health is a property of the
+      // connection whose crons run. Only the content aggregation underneath
+      // `computeFreshness` is per household, which is what `userId` bounds.
       expect(loadSyncRuns).toHaveBeenCalledWith('conn-1');
       const snapshot = await loadSyncRuns.mock.results[0].value;
       expect(getAllSourceHealth).toHaveBeenCalledWith(['guid-1'], snapshot);
-      expect(computeFreshness).toHaveBeenCalledWith(snapshot);
+      expect(computeFreshness).toHaveBeenCalledWith('user-1', snapshot);
     });
   });
 });

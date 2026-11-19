@@ -41,7 +41,8 @@ import { DashboardService } from '../../backend/src/dashboard/dashboard.service'
 import { FeedService } from '../../backend/src/feed/feed.service';
 import { ChildrenService } from '../../backend/src/children/children.service';
 import { UserItemStateService } from '../../backend/src/common/user-item-state.service';
-import type { FreshnessService } from '../../backend/src/sync/freshness.service';
+import { FreshnessService } from '../../backend/src/sync/freshness.service';
+import type { SyncRunService } from '../../backend/src/sync/sync-run.service';
 import type { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { EncryptionService } from '../../backend/src/session/encryption.service';
@@ -1607,5 +1608,292 @@ describe('Two schools whose short labels collide', () => {
     const children = await makeChildren().getChildren(LABEL_USER);
 
     expect(children.data[0]?.schoolShortLabel).toBe('תיכון הרצל');
+  });
+});
+
+/**
+ * R4 — the freshness card belongs to one household, and reads the edge.
+ *
+ * `computeContentFreshness` had no caller at all: it listed every active
+ * `householdConnection` in the table and reported `worstContentFreshness`
+ * across all of them, and then picked each connection's children by the
+ * **routing stamp**. Both halves are wrong for the same reason, and both are
+ * asserted here:
+ *
+ *  1. The stamp is whichever connection synced last, by design (ADR-0031). It
+ *     routes a fetch; it cannot answer who may see a child. For a child two
+ *     parents share, the parent without the stamp resolved `studentGuids: []`,
+ *     so their verdict was `no_content` — which `worstContentFreshness` ranks
+ *     above `current` and which therefore degraded the whole card. The B1
+ *     shape, in the last place it survived.
+ *  2. Aggregating the whole table means an unrelated household linking a fresh
+ *     school this morning drags *every* household's card to `no_content`.
+ *
+ * Against a real database because both halves are a `where`: the visibility
+ * edge is a relation filter whose semantics are Postgres's, and "no value
+ * equals NULL" is what made the stamp query come back empty rather than
+ * matching.
+ *
+ * `SchoolYearService` is stubbed to a fixed year so the verdict does not drift
+ * with the wall clock — `resolveForSchool` jumps on 1 September, and this
+ * suite's fixtures would start reading `stale_year` on their own.
+ */
+describe('The freshness card, scoped to one household', () => {
+  let prisma: PrismaClient;
+
+  const FR_SEMEL_A = 661100;
+  const FR_SEMEL_B = 661200;
+  const FR_YEAR = 2027;
+  const FR_USER_A = 'fr-user-a';
+  const FR_USER_B = 'fr-user-b';
+  const FR_USERS = [FR_USER_A, FR_USER_B];
+  const FR_CONN_A = 'fr-conn-a';
+  const FR_CONN_B = 'fr-conn-b';
+  /** A's own child, linked to A alone. */
+  const FR_CHILD_A = 'fr-guid-a';
+  /** The child both parents list, stamped to B — the state B's sync leaves. */
+  const FR_SHARED = 'fr-guid-shared';
+  const FR_GUIDS = [FR_CHILD_A, FR_SHARED];
+  /** Past the 45-day new-year grace, so the verdict is a real `current`. */
+  const FR_LESSON_DATE = new Date('2026-11-14T00:00:00Z');
+
+  beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    await prisma.$connect();
+  });
+
+  afterAll(async () => {
+    await cleanup();
+    await prisma.$disconnect();
+  });
+
+  async function cleanup(): Promise<void> {
+    await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: FR_GUIDS } } });
+    await prisma.studentConnection.deleteMany({ where: { studentGuid: { in: FR_GUIDS } } });
+    await prisma.student.deleteMany({ where: { studentGuid: { in: FR_GUIDS } } });
+    await prisma.householdConnection.deleteMany({
+      where: { schoolCode: { in: [FR_SEMEL_A, FR_SEMEL_B] } },
+    });
+    await prisma.appUser.deleteMany({ where: { id: { in: FR_USERS } } });
+  }
+
+  /**
+   * The service under test, with both of its collaborators stubbed.
+   *
+   * `SyncRunService` is irrelevant here — `computeContentFreshness` never
+   * touches it — but the constructor wants one, and empty maps make that
+   * explicit rather than relying on it.
+   */
+  function makeFreshness(): FreshnessService {
+    return new FreshnessService(
+      {
+        getAllSourceHealth: async () => new Map(),
+        getLatestSuccessfulRuns: async () => new Map(),
+      } as unknown as SyncRunService,
+      prisma as unknown as PrismaService,
+      {
+        resolveForSchool: async () => ({ year: FR_YEAR, source: 'calendar' }),
+      } as unknown as SchoolYearService,
+    );
+  }
+
+  async function user(id: string, semel: number): Promise<void> {
+    await prisma.appUser.create({
+      data: {
+        id,
+        mashovUserId: `upstream-${id}`,
+        username: id,
+        displayName: id,
+        semel,
+      },
+    });
+  }
+
+  async function connection(id: string, userId: string, semel: number): Promise<void> {
+    await prisma.householdConnection.create({
+      data: {
+        id,
+        userId,
+        username: userId,
+        schoolCode: semel,
+        schoolYear: FR_YEAR,
+        encryptedPassword: `enc-${userId}`,
+        schoolName: `בית ספר ${semel}`,
+        active: true,
+      },
+    });
+  }
+
+  async function child(
+    studentGuid: string,
+    stamp: string | null,
+    linkedTo: string[],
+  ): Promise<void> {
+    await prisma.student.create({
+      data: {
+        studentGuid,
+        privateName: 'ילד',
+        familyName: 'כלשהו',
+        fullName: `ילד ${studentGuid}`,
+        classCode: 'ז',
+        classNum: 1,
+        gender: 'M',
+        isActive: true,
+        householdConnectionId: stamp,
+      },
+    });
+    for (const householdConnectionId of linkedTo) {
+      await prisma.studentConnection.create({
+        data: { studentGuid, householdConnectionId, lastSeenInRosterAt: new Date() },
+      });
+    }
+  }
+
+  async function homework(studentGuid: string, lessonId: number): Promise<void> {
+    await prisma.homeworkItem.create({
+      data: {
+        studentGuid,
+        lessonId,
+        groupId: 500,
+        lesson: 1,
+        subjectName: 'מתמטיקה',
+        homeworkText: 'תרגילים',
+        lessonDate: FR_LESSON_DATE,
+        schoolYear: FR_YEAR,
+      },
+    });
+  }
+
+  /**
+   * Parks every connection and active child this suite did not seed.
+   *
+   * Mandatory, not hygiene. An unscoped read is decided by whatever a
+   * neighbouring suite left behind, so without this the red case could pass
+   * for the wrong reason and the green one could fail for one. The children
+   * matter as well as the connections, because `connectionStudentWhere`
+   * admits an UNLINKED child — deliberately, as everywhere on this branch —
+   * so a stray one with recent homework would be counted by every connection
+   * here. Restored afterwards, so the suite deactivates nothing permanently.
+   */
+  let parkedConnections: string[] = [];
+  let parkedStudents: string[] = [];
+
+  async function parkStrays(): Promise<void> {
+    const connections = await prisma.householdConnection.findMany({
+      where: { active: true, NOT: { id: { in: [FR_CONN_A, FR_CONN_B] } } },
+      select: { id: true },
+    });
+    parkedConnections = connections.map((row) => row.id);
+    await prisma.householdConnection.updateMany({
+      where: { id: { in: parkedConnections } },
+      data: { active: false },
+    });
+
+    const students = await prisma.student.findMany({
+      where: { isActive: true, NOT: { studentGuid: { in: FR_GUIDS } } },
+      select: { studentGuid: true },
+    });
+    parkedStudents = students.map((row) => row.studentGuid);
+    await prisma.student.updateMany({
+      where: { studentGuid: { in: parkedStudents } },
+      data: { isActive: false },
+    });
+  }
+
+  afterEach(async () => {
+    await prisma.householdConnection.updateMany({
+      where: { id: { in: parkedConnections } },
+      data: { active: true },
+    });
+    await prisma.student.updateMany({
+      where: { studentGuid: { in: parkedStudents } },
+      data: { isActive: true },
+    });
+    parkedConnections = [];
+    parkedStudents = [];
+  });
+
+  describe('a household whose connection lists nothing', () => {
+    /**
+     * A at one school with a linked child and fresh homework; B at another
+     * with no children at all. Two separate households, which is the point:
+     * B's silence is B's business.
+     */
+    beforeEach(async () => {
+      await cleanup();
+      await user(FR_USER_A, FR_SEMEL_A);
+      await user(FR_USER_B, FR_SEMEL_B);
+      await connection(FR_CONN_A, FR_USER_A, FR_SEMEL_A);
+      await connection(FR_CONN_B, FR_USER_B, FR_SEMEL_B);
+      await child(FR_CHILD_A, FR_CONN_A, [FR_CONN_A]);
+      await homework(FR_CHILD_A, 9960);
+      await parkStrays();
+    });
+
+    it("does not report the other household's empty school on this one's card", async () => {
+      const service = makeFreshness();
+
+      // Both halves on purpose. "A is current" alone is satisfied by ignoring
+      // every other row, and "B is no_content" alone is satisfied by a card
+      // that reports nothing to anybody.
+      await expect(service.computeContentFreshness(FR_USER_A)).resolves.toMatchObject({
+        status: 'current',
+        newestContentAt: FR_LESSON_DATE.toISOString(),
+      });
+      await expect(service.computeContentFreshness(FR_USER_B)).resolves.toMatchObject({
+        status: 'no_content',
+        newestContentAt: null,
+      });
+    });
+  });
+
+  describe('a child two parents share', () => {
+    /**
+     * One school, two parents, one child both of them list — stamped to B,
+     * which is the state B's sync leaves behind and the state in which A's
+     * stamp query came back empty.
+     */
+    beforeEach(async () => {
+      await cleanup();
+      await user(FR_USER_A, FR_SEMEL_A);
+      await user(FR_USER_B, FR_SEMEL_A);
+      await connection(FR_CONN_A, FR_USER_A, FR_SEMEL_A);
+      await connection(FR_CONN_B, FR_USER_B, FR_SEMEL_A);
+      await child(FR_SHARED, FR_CONN_B, [FR_CONN_A, FR_CONN_B]);
+      await homework(FR_SHARED, 9961);
+      await parkStrays();
+    });
+
+    it('reports the shared child as content to both parents at once', async () => {
+      const service = makeFreshness();
+
+      await expect(service.computeContentFreshness(FR_USER_A)).resolves.toMatchObject({
+        status: 'current',
+      });
+      await expect(service.computeContentFreshness(FR_USER_B)).resolves.toMatchObject({
+        status: 'current',
+      });
+    });
+
+    it('does not change either verdict when the other parent syncs', async () => {
+      // The oscillation B1 described. A sync's only effect on ownership is the
+      // routing stamp, so moving it in either direction must leave both cards
+      // exactly where they were.
+      const service = makeFreshness();
+
+      for (const stamp of [FR_CONN_A, FR_CONN_B, FR_CONN_A]) {
+        await prisma.student.update({
+          where: { studentGuid: FR_SHARED },
+          data: { householdConnectionId: stamp },
+        });
+
+        await expect(service.computeContentFreshness(FR_USER_A)).resolves.toMatchObject({
+          status: 'current',
+        });
+        await expect(service.computeContentFreshness(FR_USER_B)).resolves.toMatchObject({
+          status: 'current',
+        });
+      }
+    });
   });
 });

@@ -34,7 +34,16 @@ export class SettingsService {
    * ADR. What is gone is the unconditional enumeration, which leaked every
    * child in the database to every user regardless of sync activity.
    */
-  async getSourceHealth(householdConnectionId: string | null) {
+  /**
+   * One connection's source health, with the household's content freshness.
+   *
+   * Two scopes on purpose: the sync-run snapshot is this connection's, because
+   * source health is a property of the connection that runs the syncs, while
+   * the content aggregation is the caller's whole household -- a parent with
+   * two schools has one freshness card. `userId` is what bounds the second
+   * one; without it, it was every household in the database (R4).
+   */
+  async getSourceHealth(householdConnectionId: string | null, userId?: string) {
     if (!householdConnectionId) {
       return {
         sources: [],
@@ -51,7 +60,7 @@ export class SettingsService {
 
     const [sources, freshness] = await Promise.all([
       this.freshnessService.getAllSourceHealth(studentGuids, snapshot),
-      this.freshnessService.computeFreshness(snapshot),
+      this.freshnessService.computeFreshness(userId, snapshot),
     ]);
 
     return {

@@ -134,11 +134,18 @@ export class MailCountsTask {
           },
         });
 
-        // Update cachedNewCount on this specific connection (or the first active one for shared session)
-        const target = conn ?? await this.prisma.householdConnection.findFirst({ where: { active: true } });
-        if (target) {
+        // Written only for the connection this run belongs to. The shared
+        // session owns the NULL-stamped rows but has no connection row of its
+        // own, and the fallback that wrote its count into
+        // `findFirst({ active: true })` picked an arbitrary household -- a
+        // cross-household write, and now a double count as well: under R15's
+        // rule the reader already adds the unattributed rows itself, so a
+        // household holding them in `cachedNewCount` too would be counted
+        // twice. `localCount` below still reports the number in the run
+        // telemetry, which is where an operator reads it.
+        if (conn) {
           await this.prisma.householdConnection.update({
-            where: { id: target.id },
+            where: { id: conn.id },
             data: { cachedNewCount: localUnreadCount },
           });
           updatedCount = 1;

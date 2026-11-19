@@ -31,6 +31,7 @@ interface Overrides {
   behaviorFindFirst?: jest.Mock;
   mailFindMany?: jest.Mock;
   mailCount?: jest.Mock;
+  mailUnattributedCount?: jest.Mock;
   connectionFindFirst?: jest.Mock;
   connectionAggregate?: jest.Mock;
   startYear?: string;
@@ -42,7 +43,18 @@ function makeService(overrides: Overrides = {}) {
   const homeworkFindFirst = overrides.homeworkFindFirst ?? jest.fn().mockResolvedValue(null);
   const behaviorFindFirst = overrides.behaviorFindFirst ?? jest.fn().mockResolvedValue(null);
   const mailFindMany = overrides.mailFindMany ?? jest.fn().mockResolvedValue([]);
-  const mailCount = overrides.mailCount ?? jest.fn().mockResolvedValue(0);
+  // The badge's two counts both land on `mailConversation.count`: the
+  // caller's own scope, and the unattributed rows `unreadBadge` adds once
+  // (R15). Routed by predicate, so `mailCount` still records exactly the
+  // scoped calls the cases below assert on.
+  const scopedMailCount = overrides.mailCount ?? jest.fn().mockResolvedValue(0);
+  const unattributedMailCount =
+    overrides.mailUnattributedCount ?? jest.fn().mockResolvedValue(0);
+  const mailCount = jest.fn((args?: { where?: { householdConnectionId?: unknown } }) =>
+    args?.where?.householdConnectionId === null
+      ? unattributedMailCount(args)
+      : scopedMailCount(args),
+  );
   const connectionFindFirst =
     overrides.connectionFindFirst ??
     jest.fn().mockResolvedValue({
@@ -119,7 +131,7 @@ function makeService(overrides: Overrides = {}) {
     homeworkFindFirst,
     behaviorFindFirst,
     mailFindMany,
-    mailCount,
+    mailCount: scopedMailCount,
     connectionFindFirst,
   };
 }
@@ -329,6 +341,23 @@ describe('DashboardService', () => {
       expect(mailCount).toHaveBeenCalledWith(
         expect.objectContaining({ where: expect.objectContaining(mailScope()) }),
       );
+    });
+
+    it('adds the unattributed unread rows to the badge, once (R15)', async () => {
+      // The dashboard shows the same badge as the inbox, and now by the same
+      // rule rather than its own copy of the arithmetic: a conversation no
+      // connection owns is listed by both and counted by both.
+      const { service } = makeService({
+        connectionAggregate: jest
+          .fn()
+          .mockResolvedValue({ _sum: { cachedNewCount: 5 }, _count: { _all: 2 } }),
+        mailUnattributedCount: jest.fn().mockResolvedValue(2),
+        mailCount: jest.fn().mockResolvedValue(999),
+      });
+
+      const result = await service.getDashboard('user-1');
+
+      expect(result.summary.newConversations).toBe(7);
     });
 
     it('scopes the school card to the caller (N1)', async () => {

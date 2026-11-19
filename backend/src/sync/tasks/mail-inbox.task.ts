@@ -456,20 +456,21 @@ export class MailInboxTask {
       // badge would lag the rows this run just corrected. Same query and same target
       // selection as that task.
       //
-      // The count is scoped to the row's own connection. The badge sums
-      // cachedNewCount across a household's connections, so writing an
-      // unscoped count into each row reported the union once per school.
-      // The findFirst fallback survives only for the shared session, which
-      // owns the NULL-stamped rows but has no connection row of its own.
-      const refreshTarget =
-        conn ?? (await this.prisma.householdConnection.findFirst({ where: { active: true } }));
-      if (refreshTarget) {
+      // The count is this connection's own mailbox, written to its own row:
+      // the badge sums these rows, so an unscoped count written into each one
+      // reported the union once per school. A shared-session run writes
+      // nothing. It owns the NULL-stamped rows but has no row of its own, and
+      // the old `findFirst({ active: true })` fallback put its count into an
+      // arbitrary household -- a cross-household write, and under R15's rule
+      // a double count, since the reader now adds the unattributed rows once
+      // itself (`unreadBadge`).
+      if (conn) {
         await this.prisma.householdConnection.update({
-          where: { id: refreshTarget.id },
+          where: { id: conn.id },
           data: {
             cachedNewCount: await this.prisma.mailConversation.count({
               where: {
-                householdConnectionId: conn ? conn.id : null,
+                householdConnectionId: conn.id,
                 isUnread: true,
                 NOT: { labels: { array_contains: ['archived'] } },
               },

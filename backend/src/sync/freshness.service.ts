@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { SyncRun } from '@prisma/client';
+import { Prisma, SyncRun } from '@prisma/client';
 import { SyncRunService } from './sync-run.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  connectionStudentWhere,
+  visibleStudentWhere,
+} from '../common/student-links';
 import {
   calendarSchoolYear,
   SchoolYearService,
@@ -128,25 +132,42 @@ export class FreshnessService {
    * answered "fresh" while every GET returned data from a school year that had
    * ended — the crons were succeeding at fetching the wrong year.
    */
-  async computeContentFreshness(): Promise<ContentFreshness> {
+  async computeContentFreshness(userId?: string): Promise<ContentFreshness> {
     // Computed per connection and reported at its WORST. A second school with
     // no data yet would otherwise read as a frozen year for the whole
     // household -- and conversely, reading only the most recent connection
     // would hide a genuinely stale school behind a healthy one.
+    //
+    // Scoped to the CALLER's connections (R4). Unscoped, the worst verdict
+    // was taken across every household in the table, so an unrelated family
+    // linking a school this morning -- nothing synced yet, so `no_content` --
+    // degraded every other household's freshness card. A caller-less read
+    // keeps the global view the crons and the digest want, the N1 precedent.
     const connections = await this.prisma.householdConnection.findMany({
-      where: { active: true },
+      where: { active: true, ...(userId ? { userId } : {}) },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
       select: { id: true, schoolCode: true, schoolYear: true },
     });
 
-    if (connections.length > 1) {
-      const perConnection = await Promise.all(
-        connections.map((connection) => this.contentFreshnessForConnection(connection)),
+    if (connections.length === 0) {
+      // No connection to measure a school year against, so the verdict comes
+      // from the calendar. A signed-in caller still gets their own children:
+      // without the predicate this branch aggregated the whole table too.
+      return this.contentFreshnessForConnection(
+        null,
+        userId ? await visibleStudentWhere(this.prisma, userId) : {},
       );
-      return this.worstContentFreshness(perConnection);
     }
 
-    return this.contentFreshnessForConnection(connections[0] ?? null);
+    const perConnection = await Promise.all(
+      connections.map((connection) =>
+        this.contentFreshnessForConnection(
+          connection,
+          connectionStudentWhere(connection.id),
+        ),
+      ),
+    );
+    return this.worstContentFreshness(perConnection);
   }
 
   /**
@@ -183,8 +204,23 @@ export class FreshnessService {
     };
   }
 
+  /**
+   * One school's verdict, over the children a caller may see through it.
+   *
+   * The student predicate is an ARGUMENT rather than something built here
+   * from `connection.id`. `Student.householdConnectionId` is the routing
+   * stamp: it says whose credentials fetched the child, and per ADR-0031 that
+   * is whichever of two parents at one school synced last, by design. It
+   * cannot answer who may see the child, and when it was used for that the
+   * other parent's query matched nothing -- no value equals NULL and no value
+   * equals somebody else's id -- so their verdict was `no_content`, which
+   * `worstContentFreshness` ranks above `current` and which therefore
+   * degraded the whole card. The visibility edge is the answer, and the
+   * callers pass it.
+   */
   private async contentFreshnessForConnection(
     connection: { id: string; schoolCode: number; schoolYear: number } | null,
+    studentWhere: Prisma.StudentWhereInput,
   ): Promise<ContentFreshness> {
     const observedSchoolYear = connection?.schoolYear ?? 0;
     const expectedSchoolYear = connection
@@ -193,12 +229,11 @@ export class FreshnessService {
 
     const studentGuids = (
       await this.prisma.student.findMany({
-        where: {
-          isActive: true,
-          // Scoped to this school's own children, so one school's silence is
-          // not measured against the other school's content.
-          ...(connection ? { householdConnectionId: connection.id } : {}),
-        },
+        // Scoped to the children this connection lists, so one school's
+        // silence is not measured against the other school's content -- by
+        // the visibility edge, which admits a child both parents list and a
+        // child nobody lists yet, as everywhere else on this branch.
+        where: { isActive: true, ...studentWhere },
         select: { studentGuid: true },
       })
     ).map((student) => student.studentGuid);
@@ -258,14 +293,22 @@ export class FreshnessService {
     };
   }
 
-  async computeFreshness(snapshot?: SyncRunSnapshot): Promise<{
+  /**
+   * `userId` comes FIRST, deliberately: every caller-less spec call stays
+   * `computeFreshness()`, and the snapshot stays an optional second argument
+   * for the one caller that has already loaded it.
+   */
+  async computeFreshness(
+    userId?: string,
+    snapshot?: SyncRunSnapshot,
+  ): Promise<{
     state: FreshnessState;
     lastSyncAt: string | null;
     staleSources: string[];
     contentFreshness: ContentFreshness;
   }> {
     const { successRuns, allRuns } = snapshot ?? (await this.loadSyncRuns());
-    const contentFreshness = await this.computeContentFreshness();
+    const contentFreshness = await this.computeContentFreshness(userId);
     const now = new Date();
 
     const staleSources: string[] = [];

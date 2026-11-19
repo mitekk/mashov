@@ -30,6 +30,18 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     ?? overrides.householdUpdateMany
     ?? jest.fn().mockResolvedValue({ count: 0 });
 
+  // Two different counts reach `mailConversation.count`: the caller's own
+  // scope, and the unattributed rows the badge adds once (R15). Routed by
+  // predicate, so a spec can set either without moving the other, and so
+  // `conversationCount` still records exactly the calls it used to.
+  const scopedCount = overrides.conversationCount ?? jest.fn().mockResolvedValue(0);
+  const unattributedCount = overrides.unattributedCount ?? jest.fn().mockResolvedValue(0);
+  const conversationCount = jest.fn((args?: { where?: { householdConnectionId?: unknown } }) =>
+    args?.where?.householdConnectionId === null
+      ? unattributedCount(args)
+      : scopedCount(args),
+  );
+
   return {
     householdConnection: {
       findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
@@ -46,7 +58,7 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
       updateMany: householdUpdate,
     },
     mailConversation: {
-      count: overrides.conversationCount ?? jest.fn().mockResolvedValue(0),
+      count: conversationCount,
       findMany: overrides.conversationFindMany ?? jest.fn().mockResolvedValue([]),
       findUnique: overrides.conversationFindUnique ?? jest.fn().mockResolvedValue(null),
       updateMany: overrides.conversationUpdateMany ?? jest.fn().mockResolvedValue({ count: 0 }),
@@ -162,6 +174,48 @@ describe('MailService', () => {
       );
 
       await expect(service.getSummary()).resolves.toMatchObject({ newConversations: 23 });
+    });
+
+    it('adds the unattributed unread rows to the summed badge, once (R15)', async () => {
+      // One rule, decided once: each `cachedNewCount` stays its own
+      // connection's mailbox and the READER adds the rows no connection owns.
+      // Two connections, so the alternative -- writers counting "own stamps
+      // plus NULL" -- would have counted those rows twice.
+      const service = new MailService(
+        makeMockPrisma({
+          householdAggregate: jest
+            .fn()
+            .mockResolvedValue({ _sum: { cachedNewCount: 16 + 7 }, _count: { _all: 2 } }),
+          unattributedCount: jest.fn().mockResolvedValue(2),
+          conversationCount: jest.fn().mockResolvedValue(999),
+          syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await expect(service.getSummary()).resolves.toMatchObject({ newConversations: 25 });
+    });
+
+    it('does not add them twice on the no-connection fallback', async () => {
+      // The fallback is a live count over the caller's own scope, and that
+      // scope already admits NULL as "ownership unknown" -- so the
+      // unattributed rows are in it, and adding them again would inflate the
+      // badge of the one caller whose number is not cached.
+      const service = new MailService(
+        makeMockPrisma({
+          householdAggregate: jest
+            .fn()
+            .mockResolvedValue({ _sum: { cachedNewCount: null }, _count: { _all: 0 } }),
+          conversationCount: jest.fn().mockResolvedValue(4),
+          unattributedCount: jest.fn().mockResolvedValue(2),
+          syncRunFindFirst: jest.fn().mockResolvedValue({ endedAt: NOW }),
+        }),
+        makeMockMashovClient({}),
+        makeMockScope(),
+      );
+
+      await expect(service.getSummary()).resolves.toMatchObject({ newConversations: 4 });
     });
 
     it('reports zero rather than falling back when the connections really sum to zero', async () => {

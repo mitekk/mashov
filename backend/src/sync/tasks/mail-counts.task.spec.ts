@@ -229,14 +229,23 @@ describe('MailCountsTask', () => {
     expect(String(warnSpy.mock.calls[0][0])).toContain('orphans=unknown');
   });
 
-  it('still writes cachedNewCount from the local count', async () => {
+  it('writes no cachedNewCount for the shared session, and reports the count in telemetry', async () => {
+    // R15. The shared session owns the NULL-stamped rows but has no
+    // connection row of its own, so its count used to be written into
+    // `findFirst({ active: true })` -- an arbitrary household. That was a
+    // cross-household write, and under the one badge rule it is also a double
+    // count: `unreadBadge` adds the unattributed rows itself, so a household
+    // holding them in `cachedNewCount` too would be counted twice.
     (mockMashovClient.get as jest.Mock).mockResolvedValue({ unreadConversations: 16 });
 
     await task.execute();
 
-    expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith({
-      where: { id: 'household-1' },
-      data: { cachedNewCount: 39 },
-    });
+    expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
+    // The number is not lost: it is where an operator reads it from.
+    expect(mockSyncRunService.closeRun).toHaveBeenCalledWith(
+      'run-1',
+      'success',
+      expect.objectContaining({ localCount: 39, upstreamCount: 16 }),
+    );
   });
 });

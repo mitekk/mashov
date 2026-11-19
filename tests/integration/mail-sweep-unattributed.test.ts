@@ -26,11 +26,13 @@
  *
  * So on a deployment that has any stamped mail at all, this row's `isUnread`
  * is permanent. The tests below assert that outcome rather than wish it away,
- * and the last one shows what a parent actually sees because of it: the badge
- * excludes the row (every `cachedNewCount` is per connection) while the same
- * response's unread list includes it (the read scope admits NULL as
- * "ownership unknown"). Recorded as a Minor in
- * `docs/plans/merged-household-access-followups.md`.
+ * and the last one shows what a parent sees because of it. That case used to
+ * characterise a divergence -- the badge excluded the row because every
+ * `cachedNewCount` is per connection, while the same response's unread list
+ * included it because the read scope admits NULL as "ownership unknown". R15
+ * closed it, with one rule: the per-connection counts stay as they are and the
+ * reader adds the unattributed rows once, live (`unreadBadge`). The case now
+ * asserts that the number and the list agree.
  *
  * Why these cannot be proved against a mocked Prisma — `mail-inbox.task.spec.ts`
  * already covers the gates and the scoping with one:
@@ -41,8 +43,9 @@
  *     `locallyMarkedUnreadAt: null`) and `cachedNewCount`'s
  *     `NOT array_contains ['archived']` are a real `UPDATE` and a real JSONB
  *     query.
- *  3. The badge/list divergence is two different queries over one table, which
- *     only a real table can disagree about.
+ *  3. The badge and the list are different queries over one table -- an
+ *     aggregate, a NULL-stamped count and a scoped `findMany` -- and only a
+ *     real table can make them agree or disagree.
  *
  * The suite deletes every `mail_conversation` in its own seed, as
  * `api.test.ts` and `auth.test.ts` already do, because three of the task's
@@ -365,9 +368,12 @@ describe('The unattributed mail orphan the sweep exists for', () => {
     expect(state[PINNED_NULL]).toBe(true);
   });
 
-  it('is counted by no badge while being listed as unread, which is what the parent sees', async () => {
-    // Characterising the consequence, not endorsing it. Recorded as a Minor in
-    // docs/plans/merged-household-access-followups.md.
+  it('is counted by the badge it is listed in, once, by the reader (R15)', async () => {
+    // The one rule, decided once: each `cachedNewCount` stays its own
+    // connection's mailbox, and the READER adds the unattributed rows live.
+    // The alternative -- writers counting "own stamps plus NULL" -- would
+    // double-count NULL on every household with two connections, which is the
+    // inflation ADR-0030 and `283c053` were about.
     await makeTask(fakeClient('connection')).execute({ connectionId: CONN_A });
 
     const connections = await prisma.householdConnection.findMany({
@@ -384,15 +390,16 @@ describe('The unattributed mail orphan the sweep exists for', () => {
     ]);
 
     const summary = await makeMailService().getSummary(USER_A);
-    // The badge is the sum of per-connection counts, and the unattributed row
-    // belongs to no connection, so it is in no count.
-    expect(summary.newConversations).toBe(1);
-    // The same response's unread list is read with the household scope, which
-    // admits NULL as "ownership unknown" rather than hiding the row -- so the
-    // row the badge does not count is right there, marked unread.
+    // A's own mailbox (LIVE_A) plus the two unattributed unread rows the same
+    // response lists. The badge and the list now answer the same question.
+    expect(summary.newConversations).toBe(3);
+    // The unread list is read with the household scope, which admits NULL as
+    // "ownership unknown" rather than hiding the row. That was always the
+    // honest half; what changed is that the number above agrees with it.
     expect(summary.recentConversations.map((conversation) => conversation.conversationId).sort()).toEqual(
       [LIVE_A, ORPHAN_NULL, PINNED_NULL].sort(),
     );
+    expect(summary.newConversations).toBe(summary.recentConversations.length);
     expect(summary.recentConversations.every((conversation) => conversation.isNew)).toBe(true);
   });
 });

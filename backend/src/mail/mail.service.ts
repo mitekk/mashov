@@ -7,7 +7,7 @@ import type { ConnectionTarget } from '../session/connection-target';
 import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { resolveSchoolLabels } from '../common/school-label';
 import { activeConnectionIdsFor } from '../common/student-links';
-import { householdMailScope } from '../common/mail-scope';
+import { householdMailScope, unreadBadge } from '../common/mail-scope';
 import { schoolChipsForUser } from '../common/school-chips';
 import { deriveIsUnread } from './unread';
 
@@ -92,27 +92,16 @@ export class MailService {
    * row was accidentally tenant-safe; summing `{ active: true }` across the
    * whole table is not -- two households each with 5 unread would both have
    * been shown 10.
+   *
+   * The badge itself is `unreadBadge`, which owns the NULL rule: the summed
+   * per-connection counts plus the unattributed rows, counted once (R15). The
+   * same rule serves the dashboard's copy of this summary.
    */
   async getSummary(userId?: string) {
     const ownScope = await this.householdMailScope(userId);
 
-    const [localNewConversations, household, recentConversations, lastSync] = await Promise.all([
-      this.prisma.mailConversation.count({
-        where: {
-          ...ownScope,
-          isUnread: true,
-          NOT: { labels: { array_contains: ['archived'] } },
-        },
-      }),
-      // SUMMED, not read from one row. Each connection's cachedNewCount is
-      // now its own mailbox's unread count, so the household badge is their
-      // total -- reading the most recent connection's row alone would show one
-      // school's mail and silently hide the other's.
-      this.prisma.householdConnection.aggregate({
-        where: { active: true, ...(userId ? { userId } : {}) },
-        _sum: { cachedNewCount: true },
-        _count: { _all: true },
-      }),
+    const [newConversations, recentConversations, lastSync] = await Promise.all([
+      unreadBadge(this.prisma, userId, ownScope),
       this.prisma.mailConversation.findMany({
         where: {
           ...ownScope,
@@ -128,15 +117,6 @@ export class MailService {
         select: { endedAt: true },
       }),
     ]);
-
-    // `_count` distinguishes "no connections, so fall back to the local
-    // count" from "connections whose counts genuinely sum to zero". Without
-    // it, _sum is null in both cases and an empty inbox would fall back to a
-    // local count that may not be zero.
-    const newConversations =
-      household._count._all > 0
-        ? household._sum.cachedNewCount ?? 0
-        : localNewConversations;
 
     return {
       newConversations,
@@ -1278,6 +1258,11 @@ export class MailService {
    * one parent archiving one conversation rewrote every other household's
    * count too: write amplification and a cross-tenant write for a number that
    * could not have changed.
+   *
+   * Counts this connection's STAMPED rows and nothing else, which is half of
+   * R15's single rule: an unattributed row is added once by `unreadBadge`, on
+   * read. Counting NULL here as well would count it once per connection, and
+   * the badge sums these rows.
    */
   private async updateCachedNewCount(connectionIds: string[]): Promise<void> {
     for (const connection of connectionIds.map((id) => ({ id }))) {

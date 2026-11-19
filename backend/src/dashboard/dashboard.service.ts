@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { householdMailScope } from '../common/mail-scope';
+import { householdMailScope, unreadBadge } from '../common/mail-scope';
 import { buildStudentSchoolMap } from '../common/student-school-map';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
@@ -105,7 +105,7 @@ export class DashboardService {
       this.getChildren(yearScope, userId),
       this.getSummary(yearScope, mailScope, userId),
       this.getFeed(windowScope, mailScope, userId),
-      this.getFreshness(),
+      this.getFreshness(userId),
       this.getSchoolInfo(userId),
     ]);
 
@@ -123,27 +123,12 @@ export class DashboardService {
     mailScope: Prisma.MailConversationWhereInput,
     userId?: string,
   ) {
-    const [localNewConversations, household, students, recentHomework, recentBehavior] = await Promise.all([
-      // R13: this had no household predicate at all, and it is read at the
-      // `_count._all === 0` branch below -- so a user between unlinking and
-      // re-linking got every other household's unread total as their badge.
-      // `MailService.getSummary` is the same shape and was scoped in batch 1;
-      // this second copy was missed.
-      this.prisma.mailConversation.count({
-        where: {
-          ...mailScope,
-          isUnread: true,
-          NOT: { labels: { array_contains: ['archived'] } },
-        },
-      }),
-      // Summed over the CALLER's connections. Reading one row showed one
-      // school's mail and hid the other's; reading every household's row
-      // showed a stranger's.
-      this.prisma.householdConnection.aggregate({
-        where: { active: true, ...(userId ? { userId } : {}) },
-        _sum: { cachedNewCount: true },
-        _count: { _all: true },
-      }),
+    const [newConversations, students, recentHomework, recentBehavior] = await Promise.all([
+      // The same badge the inbox shows, by the same rule, from one place
+      // (R15): the caller's per-connection counts plus the unattributed rows,
+      // counted once. Two copies of these six lines are how R13 -- this one
+      // missing the household predicate entirely -- survived batch 1.
+      unreadBadge(this.prisma, userId, mailScope),
       // childrenCount is the caller's children, not everyone's. It feeds the
       // "N children" line on the dashboard.
       this.prisma.student.count({
@@ -163,15 +148,6 @@ export class DashboardService {
         },
       }),
     ]);
-    // `_count` separates "no connections, so fall back to the local count"
-    // from "connections whose counts genuinely sum to zero": _sum is null in
-    // both cases, and without the distinction an emptied inbox would fall back
-    // to a count that need not be zero.
-    const newConversations =
-      household._count._all > 0
-        ? household._sum.cachedNewCount ?? 0
-        : localNewConversations;
-
     return {
       newConversations,
       recentHomeworkCount: recentHomework,
@@ -442,8 +418,15 @@ export class DashboardService {
     return cards;
   }
 
-  private async getFreshness() {
-    const result = await this.freshnessService.computeFreshness();
+  /**
+   * The freshness card, for this caller's schools only (R4).
+   *
+   * Without the caller, `computeContentFreshness` took the worst verdict
+   * across every active connection in the table, so an unrelated household's
+   * freshly linked school reported as a frozen or empty year here.
+   */
+  private async getFreshness(userId?: string) {
+    const result = await this.freshnessService.computeFreshness(userId);
     return {
       state: result.state,
       lastSyncAt: result.lastSyncAt,

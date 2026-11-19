@@ -133,20 +133,25 @@ describe('DashboardService', () => {
       expect(result.summary.newConversations).toBe(7);
     });
 
-    it('summary newConversations sums cachedNewCount across the caller\'s connections', async () => {
+    it('summary newConversations sums the caller\'s connections plus the unowned rows', async () => {
       // Summed, not read from one row: with two schools the badge is the
       // household's total, and the most recent connection's row alone would
-      // show one school's mail and hide the other's.
+      // show one school's mail and hide the other's. On top of that sum go the
+      // conversations no connection owns, added ONCE by the reader (R15) --
+      // two connections here, so counting them in each writer would have
+      // counted them twice.
       seedEmptyState();
       mockPrisma.householdConnection.aggregate.mockResolvedValue({
         _sum: { cachedNewCount: 16 + 7 },
         _count: { _all: 2 },
       });
-      mockPrisma.mailConversation.count.mockResolvedValue(7);
+      mockPrisma.mailConversation.count.mockImplementation(({ where }) =>
+        Promise.resolve(where?.householdConnectionId === null ? 2 : 7),
+      );
 
       const result = await service.getDashboard();
 
-      expect(result.summary.newConversations).toBe(23);
+      expect(result.summary.newConversations).toBe(25);
     });
 
     it('summary newConversations falls back to DB count when cachedNewCount is null', async () => {

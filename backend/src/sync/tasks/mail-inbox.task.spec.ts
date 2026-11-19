@@ -582,7 +582,13 @@ describe('MailInboxTask', () => {
       });
     });
 
-    it('refreshes cachedNewCount so the badge and the list agree before the next counts tick', async () => {
+    it('writes no cachedNewCount for the shared session, whose rows no row owns', async () => {
+      // R15. The walk's own `cachedNewCount` refresh exists so the badge does
+      // not lag the rows it just corrected, which is a per-connection
+      // statement. A shared-session run has no connection row, and writing
+      // its NULL-stamped count into `findFirst({ active: true })` put one
+      // household's number on another's row -- and would now be counted twice,
+      // because `unreadBadge` adds the unattributed rows itself.
       (mockPrisma.householdConnection.findFirst as jest.Mock).mockResolvedValue({
         id: 'household-1',
       });
@@ -593,10 +599,7 @@ describe('MailInboxTask', () => {
 
       await task.execute();
 
-      expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith({
-        where: { id: 'household-1' },
-        data: { cachedNewCount: 16 },
-      });
+      expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
     });
   });
 });

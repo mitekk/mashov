@@ -10,9 +10,9 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: **B2** and **B4**, **R4**, **R7**–**R12**, **R14**, **R15** and **R17**,
-the two operational tasks the plan itself deferred (**T13**–**T14**), the **G2**
-coverage gap, and the minors. **G1**, **B1** and **B3** are done and kept as record.
+What is open: **B2** and **B4**, **R7**–**R12**, **R14** and **R17**, the two
+operational tasks the plan itself deferred (**T13**–**T14**), the **G2** coverage gap,
+and the minors. **G1**, **B1**, **B3**, **R4** and **R15** are done and kept as record.
 
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
@@ -43,7 +43,7 @@ stays true.
 | 2 | **R2** | **done** | A permanently broken unlink. Fixed with the stamp, the relation-filtered delete, one transaction for the whole unlink, and an index on `mail_message.conversationId`. |
 | 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor, and **N1** found while reading | **done** | One missing household predicate across four readers, on the `userId` threading batch 1 established. Closed the last place another household's data reached a screen. The mail scope moved to `common/mail-scope.ts` and the chip labels to `common/school-chips.ts`, so `/children`, `/dashboard`, `/feed` and the inbox now answer from one scoping path and one label resolution instead of four. |
 | 3.5 | **R16** + B3's remaining bullet | **done** | One household's release request went upstream under the other's decrypted password — R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closed both: a foreign stamp is now no stamp, and the fallback under it prefers the caller's connection at the stamped school. `targetFor` took the same optional caller while in there. |
-| 4 | **R4** + **R15** | open | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rides along: it is the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. |
+| 4 | **R4** + **R15** | **done** | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rode along: the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. The freshness card now takes the caller and selects children by the visibility edge; the badge is the caller's `cachedNewCount` sum plus the unattributed rows, added once by `unreadBadge` in `common/mail-scope.ts` — one rule, one home, for the two readers that each had their own copy of it. |
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | open | The only frontend items. R14 leaves a parent looking at an empty mailbox with no way forward, which is the worst *experience* left open. Needs an e2e run, so it is cheapest on its own. |
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
 | 7 | **R8**, **R9**, **R10**, **R17** | open | Four independent small correctness fixes in the auth/link path; one session, four tests. R17 is a two-line reorder. |
@@ -51,10 +51,10 @@ stays true.
 | 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1, 2, 3 and 3.5 are done: no open item puts one household's data on another's
-*screen*, and none puts a household's *request* in another's Mashov account.
-**Batch 4 is next.** Batches 4–7 are each self-contained; 7 can run in parallel with
-anything.
+Batches 1, 2, 3, 3.5 and 4 are done: no open item puts one household's data on
+another's *screen*, none puts a household's *request* in another's Mashov account, and
+no reader left answers from the whole table. **Batch 5 is next.** Batches 5–7 are each
+self-contained; 7 can run in parallel with anything.
 
 ---
 
@@ -480,10 +480,34 @@ freshness card. Separately, any unrelated household linking a fresh school drags
 household's card to `no_content`.
 
 **DoD**
-- [ ] The student predicate uses the visibility edge (`connectionStudentWhere`), and
+- [x] The student predicate uses the visibility edge (`connectionStudentWhere`), and
       the aggregation is per household (`userId` threaded in).
-- [ ] A test with two households asserts one household's empty connection does not
-      change the other's verdict.
+      `contentFreshnessForConnection` takes the predicate as an argument rather than
+      building it from the stamp, so the two call sites say which question they are
+      asking: `connectionStudentWhere(connection.id)` per connection, and
+      `visibleStudentWhere` for a signed-in caller with no active connection — that
+      branch aggregated the whole table too. `computeFreshness(userId?, snapshot?)`
+      takes the caller FIRST, which leaves every no-arg spec call untouched;
+      `DashboardService.getFreshness` and `SettingsService.getSourceHealth` pass it,
+      the latter keeping its per-connection snapshot, because source health belongs to
+      the connection whose crons run while the content card belongs to the household.
+      A caller-less read stays global for the crons and the digest (the N1 precedent).
+- [x] A test with two households asserts one household's empty connection does not
+      change the other's verdict. **3 integration cases** in
+      `tests/integration/household-isolation.test.ts`, with their own fixture, their
+      own cleanup and the stray-connection parking the file already uses — extended to
+      park stray *children* as well, since `connectionStudentWhere` deliberately
+      admits an unlinked child and a neighbouring suite's leftover would otherwise
+      decide the verdict. One case asserts both halves (household A `current` AND
+      household B `no_content`, so the fix is a scope rather than a blanket), and two
+      cover the child both parents list, including that moving the routing stamp
+      between the two connections changes neither parent's verdict. Red was exactly
+      the predicted shape: A read `no_content` in all three.
+- [x] **3 unit cases** in `freshness.service.spec.ts`: the `findMany` where carries the
+      caller's `userId` and stays global without one, and a child stamped to the other
+      connection but linked to the caller's counts — the case the stamp got wrong. The
+      two-school mock now keys its students off the links predicate, because the stamp
+      is no longer in that query.
 
 ### R5 — `resolvedFor` can hand a caller another household's connection id and label
 
@@ -802,10 +826,27 @@ fallback count (**R13**) is only read when the household has no connections at a
 it never meets this.
 
 **DoD**
-- [ ] The two writers and the reader agree about NULL. Either both count the caller's
-      stamps plus NULL, or the badge stops being a pure sum of `cachedNewCount` — but
-      one rule, decided once, not two.
-- [ ] A test with an unstamped unread conversation asserts the badge and the list agree.
+- [x] The two writers and the reader agree about NULL, by one rule: **each
+      `cachedNewCount` stays its own connection's mailbox, and the reader adds the
+      unattributed rows once, live.** The alternative — writers counting "own stamps
+      plus NULL" — double-counts those rows on every household with two connections,
+      which is the exact inflation ADR-0030 and `283c053` were about. The rule and its
+      reasoning live in `unreadBadge` in `backend/src/common/mail-scope.ts`, beside
+      `householdMailScope`, because the identical six lines of arithmetic existed in
+      `MailService.getSummary` and `DashboardService.getSummary` and that is how they
+      drifted; both now call it. The shared-session `cachedNewCount` write in
+      `mail-counts.task.ts` and `mail-inbox.task.ts` is gone: it put one mailbox's
+      count on `findFirst({ active: true })`, which was a cross-household write
+      already and under the new rule would be counted twice. `localCount` still
+      carries the number in the run telemetry.
+- [x] A test with an unstamped unread conversation asserts the badge and the list
+      agree. `tests/integration/mail-sweep-unattributed.test.ts`'s last case is
+      inverted: the badge is `1 + 2 = 3` and the unread list is the same three
+      conversations. Red was `Expected: 3, Received: 1`. Two unit cases in
+      `mail.service.spec.ts` and one in `dashboard.service.spec.ts` pin the rule on a
+      two-connection household (so a double count would show) and pin that the
+      no-connection fallback does *not* add them again — its live count is taken over
+      a scope that already admits NULL.
 
 ### R16 — A release request is sent upstream under the other parent's credentials
 
@@ -1094,18 +1135,22 @@ because `household-isolation`'s shared `cleanup()` deletes connections by
   no longer repairs it, because the refresh now writes only the connections that action
   touched. `MailCountsTask` settles it within five minutes. The fix is one call to
   `updateCachedNewCount` with the hydrated conversation's stamp.
-- An **unattributed unread conversation is in no badge and in every list.** Each
-  `cachedNewCount` is scoped to its own connection and the badge sums those rows,
-  so a `mail_conversation` at `householdConnectionId: null` is counted nowhere —
-  while `MailService.householdMailScope` admits NULL as "ownership unknown", so the
-  same `/mail/summary` response lists it as unread. Asserted as current behaviour in
-  `tests/integration/mail-sweep-unattributed.test.ts`. It is only reachable for a row
-  upstream has stopped returning (a live one gets stamped on the next walk), and the
-  sweep cannot clear it for the reasons in G1, so the honest fixes are either to count
-  NULL rows into the shared-session row's `cachedNewCount` or to stop admitting them
-  into the read scope once the backfill is known to have run. Not urgent — it needs a
-  pre-ownership row that outlived its upstream — but it is a badge that disagrees with
-  the list on the same screen, which is the class of bug `283c053` was about.
+- ~~An **unattributed unread conversation is in no badge and in every list.**~~
+  **FIXED** in batch 4, as **R15** above. Neither of the two fixes this entry proposed
+  is the one taken: counting NULL into a `cachedNewCount` row would be counted once
+  per connection by the summing badge, and narrowing the read scope would hide a row
+  the parent can see today. The badge instead stops being a pure sum and adds the
+  unattributed rows once, on read (`unreadBadge`), so the list did not have to change
+  at all. The record of what was wrong: each `cachedNewCount` is scoped to its own
+  connection and the badge summed those rows, so a `mail_conversation` at
+  `householdConnectionId: null` was counted nowhere — while the household mail scope
+  admits NULL as "ownership unknown", so the same `/mail/summary` response listed it as
+  unread. It was only reachable for a row upstream has stopped returning (a live one
+  gets stamped on the next walk), and the sweep cannot clear it for the reasons in G1,
+  so it was permanent rather than a seven-minute window — a badge disagreeing with the
+  list on the same screen, which is the class of bug `283c053` was about.
+  `tests/integration/mail-sweep-unattributed.test.ts` asserted it as current behaviour
+  and now asserts the two agree.
 - **A connection-scoped refresh fans out over every child in the database.** Each
   per-student task reads `student.findMany({ where: { isActive: true } })` — not the
   refreshing connection's children — so `POST /sync/refresh` for school A asks A's

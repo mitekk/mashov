@@ -721,13 +721,16 @@ describe('FreshnessService.computeContentFreshness across two schools', () => {
         findMany: jest.fn().mockResolvedValue(connections),
       },
       student: {
-        findMany: jest.fn(({ where }) =>
-          Promise.resolve(
-            where?.householdConnectionId
-              ? [{ studentGuid: `stu-${where.householdConnectionId}` }]
-              : [],
-          ),
-        ),
+        // Keyed off the VISIBILITY predicate, not the routing stamp. The
+        // stamp is gone from this query: it answers whose credentials fetched
+        // a child, and for a child two parents share that is whichever of
+        // them synced last (ADR-0031).
+        findMany: jest.fn(({ where }) => {
+          const connectionId = connectionIdIn(where);
+          return Promise.resolve(
+            connectionId ? [{ studentGuid: `stu-${connectionId}` }] : [],
+          );
+        }),
       },
       homeworkItem: {
         aggregate: jest.fn(({ where }) => {
@@ -742,6 +745,21 @@ describe('FreshnessService.computeContentFreshness across two schools', () => {
         aggregate: jest.fn().mockResolvedValue({ _max: { eventAt: null } }),
       },
     } as unknown as PrismaService;
+  }
+
+  /**
+   * The connection id inside `connectionStudentWhere`'s predicate.
+   *
+   * `{ OR: [{ links: { some: { householdConnectionId } } }, { links: { none: {} } }] }`
+   * — the second branch is the unlinked child, admitted deliberately, and
+   * carries no id.
+   */
+  function connectionIdIn(where: unknown): string | undefined {
+    const predicate = where as {
+      OR?: Array<{ links?: { some?: { householdConnectionId?: string } } }>;
+    };
+    return predicate?.OR?.find((branch) => branch.links?.some)?.links?.some
+      ?.householdConnectionId;
   }
 
   const FRESH = new Date(Date.UTC(2026, 10, 10));
@@ -813,5 +831,70 @@ describe('FreshnessService.computeContentFreshness across two schools', () => {
     await expect(service.computeContentFreshness()).resolves.toMatchObject({
       status: 'stale_year',
     });
+  });
+
+  it("lists only the caller's connections, and the whole table without one", async () => {
+    // R4's second half. Unscoped, the worst verdict was taken across every
+    // active connection in the database, so an unrelated household linking a
+    // school this morning -- nothing synced yet -- degraded everyone's card.
+    const prisma = makePrisma([CONN_CURRENT], { 'conn-a': FRESH });
+    const findMany = prisma.householdConnection.findMany as jest.Mock;
+    const service = new FreshnessService({} as never, prisma, makeMockSchoolYear(2027));
+
+    await service.computeContentFreshness('user-a');
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { active: true, userId: 'user-a' } }),
+    );
+
+    // The caller-less path is the crons and the digest, and stays global.
+    await service.computeContentFreshness();
+    expect(findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { active: true } }),
+    );
+  });
+
+  it('counts a child stamped to the other connection but linked to this one', async () => {
+    // The shared-child case, and the thing the stamp got wrong. Two parents at
+    // one school list the same child; the child is stamped to whichever synced
+    // last, so for the other one `householdConnectionId: conn.id` matched
+    // nothing and the verdict was `no_content` -- which outranks `current` and
+    // degraded the whole card.
+    const prisma = {
+      householdConnection: {
+        findFirst: jest.fn().mockResolvedValue(CONN_CURRENT),
+        findMany: jest.fn().mockResolvedValue([CONN_CURRENT]),
+      },
+      student: {
+        // One row: stamped to conn-b, linked to conn-a. It is returned for
+        // the caller's own connection because the LINK says so.
+        findMany: jest.fn(({ where }) =>
+          Promise.resolve(
+            connectionIdIn(where) === 'conn-a' ? [{ studentGuid: 'stu-shared' }] : [],
+          ),
+        ),
+      },
+      homeworkItem: {
+        aggregate: jest.fn(({ where }) =>
+          Promise.resolve({
+            _max: {
+              lessonDate: where?.studentGuid?.in?.includes('stu-shared') ? FRESH : null,
+            },
+          }),
+        ),
+      },
+      behaviorItem: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { eventAt: null } }),
+      },
+    } as unknown as PrismaService;
+    const service = new FreshnessService({} as never, prisma, makeMockSchoolYear(2027));
+
+    await expect(service.computeContentFreshness('user-a')).resolves.toMatchObject({
+      status: 'current',
+      newestContentAt: FRESH.toISOString(),
+    });
+    // And the stamp is not consulted at all: no top-level predicate on it.
+    for (const call of (prisma.student.findMany as jest.Mock).mock.calls) {
+      expect(call[0].where.householdConnectionId).toBeUndefined();
+    }
   });
 });
