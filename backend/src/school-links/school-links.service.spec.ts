@@ -509,7 +509,13 @@ describe('SchoolLinksService.createLink', () => {
 
       await expect(
         service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' }),
-      ).rejects.toMatchObject({ response: { error: { code: 'RATE_LIMITED' } } });
+      ).rejects.toMatchObject({
+        // 429, not 409: the frontend keys on the code, but a proxy retry
+        // policy or any other client keys on the status, and a throttle is
+        // not a conflict. `.claude/rules/api.md`.
+        status: 429,
+        response: { error: { code: 'RATE_LIMITED' } },
+      });
     });
 
     it('keys the rate limit on the user, not the IP', async () => {

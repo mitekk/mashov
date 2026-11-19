@@ -1,5 +1,7 @@
 import {
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -434,13 +436,21 @@ export class SchoolLinksService {
       await this.redis.expire(key, LINK_RATE_LIMIT_WINDOW_SECONDS);
     }
     if (count > LINK_RATE_LIMIT_MAX) {
-      throw new ConflictException({
-        error: {
-          code: 'RATE_LIMITED',
-          message: 'Too many attempts. Please try again in fifteen minutes.',
-          details: [],
+      // 429, not 409. The frontend maps the `code`, so the Hebrew message is
+      // unaffected -- but a throttle is not a conflict to anything keying off
+      // the status, a proxy retry policy included. `AuthService` reaches the
+      // same status via a bare Error its controller re-wraps; done here
+      // instead, so the envelope the frontend keys on travels with it.
+      throw new HttpException(
+        {
+          error: {
+            code: 'RATE_LIMITED',
+            message: 'Too many attempts. Please try again in fifteen minutes.',
+            details: [],
+          },
         },
-      });
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
   }
 
