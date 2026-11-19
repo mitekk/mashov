@@ -276,12 +276,41 @@ export class ConnectionService {
       where: { schoolCode: connection.schoolCode, active: true, id: { not: connection.id } },
     });
 
+    // This connection's conversations, so their messages can be deleted
+    // without trusting the message stamp. The detail fetch wrote messages with
+    // no `householdConnectionId` at all, and `MailMessage.conversation` has no
+    // `onDelete` (so `Restrict`), so a stamp predicate left those rows behind
+    // and the `mailConversation.deleteMany` below then violated
+    // `mail_message_conversationId_fkey` and aborted this whole transaction --
+    // identically on every retry, recoverable only by hand in the database
+    // (R2). The stamping fix in MailService covers rows written from now on;
+    // rows written before it are already NULL and nothing reaches them but
+    // this predicate.
+    const conversationIds = (
+      await this.prisma.mailConversation.findMany({
+        where: { householdConnectionId: connection.id },
+        select: { conversationId: true },
+      })
+    ).map((c) => c.conversationId);
+
     await this.prisma.$transaction([
       // Mail: messages BEFORE conversations. MailMessage.conversationId is a
       // foreign key onto MailConversation.conversationId, so the other order
       // is a constraint violation.
+      //
+      // The `OR` is deliberate. The `conversationId` arm is the correctness
+      // fix. The stamp arm keeps a message stamped to this connection from
+      // surviving if its conversation ever belongs elsewhere -- harmless on its
+      // own, because the `connection` relation is `onDelete: SetNull`, but free
+      // to keep. An empty `in: []` matches nothing and the stamp arm still
+      // applies.
       this.prisma.mailMessage.deleteMany({
-        where: { householdConnectionId: connection.id },
+        where: {
+          OR: [
+            { conversationId: { in: conversationIds } },
+            { householdConnectionId: connection.id },
+          ],
+        },
       }),
       this.prisma.mailConversation.deleteMany({
         where: { householdConnectionId: connection.id },

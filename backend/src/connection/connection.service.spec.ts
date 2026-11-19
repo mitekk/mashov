@@ -47,7 +47,12 @@ const mockPrisma = {
   messageBoardItem: { deleteMany: jest.fn() },
   timetableEntry: { deleteMany: jest.fn() },
   mailMessage: { deleteMany: jest.fn() },
-  mailConversation: { deleteMany: jest.fn() },
+  mailConversation: {
+    // The unlink pre-reads this connection's conversation ids so it can delete
+    // their messages regardless of how those messages are stamped.
+    findMany: jest.fn().mockResolvedValue([]),
+    deleteMany: jest.fn(),
+  },
   notificationEvent: { deleteMany: jest.fn() },
   // Both were missing from the old transaction entirely.
   studentRelease: { deleteMany: jest.fn() },
@@ -279,8 +284,18 @@ describe('ConnectionService', () => {
       for (const { model, where } of deletedWheres()) {
         expect(where).toBeDefined();
         expect(where).not.toEqual({});
-        if (model === 'mailMessage' || model === 'mailConversation') {
+        if (model === 'mailConversation') {
           expect(where).toEqual({ householdConnectionId: 'conn-a' });
+        }
+        if (model === 'mailMessage') {
+          // Scoped by this connection's conversations OR its own stamp --
+          // never unscoped, and never another school's conversation.
+          expect(where).toEqual({
+            OR: [
+              { conversationId: { in: [] } },
+              { householdConnectionId: 'conn-a' },
+            ],
+          });
         }
       }
     });
@@ -369,6 +384,40 @@ describe('ConnectionService', () => {
       const conversationCall =
         mockPrisma.mailConversation.deleteMany.mock.invocationCallOrder[0];
       expect(messageCall).toBeLessThan(conversationCall);
+    });
+
+    it("deletes the connection's conversations' messages however they are stamped", async () => {
+      // R2: the detail fetch wrote mailMessage rows with no
+      // householdConnectionId, so a stamp predicate left them behind and
+      // mailConversation.deleteMany then violated
+      // mail_message_conversationId_fkey -- the same 500 on every retry. The
+      // delete reaches them by conversation instead.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.mailConversation.findMany.mockResolvedValue([
+        { conversationId: 'conv-a1' },
+        { conversationId: 'conv-a2' },
+      ]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      expect(mockPrisma.mailConversation.findMany).toHaveBeenCalledWith({
+        where: { householdConnectionId: 'conn-a' },
+        select: { conversationId: true },
+      });
+      expect(mockPrisma.mailMessage.deleteMany).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { conversationId: { in: ['conv-a1', 'conv-a2'] } },
+            { householdConnectionId: 'conn-a' },
+          ],
+        },
+      });
+      // Still before the conversations, which is what the FK requires.
+      expect(mockPrisma.mailMessage.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+        mockPrisma.mailConversation.deleteMany.mock.invocationCallOrder[0],
+      );
     });
 
     it('now deletes studentRelease and schoolActivity', async () => {

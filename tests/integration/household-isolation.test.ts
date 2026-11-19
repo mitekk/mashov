@@ -784,4 +784,115 @@ describe('Two mailboxes, two households', () => {
       expect(callArgs[1]).toEqual([CONV_A]);
     }
   });
+
+  /**
+   * R2 — the unlink that could not succeed.
+   *
+   * `deleteOneConnection` deleted `mailMessage` by `householdConnectionId` and
+   * then `mailConversation` by the same key, relying on the two stamps being in
+   * sync. The detail fetch wrote messages with no stamp at all, and
+   * `MailMessage.conversation` has no `onDelete` (so `Restrict`), so one
+   * NULL-stamped message under a stamped conversation made
+   * `mailConversation.deleteMany` violate `mail_message_conversationId_fkey`
+   * and aborted the whole `$transaction` — on every retry, recoverable only by
+   * hand in the database.
+   *
+   * Asserted at service level: `deleteConnection` resolving `{ ok: true }` is
+   * the whole of the 204, because `school-links.controller.ts` puts a static
+   * `@HttpCode(HttpStatus.NO_CONTENT)` on a handler that does nothing but await
+   * this service.
+   */
+  describe('unlinking a school whose conversations have been opened', () => {
+    function makeConnectionService(): ConnectionService {
+      return new ConnectionService(
+        prisma as unknown as PrismaService,
+        {
+          encrypt: (value: string) => value,
+          decrypt: (value: string) => value,
+        } as unknown as EncryptionService,
+        { get: () => undefined } as unknown as ConfigService,
+        {} as unknown as SchoolYearService,
+        { invalidateConnection: () => undefined } as unknown as MashovSessionService,
+      );
+    }
+
+    const MSG_A = 'hhm-msg-a';
+
+    it('unlinks after the detail fetch has written a message', async () => {
+      const mail = makeMailService();
+      upstream.getForTarget.mockResolvedValue({
+        conversationId: CONV_A,
+        subject: `נושא ${CONV_A}`,
+        sendTime: '2026-11-10T08:00:00Z',
+        isNew: true,
+        messages: [
+          {
+            messageId: MSG_A,
+            conversationId: CONV_A,
+            senderId: 'sender-a',
+            senderName: 'מורה',
+            subject: `נושא ${CONV_A}`,
+            body: '<p>גוף ההודעה</p>',
+            sendTime: '2026-11-10T08:00:00Z',
+            isNew: true,
+            recipients: [],
+            files: [],
+          },
+        ],
+      });
+
+      await mail.getConversationDetail(CONV_A, MAIL_USER_A);
+
+      // The stamping half of the fix: the message the hydration wrote carries
+      // the conversation's household.
+      const written = await prisma.mailMessage.findUnique({
+        where: { messageId: MSG_A },
+        select: { householdConnectionId: true },
+      });
+      expect(written?.householdConnectionId).toBe(MAIL_CONN_A);
+
+      await expect(
+        makeConnectionService().deleteConnection(MAIL_USER_A, MAIL_CONN_A),
+      ).resolves.toEqual({ ok: true });
+
+      await expect(
+        prisma.mailConversation.count({ where: { conversationId: CONV_A } }),
+      ).resolves.toBe(0);
+      await expect(
+        prisma.mailMessage.count({ where: { conversationId: CONV_A } }),
+      ).resolves.toBe(0);
+    });
+
+    it('unlinks when a message under its conversation is NULL-stamped', async () => {
+      // The exact shape of every row written before the stamping fix. No
+      // stamping change reaches these, so the delete predicate is what has to
+      // stop depending on the stamp.
+      await prisma.mailMessage.create({
+        data: {
+          messageId: MSG_A,
+          conversationId: CONV_A,
+          householdConnectionId: null,
+          senderId: 'sender-a',
+          senderName: 'מורה',
+          subject: `נושא ${CONV_A}`,
+          bodyHtmlSanitized: '<p>גוף ההודעה</p>',
+          sendTime: new Date('2026-11-10T08:00:00Z'),
+          isNew: true,
+          recipients: [],
+          files: [],
+        },
+      });
+
+      await expect(
+        makeConnectionService().deleteConnection(MAIL_USER_A, MAIL_CONN_A),
+      ).resolves.toEqual({ ok: true });
+
+      await expect(
+        prisma.mailConversation.count({ where: { conversationId: CONV_A } }),
+      ).resolves.toBe(0);
+      await expect(
+        prisma.mailMessage.count({ where: { messageId: MSG_A } }),
+      ).resolves.toBe(0);
+    });
+  });
 });
