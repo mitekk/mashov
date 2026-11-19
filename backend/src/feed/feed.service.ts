@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildStudentSchoolMap } from '../common/student-school-map';
+import { householdMailScope } from '../common/mail-scope';
+import { visibleStudentWhere } from '../common/student-links';
 import {
   historyScopeForStudents,
 } from '../common/school-year/school-year.scope';
@@ -57,8 +59,15 @@ export class FeedService {
       userId,
     );
 
+    // R3: this read was unscoped, unlike the dashboard's. Every feed *item* is
+    // year-scoped by child, so the roster's own leak is narrow -- but the
+    // school map is built from these rows, which is how another household's
+    // connection id and parent-chosen label reached the response (R5).
     const students = await this.prisma.student.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(userId ? await visibleStudentWhere(this.prisma, userId) : {}),
+      },
       select: { studentGuid: true, fullName: true },
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
@@ -75,9 +84,17 @@ export class FeedService {
         where: yearScope,
         orderBy: { eventAt: 'desc' },
       }),
+      // R3: an `archived` filter and nothing else, so another household's mail
+      // rendered here too. Two predicates in an `AND` array rather than one
+      // merged object -- the household scope is an `OR`, so a spread would let
+      // one of them overwrite the other (the same reason
+      // `mail.service.ts:166` does it).
       this.prisma.mailConversation.findMany({
         where: {
-          NOT: { labels: { array_contains: ['archived'] } },
+          AND: [
+            await householdMailScope(this.prisma, userId),
+            { NOT: { labels: { array_contains: ['archived'] } } },
+          ],
         },
         orderBy: { sendTime: 'desc' },
       }),

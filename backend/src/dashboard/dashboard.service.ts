@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { householdMailScope } from '../common/mail-scope';
 import { buildStudentSchoolMap } from '../common/student-school-map';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
@@ -94,10 +96,15 @@ export class DashboardService {
       userId,
     );
 
+    // Resolved once here rather than inside each reader: both `getSummary` and
+    // `getFeed` need it, both are private and called only from here, so the
+    // query count stays flat.
+    const mailScope = await householdMailScope(this.prisma, userId);
+
     const [students, summary, feed, freshness, school] = await Promise.all([
       this.getChildren(yearScope, userId),
-      this.getSummary(yearScope, userId),
-      this.getFeed(windowScope, userId),
+      this.getSummary(yearScope, mailScope, userId),
+      this.getFeed(windowScope, mailScope, userId),
       this.getFreshness(),
       this.getSchoolInfo(),
     ]);
@@ -111,7 +118,11 @@ export class DashboardService {
     };
   }
 
-  private async getSummary(yearScope: YearScope, userId?: string) {
+  private async getSummary(
+    yearScope: YearScope,
+    mailScope: Prisma.MailConversationWhereInput,
+    userId?: string,
+  ) {
     const [localNewConversations, household, students, recentHomework, recentBehavior] = await Promise.all([
       this.prisma.mailConversation.count({
         where: {
@@ -163,7 +174,11 @@ export class DashboardService {
     };
   }
 
-  private async getFeed(yearScope: HistoryWhere, userId?: string): Promise<FeedItem[]> {
+  private async getFeed(
+    yearScope: HistoryWhere,
+    mailScope: Prisma.MailConversationWhereInput,
+    userId?: string,
+  ): Promise<FeedItem[]> {
     const students = await this.prisma.student.findMany({
       where: {
         isActive: true,
@@ -187,7 +202,11 @@ export class DashboardService {
         orderBy: { eventAt: 'desc' },
         take: 20,
       }),
+      // R3: this read had no `where` at all, so another household's mail
+      // subjects and sender-name previews rendered as feed items on `/home` --
+      // with `schoolId: null`, so the school chip could not even hide them.
       this.prisma.mailConversation.findMany({
+        where: mailScope,
         orderBy: { sendTime: 'desc' },
         take: 20,
       }),

@@ -29,6 +29,10 @@ interface Overrides {
   behaviorFindMany?: jest.Mock;
   homeworkFindFirst?: jest.Mock;
   behaviorFindFirst?: jest.Mock;
+  mailFindMany?: jest.Mock;
+  mailCount?: jest.Mock;
+  connectionFindFirst?: jest.Mock;
+  connectionAggregate?: jest.Mock;
   startYear?: string;
 }
 
@@ -37,20 +41,27 @@ function makeService(overrides: Overrides = {}) {
   const behaviorFindMany = overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]);
   const homeworkFindFirst = overrides.homeworkFindFirst ?? jest.fn().mockResolvedValue(null);
   const behaviorFindFirst = overrides.behaviorFindFirst ?? jest.fn().mockResolvedValue(null);
+  const mailFindMany = overrides.mailFindMany ?? jest.fn().mockResolvedValue([]);
+  const mailCount = overrides.mailCount ?? jest.fn().mockResolvedValue(0);
+  const connectionFindFirst =
+    overrides.connectionFindFirst ??
+    jest.fn().mockResolvedValue({
+      schoolYear: 2027,
+      cachedNewCount: 0,
+      schoolName: 'School',
+    });
 
   const prisma = {
     householdConnection: {
-      findFirst: jest.fn().mockResolvedValue({
-        schoolYear: 2027,
-        cachedNewCount: 0,
-        schoolName: 'School',
-      }),
+      findFirst: connectionFindFirst,
       findMany: jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
       // The badge is summed over the CALLER's connections now, so the read is
       // an aggregate rather than one row.
-      aggregate: jest
-        .fn()
-        .mockResolvedValue({ _sum: { cachedNewCount: 0 }, _count: { _all: 1 } }),
+      aggregate:
+        overrides.connectionAggregate ??
+        jest
+          .fn()
+          .mockResolvedValue({ _sum: { cachedNewCount: 0 }, _count: { _all: 1 } }),
     },
     student: {
       findMany: ownershipAwareStudentFindMany(
@@ -75,8 +86,8 @@ function makeService(overrides: Overrides = {}) {
       count: jest.fn().mockResolvedValue(0),
     },
     mailConversation: {
-      findMany: jest.fn().mockResolvedValue([]),
-      count: jest.fn().mockResolvedValue(0),
+      findMany: mailFindMany,
+      count: mailCount,
     },
   } as unknown as PrismaService;
 
@@ -101,7 +112,27 @@ function makeService(overrides: Overrides = {}) {
   } as unknown as ConfigService;
 
   const service = new DashboardService(prisma, freshness, session, itemState, config);
-  return { service, homeworkFindMany, behaviorFindMany, homeworkFindFirst, behaviorFindFirst };
+  return {
+    service,
+    homeworkFindMany,
+    behaviorFindMany,
+    homeworkFindFirst,
+    behaviorFindFirst,
+    mailFindMany,
+    mailCount,
+    connectionFindFirst,
+  };
+}
+
+/** The mail predicate a scoped dashboard read is expected to issue. */
+function mailScope(own = ['conn-1']) {
+  return {
+    OR: [
+      { householdConnectionId: { in: own } },
+      // NULL stays admitted: ownership unknown is not somebody else's.
+      { householdConnectionId: null },
+    ],
+  };
 }
 
 /** The window predicate a history-spanning read is expected to issue. */
@@ -244,6 +275,34 @@ describe('DashboardService', () => {
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: windowWhere(2027, 2027) }),
       );
+    });
+  });
+
+  /**
+   * R3, R13 and N1 — three reads on one screen that never took the caller.
+   *
+   * The student and item reads were scoped in batch 1; these three were not,
+   * and each of them puts another household's data on the dashboard: the feed's
+   * mail list (R3), the fallback badge count (R13) and the school card (N1).
+   */
+  describe('scoping to the caller', () => {
+    it('scopes the feed mail read to the household (R3)', async () => {
+      const { service, mailFindMany } = makeService();
+
+      await service.getDashboard('user-1');
+
+      expect(mailFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: mailScope() }),
+      );
+    });
+
+    it('leaves the caller-less read unscoped', async () => {
+      // The digest and the unauthenticated integration suite drive this path.
+      const { service, mailFindMany } = makeService();
+
+      await service.getDashboard();
+
+      expect(mailFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
     });
   });
 });

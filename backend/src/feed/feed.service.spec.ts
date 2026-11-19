@@ -310,11 +310,90 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(mailFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: {
-            NOT: { labels: { array_contains: ['archived'] } },
-          },
+          // An `AND` array even with no caller: the household scope is an
+          // `OR`, so merging the two predicates would let one overwrite the
+          // other. With no caller the scope half is `{}`, which selects
+          // everything, so the caller-less read is unchanged.
+          where: { AND: [{}, { NOT: { labels: { array_contains: ['archived'] } } }] },
         }),
       );
+    });
+
+    /**
+     * R3 — the feed read another household's mail, and its children.
+     *
+     * The mail leak put another household's subjects and sender-name previews
+     * on `/home` with `schoolId: null`, so the school chip could not even hide
+     * them. The student read is the quieter half: every feed *item* is already
+     * year-scoped by child, so the only thing the unscoped roster changes is
+     * the school map built from it — which is exactly how R5's foreign
+     * connection id reached the response. A `where` assertion is therefore the
+     * honest place to pin it.
+     */
+    describe('scoping to the caller', () => {
+      /** The caller's connections, as the shared helpers resolve them. */
+      const OWN = ['conn-1'];
+
+      it('scopes the mail read to the household', async () => {
+        const mailFindMany = jest.fn().mockResolvedValue([]);
+        const service = makeFeedService(makeMockPrisma({ mailFindMany }));
+
+        await service.getFeed(1, 20, 'user-1');
+
+        expect(mailFindMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: {
+              AND: [
+                {
+                  OR: [
+                    { householdConnectionId: { in: OWN } },
+                    // NULL stays admitted: ownership unknown is not somebody
+                    // else's, and excluding it would empty the feed on a
+                    // deployment that has not re-synced.
+                    { householdConnectionId: null },
+                  ],
+                },
+                { NOT: { labels: { array_contains: ['archived'] } } },
+              ],
+            },
+          }),
+        );
+      });
+
+      it('scopes the roster to what the caller may see', async () => {
+        const studentFindMany = jest.fn().mockResolvedValue([]);
+        const prisma = makeMockPrisma({ studentFindMany });
+        const service = makeFeedService(prisma);
+
+        await service.getFeed(1, 20, 'user-1');
+
+        expect(studentFindMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: {
+              isActive: true,
+              // The visibility edge, not the routing stamp: a child two
+              // parents share carries one stamp (ADR-0031).
+              OR: [
+                { links: { some: { householdConnectionId: { in: OWN } } } },
+                { links: { none: {} } },
+              ],
+            },
+          }),
+        );
+      });
+
+      it('leaves the caller-less read unscoped', async () => {
+        // The digest and the unauthenticated integration suite drive this
+        // path, and nothing about it should change.
+        const studentFindMany = jest.fn().mockResolvedValue([]);
+        const service = makeFeedService(makeMockPrisma({ studentFindMany }));
+
+        await service.getFeed(1, 20);
+
+        expect(studentFindMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { isActive: true } }),
+        );
+      });
     });
 
     it('resolves studentName from student map when studentGuid is provided', async () => {

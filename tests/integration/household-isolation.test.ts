@@ -37,6 +37,10 @@ import {
 import { ConnectionService } from '../../backend/src/connection/connection.service';
 import { ConnectionScopeService } from '../../backend/src/common/connection-scope/connection-scope.service';
 import { MailService } from '../../backend/src/mail/mail.service';
+import { DashboardService } from '../../backend/src/dashboard/dashboard.service';
+import { FeedService } from '../../backend/src/feed/feed.service';
+import { UserItemStateService } from '../../backend/src/common/user-item-state.service';
+import type { FreshnessService } from '../../backend/src/sync/freshness.service';
 import type { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { EncryptionService } from '../../backend/src/session/encryption.service';
@@ -48,6 +52,8 @@ const SEMEL = 778899;
 const YEAR = 2027;
 const USER_A = 'hh-user-a';
 const USER_B = 'hh-user-b';
+/** Signed in, no connection: the only user who reaches R13's branch. */
+const USER_C = 'hh-user-c';
 const CONN_A = 'hh-conn-a';
 const CONN_B = 'hh-conn-b';
 const OWN_A = 'hh-guid-a';
@@ -55,6 +61,14 @@ const OWN_B = 'hh-guid-b';
 const SHARED = 'hh-guid-shared';
 const UNLINKED = 'hh-guid-unlinked';
 const ALL_GUIDS = [OWN_A, OWN_B, SHARED, UNLINKED];
+const ALL_USERS = [USER_A, USER_B, USER_C];
+/** One conversation per connection, so a leak has a name either way. */
+const HH_CONV_A = 'hh-conv-a';
+const HH_CONV_B = 'hh-conv-b';
+const HH_CONVERSATIONS = [HH_CONV_A, HH_CONV_B];
+/** A's cached badge, B's, and the local count the fallback would read. */
+const CACHED_A = 3;
+const CACHED_B = 7;
 /** The unlinked child's current-year row, and their pre-migration one. */
 const UNLINKED_LESSON_ID = 9910;
 const UNLINKED_LEGACY_LESSON_ID = 9911;
@@ -80,14 +94,17 @@ describe('Two parents, one school, shared children', () => {
   });
 
   async function cleanup(): Promise<void> {
-    await prisma.userItemState.deleteMany({ where: { userId: { in: [USER_A, USER_B] } } });
+    await prisma.userItemState.deleteMany({ where: { userId: { in: ALL_USERS } } });
     await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: ALL_GUIDS } } });
+    await prisma.mailConversation.deleteMany({
+      where: { conversationId: { in: HH_CONVERSATIONS } },
+    });
     await prisma.studentConnection.deleteMany({
       where: { studentGuid: { in: ALL_GUIDS } },
     });
     await prisma.student.deleteMany({ where: { studentGuid: { in: ALL_GUIDS } } });
     await prisma.householdConnection.deleteMany({ where: { schoolCode: SEMEL } });
-    await prisma.appUser.deleteMany({ where: { id: { in: [USER_A, USER_B] } } });
+    await prisma.appUser.deleteMany({ where: { id: { in: ALL_USERS } } });
   }
 
   /**
@@ -104,6 +121,9 @@ describe('Two parents, one school, shared children', () => {
     for (const [id, username] of [
       [USER_A, 'parent-a'],
       [USER_B, 'parent-b'],
+      // No connection of their own. Between unlinking and re-linking, which is
+      // the only state in which the dashboard reaches its fallback badge.
+      [USER_C, 'parent-c'],
     ]) {
       await prisma.appUser.create({
         data: {
@@ -116,10 +136,10 @@ describe('Two parents, one school, shared children', () => {
       });
     }
 
-    for (const [id, userId, username] of [
-      [CONN_A, USER_A, 'parent-a'],
-      [CONN_B, USER_B, 'parent-b'],
-    ]) {
+    for (const [id, userId, username, cachedNewCount] of [
+      [CONN_A, USER_A, 'parent-a', CACHED_A],
+      [CONN_B, USER_B, 'parent-b', CACHED_B],
+    ] as Array<[string, string, string, number]>) {
       await prisma.householdConnection.create({
         data: {
           id,
@@ -130,6 +150,9 @@ describe('Two parents, one school, shared children', () => {
           encryptedPassword: 'enc',
           schoolName: 'בית ספר משותף',
           active: true,
+          // Explicit, and different per connection, so a summed badge cannot
+          // be right by accident.
+          cachedNewCount,
         },
       });
     }
@@ -162,6 +185,26 @@ describe('Two parents, one school, shared children', () => {
         { studentGuid: SHARED, householdConnectionId: CONN_A, lastSeenInRosterAt: new Date() },
         { studentGuid: SHARED, householdConnectionId: CONN_B, lastSeenInRosterAt: new Date() },
       ],
+    });
+
+    // One unread conversation per connection. The feed readers render mail
+    // alongside the children, so this is what R3's leak looks like on the
+    // screen: another household's subject and sender-name preview as a feed
+    // item, with `schoolId: null` so the school chip cannot hide it.
+    await prisma.mailConversation.createMany({
+      data: [
+        [HH_CONV_A, CONN_A],
+        [HH_CONV_B, CONN_B],
+      ].map(([conversationId, stamp]) => ({
+        conversationId,
+        subject: `נושא ${conversationId}`,
+        senderNamePreview: 'מורה',
+        sendTime: new Date('2026-11-11T08:00:00Z'),
+        isUnread: true,
+        labels: [],
+        lastFetchedAt: new Date('2026-11-11T08:05:00Z'),
+        householdConnectionId: stamp,
+      })),
     });
 
     await prisma.homeworkItem.createMany({
@@ -491,6 +534,88 @@ describe('Two parents, one school, shared children', () => {
       where: { studentGuid: { in: ALL_GUIDS } },
     });
     expect(links).toBe(4);
+  });
+
+  /**
+   * Batch 3 — the four readers that answered from the whole table.
+   *
+   * `MailService` was scoped in batch 1; the dashboard, the feed and
+   * `/children` each kept their own path to the same questions, and each path
+   * was missing the household predicate in a different place. Asserted
+   * against a real database because what is being proved is a `where`:
+   * the visibility edge is a relation filter, and `resolvedFor` chooses among
+   * rows Postgres returns.
+   */
+  describe('the readers behind /home and /children', () => {
+    function makeDashboard(): DashboardService {
+      return new DashboardService(
+        prisma as unknown as PrismaService,
+        {
+          computeFreshness: async () => ({
+            state: 'fresh',
+            lastSyncAt: null,
+            staleSources: [],
+          }),
+        } as unknown as FreshnessService,
+        // The roster refresh is an upstream call; the fixture is the roster.
+        { ensureStudentsAvailable: async () => undefined } as unknown as MashovSessionService,
+        new UserItemStateService(prisma as unknown as PrismaService),
+        { get: () => undefined } as unknown as ConfigService,
+      );
+    }
+
+    function makeFeed(): FeedService {
+      return new FeedService(
+        prisma as unknown as PrismaService,
+        { get: () => undefined } as unknown as ConfigService,
+      );
+    }
+
+    /** Every feed item this fixture could produce, by source id. */
+    async function feedSourceIds(userId: string): Promise<string[]> {
+      const dashboard = await makeDashboard().getDashboard(userId);
+      const feed = await makeFeed().getFeed(1, 100, userId);
+      return [
+        ...dashboard.feed.map((item) => item.sourceId),
+        ...feed.data.map((item) => item.sourceId),
+      ];
+    }
+
+    describe('R3 — the feed renders only the caller mailbox and children', () => {
+      it("keeps the other household's mail off both feeds", async () => {
+        expect(await feedSourceIds(USER_A)).toContain(HH_CONV_A);
+        expect(await feedSourceIds(USER_A)).not.toContain(HH_CONV_B);
+
+        expect(await feedSourceIds(USER_B)).toContain(HH_CONV_B);
+        expect(await feedSourceIds(USER_B)).not.toContain(HH_CONV_A);
+      });
+
+      it("keeps the other household's children off both feeds", async () => {
+        // A guard, not this fix's red: every feed ITEM is already year-scoped
+        // by child, so the unscoped roster could not put a foreign child's
+        // homework here. What the unscoped roster did reach was the school map
+        // built from it -- which is R5 below, and is pinned at the `where`
+        // level in `feed.service.spec.ts`.
+        const forA = await makeFeed().getFeed(1, 100, USER_A);
+        const guidsA = forA.data.map((item) => item.studentGuid).filter(Boolean);
+
+        // The shared child is A's too, and the unlinked one is everybody's.
+        expect(guidsA).toContain(SHARED);
+        expect(guidsA).not.toContain(OWN_B);
+      });
+
+      it('leaves the unattributed conversation visible to both', async () => {
+        // NULL means "ownership unknown, re-stamp on the next walk". The feed
+        // follows the same rule as the inbox rather than inventing its own.
+        await prisma.mailConversation.update({
+          where: { conversationId: HH_CONV_B },
+          data: { householdConnectionId: null },
+        });
+
+        expect(await feedSourceIds(USER_A)).toContain(HH_CONV_B);
+        expect(await feedSourceIds(USER_B)).toContain(HH_CONV_B);
+      });
+    });
   });
 });
 
