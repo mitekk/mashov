@@ -636,6 +636,22 @@ spec was tightened while in there — it now mocks the credential's `AppUser` as
 *different* household, so it proves the gate instead of relying on an unmocked
 `findUnique` answering `undefined`.
 
+**Residual, recorded rather than fixed** (found by batch 7's own review). One shape still
+freezes the name, and it is the adoption path itself: a parent whose `AppUser` was
+created from school A's credential, who linked school B from inside that session, and
+who from then on always signs in with **B's** password. No `AppUser` exists for B's
+`mashovUserId`, so adoption fires on every such sign-in and still returns before the
+upsert. Left alone deliberately — refreshing the household's `displayName` from the
+*adopted* school's credential is a decision about which credential owns the household's
+name, not a bug in the gate, and ADR-0029 does not settle it. Signing in with A's
+password refreshes it. Pick this up with **B4**, which is the same question about contact
+details.
+
+Also uncovered, and unchanged by this batch: nothing tests
+`adoptionEnabled() === false`. The kill switch is still the first conjunct of the gate,
+so its behaviour is byte-identical before and after — but the batch touched that
+condition and the switch has no coverage at all.
+
 ### R9 — `PUT /school-links/:id` 500s on the unique index this branch added
 
 **Severity**: medium.
@@ -659,7 +675,12 @@ field-array and constraint-name forms Prisma can return, and anything else rethr
 same `update` also writes `encryptedPassword`, `lastLoginAt` and `mashovUniqueId`, so a
 blanket `P2002 -> 409` would one day label a different collision "username taken". A
 companion test pins that propagation. No `P2002` handling existed anywhere in
-`backend/src` before this, so it is the pattern now.
+`backend/src` before this, so it is the pattern now. `docs/api-contract.md` gained the
+409 on both `PUT` rows that reach `updateConnection`.
+
+Scope note: no frontend code calls `PUT /school-links/:id` today — `schoolLinks.ts` has
+only `DELETE` — so this is an API-contract and robustness fix, not a 500 a parent can
+currently reach from the UI.
 
 ### R10 — The link rate limit answers 409 where the rules say 429
 
