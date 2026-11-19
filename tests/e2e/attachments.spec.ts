@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { AttachmentViewerPage } from './pages/AttachmentViewerPage';
 
@@ -7,7 +9,9 @@ import { AttachmentViewerPage } from './pages/AttachmentViewerPage';
  * The binary endpoints are `route.fulfill`ed with real bytes so the viewer's
  * MIME resolution runs for real: a PNG, a minimal PDF, the same PDF served as
  * `application/octet-stream` (the extension-fallback path, which is the one
- * most likely to regress), a `.docx`, a 404 and a 504 envelope.
+ * most likely to regress), a real `.docx` from `fixtures/`, a file named
+ * `.docx` whose bytes are not a zip, an `.xlsx` standing in for the types
+ * that still cannot preview, a 404 and a 504 envelope.
  */
 
 const STUDENT_GUID = 'e2e-test-student-guid-00002';
@@ -31,14 +35,41 @@ const MINIMAL_PDF = [
   '%%EOF',
 ].join('\n');
 
+/** A real Word file: RTL heading, Hebrew paragraph, bordered table. See
+ * `fixtures/README.md`. */
+const SAMPLE_DOCX = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.docx'));
+
+/** The same, but crafted: a `javascript:` hyperlink relationship and a font
+ * name that breaks out of its CSS declaration to fetch a beacon. */
+const HOSTILE_DOCX = fs.readFileSync(path.join(__dirname, 'fixtures', 'hostile.docx'));
+
+const BEACON_HOST = 'evil.example';
+
+/** Text the fixture carries, used to prove the parse actually happened rather
+ * than just the container mounting. */
+const DOCX_HEADING = 'אישור הורים לטיול השנתי';
+
+const DOCX_CONTENT_TYPE =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 const FILES = [
   { fileId: 'file-png', fileName: 'photo.png' },
   { fileId: 'file-pdf', fileName: 'letter.pdf' },
   { fileId: 'file-octet-pdf', fileName: 'mystery.pdf' },
-  { fileId: 'file-docx', fileName: 'form.docx' },
+  // The stand-in for "a type that can never preview". It used to be the
+  // `.docx`, which now renders.
+  { fileId: 'file-xlsx', fileName: 'grades.xlsx' },
   { fileId: 'file-missing', fileName: 'gone.pdf' },
   { fileId: 'file-timeout', fileName: 'slow.pdf' },
+  { fileId: 'file-docx', fileName: 'form.docx' },
+  { fileId: 'file-docx-corrupt', fileName: 'broken.docx' },
+  { fileId: 'file-docx-hostile', fileName: 'hostile.docx' },
 ];
+
+const XLSX_FILE = FILES[3];
+const DOCX_FILE = FILES[6];
+const CORRUPT_DOCX_FILE = FILES[7];
+const HOSTILE_DOCX_FILE = FILES[8];
 
 const MOCK_ME = {
   mashovUserId: 'e2e-parent-1',
@@ -80,11 +111,41 @@ async function fulfillAttachment(route: Route): Promise<void> {
       });
       return;
 
+    case 'file-xlsx':
+      await route.fulfill({
+        status: 200,
+        contentType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers: { 'content-disposition': 'attachment; filename="grades.xlsx"' },
+        body: Buffer.from('PK\u0003\u0004 not really an xlsx', 'utf-8'),
+      });
+      return;
+
     case 'file-docx':
       await route.fulfill({
         status: 200,
-        contentType: 'application/octet-stream',
+        contentType: DOCX_CONTENT_TYPE,
         headers: { 'content-disposition': 'attachment; filename="form.docx"' },
+        body: SAMPLE_DOCX,
+      });
+      return;
+
+    case 'file-docx-hostile':
+      await route.fulfill({
+        status: 200,
+        contentType: DOCX_CONTENT_TYPE,
+        headers: { 'content-disposition': 'attachment; filename="hostile.docx"' },
+        body: HOSTILE_DOCX,
+      });
+      return;
+
+    // Named `.docx`, but the bytes are not a zip — a mislabeled or truncated
+    // file, which is what the parse has to fail gracefully on.
+    case 'file-docx-corrupt':
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/octet-stream',
+        headers: { 'content-disposition': 'attachment; filename="broken.docx"' },
         body: Buffer.from('PK\u0003\u0004 not really a docx', 'utf-8'),
       });
       return;
@@ -329,10 +390,10 @@ test.describe('Attachment viewer', () => {
   });
 
   test('offers download but not print for a file it cannot preview', async ({ page }) => {
-    await gotoHomework(page, [FILES[3]]);
+    await gotoHomework(page, [XLSX_FILE]);
     const viewer = new AttachmentViewerPage(page);
 
-    await viewer.open('file-docx');
+    await viewer.open('file-xlsx');
 
     await expect(viewer.unsupportedCard).toBeVisible();
     await expect(viewer.unsupportedDownloadButton).toBeVisible();
@@ -350,15 +411,16 @@ test.describe('Attachment viewer', () => {
       }
     });
 
-    await gotoHomework(page, [FILES[3]]);
+    await gotoHomework(page, [XLSX_FILE]);
     const viewer = new AttachmentViewerPage(page);
 
-    await viewer.open('file-docx');
+    await viewer.open('file-xlsx');
     await expect(viewer.unsupportedCard).toBeVisible();
 
-    // A `.docx` can never render inline, and no response header could change
+    // An `.xlsx` can never render inline, and no response header could change
     // that — so pulling it into memory just to say so would cost a parent on
-    // mobile data the whole transfer.
+    // mobile data the whole transfer. (A `.docx` is the opposite case now; see
+    // the docx test below, which asserts the request *is* made.)
     expect(requested).toEqual([]);
 
     // Download still works: it navigates to the endpoint, whose
@@ -366,13 +428,156 @@ test.describe('Attachment viewer', () => {
     const downloadPromise = page.waitForEvent('download');
     await viewer.unsupportedDownloadButton.click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe('form.docx');
+    expect(download.suggestedFilename()).toBe('grades.xlsx');
+  });
+
+  test('renders a real .docx inline, parsed from its own bytes', async ({ page }) => {
+    const requested: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes(`/homework/${HOMEWORK_ID}/files/`)) {
+        requested.push(request.url());
+      }
+    });
+
+    await gotoHomework(page, [DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx');
+
+    await expect(viewer.docxPreview).toBeVisible();
+    await expect(viewer.unsupportedCard).toBeHidden();
+
+    // The container alone proves nothing — the parse is what is under test, so
+    // assert the document's own text. It lives in an open shadow root, which
+    // Playwright's text engine pierces.
+    await expect(viewer.docxPreview).toContainText(DOCX_HEADING);
+    await expect(viewer.docxPreview).toContainText('ירושלים');
+
+    // The inverse of the skip-the-fetch rule: a `.docx` is worth the transfer
+    // now, because the bytes are what gets rendered.
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toContain('file-docx');
+  });
+
+  test('shows the error state with a download escape hatch when the .docx is not a zip', async ({
+    page,
+  }) => {
+    await gotoHomework(page, [CORRUPT_DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx-corrupt');
+
+    await expect(viewer.error).toBeVisible();
+    await expect(viewer.error).toContainText('לא ניתן להציג את הקובץ');
+    await expect(viewer.errorFallbackLink).toHaveAttribute(
+      'href',
+      `/api/v1/children/${STUDENT_GUID}/homework/${HOMEWORK_ID}/files/file-docx-corrupt`,
+    );
+    await expect(viewer.errorFallbackLink).toHaveAttribute('download', 'broken.docx');
+
+    // Nothing to print: the render never completed.
+    await expect(viewer.printButton).toBeHidden();
+  });
+
+  test('prints a .docx as the rendered document, not as its zip bytes', async ({ page }) => {
+    await gotoHomework(page, [DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx');
+    await expect(viewer.docxPreview).toContainText(DOCX_HEADING);
+
+    // The button only appears once the parse has produced a render — before
+    // that there is nothing to print.
+    await expect(viewer.printButton).toBeVisible();
+    await viewer.printButton.click();
+
+    await expect(viewer.printFrame).toBeAttached();
+
+    // What separates a correct docx printout from the old failure mode (the
+    // raw zip escaped into a `<pre>`): the frame's document carries the
+    // document's text.
+    const frame = page.frameLocator('[data-testid="attachment-print-frame"]');
+    await expect(frame.locator('body')).toContainText(DOCX_HEADING);
+  });
+
+  test('strips a javascript: hyperlink a crafted .docx carries', async ({ page }) => {
+    await gotoHomework(page, [HOSTILE_DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx-hostile');
+    await expect(viewer.docxPreview).toContainText('לחצו כאן לאישור');
+
+    // The library assigns `a.href` straight from the document's relationships
+    // with no scheme check, and this render lives in the app's origin — one tap
+    // would run script with the session cookie attached. Its own stylesheet
+    // renders anchors with `color: inherit`, so the trap does not even look
+    // like a link.
+    const anchors = await page.evaluate(() => {
+      const host = document.querySelector('[data-testid="attachment-preview-docx"]');
+      return Array.from(host?.shadowRoot?.querySelectorAll('a') ?? []).map((a) => ({
+        href: a.getAttribute('href'),
+        rel: a.getAttribute('rel'),
+        target: a.getAttribute('target'),
+      }));
+    });
+
+    expect(anchors.length).toBeGreaterThan(0);
+    for (const anchor of anchors) {
+      expect(anchor.href ?? '').not.toContain('javascript:');
+    }
+
+    // And the click is inert, rather than merely looking inert.
+    await viewer.docxPreview.getByText('לחצו כאן לאישור').click();
+    const pwned = await page.evaluate(
+      () => (window as unknown as { __docxPwned?: number }).__docxPwned ?? 0,
+    );
+    expect(pwned).toBe(0);
+  });
+
+  test('does not let a crafted .docx call home through injected css', async ({ page }) => {
+    const beaconRequests: string[] = [];
+    await page.route(`**://${BEACON_HOST}/**`, async (route) => {
+      beaconRequests.push(route.request().url());
+      await route.abort();
+    });
+
+    await gotoHomework(page, [HOSTILE_DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx-hostile');
+    await expect(viewer.docxPreview).toContainText('מסמך בדיקה');
+
+    // A font name with no whitespace is not quoted by the library, so it
+    // escapes its declaration and injects a whole rule. CSS cannot execute
+    // here, but a url() is a read receipt — plus IP and user-agent — on an
+    // authenticated session, from a document no school sent.
+    await expect(viewer.printButton).toBeVisible();
+    await viewer.printButton.click();
+    await expect(viewer.printFrame).toBeAttached();
+    await page.waitForTimeout(500);
+
+    expect(beaconRequests).toEqual([]);
+  });
+
+  test('renders the second .docx after the first one failed', async ({ page }) => {
+    // The failure state must not strand the files behind it: the host element
+    // the renderer needs stays mounted even while the error card is showing.
+    await gotoHomework(page, [CORRUPT_DOCX_FILE, DOCX_FILE]);
+    const viewer = new AttachmentViewerPage(page);
+
+    await viewer.open('file-docx-corrupt');
+    await expect(viewer.error).toBeVisible();
+
+    await viewer.nextButton.click();
+    await expect(viewer.title).toHaveText('form.docx');
+    await expect(viewer.docxPreview).toContainText(DOCX_HEADING);
+    await expect(viewer.printButton).toBeVisible();
   });
 
   test('navigates between several files with the buttons and the counter tracks', async ({
     page,
   }) => {
-    await gotoHomework(page, [FILES[0], FILES[1], FILES[3]]);
+    await gotoHomework(page, [FILES[0], FILES[1], XLSX_FILE]);
     const viewer = new AttachmentViewerPage(page);
 
     await viewer.open('file-png');
@@ -387,7 +592,7 @@ test.describe('Attachment viewer', () => {
 
     await viewer.nextButton.click();
     await expect(viewer.counter).toHaveText('3 / 3');
-    await expect(viewer.title).toHaveText('form.docx');
+    await expect(viewer.title).toHaveText('grades.xlsx');
     await expect(viewer.nextButton).toBeDisabled();
 
     await viewer.previousButton.click();
@@ -395,7 +600,7 @@ test.describe('Attachment viewer', () => {
   });
 
   test('ArrowLeft advances and ArrowRight goes back, as RTL requires', async ({ page }) => {
-    await gotoHomework(page, [FILES[0], FILES[3]]);
+    await gotoHomework(page, [FILES[0], XLSX_FILE]);
     const viewer = new AttachmentViewerPage(page);
 
     await viewer.open('file-png');
@@ -403,7 +608,7 @@ test.describe('Attachment viewer', () => {
 
     await viewer.pressAdvanceKey();
     await expect(viewer.counter).toHaveText('2 / 2');
-    await expect(viewer.title).toHaveText('form.docx');
+    await expect(viewer.title).toHaveText('grades.xlsx');
 
     await viewer.pressBackKey();
     await expect(viewer.counter).toHaveText('1 / 2');

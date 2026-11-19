@@ -20,6 +20,7 @@ import {
 } from '@/lib/attachment-routes';
 import {
   charsetFromContentType,
+  DOCX_MIME_TYPE,
   formatFileSize,
   isSvg,
   mimeFromExtension,
@@ -97,6 +98,32 @@ describe('previewKindFor', () => {
     expect(previewKindFor('application/pdf', 'letter.pdf')).toBe('pdf');
   });
 
+  it('renders the OOXML Word type as a docx', () => {
+    expect(previewKindFor(DOCX_MIME_TYPE, 'form.docx')).toBe('docx');
+  });
+
+  it('renders a docx the server labelled octet-stream, via the extension', () => {
+    // The common real case: Mashov reports no type, so `resolveMimeType`
+    // derives it from the filename before `previewKindFor` ever sees it.
+    const mime = resolveMimeType('application/octet-stream', 'form.docx');
+    expect(mime).toBe(DOCX_MIME_TYPE);
+    expect(previewKindFor(mime, 'form.docx')).toBe('docx');
+  });
+
+  it.each([
+    ['application/msword', 'letter.doc'],
+    ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'grades.xlsx'],
+    ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'deck.pptx'],
+  ])('still refuses to preview %s — only Word OOXML renders', (mime, fileName) => {
+    expect(previewKindFor(mime, fileName)).toBe('unsupported');
+  });
+
+  it('routes an SVG served with the docx type down the image path', () => {
+    // Strictest source wins, and the new docx branch must not break it: an
+    // `<img>` is the only place a script-bearing SVG is safe.
+    expect(previewKindFor(DOCX_MIME_TYPE, 'evil.svg')).toBe('image');
+  });
+
   it.each(['text/plain', 'text/csv', 'text/markdown'])('renders %s as text', (mime) => {
     expect(previewKindFor(mime, 'file.bin')).toBe('text');
   });
@@ -110,7 +137,6 @@ describe('previewKindFor', () => {
   });
 
   it.each([
-    ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'form.docx'],
     ['application/vnd.ms-excel', 'grades.xls'],
     ['application/zip', 'bundle.zip'],
     ['application/octet-stream', 'mystery'],
@@ -154,8 +180,9 @@ describe('mimeFromExtension', () => {
   it('names the office and archive types that can never preview', () => {
     // This pairing is what lets the viewer skip the fetch entirely: a file
     // whose extension resolves to an unsupported type cannot be rescued by
-    // the response header.
-    for (const fileName of ['form.docx', 'grades.xlsx', 'deck.pptx', 'bundle.zip']) {
+    // the response header. `.docx` is deliberately absent — it renders
+    // in-page now, so its bytes are worth fetching.
+    for (const fileName of ['letter.doc', 'grades.xlsx', 'deck.pptx', 'bundle.zip']) {
       const mime = mimeFromExtension(fileName);
       expect(mime).not.toBeNull();
       expect(previewKindFor(mime as string, fileName)).toBe('unsupported');
@@ -163,7 +190,7 @@ describe('mimeFromExtension', () => {
   });
 
   it('does not rule out a previewable extension', () => {
-    for (const fileName of ['a.pdf', 'a.png', 'a.svg', 'a.csv', 'a.txt']) {
+    for (const fileName of ['a.pdf', 'a.png', 'a.svg', 'a.csv', 'a.txt', 'a.docx']) {
       const mime = mimeFromExtension(fileName);
       expect(mime).not.toBeNull();
       expect(previewKindFor(mime as string, fileName)).not.toBe('unsupported');

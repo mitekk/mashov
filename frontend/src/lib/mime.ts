@@ -10,7 +10,7 @@
  * Both exported predicates are pure and total: no throwing, no I/O.
  */
 
-export type PreviewKind = 'image' | 'pdf' | 'text' | 'unsupported';
+export type PreviewKind = 'image' | 'pdf' | 'text' | 'docx' | 'unsupported';
 
 /**
  * Header values that mean "we have no idea what this is". When the header is
@@ -23,6 +23,15 @@ const UNINFORMATIVE_MIME_TYPES = new Set([
   'application/download',
   'application/force-download',
 ]);
+
+/**
+ * Word OOXML — the one office type that renders inline. It is parsed into DOM
+ * nodes in the page (see `components/attachments/DocxPreview.tsx`), never
+ * handed to a frame. Legacy `.doc` is a different, binary format and stays
+ * unsupported; `.xlsx`/`.pptx` are OOXML too but need their own renderers.
+ */
+export const DOCX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 /**
  * Extension → MIME. Deliberately small: the types the viewer can render, plus
@@ -45,7 +54,7 @@ const EXTENSION_MIME_TYPES: Record<string, string> = {
   md: 'text/markdown',
   markdown: 'text/markdown',
   doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  docx: DOCX_MIME_TYPE,
   xls: 'application/vnd.ms-excel',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   ppt: 'application/vnd.ms-powerpoint',
@@ -92,9 +101,10 @@ function extensionOf(fileName: string): string {
  * is absent or unrecognized.
  *
  * Exposed so a caller can decide *before* fetching whether a file is worth
- * pulling into memory: a `.docx` or `.zip` can never render inline, and
+ * pulling into memory: a `.xlsx` or `.zip` can never render inline, and
  * streaming 30MB of it over mobile data only to show a "cannot display" card
- * is worse than the plain link it replaced.
+ * is worse than the plain link it replaced. A `.docx` does render, so its
+ * bytes are worth the transfer.
  */
 export function mimeFromExtension(fileName: string): string | null {
   return EXTENSION_MIME_TYPES[extensionOf(fileName)] ?? null;
@@ -140,7 +150,8 @@ export function resolveMimeType(
  * How the viewer should render a file — a closed allowlist whose default
  * branch is `'unsupported'`.
  *
- * The allowlist is a security control, not a convenience. An SVG is a
+ * The allowlist is a security control, not a convenience. The rule it encodes
+ * is about *where* bytes are rendered, not only whether they are. An SVG is a
  * script-bearing document: it is safe inside `<img>`, where the UA forces
  * secure static mode (no scripts, no external loads), and *unsafe* inside
  * `<object>`/`<embed>`/`<iframe>`, because a `blob:` URL inherits this
@@ -154,7 +165,14 @@ export function resolveMimeType(
  *
  * SVG is detected from *either* source — strictest source wins — so a header
  * claiming `image/png` on `evil.svg` still routes down the image-only path
- * rather than anything laxer.
+ * rather than anything laxer. That check stays first: the docx branch below
+ * must not capture an `evil.svg` whose header claims the Word type.
+ *
+ * `docx` is the one kind that is neither a tag nor a frame: the bytes are
+ * parsed to DOM nodes by `docx-preview` and appended inside a shadow root in
+ * this page. That is safe *because* nothing is ever injected as an HTML
+ * string, and it is why the invariant is "in-page, never framed" rather than
+ * "docx cannot preview". Do not render a docx by pointing a frame at its blob.
  */
 export function previewKindFor(mime: string, fileName: string): PreviewKind {
   const normalized = bareType(mime);
@@ -163,6 +181,7 @@ export function previewKindFor(mime: string, fileName: string): PreviewKind {
     return 'image';
   }
   if (IMAGE_MIME_TYPES.has(normalized)) return 'image';
+  if (normalized === DOCX_MIME_TYPE) return 'docx';
   if (normalized === 'application/pdf') return 'pdf';
   if (TEXT_MIME_TYPES.has(normalized)) return 'text';
 

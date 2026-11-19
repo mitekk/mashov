@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Download, FileQuestion } from 'lucide-react';
+import { DocxPreview, type DocxRender } from '@/components/attachments/DocxPreview';
+import { UnsupportedCard } from '@/components/attachments/UnsupportedCard';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { describeAttachmentError } from '@/lib/attachment-errors';
@@ -14,6 +15,9 @@ export interface AttachmentPreviewProps {
    * bypasses our fetch (and so the proxy timeout) entirely. */
   href: string;
   previewKind: PreviewKind;
+  /** The bytes themselves. Only the docx renderer needs them — it parses the
+   * file rather than pointing a tag at an object URL. */
+  blob: Blob | undefined;
   objectUrl: string | null;
   text: string | null;
   isTextTruncated: boolean;
@@ -22,38 +26,9 @@ export interface AttachmentPreviewProps {
   error: unknown;
   onRetry: () => void;
   onDownload: () => void;
-}
-
-/** Shown for anything the browser cannot safely render inline: Word, Excel,
- * archives — and anything whose type we could not establish. */
-function UnsupportedCard({
-  fileName,
-  onDownload,
-}: {
-  fileName: string;
-  onDownload: () => void;
-}) {
-  return (
-    <div
-      data-testid="attachment-preview-unsupported"
-      className="card-base flex flex-col items-center justify-center gap-3 px-4 py-12 text-center"
-    >
-      <FileQuestion className="h-10 w-10 text-muted-foreground opacity-70" aria-hidden="true" />
-      <p className="text-base font-medium text-foreground">לא ניתן להציג את הקובץ בתוך האפליקציה</p>
-      <p className="max-w-sm text-sm text-muted-foreground" dir={getTextDir(fileName)}>
-        {fileName}
-      </p>
-      <button
-        type="button"
-        onClick={onDownload}
-        data-testid="attachment-unsupported-download-button"
-        className="tap-target mt-2 inline-flex items-center gap-2 rounded-2xl border border-primary/30 px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/10"
-      >
-        <Download className="h-4 w-4" aria-hidden="true" />
-        הורדת הקובץ
-      </button>
-    </div>
-  );
+  /** Receives the serialized docx render, which is what makes Print possible
+   * for a Word file. `null` whenever there is no usable render. */
+  onDocxRendered: (render: DocxRender | null) => void;
 }
 
 /**
@@ -65,6 +40,12 @@ function UnsupportedCard({
  * inherits this document's origin for scripting, which would turn a
  * script-bearing SVG into stored XSS against the session.
  *
+ * The `docx` arm is the one that renders without pointing a tag at the bytes:
+ * `DocxPreview` parses the OOXML and appends DOM nodes inside a shadow root in
+ * this page. In-page is *safer* than a frame here, not laxer — nothing is
+ * injected as an HTML string, and there is no blob: document to inherit the
+ * origin. See the comment in `DocxPreview.tsx` before changing it.
+ *
  * Note for anyone adding a Content-Security-Policy later (there is none in the
  * repo today): `img-src`, `frame-src` and `object-src` must all include
  * `blob:` or this preview dies silently.
@@ -73,6 +54,7 @@ export function AttachmentPreview({
   fileName,
   href,
   previewKind,
+  blob,
   objectUrl,
   text,
   isTextTruncated,
@@ -81,6 +63,7 @@ export function AttachmentPreview({
   error,
   onRetry,
   onDownload,
+  onDocxRendered,
 }: AttachmentPreviewProps) {
   // An image whose header lied about its type: fall back to the same card an
   // unsupported file gets rather than showing a broken-image glyph.
@@ -137,6 +120,18 @@ export function AttachmentPreview({
           </a>
         </p>
       </div>
+    );
+  }
+
+  if (previewKind === 'docx' && blob) {
+    return (
+      <DocxPreview
+        blob={blob}
+        fileName={fileName}
+        href={href}
+        onDownload={onDownload}
+        onRendered={onDocxRendered}
+      />
     );
   }
 
