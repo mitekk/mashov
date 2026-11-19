@@ -324,9 +324,10 @@ conversation is stamped. `mailConversation.deleteMany` then violates
       (for conversations upstream still returns) and the delete predicate below.
       All four call sites already passed the whole `mailConversation` row, so none
       changed. **And** the unlink no longer depends on the stamp:
-      `deleteOneConnection` pre-reads the connection's `conversationId`s and matches
-      `conversationId IN (…) OR householdConnectionId = :id`, still ahead of
-      `mailConversation.deleteMany` for the FK. Both halves are needed and neither
+      the delete matches `conversation: { householdConnectionId } OR
+      householdConnectionId`, still ahead of `mailConversation.deleteMany` for the FK.
+      (It first used a pre-read of conversation ids and an `IN` list; `c82ebc1`
+      replaced that with the relation filter — see the Minors below for why.) Both halves are needed and neither
       substitutes for the other — stamping reaches future and re-fetched rows, and
       nothing reaches the already-NULL ones but the predicate.
 - [x] A test opens a conversation detail, then unlinks that school.
@@ -853,35 +854,48 @@ came out of the work rather than out of review; they are the Minors below.
   `MashovSessionService`, which that module neither provides nor imports. Nothing
   imports it and nothing injects `SessionService`. It now carries a comment saying so;
   deleting it is the actual fix.
-- Found while fixing **R2**, all in `ConnectionService.deleteOneConnection`. A
-  relation filter instead of the pre-read —
-  `where: { OR: [{ conversation: { householdConnectionId: connection.id } }, {
-  householdConnectionId: connection.id }] }` — collapses the first two of these into
-  nothing, and was not taken only because R2's own shape was the one the tests were
-  written red against:
-  - `conversationIds` is read OUTSIDE the `$transaction`, so a conversation created
-    between the read and the delete is deleted while a NULL-stamped message under it
-    is not. Traced: that needs the shared-session mail walk, which runs only when the
-    household has no active connection, so the worst case is one retriable 500 rather
-    than R2's permanent one. No orphan and no partial state — the transaction aborts
-    whole.
-  - The `in` list is unbounded, and `mail-inbox.task.ts` never deletes a mail row, so
-    it only grows. Past roughly 65k conversations in one household the `DELETE … WHERE
-    conversationId IN (…)` exceeds Postgres's 16-bit bind-parameter limit and the
-    unlink breaks permanently — R2's exact failure class at a higher threshold. Not
-    reachable at school-mailbox scale, so recorded rather than fixed.
-  - `mail_message."conversationId"` has no index (`schema.prisma` declares only
-    `@@index([householdConnectionId])`, and Postgres does not index FK child columns
-    for you), so both the new delete arm and the FK check on
-    `mailConversation.deleteMany` sequential-scan `mail_message` while the unlink
-    holds its locks. Pre-existing; `@@index([conversationId])` fixes both.
-  - `deleteConnection` loops `deleteOneConnection` with one `$transaction` each, so a
-    failure on the second school leaves the first unlinked and still returns a 500 —
-    the caller cannot tell what happened. Pre-existing and independent of R2.
+- Found while fixing **R2**, all in `ConnectionService.deleteOneConnection`, and
+  **all four now fixed** in `c82ebc1` and `2bfd7de` rather than deferred. What they
+  were, and what the fix was:
+  - `conversationIds` was read OUTSIDE the `$transaction`, so a conversation created
+    between the read and the delete would be deleted while a NULL-stamped message
+    under it was not. Traced before fixing: that needed the shared-session mail walk,
+    which runs only when the household has no active connection, so the worst case was
+    one retriable 500 rather than R2's permanent one, with no orphan and no partial
+    state.
+  - That `in` list was unbounded, and `mail-inbox.task.ts` never deletes a mail row,
+    so it only grew. Past roughly 65k conversations in one household the `DELETE …
+    WHERE conversationId IN (…)` exceeds Postgres's 16-bit bind-parameter limit and
+    the unlink breaks permanently — R2's exact failure class at a higher threshold.
+    Both are gone: the predicate is now the relation filter
+    `conversation: { householdConnectionId: connection.id }`, which is one statement,
+    evaluated inside the transaction, with no id list. Verified red against real
+    Postgres by deleting that arm — the NULL-stamped case failed again on
+    `mail_message_conversationId_fkey`, the other 278 stayed green.
+  - `mail_message."conversationId"` had no index (`schema.prisma` declared only
+    `@@index([householdConnectionId])`, and Postgres does not index a foreign key's
+    referencing column), so both the delete arm and the FK check behind
+    `mailConversation.deleteMany` sequential-scanned `mail_message` under lock, as did
+    every conversation open. Now `@@index([conversationId])` plus
+    `20261123000000_mail_message_conversation_index`, written `IF NOT EXISTS` so it
+    survives the `prisma db push` boot.
+  - `deleteConnection` looped `deleteOneConnection` with one `$transaction` each, so a
+    failure on the second school left the first unlinked and still returned a 500 —
+    the parent pressed "disconnect all", saw an error, and could not tell that half of
+    it had happened. Now one transaction for every school, with sessions evicted after
+    the commit. That required widening both exclusion sets from "every connection but
+    this one" to "every connection in this unlink": the sequential loop was only
+    correct because the earlier school's rows were already deleted by the time it
+    read, and read up front, a child both unlinked schools list would have looked
+    shared to each and survived as an orphan with `isActive: true`. Two unit cases pin
+    each exclusion set; six were red before the change.
 - Also found fixing **R2**: a conversation that is unattributed (`householdConnectionId
   IS NULL`) and whose messages are therefore written NULL-stamped too survives every
   unlink, both rows, and stays visible to every household. Deliberate — keeping the
   message stamp equal to the conversation's is the invariant the unlink rests on, and
   the sync walk re-stamps such rows while upstream still returns them — but it means
   the only thing that ever clears them is `mail-sweep-unattributed`, under the
-  conditions **G1** records.
+  conditions **G1** records. Left as it is deliberately, and the only one of the
+  review's minors not folded in: the alternative is for one household's unlink to
+  delete a conversation every other household can still see, which is worse than
+  leaving it.
