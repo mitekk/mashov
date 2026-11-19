@@ -304,13 +304,46 @@ conversation is stamped. `mailConversation.deleteMany` then violates
 `mail_message_conversationId_fkey`, the whole `$transaction` aborts, and the unlink
 500s. It is not transient: it fails identically on every retry.
 
+**Status: FIXED** in `fc85cf8` (the stamp) and `b6565a9` (the delete predicate).
+
 **DoD**
-- [ ] The detail fetch stamps `householdConnectionId` on the messages it writes
-      (`create` **and** `update` branches, so existing rows self-heal), **and** the
-      unlink deletes messages by `conversationId IN (…)` rather than by stamp — belt
-      and braces, because rows written before the fix are already NULL.
-- [ ] A test opens a conversation detail, then unlinks that school, and asserts 204
-      with the conversation and its messages gone.
+- [x] The detail fetch stamps `householdConnectionId` on the messages it writes.
+      `hydrateConversationFromUpstream` / `persistUpstreamConversationDetail` now take
+      the conversation's own stamp — not the resolved upstream target, because keeping
+      the message and conversation stamps identical is exactly the invariant the unlink
+      was written against — and the `mailMessage.upsert` carries it into `create`
+      always and into `update` only when the conversation is stamped. That is the
+      self-heal for rows written before the fix, without letting an unstamped
+      conversation un-stamp a message a sync walk had already attributed correctly.
+      All four call sites already passed the whole `mailConversation` row, so none
+      changed. **And** the unlink no longer depends on the stamp:
+      `deleteOneConnection` pre-reads the connection's `conversationId`s and matches
+      `conversationId IN (…) OR householdConnectionId = :id`, still ahead of
+      `mailConversation.deleteMany` for the FK. Both halves are needed and neither
+      substitutes for the other — stamping reaches future and re-fetched rows, and
+      nothing reaches the already-NULL ones but the predicate.
+- [x] A test opens a conversation detail, then unlinks that school.
+      `tests/integration/household-isolation.test.ts`, **2 cases** against real
+      Postgres in the `Two mailboxes, two households` describe: one drives
+      `getConversationDetail` through the real hydration path (spy `getForTarget`
+      returning a one-message detail payload), asserts the written `mailMessage`
+      carries the conversation's connection, then unlinks and asserts the
+      conversation and its messages are gone; the second inserts a NULL-stamped
+      message under the same conversation directly — the exact shape of a row written
+      before this fix — and asserts the unlink still succeeds and removes it, which is
+      the half that stays red if only the stamping lands. Verified red at `fc85cf8^`:
+      both failed on `Foreign key constraint violated:
+      mail_message_conversationId_fkey` out of the aborted `$transaction`, and the
+      first also on the message stamp being `null`. Unit cases pin the two edits where
+      the unit suite catches a regression cheaply: three in `mail.service.spec.ts`
+      (`create` carries the stamp, `update` carries it, an unstamped conversation
+      writes no `householdConnectionId` into `update`) and one in
+      `connection.service.spec.ts` (the predicate reaches this connection's
+      conversations and still runs before `mailConversation.deleteMany`).
+      On "asserts 204": the assertion is at service level, where `deleteConnection`
+      resolving `{ ok: true }` is the whole of it — `school-links.controller.ts:133`
+      is a static `@HttpCode(HttpStatus.NO_CONTENT)` on a handler that does nothing
+      but await this service, so standing up the HTTP harness adds no information.
 
 ### R3 — `/dashboard` and `/feed` render other households' mail
 
