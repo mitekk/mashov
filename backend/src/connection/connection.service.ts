@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { AxiosInstance } from 'axios';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../session/encryption.service';
 import {
@@ -211,8 +212,33 @@ export class ConnectionService {
       });
     }
 
+    // ONE transaction for the whole unlink, not one per school. The old loop
+    // committed each school separately, so a failure on the second school left
+    // the first unlinked and still returned a 500 -- the parent pressed
+    // "disconnect all", saw an error, and had no way to learn that half of it
+    // had happened.
+    //
+    // Every school being unlinked is passed to each preparation, because the
+    // exclusion sets below can no longer mean "every connection but this one".
+    // The sequential loop got that right by accident: by the time it reached
+    // the second school, the first school's rows were already deleted.
+    const deletingIds = connections.map((c) => c.id);
+    // Sequentially, not Promise.all: these are reads whose order the tests and
+    // the log read back, and nothing here is slow enough to want interleaving.
+    const operations: Prisma.PrismaPromise<unknown>[] = [];
     for (const connection of connections) {
-      await this.deleteOneConnection(connection);
+      operations.push(...(await this.prepareConnectionDeletion(connection, deletingIds)));
+    }
+
+    await this.prisma.$transaction(operations);
+
+    // The upstream cookies for these connections live in process memory and
+    // were never evicted anywhere, so they survived until a restart -- and a
+    // re-link would then be served a session for credentials that had been
+    // deleted. After the commit, so a rolled-back unlink does not evict a
+    // session whose connection still exists.
+    for (const connection of connections) {
+      this.sessionService.invalidateConnection(connection.id);
     }
 
     const remaining = await this.prisma.householdConnection.count({
@@ -225,10 +251,22 @@ export class ConnectionService {
     return { ok: true };
   }
 
-  private async deleteOneConnection(connection: {
-    id: string;
-    schoolCode: number;
-  }): Promise<void> {
+  /**
+   * The deletes for one school, prepared but not run: the caller puts every
+   * school's into a single `$transaction`.
+   *
+   * `deletingIds` is every connection in that unlink, this one included. The
+   * reads below exclude all of them, because a child or a school-level row
+   * kept alive by a connection that is itself being deleted is not kept alive
+   * at all.
+   */
+  private async prepareConnectionDeletion(
+    connection: {
+      id: string;
+      schoolCode: number;
+    },
+    deletingIds: string[],
+  ): Promise<Prisma.PrismaPromise<unknown>[]> {
     // The children THIS connection lists, read from the visibility edge rather
     // than the routing stamp: a child two parents share carries one stamp, so
     // a stamp predicate would both miss children this school lists and claim
@@ -262,7 +300,7 @@ export class ConnectionService {
         ? await this.prisma.studentConnection.findMany({
             where: {
               studentGuid: { in: listedGuids },
-              householdConnectionId: { not: connection.id },
+              householdConnectionId: { notIn: deletingIds },
             },
             select: { studentGuid: true },
           })
@@ -273,52 +311,52 @@ export class ConnectionService {
     // The behaviour taxonomy is school-level, so it survives if another
     // active connection is still at the same school (two parents, one school).
     const sharesSchool = await this.prisma.householdConnection.count({
-      where: { schoolCode: connection.schoolCode, active: true, id: { not: connection.id } },
+      where: {
+        schoolCode: connection.schoolCode,
+        active: true,
+        id: { notIn: deletingIds },
+      },
     });
 
-    // This connection's conversations, so their messages can be deleted
-    // without trusting the message stamp. The detail fetch wrote messages with
-    // no `householdConnectionId` at all, and `MailMessage.conversation` has no
-    // `onDelete` (so `Restrict`), so a stamp predicate left those rows behind
-    // and the `mailConversation.deleteMany` below then violated
-    // `mail_message_conversationId_fkey` and aborted this whole transaction --
-    // identically on every retry, recoverable only by hand in the database
-    // (R2). The stamping fix in MailService covers rows written from now on;
-    // rows written before it are already NULL and nothing reaches them but
-    // this predicate.
-    const conversationIds = (
-      await this.prisma.mailConversation.findMany({
-        where: { householdConnectionId: connection.id },
-        select: { conversationId: true },
-      })
-    ).map((c) => c.conversationId);
-
-    await this.prisma.$transaction([
+    return [
       // Mail: messages BEFORE conversations. MailMessage.conversationId is a
       // foreign key onto MailConversation.conversationId, so the other order
       // is a constraint violation.
       //
-      // The `OR` is deliberate. The `conversationId` arm is the correctness
-      // fix. The stamp arm catches a message stamped to this connection whose
-      // conversation belongs elsewhere -- it DELETES that message rather than
+      // Messages are reached THROUGH the conversation, not by their own stamp.
+      // The detail fetch used to write them with no `householdConnectionId` at
+      // all, and `MailMessage.conversation` has no `onDelete` (so `Restrict`),
+      // so a stamp predicate left those rows behind and the
+      // `mailConversation.deleteMany` below then violated
+      // `mail_message_conversationId_fkey` and aborted this whole transaction
+      // -- identically on every retry, recoverable only by hand in the
+      // database (R2). Rows written before the stamping fix in MailService are
+      // already NULL and nothing reaches them but this predicate.
+      //
+      // A relation filter rather than a pre-read of conversation ids. The ids
+      // are unbounded -- the mail sync never deletes a row, so they only
+      // accumulate -- and an `IN` list long enough would exceed Postgres's
+      // 16-bit bind-parameter limit and break the unlink permanently, which is
+      // R2's own failure class returning at a higher threshold. It also keeps
+      // the read inside the transaction, so a conversation written after a
+      // pre-read cannot be missed.
+      //
+      // The stamp arm catches a message stamped to this connection whose
+      // conversation belongs elsewhere. It DELETES that message rather than
       // un-stamping it, which is more than the schema's own
       // `onDelete: SetNull` would do, so it is not free: it is the same
-      // trade-off the `conversationId` arm already makes.
-      //
-      // `MailConversation.conversationId` is globally `@unique`, so a
-      // conversation two mailboxes hold is ONE row stamped to whichever
-      // connection walked it last. Unlinking that connection deletes the row
-      // (the predicate below, unchanged on this branch) and the FK then
-      // requires its messages to go too, whoever else could still see them.
-      // Before this change that case did not survive -- it was the 500. A
-      // narrower message predicate cannot fix it; only a conversation key that
-      // is per-household could, which is a schema change.
-      //
-      // An empty `in: []` matches nothing and the stamp arm still applies.
+      // trade-off the relation arm already makes. `MailConversation.conversationId`
+      // is globally `@unique`, so a conversation two mailboxes hold is ONE row
+      // stamped to whichever connection walked it last; unlinking that
+      // connection deletes the row (the predicate below, unchanged) and the FK
+      // then requires its messages to go too, whoever else could still see
+      // them. Before R2 that case did not survive at all -- it was the 500. A
+      // narrower message predicate cannot avoid it; only a per-household
+      // conversation key could, which is a schema change.
       this.prisma.mailMessage.deleteMany({
         where: {
           OR: [
-            { conversationId: { in: conversationIds } },
+            { conversation: { householdConnectionId: connection.id } },
             { householdConnectionId: connection.id },
           ],
         },
@@ -373,12 +411,6 @@ export class ConnectionService {
       // every one of them every twelve minutes, forever.
       this.prisma.student.deleteMany({ where: { studentGuid: { in: studentGuids } } }),
       this.prisma.householdConnection.delete({ where: { id: connection.id } }),
-    ]);
-
-    // The upstream cookies for this connection live in process memory and
-    // were never evicted anywhere, so they survived until a restart -- and a
-    // re-link would then be served a session for credentials that had been
-    // deleted.
-    this.sessionService.invalidateConnection(connection.id);
+    ];
   }
 }

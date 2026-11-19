@@ -292,7 +292,7 @@ describe('ConnectionService', () => {
           // never unscoped, and never another school's conversation.
           expect(where).toEqual({
             OR: [
-              { conversationId: { in: [] } },
+              { conversation: { householdConnectionId: 'conn-a' } },
               { householdConnectionId: 'conn-a' },
             ],
           });
@@ -391,25 +391,24 @@ describe('ConnectionService', () => {
       // householdConnectionId, so a stamp predicate left them behind and
       // mailConversation.deleteMany then violated
       // mail_message_conversationId_fkey -- the same 500 on every retry. The
-      // delete reaches them by conversation instead.
+      // delete reaches them through the conversation instead.
+      //
+      // A relation filter, not a pre-read of conversation ids: the ids are
+      // unbounded (nothing ever deletes a mail row), so an `in` list would
+      // reintroduce exactly this failure class past Postgres's 16-bit
+      // bind-parameter limit, and a read outside the transaction can miss a
+      // conversation written after it.
       mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
       mockPrisma.householdConnection.count.mockResolvedValue(1);
-      mockPrisma.mailConversation.findMany.mockResolvedValue([
-        { conversationId: 'conv-a1' },
-        { conversationId: 'conv-a2' },
-      ]);
       mockPrisma.$transaction.mockResolvedValue([]);
 
       await service.deleteConnection('user-1', 'conn-a');
 
-      expect(mockPrisma.mailConversation.findMany).toHaveBeenCalledWith({
-        where: { householdConnectionId: 'conn-a' },
-        select: { conversationId: true },
-      });
+      expect(mockPrisma.mailConversation.findMany).not.toHaveBeenCalled();
       expect(mockPrisma.mailMessage.deleteMany).toHaveBeenCalledWith({
         where: {
           OR: [
-            { conversationId: { in: ['conv-a1', 'conv-a2'] } },
+            { conversation: { householdConnectionId: 'conn-a' } },
             { householdConnectionId: 'conn-a' },
           ],
         },
@@ -418,6 +417,84 @@ describe('ConnectionService', () => {
       expect(mockPrisma.mailMessage.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
         mockPrisma.mailConversation.deleteMany.mock.invocationCallOrder[0],
       );
+    });
+
+    it('unlinks every school in ONE transaction', async () => {
+      // The old loop ran one $transaction per school, so a failure on the
+      // second left the first unlinked and still returned a 500: the parent
+      // pressed "disconnect all", got an error, and had no way to know half of
+      // it had happened.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A, CONN_B]);
+      mockPrisma.householdConnection.count.mockResolvedValue(0);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await expect(service.deleteConnection('user-1')).resolves.toEqual({ ok: true });
+
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+      // Both schools' work is in it.
+      const wheres = deletedWheres().map(({ where }) => JSON.stringify(where));
+      expect(wheres.some((w) => w.includes('conn-a'))).toBe(true);
+      expect(wheres.some((w) => w.includes('conn-b'))).toBe(true);
+      // And both sessions are evicted, which only happens after the commit.
+      expect(mockSessionService.invalidateConnection).toHaveBeenCalledWith('conn-a');
+      expect(mockSessionService.invalidateConnection).toHaveBeenCalledWith('conn-b');
+    });
+
+    it('treats a child only ANOTHER surviving school lists as shared', async () => {
+      // One transaction means the exclusion sets cannot be "every connection
+      // but this one" any more. The sequential loop got this right by
+      // accident: on the second school, the first school's links were already
+      // deleted. Read up front, a child both unlinked schools list would look
+      // shared to each of them and survive as an orphan with isActive: true --
+      // the bug the student.deleteMany in here exists to prevent.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A, CONN_B]);
+      mockPrisma.householdConnection.count.mockResolvedValue(0);
+      // Both schools list the child; nothing outside the unlink does. Keyed on
+      // the predicate rather than on call order, because both reads happen
+      // twice over -- once per school.
+      mockPrisma.studentConnection.findMany.mockImplementation(
+        ({ where }: { where: { householdConnectionId?: { notIn?: string[] } } }) =>
+          Promise.resolve(
+            where.householdConnectionId?.notIn ? [] : [{ studentGuid: 'guid-shared' }],
+          ),
+      );
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1');
+
+      // The "also listed elsewhere" read excludes BOTH schools being unlinked.
+      expect(mockPrisma.studentConnection.findMany).toHaveBeenCalledWith({
+        where: {
+          studentGuid: { in: ['guid-shared'] },
+          householdConnectionId: { notIn: ['conn-a', 'conn-b'] },
+        },
+        select: { studentGuid: true },
+      });
+      // Nothing else lists the child, so the child goes.
+      expect(mockPrisma.student.deleteMany).toHaveBeenCalledWith({
+        where: { studentGuid: { in: ['guid-shared'] } },
+      });
+    });
+
+    it('keeps the behaviour taxonomy only for a school that SURVIVES', async () => {
+      // Same correction, on schoolCode: two connections at one school, both
+      // being unlinked, must not each see the other as a reason to keep it.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([
+        CONN_A,
+        { id: 'conn-a2', schoolCode: CONN_A.schoolCode },
+      ]);
+      mockPrisma.householdConnection.count.mockResolvedValue(0);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1');
+
+      expect(mockPrisma.householdConnection.count).toHaveBeenCalledWith({
+        where: {
+          schoolCode: CONN_A.schoolCode,
+          active: true,
+          id: { notIn: ['conn-a', 'conn-a2'] },
+        },
+      });
     });
 
     it('now deletes studentRelease and schoolActivity', async () => {
@@ -573,7 +650,9 @@ describe('ConnectionService', () => {
       const result = await service.deleteConnection('user-1');
 
       expect(result).toEqual({ ok: true });
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(2);
+      // One transaction for the whole unlink, not one per school -- see
+      // 'unlinks every school in ONE transaction' above for why.
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
       expect(mockSessionService.invalidateConnection).toHaveBeenCalledWith('conn-a');
       expect(mockSessionService.invalidateConnection).toHaveBeenCalledWith('conn-b');
     });
