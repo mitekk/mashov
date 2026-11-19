@@ -296,13 +296,66 @@ describe('DashboardService', () => {
       );
     });
 
-    it('leaves the caller-less read unscoped', async () => {
+    it('scopes the fallback badge count to the household (R13)', async () => {
+      const { service, mailCount } = makeService();
+
+      await service.getDashboard('user-1');
+
+      expect(mailCount).toHaveBeenCalledWith({
+        where: {
+          ...mailScope(),
+          isUnread: true,
+          NOT: { labels: { array_contains: ['archived'] } },
+        },
+      });
+    });
+
+    it('reads the fallback count, not the other household, when there are no connections (R13)', async () => {
+      // The whole trigger: `_count._all === 0` is a user between unlinking and
+      // re-linking, and the local count was every household's unread total.
+      // The scope now admits only the unstamped rows for them, so the mock's
+      // count is what the badge reports -- and the predicate it was counted
+      // under is the assertion above.
+      const { service, mailCount } = makeService({
+        connectionAggregate: jest
+          .fn()
+          .mockResolvedValue({ _sum: { cachedNewCount: null }, _count: { _all: 0 } }),
+        mailCount: jest.fn().mockResolvedValue(4),
+      });
+
+      const result = await service.getDashboard('user-1');
+
+      expect(result.summary.newConversations).toBe(4);
+      expect(mailCount).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining(mailScope()) }),
+      );
+    });
+
+    it('scopes the school card to the caller (N1)', async () => {
+      const { service, connectionFindFirst } = makeService();
+
+      await service.getDashboard('user-1');
+
+      // The deprecated `school` field, due for deletion in T14, but a
+      // cross-household read on the screen until then: `{ active: true }`
+      // alone showed a single-school parent another household's school.
+      expect(connectionFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { active: true, userId: 'user-1' },
+        }),
+      );
+    });
+
+    it('leaves the caller-less reads unscoped', async () => {
       // The digest and the unauthenticated integration suite drive this path.
-      const { service, mailFindMany } = makeService();
+      const { service, mailFindMany, connectionFindFirst } = makeService();
 
       await service.getDashboard();
 
       expect(mailFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
+      expect(connectionFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { active: true } }),
+      );
     });
   });
 });

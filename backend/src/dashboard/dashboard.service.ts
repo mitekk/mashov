@@ -106,7 +106,7 @@ export class DashboardService {
       this.getSummary(yearScope, mailScope, userId),
       this.getFeed(windowScope, mailScope, userId),
       this.getFreshness(),
-      this.getSchoolInfo(),
+      this.getSchoolInfo(userId),
     ]);
 
     return {
@@ -124,8 +124,14 @@ export class DashboardService {
     userId?: string,
   ) {
     const [localNewConversations, household, students, recentHomework, recentBehavior] = await Promise.all([
+      // R13: this had no household predicate at all, and it is read at the
+      // `_count._all === 0` branch below -- so a user between unlinking and
+      // re-linking got every other household's unread total as their badge.
+      // `MailService.getSummary` is the same shape and was scoped in batch 1;
+      // this second copy was missed.
       this.prisma.mailConversation.count({
         where: {
+          ...mailScope,
           isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
@@ -445,9 +451,17 @@ export class DashboardService {
     };
   }
 
-  private async getSchoolInfo() {
+  /**
+   * The deprecated `school` field, due for deletion in T14.
+   *
+   * N1: `{ active: true }` with no `userId` read whichever household had
+   * logged in most recently, so a single-school parent could be shown another
+   * household's `schoolName` and `schoolYear` on their own dashboard. Still a
+   * cross-household read on the screen today, whatever its future.
+   */
+  private async getSchoolInfo(userId?: string) {
     const household = await this.prisma.householdConnection.findFirst({
-      where: { active: true },
+      where: { active: true, ...(userId ? { userId } : {}) },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
       select: { schoolName: true, schoolYear: true },
     });

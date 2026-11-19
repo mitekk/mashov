@@ -616,6 +616,61 @@ describe('Two parents, one school, shared children', () => {
         expect(await feedSourceIds(USER_B)).toContain(HH_CONV_B);
       });
     });
+
+    describe('R13 — the fallback badge belongs to the caller', () => {
+      it('reports 0 for a user with no connection, not the other households', async () => {
+        // The only state that reaches the fallback: `_count._all === 0`, which
+        // is a user between unlinking and re-linking. Both conversations in
+        // the fixture are unread and stamped, so the unscoped count was 2.
+        const dashboard = await makeDashboard().getDashboard(USER_C);
+
+        expect(dashboard.summary.newConversations).toBe(0);
+      });
+
+      it('still sums the cached counts for a user who has connections', async () => {
+        // So the fix cannot be satisfied by always reporting zero. One
+        // connection each, so each parent reads their own cached number
+        // rather than the household total of both.
+        const dashboard = await makeDashboard().getDashboard(USER_A);
+
+        expect(dashboard.summary.newConversations).toBe(CACHED_A);
+        await expect(
+          makeDashboard()
+            .getDashboard(USER_B)
+            .then((result) => result.summary.newConversations),
+        ).resolves.toBe(CACHED_B);
+      });
+
+      it('counts the unattributed conversation for the connectionless user', async () => {
+        // NULL is admitted here on the same terms as everywhere else, so the
+        // fallback is a real count over what they may see rather than zero by
+        // construction.
+        await prisma.mailConversation.update({
+          where: { conversationId: HH_CONV_A },
+          data: { householdConnectionId: null },
+        });
+
+        const dashboard = await makeDashboard().getDashboard(USER_C);
+
+        expect(dashboard.summary.newConversations).toBe(1);
+      });
+    });
+
+    describe('N1 — the school card belongs to the caller', () => {
+      it("does not show the other household's school", async () => {
+        // `findFirst({ where: { active: true } })` ordered by `lastLoginAt`
+        // desc, so the most recently used household in the whole table won.
+        // Renaming B's school and touching its row makes B that household.
+        await prisma.householdConnection.update({
+          where: { id: CONN_B },
+          data: { schoolName: 'בית ספר אחר', lastLoginAt: new Date() },
+        });
+
+        const dashboard = await makeDashboard().getDashboard(USER_A);
+
+        expect(dashboard.school.schoolName).toBe('בית ספר משותף');
+      });
+    });
   });
 });
 
