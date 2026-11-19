@@ -7,6 +7,7 @@ import type { ConnectionTarget } from '../session/connection-target';
 import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { resolveSchoolLabels } from '../common/school-label';
 import { activeConnectionIdsFor } from '../common/student-links';
+import { householdMailScope } from '../common/mail-scope';
 import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
@@ -606,27 +607,12 @@ export class MailService {
   /**
    * Restricts a mail read to the caller's own mailboxes.
    *
-   * Unstamped conversations are included, as everywhere else: NULL means
-   * "ownership unknown", and excluding them would empty the inbox on a
-   * deployment that has not re-synced since the ownership migration.
-   *
-   * No caller means no filter. Every mail route runs behind `AppSessionGuard`
-   * and none is `@Public()`, so on real traffic there is always a caller; the
-   * unscoped path is for a server-side caller with no user to speak of, and
-   * today the only thing that drives it is `tests/integration/api.test.ts`,
-   * whose requests are unauthenticated. Nothing in the crons or the digest
-   * reaches `MailService` at all -- `MailCountsTask` and `MailInboxTask` own
-   * their own queries. Said plainly here because an optional `userId` whose
-   * absence means "whole table" is only safe while that stays true, and
-   * R3-R6 are about to add callers.
+   * The rule itself lives in `common/mail-scope.ts`, because the dashboard and
+   * the feed render mail too and one scoping path for one table is the point.
+   * Kept as a method so this service's call sites read unchanged.
    */
-  private async householdMailScope(userId?: string): Promise<Prisma.MailConversationWhereInput> {
-    const own = await this.ownConnectionIds(userId);
-    if (own === null) return {};
-
-    return {
-      OR: [{ householdConnectionId: { in: own } }, { householdConnectionId: null }],
-    };
+  private householdMailScope(userId?: string): Promise<Prisma.MailConversationWhereInput> {
+    return householdMailScope(this.prisma, userId);
   }
 
   /**
