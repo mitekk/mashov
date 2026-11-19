@@ -139,7 +139,15 @@ export class SyncController {
     const settled = results.filter((result): result is ManualSyncRefreshResponse => !!result);
     // A refresh that achieved nothing stays a 500, or `SyncingPageClient`'s
     // `default:` branch stops reporting a failed trigger.
-    if (settled.length === 0) throw firstError;
+    //
+    // `firstError` is always set here today, because `resolveConnections`
+    // throws 404 on an empty list, so `settled.length === 0` implies at least
+    // one iteration that threw. That invariant lives one function away: if the
+    // 404 ever moves, a bare `throw undefined` becomes a 500 with nothing in
+    // the log to say why.
+    if (settled.length === 0) {
+      throw firstError ?? new Error('no connection produced a refresh result');
+    }
 
     const schools = connections.map((connection, index) => ({
       schoolId: connection.id,

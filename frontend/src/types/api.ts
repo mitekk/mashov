@@ -501,6 +501,12 @@ export interface SyncRefreshResponse {
   startedAt: string;
   endedAt: string;
   durationMs: number;
+  /**
+   * One entry per task **per school**, concatenated — so `task` is not unique.
+   * A two-school household carries two `homework` entries, and both
+   * `tasks.find((t) => t.task === …)` and `key={task.task}` would silently keep
+   * one school and drop the other. Group by school instead.
+   */
   tasks: SyncTaskResult[];
   /** One entry per refreshed connection. Additive; no caller reads it yet. */
   schools: SyncRefreshSchool[];
