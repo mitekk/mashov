@@ -1641,6 +1641,61 @@ describe('MailService household scoping', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(targetForMessage).not.toHaveBeenCalled();
     });
+
+    /** The message's own stamp, under a conversation NULL admits to everyone. */
+    function makeAttachmentService(messageStamp: string | null) {
+      const targetForMessage = jest
+        .fn()
+        .mockResolvedValue({ ...SCOPE_TARGET, id: THEIRS, username: 'parent-theirs' });
+      return {
+        targetForMessage,
+        ...makeService(
+          {
+            conversationFindUnique: jest
+              .fn()
+              .mockResolvedValue(makeConversation({ householdConnectionId: null })),
+            messageFindMany: jest.fn().mockResolvedValue([
+              {
+                messageId: 'msg-1',
+                conversationId: 'conv-unstamped',
+                householdConnectionId: messageStamp,
+                files: [{ fileId: 'file-1', fileName: 'file.pdf' }],
+                bodyHtmlSanitized: '<p>body</p>',
+              },
+            ]),
+          },
+          { targetForMessage },
+        ),
+      };
+    }
+
+    it("404s a message stamped to another household under an unstamped conversation", async () => {
+      // B3's stamped branch on the one path where its bound fails. An
+      // unattributed conversation is visible to every household, the messages
+      // under it can carry a stamp of their own, and `resolveOrFallback`
+      // honours `userId` only on its fallback branch -- so this resolved the
+      // other household's credentials and Mashov accepted, because the
+      // credentials and the message do belong together.
+      const { service, targetForMessage } = makeAttachmentService(THEIRS);
+
+      await expect(
+        service.downloadMessageAttachment('conv-unstamped', 'msg-1', 'file-1', CALLER),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(targetForMessage).not.toHaveBeenCalled();
+    });
+
+    it('still resolves a target for an unstamped message', async () => {
+      // NULL stays admitted, as it is everywhere else: tightening it here
+      // would empty the attachment path on any deployment whose ownership
+      // backfill refused.
+      const { service, targetForMessage } = makeAttachmentService(null);
+
+      await service
+        .downloadMessageAttachment('conv-unstamped', 'msg-1', 'file-1', CALLER)
+        .catch(() => undefined);
+
+      expect(targetForMessage).toHaveBeenCalled();
+    });
   });
 
   describe('mutations', () => {

@@ -323,20 +323,50 @@ export class MailService {
       await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
       const refreshedMessage = await this.getMessageInConversation(conversationId, messageId);
       attachment = this.findMessageAttachment(refreshedMessage?.files, fileId);
+      // Keep the row the stamp check below reads in step with the one the
+      // attachment came from: the hydration above can re-stamp it.
+      if (refreshedMessage) message = refreshedMessage;
     }
     if (!attachment) throw new NotFoundException(`Attachment not found: ${fileId}`);
+
+    // The MESSAGE's stamp, checked against the caller before a single
+    // credential is resolved.
+    //
+    // `assertVisible` above checked the CONVERSATION, and that is not enough
+    // here. An unattributed conversation (`householdConnectionId IS NULL`) is
+    // visible to every household by the branch-wide NULL rule -- which is
+    // load-bearing, not an oversight -- while the messages under it can carry
+    // a stamp of their own, because the ownership backfill refuses on any
+    // database with more than one active connection. So "the caller may see
+    // the conversation" did not bound whose credentials this download would
+    // spend.
+    //
+    // It had to, because `resolveOrFallback` honours `userId` only on its
+    // FALLBACK branch: a non-null stamp resolves to that connection whoever is
+    // asking (ADR-0030's `I6` ruling). That ruling's stated bound -- "Mashov
+    // rejects it, so the symptom is an empty list rather than a leak" -- does
+    // not hold on this path. The credentials and the message genuinely belong
+    // together, so Mashov accepts, and the other household's file comes back.
+    //
+    // The same `canSee` rule as everywhere else, so NULL stays admitted: a
+    // stricter rule here would empty the attachment path on every deployment
+    // that has not re-synced. And the same 404 as a genuinely missing message
+    // two lines up, so the answer cannot be used to tell a foreign message
+    // from an absent one.
+
+    if (!this.canSee(message.householdConnectionId, await this.ownConnectionIds(userId))) {
+      throw new NotFoundException(`Message not found: ${messageId}`);
+    }
 
     // Resolved once for the whole download, including the retry below: the
     // message's own stamp, so a bare messageId is enough and no join is
     // needed.
     //
     // Resolved HERE, and not before the lookups above, because `messageId`
-    // comes from the caller and only `conversationId` has been checked against
-    // the household. `targetForMessage` reads the message's own stamp and the
-    // stamped branch of the fallback takes no caller, so resolving it earlier
-    // would decrypt another household's password inside this request on the
-    // strength of an id nothing had validated. By this line the message is
-    // known to be in a conversation the caller may see.
+    // comes from the caller and only `conversationId` had been checked against
+    // the household at that point. By this line the message is known to be in
+    // a conversation the caller may see AND to carry a stamp the caller may
+    // spend.
     const target = await this.scope.targetForMessage(messageId, userId).catch(() =>
       this.scope.targetForConversation(conversationId, userId),
     );

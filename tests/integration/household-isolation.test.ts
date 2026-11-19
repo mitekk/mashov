@@ -558,6 +558,7 @@ describe('Two mailboxes, two households', () => {
   const MAIL_CONVERSATIONS = [CONV_A, CONV_B, CONV_NULL];
   const MSG_B = 'hhm-msg-b';
   const MSG_NULL = 'hhm-msg-null';
+  const FILE_ID = 'hhm-file-1';
 
   let prisma: PrismaClient;
   let upstream: {
@@ -696,6 +697,9 @@ describe('Two mailboxes, two households', () => {
           messageId: MSG_NULL,
           conversationId: CONV_NULL,
           householdConnectionId: null,
+          // An attachment, so the download path reaches the credential
+          // resolve instead of 404ing earlier on a missing file.
+          files: [{ fileId: FILE_ID, fileName: 'file.pdf' }],
           senderId: 'sender-null',
           senderName: 'מורה',
           subject: `נושא ${CONV_NULL}`,
@@ -703,7 +707,6 @@ describe('Two mailboxes, two households', () => {
           sendTime: new Date('2026-11-10T08:00:00Z'),
           isNew: true,
           recipients: [],
-          files: [],
         },
       ],
     });
@@ -822,6 +825,70 @@ describe('Two mailboxes, two households', () => {
     for (const callArgs of upstream.putForTarget.mock.calls) {
       expect(callArgs[1]).toEqual([CONV_A]);
     }
+  });
+
+  /**
+   * B3's stamped branch, on the one path where its stated bound does not hold.
+   *
+   * `ConnectionScopeService.resolveOrFallback` honours `userId` only on the
+   * FALLBACK branch; a non-null stamp resolves to that connection's
+   * credentials whoever is asking. ADR-0030 accepts that as the `I6` ruling,
+   * bounded by "Mashov rejects it, so the symptom is an empty list rather than
+   * a leak".
+   *
+   * `downloadMessageAttachment` escapes the bound. It checks ownership on the
+   * CONVERSATION and resolves credentials from the MESSAGE, and an
+   * unattributed conversation is visible to every household by the branch-wide
+   * NULL rule. So household B could reach a message stamped to A under A's
+   * decrypted password — and Mashov accepts it, because the credentials and
+   * the message do belong together.
+   */
+  describe('an attachment on a message stamped to the other household', () => {
+    /** The shape the ownership backfill leaves behind: NULL over a stamp. */
+    async function stampTheMessageToA(): Promise<void> {
+      await prisma.mailMessage.update({
+        where: { messageId: MSG_NULL },
+        data: { householdConnectionId: MAIL_CONN_A },
+      });
+    }
+
+    it("refuses the other household's message, and spends no credentials on it", async () => {
+      await stampTheMessageToA();
+      const mail = makeMailService();
+
+      await expect(
+        mail.downloadMessageAttachment(CONV_NULL, MSG_NULL, FILE_ID, MAIL_USER_B),
+      ).rejects.toMatchObject({ status: 404 });
+
+      // The whole point: nothing went upstream. A guard that only works
+      // because Mashov says no is not a guard, and here Mashov would say yes.
+      noUpstreamCall();
+    });
+
+    it("still serves the owning household", async () => {
+      // So the guard cannot be satisfied by refusing everyone.
+      await stampTheMessageToA();
+      const mail = makeMailService();
+
+      await mail
+        .downloadMessageAttachment(CONV_NULL, MSG_NULL, FILE_ID, MAIL_USER_A)
+        .catch(() => undefined);
+
+      expect(upstream.getResponseForTarget).toHaveBeenCalled();
+    });
+
+    it('still serves an unstamped message to either household', async () => {
+      // NULL stays admitted. Tightening it here would empty the attachment
+      // path on any deployment that has not re-synced, which is the same
+      // reason canSee admits NULL everywhere else.
+      const mail = makeMailService();
+
+      await mail
+        .downloadMessageAttachment(CONV_NULL, MSG_NULL, FILE_ID, MAIL_USER_B)
+        .catch(() => undefined);
+
+      expect(upstream.getResponseForTarget).toHaveBeenCalled();
+    });
   });
 
   /**
