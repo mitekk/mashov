@@ -238,6 +238,73 @@ describe('ConnectionScopeService', () => {
     });
   });
 
+  describe('the fallback and the caller', () => {
+    /**
+     * Two households, A's row unstamped and B's connection the more recently
+     * used one. Without the caller the fallback picks B, and A's request goes
+     * upstream under B's decrypted Mashov password -- and for a mail mutation
+     * the upstream write lands in B's account.
+     */
+    const twoHouseholds = () =>
+      makePrisma({
+        connections: [
+          conn({
+            id: 'conn-a',
+            userId: 'user-a',
+            username: 'parent-a',
+            lastLoginAt: new Date('2026-01-01T00:00:00Z'),
+          }),
+          conn({
+            id: 'conn-b',
+            userId: 'user-b',
+            username: 'parent-b',
+            encryptedPassword: 'enc:pw-b',
+            lastLoginAt: new Date('2026-11-18T00:00:00Z'),
+          }),
+        ],
+        students: [{ studentGuid: 'guid-a', householdConnectionId: null }],
+        conversations: [{ conversationId: 'conv-a', householdConnectionId: null }],
+        messages: [{ messageId: 'msg-a', householdConnectionId: null }],
+      });
+
+    it("never falls back to another household's connection for a known caller", async () => {
+      const { prisma } = twoHouseholds();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-a', 'user-a')).resolves.toMatchObject({
+        id: 'conn-a',
+        password: 'pw-a',
+      });
+      await expect(service.targetForConversation('conv-a', 'user-a')).resolves.toMatchObject({
+        id: 'conn-a',
+      });
+      await expect(service.targetForMessage('msg-a', 'user-a')).resolves.toMatchObject({
+        id: 'conn-a',
+      });
+    });
+
+    it('throws rather than borrowing a stranger when the caller has no connection', async () => {
+      const { prisma } = twoHouseholds();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-a', 'user-c')).rejects.toThrow(
+        /no active connection/i,
+      );
+    });
+
+    it('still picks the globally most recent connection when given no caller', async () => {
+      // The digest and the crons resolve unowned rows with no caller to speak
+      // of. Scoping must not take that path away.
+      const { prisma } = twoHouseholds();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-a')).resolves.toMatchObject({ id: 'conn-b' });
+      await expect(service.targetForConversation('conv-a')).resolves.toMatchObject({
+        id: 'conn-b',
+      });
+    });
+  });
+
   describe('groupConversationsByConnection', () => {
     it('splits a mixed list into one entry per connection', async () => {
       const { prisma } = makePrisma({

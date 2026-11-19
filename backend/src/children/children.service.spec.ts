@@ -2465,3 +2465,121 @@ describe('ChildrenService ownership guard coverage', () => {
     expect(client.getResponseForTarget).not.toHaveBeenCalled();
   });
 });
+
+describe('ChildrenService per-child reads and the connection router', () => {
+  /**
+   * The router scopes its unstamped-row fallback to the caller. A per-child
+   * read that resolves a target without saying who is asking is how one
+   * household's request ended up sent upstream under another household's
+   * decrypted Mashov password.
+   */
+  const OWNED_GUID = 'guid-mine';
+  const CALLER = 'user-mine';
+
+  const OWNED = {
+    id: 'row-mine',
+    studentGuid: OWNED_GUID,
+    privateName: 'Child',
+    familyName: 'Mine',
+    fullName: 'Child Mine',
+    classCode: 'ז',
+    classNum: 1,
+    gender: 'M',
+    isActive: true,
+    householdConnectionId: 'conn-mine',
+    updatedAt: new Date('2026-11-01T00:00:00Z'),
+  };
+
+  function makeService(targetForStudent: jest.Mock) {
+    const prisma = {
+      student: {
+        findUnique: jest.fn().mockResolvedValue(OWNED),
+        findMany: jest.fn().mockResolvedValue([OWNED]),
+      },
+      studentConnection: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { studentGuid: OWNED_GUID, householdConnectionId: 'conn-mine' },
+          ]),
+      },
+      householdConnection: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+        findMany: jest.fn().mockResolvedValue([{ id: 'conn-mine', schoolYear: 2027 }]),
+        findUnique: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+      },
+      homeworkItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'hw-1',
+          studentGuid: OWNED_GUID,
+          files: [{ fileId: 'f1', fileName: 'note.pdf' }],
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      behaviorItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'beh-1',
+          studentGuid: OWNED_GUID,
+          rawPayload: { files: [{ fileId: 'f1', fileName: 'note.pdf' }] },
+          lessonId: 5,
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
+      schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as jest.Mocked<PrismaService>;
+
+    return new ChildrenService(
+      prisma,
+      makeMockSession(),
+      makeMockMashovClient(),
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope({ targetForStudent }),
+    );
+  }
+
+  const ROUTES: Array<{ name: string; call: (service: ChildrenService) => Promise<unknown> }> = [
+    { name: 'getLessonPlans', call: (s) => s.getLessonPlans(OWNED_GUID, CALLER) },
+    { name: 'getLessonHistory', call: (s) => s.getLessonHistory(OWNED_GUID, CALLER) },
+    { name: 'getStudentReleases', call: (s) => s.getStudentReleases(OWNED_GUID, CALLER) },
+    { name: 'getSchoolActivities', call: (s) => s.getSchoolActivities(OWNED_GUID, CALLER) },
+    {
+      name: 'createStudentRelease',
+      call: (s) => s.createStudentRelease(OWNED_GUID, { date: '2026-11-20' }, CALLER),
+    },
+    {
+      name: 'updateStudentRelease',
+      call: (s) => s.updateStudentRelease(OWNED_GUID, 7, { date: '2026-11-21' }, CALLER),
+    },
+    { name: 'deleteStudentRelease', call: (s) => s.deleteStudentRelease(OWNED_GUID, 7, CALLER) },
+    {
+      name: 'downloadHomeworkAttachment',
+      call: (s) => s.downloadHomeworkAttachment(OWNED_GUID, 'hw-1', 'f1', CALLER),
+    },
+    {
+      name: 'downloadBehaviorAttachment',
+      call: (s) => s.downloadBehaviorAttachment(OWNED_GUID, 'beh-1', 'f1', CALLER),
+    },
+  ];
+
+  it.each(ROUTES)('$name tells the router who is asking', async ({ call }) => {
+    const targetForStudent = jest.fn().mockResolvedValue({
+      id: 'conn-mine',
+      schoolCode: 1234,
+      schoolYear: 2027,
+      username: 'parent',
+      password: 'pw',
+      schoolName: 'School',
+    });
+    const service = makeService(targetForStudent);
+
+    await call(service).catch(() => undefined);
+
+    expect(targetForStudent).toHaveBeenCalledWith(OWNED_GUID, CALLER);
+  });
+});

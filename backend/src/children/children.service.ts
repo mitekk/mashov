@@ -400,7 +400,7 @@ export class ChildrenService {
       candidates,
       `https://web.mashov.info/students/main/students/${studentGuid}/homework`,
       file.fileName,
-      await this.scope.targetForStudent(studentGuid),
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 
@@ -437,7 +437,7 @@ export class ChildrenService {
       candidates,
       `https://web.mashov.info/students/main/students/${studentGuid}/behave`,
       file.fileName,
-      await this.scope.targetForStudent(studentGuid),
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 
@@ -644,7 +644,7 @@ export class ChildrenService {
     try {
       const plans = await this.mashovClient.getForTarget<unknown[]>(
         `/api/students/${studentGuid}/lessons/plans`,
-        await this.scope.targetForStudent(studentGuid),
+        await this.scope.targetForStudent(studentGuid, userId),
         { headers: { Referer: referer } },
       );
       const data = Array.isArray(plans) ? plans : [];
@@ -661,7 +661,7 @@ export class ChildrenService {
     try {
       const history = await this.mashovClient.getForTarget<unknown[]>(
         `/api/students/${studentGuid}/lessons/history`,
-        await this.scope.targetForStudent(studentGuid),
+        await this.scope.targetForStudent(studentGuid, userId),
         { headers: { Referer: referer } },
       );
       const data = Array.isArray(history) ? history : [];
@@ -677,7 +677,7 @@ export class ChildrenService {
     const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
     return this.mashovClient.getForTarget<unknown[]>(
       `/api/students/${studentGuid}/studentReleases`,
-      await this.scope.targetForStudent(studentGuid),
+      await this.scope.targetForStudent(studentGuid, userId),
       { headers: { Referer: referer } },
     );
   }
@@ -692,7 +692,7 @@ export class ChildrenService {
     // is looking at.
     return this.mashovClient.getForTarget<unknown[]>(
       '/api/schoolActivities/permitted',
-      await this.scope.targetForStudent(studentGuid),
+      await this.scope.targetForStudent(studentGuid, userId),
       { headers: { Referer: referer } },
     );
   }
@@ -704,7 +704,7 @@ export class ChildrenService {
     return this.mashovClient.putForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/request`,
       body,
-      await this.scope.targetForStudent(studentGuid),
+      await this.scope.targetForStudent(studentGuid, userId),
       { headers: { Referer: referer } },
     );
   }
@@ -720,7 +720,7 @@ export class ChildrenService {
     return this.mashovClient.putForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}/request`,
       body,
-      await this.scope.targetForStudent(studentGuid),
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 
@@ -729,7 +729,7 @@ export class ChildrenService {
 
     return this.mashovClient.deleteForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}`,
-      await this.scope.targetForStudent(studentGuid),
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 

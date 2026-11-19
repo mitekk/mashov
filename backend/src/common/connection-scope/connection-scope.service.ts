@@ -80,8 +80,15 @@ export class ConnectionScopeService {
     return target;
   }
 
-  /** The connection that owns a child, or the fallback when it is unstamped. */
-  async targetForStudent(studentGuid: string): Promise<ConnectionTarget> {
+  /**
+   * The connection that owns a child, or the fallback when it is unstamped.
+   *
+   * `userId` is the caller, when there is one: it scopes the fallback, so an
+   * unattributed child of one household can never be fetched with another
+   * household's credentials. Omitting it keeps the global fallback the crons
+   * and the digest need.
+   */
+  async targetForStudent(studentGuid: string, userId?: string): Promise<ConnectionTarget> {
     const student = await this.prisma.student.findUnique({
       where: { studentGuid },
       select: { householdConnectionId: true },
@@ -91,11 +98,18 @@ export class ConnectionScopeService {
       throw new Error(`Student not found: ${studentGuid}`);
     }
 
-    return this.resolveOrFallback(student.householdConnectionId, `student ${studentGuid}`);
+    return this.resolveOrFallback(
+      student.householdConnectionId,
+      `student ${studentGuid}`,
+      userId,
+    );
   }
 
-  /** The mailbox a conversation came from, or the fallback. */
-  async targetForConversation(conversationId: string): Promise<ConnectionTarget> {
+  /** The mailbox a conversation came from, or the caller's fallback. */
+  async targetForConversation(
+    conversationId: string,
+    userId?: string,
+  ): Promise<ConnectionTarget> {
     const row = await this.prisma.mailConversation.findUnique({
       where: { conversationId },
       select: { householdConnectionId: true },
@@ -105,7 +119,11 @@ export class ConnectionScopeService {
       throw new Error(`Conversation not found: ${conversationId}`);
     }
 
-    return this.resolveOrFallback(row.householdConnectionId, `conversation ${conversationId}`);
+    return this.resolveOrFallback(
+      row.householdConnectionId,
+      `conversation ${conversationId}`,
+      userId,
+    );
   }
 
   /**
@@ -115,7 +133,7 @@ export class ConnectionScopeService {
    * the conversation: an attachment download has a bare `messageId` and
    * nothing else.
    */
-  async targetForMessage(messageId: string): Promise<ConnectionTarget> {
+  async targetForMessage(messageId: string, userId?: string): Promise<ConnectionTarget> {
     const row = await this.prisma.mailMessage.findUnique({
       where: { messageId },
       select: { householdConnectionId: true },
@@ -125,7 +143,7 @@ export class ConnectionScopeService {
       throw new Error(`Mail message not found: ${messageId}`);
     }
 
-    return this.resolveOrFallback(row.householdConnectionId, `message ${messageId}`);
+    return this.resolveOrFallback(row.householdConnectionId, `message ${messageId}`, userId);
   }
 
   /**
@@ -208,10 +226,18 @@ export class ConnectionScopeService {
    * unowned rows and the ownership backfill refuses to guess above one active
    * connection. Throwing instead would take a single-school deployment that
    * has not yet re-synced from working to broken.
+   *
+   * It is scoped to the caller when there is one. Guessing across households
+   * meant an unattributed row of A's could resolve to B's connection, and A's
+   * request would then be sent upstream under B's decrypted Mashov password --
+   * for a mail mutation, writing into B's account. Without a caller (the
+   * crons, the digest) the guess stays global, which is the only thing those
+   * paths can do.
    */
   private async resolveOrFallback(
     connectionId: string | null,
     subject: string,
+    userId?: string,
   ): Promise<ConnectionTarget> {
     if (connectionId) {
       const row = await this.prisma.householdConnection.findUnique({
@@ -227,7 +253,7 @@ export class ConnectionScopeService {
     }
 
     const fallback = await this.prisma.householdConnection.findFirst({
-      where: { active: true },
+      where: { active: true, ...(userId ? { userId } : {}) },
       orderBy: { lastLoginAt: 'desc' },
     });
 

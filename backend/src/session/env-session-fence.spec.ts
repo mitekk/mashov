@@ -212,7 +212,7 @@ describe('the shared env session is fenced off from user-facing reads', () => {
       await service.getLessonPlans('guid-1');
 
       expect(client.getForTarget).toHaveBeenCalled();
-      expect(scope.targetForStudent).toHaveBeenCalledWith('guid-1');
+      expect(scope.targetForStudent).toHaveBeenCalledWith('guid-1', undefined);
       assertFenceIntact(client);
     });
 
@@ -237,7 +237,7 @@ describe('the shared env session is fenced off from user-facing reads', () => {
       await service.getSchoolActivities('guid-1');
 
       expect(client.getForTarget).toHaveBeenCalled();
-      expect(scope.targetForStudent).toHaveBeenCalledWith('guid-1');
+      expect(scope.targetForStudent).toHaveBeenCalledWith('guid-1', undefined);
       assertFenceIntact(client);
     });
 

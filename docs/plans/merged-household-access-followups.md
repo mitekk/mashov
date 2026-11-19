@@ -203,16 +203,16 @@ database with more than one active connection
 (`20261120010000_connection_scoping/migration.sql`).
 
 **DoD**
-- [ ] `targetFor*` accept an optional `userId` and the fallback is scoped to it when
+- [x] `targetFor*` accept an optional `userId` and the fallback is scoped to it when
       present.
 - [ ] Callers that have a `userId` pass it: `ChildrenService` (every per-child route
       already holds one — **25** of them take a `studentGuid`, enumerated by
       `tests/integration/children-route-guard.test.ts`; the "nine" this item used to
       say was the count an earlier review named, not the route count),
       `MailService.getConversationDetail` and the attachment path.
-- [ ] A test asserts an unstamped row belonging to user A never resolves to user B's
+- [x] A test asserts an unstamped row belonging to user A never resolves to user B's
       connection.
-- [ ] The no-`userId` path (digest, crons) keeps today's global fallback, with a test
+- [x] The no-`userId` path (digest, crons) keeps today's global fallback, with a test
       pinning that.
 
 ---
