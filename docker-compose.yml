@@ -135,6 +135,39 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Throwaway Postgres for the test profile only.
+  #
+  # The integration suite runs `prisma db push --force-reset`, which DROPS every
+  # table. Pointed at the `db` service it wipes the developer's own synced
+  # Mashov data -- which is exactly what happened on 2026-11-19, taking the
+  # household connection and every conversation with it.
+  #
+  # A separate database *name* on the same server would have fixed that case,
+  # but leaves the dev data one typo away forever. A separate instance makes it
+  # unreachable from the test profile by construction.
+  #
+  # tmpfs, so the data never touches a volume and every run starts clean.
+  db-test:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: mashov
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    tmpfs:
+      - /var/lib/postgresql/data
+    shm_size: '256mb'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   unit:
     build:
       context: ./backend
@@ -142,13 +175,13 @@ services:
     profiles: ["test"]
     working_dir: /app
     depends_on:
-      db:
+      db-test:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       NODE_ENV: test
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/mashov
+      DATABASE_URL: postgresql://postgres:postgres@db-test:5432/mashov
       REDIS_URL: redis://redis:6379
       ENCRYPTION_KEY: test-encryption-key-32-chars-long!
       SESSION_LIFETIME_DAYS: "30"
@@ -169,13 +202,13 @@ services:
     profiles: ["test"]
     working_dir: /work
     depends_on:
-      db:
+      db-test:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       NODE_ENV: test
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/mashov
+      DATABASE_URL: postgresql://postgres:postgres@db-test:5432/mashov
       REDIS_URL: redis://redis:6379
       ENCRYPTION_KEY: test-encryption-key-32-chars-long!
       SESSION_LIFETIME_DAYS: "30"
