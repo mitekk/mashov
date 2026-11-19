@@ -15,8 +15,10 @@ deferred (**T13–T14**), and the minors. **G1** and **B1** are done and kept as
 
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
-recorded here. **R1**, **R2** and B3's attachment leak are done. **R3** is
-the one cross-household read still open, so it is the next gate, not a cleanup.
+recorded here. **R1**, **R2**, B3's attachment leak and batch 3 (**R3**, **R5**,
+**R6**, **R13**, **N1** and the label-set minor) are done. **No cross-household read
+is open any more**: every remaining item is a degraded signal, a frontend gap or a
+pre-existing bug.
 
 ## Pick-up order
 
@@ -29,16 +31,16 @@ stays true.
 |---|---|---|---|
 | 1 | **R1** + **B3** + `updateCachedNewCount()` | **done**, 1 bullet left | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's remaining bullet — the stamped branch of `resolveOrFallback` generally — has no known reachable path and is not a production gate. |
 | 2 | **R2** | **done** | A permanently broken unlink. Fixed with the stamp, the relation-filtered delete, one transaction for the whole unlink, and an index on `mail_message.conversationId`. |
-| 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor | open | One missing household predicate across four readers, on the `userId` threading batch 1 established. **R3 is the last place another household's data still reaches a screen** — `dashboard.service.ts:190` and `feed.service.ts:78` still read `mailConversation` with no household predicate — so this is the next production gate. |
-| 4 | **R4** | open | Same visibility-edge fix as batch 3, in a service with no callers in common. Can ride along with batch 3 if that goes quickly. |
+| 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor, and **N1** found while reading | **done** | One missing household predicate across four readers, on the `userId` threading batch 1 established. Closed the last place another household's data reached a screen. The mail scope moved to `common/mail-scope.ts` and the chip labels to `common/school-chips.ts`, so `/children`, `/dashboard`, `/feed` and the inbox now answer from one scoping path and one label resolution instead of four. |
+| 4 | **R4** | open | Same visibility-edge fix as batch 3, in a service with no callers in common. Was offered a ride with batch 3 and deliberately left out of it; it is now the next batch. |
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | open | The only frontend items. R14 leaves a parent looking at an empty mailbox with no way forward, which is the worst *experience* left open. Needs an e2e run, so it is cheapest on its own. |
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
 | 7 | **R8**, **R9**, **R10** | open | Three independent small correctness fixes in the auth/link path; one session, three tests. |
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1 and 2 are done. **Batch 3 is next**, and is the last open item that puts one
-household's data on another's screen. Batches 4–7 are each self-contained; 7 can run in
+Batches 1, 2 and 3 are done, and with batch 3 no open item puts one household's data on
+another's screen. **Batch 4 is next.** Batches 4–7 are each self-contained; 7 can run in
 parallel with anything.
 
 ---
@@ -425,10 +427,22 @@ feed items on `/home`, each with `schoolId: null` so the school chip filter leav
 visible.
 
 **DoD**
-- [ ] Both feed readers scope conversations by `householdMailScope` and students by the
-      visibility edge.
-- [ ] A test asserts household A's `/dashboard` and `/feed` contain no item sourced
+- [x] Both feed readers scope conversations by `householdMailScope` and students by the
+      visibility edge. The scope moved out of `MailService` into
+      `common/mail-scope.ts` first, verbatim, so there is one definition of it rather
+      than a second copy to miss again. The dashboard resolves it once in
+      `getDashboard` and passes it into both private readers, so the query count is
+      unchanged. Both mail predicates are an `AND` array, not a merged object: the
+      scope is an `OR`, so a spread lets one predicate overwrite the other.
+- [x] A test asserts household A's `/dashboard` and `/feed` contain no item sourced
       from B's mailbox or B's children.
+      In `tests/integration/household-isolation.test.ts`, on the shared-children
+      fixture extended with one unread conversation per connection.
+      Note on the student half: every feed *item* is already year-scoped by child, so
+      the unscoped roster could not put a foreign child's homework in the feed — what
+      it did reach was the school map built from those rows, which is **R5**. The
+      honest red for it is the `where` assertion in `feed.service.spec.ts`, and the
+      integration case is a guard.
 
 ### R4 — The freshness card reads every household in the database
 
@@ -469,10 +483,18 @@ parent-chosen `displayLabel`. That leaks A's id and label, and because
 `me.schools`, the lookup misses and the child's school chip can never match it.
 
 **DoD**
-- [ ] `buildStudentSchoolMap` takes the caller's connection ids and intersects before
-      choosing.
-- [ ] A test asserts the shared child's `schoolId` is always one of the caller's own
-      connections.
+- [x] `buildStudentSchoolMap` takes the caller's connection ids and intersects before
+      choosing — a third optional `userId` argument rather than a second helper. The
+      stamp wins only when it is in the filtered set, else the first of it; a child
+      whose links are all somebody else's gets no badge rather than a foreign id; and
+      the pre-backfill fallback to the stamp survives only when the stamp is one the
+      caller owns. `byId` therefore cannot hold anything but the caller's connections.
+      Without a `userId` the behaviour is unchanged, verbatim, and
+      `student-school-map.spec.ts` pins that too — including that the unscoped path
+      asks for no connections of its own.
+- [x] A test asserts the shared child's `schoolId` is always one of the caller's own
+      connections, in both the dashboard's `children[]` and the feed items, and that
+      moving the routing stamp back and forth moves neither parent's answer.
 
 ### R6 — `/children` derives school fields from the stamp while `/home` uses the edge
 
@@ -493,14 +515,20 @@ also contradicts `docs/api-contract.md:66`, which lists these as the per-child s
 fields.
 
 **DoD**
-- [ ] `/children` resolves school fields through the same helper the feed uses, so the
-      two endpoints cannot disagree.
-- [ ] A test asserts the same child's `schoolId` and `schoolShortLabel` match across
-      `/children`, `/dashboard` and `/feed`.
-- [ ] While in here: the label-set inconsistency already in **Minors**
-      (`resolveSchoolLabels` resolves over the whole connection set,
-      `student-school-map.ts` only over the connections present in the list) is the
-      same seam — fix both or neither.
+- [x] `/children` resolves school fields through the same helper the feed uses, so the
+      two endpoints cannot disagree. All four fields come from
+      `buildStudentSchoolMap`, whose `StudentSchool` already carries every one of
+      them; the private `resolveSchoolLabels` is deleted. `docs/api-contract.md` gains
+      one sentence saying `schoolId` is always one of the caller's own connections.
+- [x] A test asserts the same child's `schoolId` and `schoolShortLabel` match across
+      `/children`, `/dashboard` and `/feed`, with `schoolName` and `semel` non-null —
+      where the id was foreign and the three labels were all `null`.
+- [x] The label-set inconsistency in **Minors** is fixed in the same batch, in the
+      commit after this one: new `common/school-chips.ts` resolves the labels once over
+      the caller's whole active connection set, and `buildStudentSchoolMap`,
+      `/children` through it, and `MailService.getConversations` all read from it.
+      Fixing R6 alone would have made the three readers agree on the *narrower*
+      answer, which is why the two were one batch.
 
 ### R7 — The add-school form can submit a school the input is no longer showing
 
@@ -660,9 +688,32 @@ with a connection reads the summed `cachedNewCount` instead and never reaches th
 branch.
 
 **DoD**
-- [ ] The count takes the same `householdMailScope` as `MailService.getSummary`.
-- [ ] A test with two households asserts the no-connection user's badge is 0, not the
-      other household's count.
+- [x] The count takes the same `householdMailScope` as `MailService.getSummary` —
+      literally the same function now, from `common/mail-scope.ts`.
+- [x] A test with two households asserts the no-connection user's badge is 0, not the
+      other household's count, that it still counts an unattributed conversation (so
+      the fix is a real scope rather than a hardcoded zero), and that each parent with
+      a connection still reads their own `cachedNewCount`.
+
+### N1 — The deprecated school card reads every household in the database
+
+**Severity**: low. Narrow, deprecated field, but another household's name on the screen.
+
+Found while reading for batch 3, and fixed in it.
+
+**Cause.** `backend/src/dashboard/dashboard.service.ts` — `getSchoolInfo()` read
+`householdConnection.findFirst({ where: { active: true } })` with no `userId`, ordered
+by `lastLoginAt` desc.
+
+**Description.** A single-school parent could be shown whichever household had logged
+in most recently: another household's `schoolName` and `schoolYear` in
+`DashboardResponse.school`. The field is deprecated and due for deletion in **T14**,
+but it was a cross-household read on the screen today, so it was not left for then.
+
+**DoD**
+- [x] `getSchoolInfo` takes the caller, keeping the caller-less path as it was.
+- [x] A test with a second household at a differently named school, made the most
+      recent login, asserts the caller sees their own school.
 
 ### R14 — Filtering the inbox by school can make that school's mail unreachable
 
@@ -907,11 +958,21 @@ came out of the work rather than out of review; they are the Minors below.
 - `children.service.ts` `getLessonPlans` / `getLessonHistory` — `catch { return {
   data: [] } }` with no log, so a 403 from a wrong-target resolution (**B3**) is
   indistinguishable from a school that has no lesson plans.
-- Label-set inconsistency: `ChildrenService.resolveSchoolLabels` resolves over the
+- ~~Label-set inconsistency: `ChildrenService.resolveSchoolLabels` resolves over the
   household's whole connection set, `common/student-school-map.ts` only over the
   connections present in the list. Two schools whose short labels collide therefore
   show the collision-expanded full name on `/children` and the short colliding label
-  on a page listing only one of them.
+  on a page listing only one of them.~~ **Fixed in batch 3**, with **R6** — it was the
+  same seam, and there was a third reader with it (`MailService.getConversations`,
+  which resolved over the connections present in the page). All three now read
+  `common/school-chips.ts`, which resolves the labels once over the caller's whole
+  active connection set. `common/school-label.ts` stays pure.
+- The e2e suite is flaky under full parallel load on a dev machine: two full runs
+  during batch 3 failed 3 and then 4 tests, a *different* set each time, all of them
+  `expect(locator).toBeVisible` timeouts on a page that had not finished rendering.
+  Every one of them passes when its own spec file runs alone, and batch 3 touched no
+  frontend code. Worth knowing before reading a local red as a regression; unmeasured
+  whether CI's runners show it too.
 - `npm run test:integration` was collecting the *other git worktrees'* copies of
   `tests/integration/**` — `.worktrees/feat-attachment-viewer` is on an older commit,
   so five of its suites failed to run and the gate was red for reasons that had
