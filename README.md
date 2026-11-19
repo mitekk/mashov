@@ -140,6 +140,15 @@ npm run test:integration  # backend API integration tests
 npm run test:e2e          # full-stack Playwright e2e
 ```
 
+`test:unit` and `test:integration` run against `db-test`, a throwaway Postgres on
+tmpfs that exists only under the `test` profile. They never touch the `db` your dev
+stack uses — which matters, because the integration suite starts with
+`prisma db push --force-reset` and would otherwise drop every table in it.
+
+`test:e2e` is **not** isolated this way: it drives the real `backend` service and so
+writes into the dev database. It does not reset it, but it does leave test data
+behind. Point `DATABASE_URL` elsewhere first if that matters to you.
+
 ### Configuration
 
 Copy `.env.example` to `.env`. The values you **must** set:
