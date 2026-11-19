@@ -57,14 +57,28 @@ export class ConnectionScopeService {
     return targets;
   }
 
-  /** One connection by id. Throws for an unknown or inactive one. */
-  async targetFor(connectionId: string): Promise<ConnectionTarget> {
+  /**
+   * One connection by id. Throws for an unknown, inactive or foreign one.
+   *
+   * `userId` is the caller, when there is one. There is no fallback here to
+   * scope, so the id itself is the only thing to check -- and its callers
+   * reach it with an id grouped out of their own household-scoped read, which
+   * bounds them. That should not be the ONLY thing that bounds them: the
+   * stamped branch of `resolveOrFallback` was bounded by its callers too, up
+   * to the point where one of them was not (**R16**). A connection with no
+   * `userId` is admitted, the same "ownership unknown" rule as everywhere
+   * else; without a caller (the sync fanout) any active connection resolves.
+   */
+  async targetFor(connectionId: string, userId?: string): Promise<ConnectionTarget> {
     const row = await this.prisma.householdConnection.findUnique({
       where: { id: connectionId },
     });
 
     if (!row) {
       throw new Error(`Household connection not found: ${connectionId}`);
+    }
+    if (userId && row.userId && row.userId !== userId) {
+      throw new Error(`Household connection ${connectionId} belongs to another household`);
     }
     if (!row.active) {
       // An unlinked school's credentials are no longer trusted to talk
@@ -178,8 +192,8 @@ export class ConnectionScopeService {
   }
 
   /**
-   * A stamp if there is one, else the household's most recently used
-   * connection.
+   * The caller's own stamp if there is one, else the household's most recently
+   * used connection -- preferring the stamped school.
    *
    * The fallback is not a shortcut: NULL means "ownership unknown, re-stamp on
    * the next roster refresh", because the shared env-credential session writes
@@ -187,35 +201,67 @@ export class ConnectionScopeService {
    * connection. Throwing instead would take a single-school deployment that
    * has not yet re-synced from working to broken.
    *
-   * It is scoped to the caller when there is one. Guessing across households
-   * meant an unattributed row of A's could resolve to B's connection, and A's
-   * request would then be sent upstream under B's decrypted Mashov password --
-   * for a mail mutation, writing into B's account. Without a caller (the
-   * crons, the digest) the guess stays global, which is the only thing those
-   * paths can do.
+   * Both branches are scoped to the caller when there is one, and the stamped
+   * branch is the later fix (**R16**). Guessing across households meant an
+   * unattributed row of A's could resolve to B's connection; honouring a
+   * foreign STAMP meant the same thing for a row that is attributed, just not
+   * to the caller. Either way A's request went upstream under B's decrypted
+   * Mashov password -- for a mutation, writing into B's account. Two parents
+   * sharing a child (ADR-0031) reach that every time the other one synced
+   * last: `requireStudent` admits the child for both, correctly, and the stamp
+   * is the other parent's by design.
+   *
+   * So a stamp outside the caller's connections is treated as no stamp at all,
+   * and the fallback under it prefers the caller's connection AT THE STAMPED
+   * SCHOOL -- the row is at that school, so in a two-school household the
+   * most recently used connection is the wrong credential to spend. A stamp on
+   * a connection with no `userId` is still honoured: that is the same
+   * "ownership unknown" rule as everywhere else, and it is what every row of a
+   * deployment predating linking looks like.
+   *
+   * Without a caller (the crons, the digest) the stamp is authoritative and
+   * the guess stays global, which is the only thing those paths can do.
    */
   private async resolveOrFallback(
     connectionId: string | null,
     subject: string,
     userId?: string,
   ): Promise<ConnectionTarget> {
+    // The school the stamp points at, when there is a stamp to read it from.
+    // The stamped row is at that school, so it is the school the fallback
+    // below should look for among the caller's own connections.
+    let stampedSchoolCode: number | undefined;
+
     if (connectionId) {
       const row = await this.prisma.householdConnection.findUnique({
         where: { id: connectionId },
       });
-      const target = row?.active ? this.toTarget(row as ConnectionRow) : null;
+      stampedSchoolCode = row?.schoolCode;
+
+      const foreign = Boolean(userId && row?.userId && row.userId !== userId);
+      const target = row?.active && !foreign ? this.toTarget(row as ConnectionRow) : null;
       if (target) return target;
+
       this.logger.warn(
-        `${subject} is stamped with connection ${connectionId}, which is missing or inactive; falling back`,
+        foreign
+          ? `${subject} is stamped with connection ${connectionId}, which belongs to another household; falling back to the caller's own`
+          : `${subject} is stamped with connection ${connectionId}, which is missing or inactive; falling back`,
       );
     } else {
       this.logger.debug(`${subject} has no ownership stamp; falling back to the latest connection`);
     }
 
-    const fallback = await this.prisma.householdConnection.findFirst({
-      where: { active: true, ...(userId ? { userId } : {}) },
-      orderBy: { lastLoginAt: 'desc' },
-    });
+    const fallback =
+      (userId !== undefined && stampedSchoolCode !== undefined
+        ? await this.prisma.householdConnection.findFirst({
+            where: { active: true, userId, schoolCode: stampedSchoolCode },
+            orderBy: { lastLoginAt: 'desc' },
+          })
+        : null) ??
+      (await this.prisma.householdConnection.findFirst({
+        where: { active: true, ...(userId ? { userId } : {}) },
+        orderBy: { lastLoginAt: 'desc' },
+      }));
 
     const target = fallback ? this.toTarget(fallback as ConnectionRow) : null;
     if (!target) {

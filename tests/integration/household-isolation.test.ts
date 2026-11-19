@@ -148,7 +148,10 @@ describe('Two parents, one school, shared children', () => {
           username,
           schoolCode: SEMEL,
           schoolYear: YEAR,
-          encryptedPassword: 'enc',
+          // Distinct per connection: "no upstream call went out under the
+          // other parent's credentials" is only assertable if the two
+          // credentials are telling apart in the first place.
+          encryptedPassword: `enc-${username}`,
           schoolName: 'בית ספר משותף',
           active: true,
           // Explicit, and different per connection, so a summed badge cannot
@@ -761,6 +764,86 @@ describe('Two parents, one school, shared children', () => {
         const dashboard = await makeDashboard().getDashboard(USER_C);
 
         expect(dashboard.summary.newConversations).toBe(1);
+      });
+    });
+
+    describe('R16 — a release request goes out under the caller credentials', () => {
+      /**
+       * The shared child is stamped to B, and `requireStudent` admits them for
+       * both parents -- correctly, because the visibility edge lists both.
+       * What must not follow is A's early-release request being sent upstream
+       * under B's decrypted Mashov password, into B's account. Mashov accepts
+       * it (same school, same child, well-formed request), so a guard that
+       * only works because upstream says no is no guard: the assertion is that
+       * no call carries B's credentials at all.
+       */
+      function upstreamSpy() {
+        return {
+          getForTarget: jest.fn().mockResolvedValue([]),
+          putForTarget: jest.fn().mockResolvedValue(undefined),
+          deleteForTarget: jest.fn().mockResolvedValue(undefined),
+        };
+      }
+
+      function childrenWith(upstream: ReturnType<typeof upstreamSpy>): ChildrenService {
+        return new ChildrenService(
+          prisma as unknown as PrismaService,
+          { ensureStudentsAvailable: async () => undefined } as unknown as MashovSessionService,
+          upstream as unknown as MashovHttpClient,
+          new UserItemStateService(prisma as unknown as PrismaService),
+          { get: () => undefined } as unknown as ConfigService,
+          new ConnectionScopeService(prisma as unknown as PrismaService, {
+            decrypt: (value: string) => value,
+          } as unknown as EncryptionService),
+        );
+      }
+
+      /** Every `ConnectionTarget` any of the three mutations spent. */
+      function targetsSpent(upstream: ReturnType<typeof upstreamSpy>) {
+        return [
+          ...upstream.putForTarget.mock.calls.map((args) => args[2]),
+          ...upstream.deleteForTarget.mock.calls.map((args) => args[1]),
+        ];
+      }
+
+      it("sends A's release for the child stamped to B under A's own connection", async () => {
+        const upstream = upstreamSpy();
+        const children = childrenWith(upstream);
+
+        await children.createStudentRelease(SHARED, { reason: 'רופא' }, USER_A);
+        await children.updateStudentRelease(SHARED, 17, { reason: 'רופא' }, USER_A);
+        await children.deleteStudentRelease(SHARED, 17, USER_A);
+
+        const targets = targetsSpent(upstream);
+        expect(targets).toHaveLength(3);
+        for (const target of targets) {
+          expect(target).toMatchObject({
+            id: CONN_A,
+            username: 'parent-a',
+            password: 'enc-parent-a',
+          });
+        }
+      });
+
+      it("still routes B's own request through B", async () => {
+        const upstream = upstreamSpy();
+
+        await childrenWith(upstream).createStudentRelease(SHARED, { reason: 'רופא' }, USER_B);
+
+        expect(targetsSpent(upstream)).toEqual([
+          expect.objectContaining({ id: CONN_B, password: 'enc-parent-b' }),
+        ]);
+      });
+
+      it('refuses the child only the other parent lists, before resolving anything', async () => {
+        const upstream = upstreamSpy();
+
+        await expect(
+          childrenWith(upstream).createStudentRelease(OWN_B, { reason: 'רופא' }, USER_A),
+        ).rejects.toThrow();
+
+        expect(upstream.putForTarget).not.toHaveBeenCalled();
+        expect(upstream.deleteForTarget).not.toHaveBeenCalled();
       });
     });
 

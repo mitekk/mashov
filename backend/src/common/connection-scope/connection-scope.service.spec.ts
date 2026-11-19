@@ -51,6 +51,7 @@ function makePrisma(state: {
       if (key === 'active') return row.active === value;
       if (key === 'userId') return row.userId === value;
       if (key === 'id') return row.id === value;
+      if (key === 'schoolCode') return row.schoolCode === value;
       return true;
     });
 
@@ -300,6 +301,202 @@ describe('ConnectionScopeService', () => {
 
       await expect(service.targetForStudent('guid-a')).resolves.toMatchObject({ id: 'conn-b' });
       await expect(service.targetForConversation('conv-a')).resolves.toMatchObject({
+        id: 'conn-b',
+      });
+    });
+  });
+
+  describe('targetFor and the caller (R16)', () => {
+    /**
+     * The by-id resolve has no fallback to scope, so the id itself is the only
+     * thing to check -- and its two callers
+     * (`MailService.unarchive`, `forEachConnectionSubset`) reach it with an id
+     * grouped out of their own `visibleConversations` read. That read bounds
+     * them today. It should not be the only thing that does: the stamped
+     * branch above was bounded by its callers too, right up to the point where
+     * one of them was not.
+     */
+    const twoHouseholds = () =>
+      makePrisma({
+        connections: [
+          conn({ id: 'conn-a', userId: 'user-a' }),
+          conn({
+            id: 'conn-b',
+            userId: 'user-b',
+            username: 'parent-b',
+            encryptedPassword: 'enc:pw-b',
+          }),
+          conn({ id: 'conn-none', userId: null, username: 'env-credential' }),
+        ],
+      });
+
+    it("refuses another household's connection for a known caller", async () => {
+      const { prisma } = twoHouseholds();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetFor('conn-b', 'user-a')).rejects.toThrow(/another household/i);
+    });
+
+    it("resolves the caller's own, and one nobody owns", async () => {
+      const { prisma } = twoHouseholds();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetFor('conn-a', 'user-a')).resolves.toMatchObject({ id: 'conn-a' });
+      await expect(service.targetFor('conn-none', 'user-a')).resolves.toMatchObject({
+        id: 'conn-none',
+      });
+    });
+
+    it('resolves any active connection when given no caller', async () => {
+      // The sync fanout resolves the connection it is iterating over.
+      const { prisma } = twoHouseholds();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetFor('conn-b')).resolves.toMatchObject({ id: 'conn-b' });
+    });
+  });
+
+  describe('a stamp that is not the caller\'s (R16)', () => {
+    /**
+     * Two parents at one school share a child (ADR-0031), and the child is
+     * stamped to whichever of them synced last -- here B. Both may act on the
+     * child; only one of them may have their password spent doing it.
+     */
+    const shared = () =>
+      makePrisma({
+        connections: [
+          conn({
+            id: 'conn-a',
+            userId: 'user-a',
+            username: 'parent-a',
+            lastLoginAt: new Date('2026-01-01T00:00:00Z'),
+          }),
+          conn({
+            id: 'conn-b',
+            userId: 'user-b',
+            username: 'parent-b',
+            encryptedPassword: 'enc:pw-b',
+            lastLoginAt: new Date('2026-11-18T00:00:00Z'),
+          }),
+        ],
+        students: [{ studentGuid: 'guid-shared', householdConnectionId: 'conn-b' }],
+        conversations: [{ conversationId: 'conv-b', householdConnectionId: 'conn-b' }],
+        messages: [{ messageId: 'msg-b', householdConnectionId: 'conn-b' }],
+      });
+
+    it("resolves a child stamped to the other parent through the caller's own connection", async () => {
+      const { prisma } = shared();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-shared', 'user-a')).resolves.toMatchObject({
+        id: 'conn-a',
+        username: 'parent-a',
+        password: 'pw-a',
+      });
+    });
+
+    it('does the same for a conversation and a message stamped elsewhere', async () => {
+      const { prisma } = shared();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForConversation('conv-b', 'user-a')).resolves.toMatchObject({
+        id: 'conn-a',
+        password: 'pw-a',
+      });
+      await expect(service.targetForMessage('msg-b', 'user-a')).resolves.toMatchObject({
+        id: 'conn-a',
+        password: 'pw-a',
+      });
+    });
+
+    it('leaves the stamp alone for the household that owns it', async () => {
+      const { prisma } = shared();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-shared', 'user-b')).resolves.toMatchObject({
+        id: 'conn-b',
+        password: 'pw-b',
+      });
+    });
+
+    it('still honours a stamp on a connection nobody owns', async () => {
+      // `userId IS NULL` on a connection is the same "ownership unknown"
+      // rule as everywhere else on this branch, not "nobody's": it is what a
+      // deployment that predates linking looks like, and refusing it would
+      // take every routed read down there.
+      const { prisma } = makePrisma({
+        connections: [
+          conn({ id: 'conn-a', userId: 'user-a' }),
+          conn({
+            id: 'conn-none',
+            userId: null,
+            username: 'env-credential',
+            encryptedPassword: 'enc:pw-none',
+          }),
+        ],
+        students: [{ studentGuid: 'guid-1', householdConnectionId: 'conn-none' }],
+      });
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-1', 'user-a')).resolves.toMatchObject({
+        id: 'conn-none',
+        password: 'pw-none',
+      });
+    });
+
+    it("prefers the caller's connection at the stamped school", async () => {
+      // A two-school household: the child is at the stamp's school, so the
+      // household's most RECENT connection is the wrong one to spend.
+      const { prisma } = makePrisma({
+        connections: [
+          conn({
+            id: 'conn-a-here',
+            userId: 'user-a',
+            schoolCode: 111,
+            username: 'parent-a-here',
+            encryptedPassword: 'enc:pw-here',
+            lastLoginAt: new Date('2026-01-01T00:00:00Z'),
+          }),
+          conn({
+            id: 'conn-a-elsewhere',
+            userId: 'user-a',
+            schoolCode: 222,
+            username: 'parent-a-elsewhere',
+            encryptedPassword: 'enc:pw-elsewhere',
+            lastLoginAt: new Date('2026-11-18T00:00:00Z'),
+          }),
+          conn({ id: 'conn-b', userId: 'user-b', schoolCode: 111, username: 'parent-b' }),
+        ],
+        students: [{ studentGuid: 'guid-shared', householdConnectionId: 'conn-b' }],
+      });
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-shared', 'user-a')).resolves.toMatchObject({
+        id: 'conn-a-here',
+        password: 'pw-here',
+      });
+    });
+
+    it('throws rather than borrowing the stamp when the caller has no connection', async () => {
+      const { prisma } = shared();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-shared', 'user-c')).rejects.toThrow(
+        /no active connection/i,
+      );
+    });
+
+    it('still resolves the stamp itself when there is no caller', async () => {
+      // The crons and the digest have no caller to scope to, and a stamped row
+      // is exactly what they should route by.
+      const { prisma } = shared();
+      const service = new ConnectionScopeService(prisma, encryption);
+
+      await expect(service.targetForStudent('guid-shared')).resolves.toMatchObject({
+        id: 'conn-b',
+        password: 'pw-b',
+      });
+      await expect(service.targetForConversation('conv-b')).resolves.toMatchObject({
         id: 'conn-b',
       });
     });

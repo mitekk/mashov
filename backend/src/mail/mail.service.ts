@@ -1141,7 +1141,7 @@ export class MailService {
       let markedUnreadUpstream = false;
       try {
         const target = connectionId
-          ? await this.scope.targetFor(connectionId)
+          ? await this.scope.targetFor(connectionId, userId)
           : await this.scope.targetForConversation(subset[0], userId);
         const marked = await this.mashovClient.putForTarget<unknown>(
           '/api/mail/conversations/markAsUnread',
@@ -1252,7 +1252,7 @@ export class MailService {
     for (const [connectionId, subset] of grouped) {
       try {
         const target = connectionId
-          ? await this.scope.targetFor(connectionId)
+          ? await this.scope.targetFor(connectionId, userId)
           : await this.scope.targetForConversation(subset[0], userId);
         await call(subset, target);
       } catch (error) {
