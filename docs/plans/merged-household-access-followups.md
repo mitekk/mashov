@@ -13,6 +13,11 @@ recorded here as **R1–R12**.
 What is open: **B2–B4** and **R1–R12**, the two operational tasks the plan itself
 deferred (**T13–T14**), and the minors. **G1** and **B1** are done and kept as record.
 
+A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
+**R13** and **R14** below and sharpened **B3**; everything else it found was already
+recorded here. **R1** and **R2** are done, so of the two batches that gate production
+only B3's new bullet remains.
+
 ## Pick-up order
 
 Each batch is one session's work and leaves the tree green on its own. Within a batch
@@ -20,13 +25,13 @@ the items share a seam, so splitting them costs more than doing them together.
 
 | # | Items | Why here |
 |---|---|---|
-| 1 | **R1** + **B3** + `updateCachedNewCount()` | The only finding where one household writes another's data upstream with their credentials. B3's `userId`-threading bullet is the same edit. |
+| 1 | **R1** + **B3** + `updateCachedNewCount()` | The only finding where one household writes another's data upstream with their credentials. B3's `userId`-threading bullet is the same edit. **Done except B3's new bullet** — the stamped-branch attachment leak the third review found, which is the last open piece of this batch and still a pre-production one. |
 | 2 | **R2** | A permanently broken unlink, independent of everything else, and small. |
-| 3 | **R3**, **R5**, **R6** + the label-set minor | One missing predicate across three readers. Needs the `userId` threading batch 1 establishes. |
+| 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor | One missing predicate across four readers. Needs the `userId` threading batch 1 establishes. |
 | 4 | **R4** | Same visibility-edge fix as batch 3, in a service with no callers in common. Could ride along with batch 3 if that one goes quickly. |
 | 5 | **R12** + the "connection-scoped refresh fans out over every child" minor | Both are the refresh envelope lying to the parent, in opposite directions. **R11** fits here too. |
 | 6 | **R8**, **R9**, **R10** | Three independent small correctness fixes in the auth/link path; one session, three tests. |
-| 7 | **R7** + the `MorePageClient` dead term | The only frontend items. Needs an e2e run, so it is cheapest on its own. |
+| 7 | **R7**, **R14** + the `MorePageClient` dead term | The only frontend items, and R14 needs the `?schoolId=` exclusion minor settled with it. Needs an e2e run, so it is cheapest on its own. |
 | 8 | **B2**, **B4** | Pre-existing bugs with no dependency on the above. |
 | 9 | **T13**, then **T14** | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. |
 
@@ -214,6 +219,30 @@ database with more than one active connection
       connection.
 - [x] The no-`userId` path (digest, crons) keeps today's global fallback, with a test
       pinning that.
+
+**Scope correction (third review, 2026-11-19).** The `userId` threading above fixed the
+**fallback** branch of `resolveOrFallback` (`:215`). The **stamped** branch (`:202-207`)
+still ignores `userId` entirely: a non-null stamp resolves to that connection's target
+whoever is asking. ADR-0030 records that as the deliberate `I6` ruling, on the stated
+bound that "Mashov rejects it in almost every case, so the symptom is an empty list
+rather than a leak". That bound does not hold on one path:
+
+`MailService.downloadAttachment:340` resolves `targetForMessage`, which reads the
+**message's** stamp, while the only ownership check it passed is `assertVisible` on the
+**conversation** — and `canSee:639` admits a NULL-stamped conversation for every
+caller. So an unstamped conversation whose message rows are stamped to household A
+lets household B download that attachment under A's decrypted Mashov password. The
+`.catch()` fallback to `targetForConversation` fires only when the message row is
+missing, never when it is foreign-stamped. Mashov accepts this one, because the
+credentials and the message genuinely belong together — the request is well-formed and
+the file comes back. That shape exists on any database where the ownership backfill
+refused, which is every deployment with more than one active connection.
+
+- [ ] `targetForMessage` (and the stamped branch generally, where a caller is known)
+      refuses a stamp outside the caller's own connections rather than resolving it, or
+      `downloadAttachment` checks the message's stamp against the caller before
+      resolving. A test asserts household B cannot download an attachment on a
+      NULL-stamped conversation whose message is stamped to A.
 
 ---
 
@@ -586,6 +615,63 @@ first more visible, so do them together.
 
 ---
 
+## Bugs the third review found (2026-11-19)
+
+`/code-review high` over `master...HEAD`, run after **R2** and its minors landed. Nine
+items; six were already recorded here (**R3** twice, **R6**, **R7**, **R8**, **B2**),
+one sharpened **B3**'s stated bound (recorded there), and the two below are new. The
+review also checked the **R2** unlink work specifically — delete ordering, the
+relation-filtered message delete, both exclusion sets, FK safety — and found it sound.
+
+### R13 — The dashboard badge falls back to the global unread count
+
+**Severity**: low. Narrow trigger, but it is another household's number on the screen.
+
+**Cause.** `backend/src/dashboard/dashboard.service.ts:116` — `localNewConversations`
+counts `mailConversation` with `isUnread: true` and no household predicate at all.
+`MailService.getSummary:97` is the same shape and *was* fixed in batch 1, where it
+spreads `ownScope`; this second copy was missed. The value is used at `:156`, and only
+when `household._count._all === 0`.
+
+**Description.** A signed-in user with no active connection — between unlinking and
+re-linking, or mid-onboarding — gets every other household's unread conversations as
+their own badge count. The `_count._all === 0` guard is what keeps it narrow: a user
+with a connection reads the summed `cachedNewCount` instead and never reaches this
+branch.
+
+**DoD**
+- [ ] The count takes the same `householdMailScope` as `MailService.getSummary`.
+- [ ] A test with two households asserts the no-connection user's badge is 0, not the
+      other household's count.
+
+### R14 — Filtering the inbox by school can make that school's mail unreachable
+
+**Severity**: medium. The parent is shown an empty mailbox and has no way forward.
+
+**Cause.** `frontend/src/app/inbox/InboxPageClient.tsx:82-88` filters `allConversations`
+by school **client-side**, over a `useInfiniteQuery` of 20 rows per page
+(`useMail.ts:26`). `GET /mail/conversations` has accepted `?schoolId=` since this
+branch, and `fetchConversations` never sends it. The empty branch at `:315` renders
+`EmptyState` *instead of* `ConversationList`, which is what carries `hasMore` and the
+load-more control.
+
+**Description.** If page 1 holds only school A's conversations, selecting school B
+renders "תיבת הדואר ריקה" — the mailbox-is-empty copy, which does not mention the
+filter — with no way to load page 2. School B's mail is not merely unfiltered, it is
+unreachable without clearing the chip. The pagination counts shown elsewhere are
+computed on the unfiltered totals too.
+
+**DoD**
+- [ ] The school chip is a server-side filter: `fetchConversations` passes `schoolId`
+      and the query key includes it, so pagination and counts are over the filtered
+      set. (**R1** already made `?schoolId=` 404 on a foreign connection, so the
+      param is safe to send.)
+- [ ] The empty state distinguishes "no mail at all" from "no mail at this school",
+      and keeps a way to load more or clear the filter.
+- [ ] An e2e case selects a school whose mail is not on page 1 and asserts it appears.
+
+---
+
 ## Operational tasks the plan deferred
 
 ### T13 — Link the second school against the real stack
@@ -749,7 +835,11 @@ came out of the work rather than out of review; they are the Minors below.
   one. Same family as the entry below. No frontend caller is affected —
   `InboxPageClient` filters by school client-side and never sends `schoolId` — so it is
   API-surface only. Pinned as current behaviour in
-  `tests/integration/household-isolation.test.ts`.
+  `tests/integration/household-isolation.test.ts`. **Correction (third review):** that
+  client-side filter has a consequence of its own, recorded as **R14** — it can make a
+  school's mail unreachable rather than merely unfiltered. Sending `schoolId` is part of
+  R14's fix, so the exclusion above stops being API-surface-only at that point and the
+  two have to be resolved together.
 - **Opening a conversation can leave one connection's `cachedNewCount` stale for up to
   five minutes.** Hydrating on open recomputes `isUnread` and no count, which is
   pre-existing; what changed in batch 1 is that the user's next mail action elsewhere
