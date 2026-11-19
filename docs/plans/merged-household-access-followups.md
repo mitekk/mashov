@@ -779,8 +779,9 @@ came out of the work rather than out of review; they are the Minors below.
   start on a machine with anything else on that port. Parameterising the host port
   (`${DB_PORT:-5432}:5432`) costs nothing; the e2e containers reach the db over the
   compose network and do not need the publish at all.~~ **Done** — `${DB_PORT:-5432}:5432`,
-  documented in `README.md`. `DB_PORT=5433 npm run test:integration` is what the
-  integration gate for batch 1 was run with.
+  documented in `README.md` and `.env.example`. `DB_PORT=5433 npm run test:integration`
+  is what the integration gate for batch 1 was run with, and `DB_PORT=5433 npm run
+  test:e2e` the e2e suite (171 tests).
 - `tests/e2e/school-links.spec.ts:389` ("a successful link goes to the syncing screen
   for that school") is **flaky**: it failed once on `syncing-heading` not being found
   after `waitForURL` had already succeeded, then passed on an identical re-run. The page
