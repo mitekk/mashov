@@ -1,14 +1,28 @@
 'use client';
 
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { ChevronLeft, ChevronRight, Download, Printer, X } from 'lucide-react';
 import { AttachmentPreview } from '@/components/attachments/AttachmentPreview';
 import { useAttachmentBlob } from '@/hooks/useAttachmentBlob';
-import { printBlob, triggerBlobDownload, triggerHrefDownload } from '@/lib/blob-actions';
-import { formatFileSize, isSvg } from '@/lib/mime';
+import {
+  printBlob,
+  triggerBlobDownload,
+  triggerHrefDownload,
+  type DocxRender,
+} from '@/lib/blob-actions';
+import { formatFileSize, isSvg, type PreviewKind } from '@/lib/mime';
 import { getTextDir } from '@/lib/rtl';
 import type { Attachment } from '@/types/api';
+
+/**
+ * The kinds `printBlob` can actually render — a positive allowlist, so a kind
+ * added to `PreviewKind` later does not silently switch the Print button on
+ * for a path that would print the wrong thing. (That is not hypothetical: the
+ * old test was `previewKind !== 'unsupported'`, and adding `docx` to the union
+ * under it would have offered to print a Word file as its escaped zip bytes.)
+ */
+const PRINTABLE_KINDS: readonly PreviewKind[] = ['pdf', 'image', 'text', 'docx'];
 
 export interface AttachmentViewerProps {
   files: Attachment[];
@@ -57,6 +71,12 @@ export function AttachmentViewer({
     refetch,
   } = useAttachmentBlob(href, file?.fileName ?? '', { enabled: open && Boolean(file) });
 
+  /** The docx render, once `DocxPreview` has one. Held as state rather than a
+   * ref because the Print button's presence depends on it. `DocxPreview` resets
+   * it to `null` on every new blob and on unmount, so next/prev can never print
+   * the previous document. */
+  const [docxRender, setDocxRender] = useState<DocxRender | null>(null);
+
   const hasPrevious = safeIndex > 0;
   const hasNext = safeIndex < files.length - 1;
 
@@ -84,8 +104,8 @@ export function AttachmentViewer({
 
   const handlePrint = useCallback(() => {
     if (!blob || !file) return;
-    void printBlob(blob, mimeType, file.fileName, href);
-  }, [blob, file, href, mimeType]);
+    void printBlob(blob, mimeType, file.fileName, href, docxRender);
+  }, [blob, docxRender, file, href, mimeType]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -109,9 +129,13 @@ export function AttachmentViewer({
 
   const sizeLabel = blob ? formatFileSize(blob.size) : '';
   // SVG is viewable but not printable: see `printBlob`. Offering the button
-  // and then quietly downloading instead would be the worse answer.
+  // and then quietly downloading instead would be the worse answer — which is
+  // also why a docx only becomes printable once its render exists.
   const canPrint =
-    Boolean(blob) && previewKind !== 'unsupported' && !isSvg(mimeType, file.fileName);
+    Boolean(blob) &&
+    PRINTABLE_KINDS.includes(previewKind) &&
+    !isSvg(mimeType, file.fileName) &&
+    (previewKind !== 'docx' || docxRender !== null);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -185,6 +209,7 @@ export function AttachmentViewer({
               fileName={file.fileName}
               href={href}
               previewKind={previewKind}
+              blob={blob}
               objectUrl={objectUrl}
               text={text}
               isTextTruncated={isTextTruncated}
@@ -193,6 +218,7 @@ export function AttachmentViewer({
               error={error}
               onRetry={refetch}
               onDownload={handleDownload}
+              onDocxRendered={setDocxRender}
             />
           </div>
 

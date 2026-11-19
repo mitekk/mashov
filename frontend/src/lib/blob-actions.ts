@@ -6,7 +6,22 @@
  * can invalidate the URL the live preview is rendering.
  */
 
+import DOMPurify from 'dompurify';
+
 import { isSvg, previewKindFor } from '@/lib/mime';
+
+/**
+ * A finished `.docx` render, serialized by `DocxPreview`.
+ *
+ * Declared here rather than in the component because the print path is its
+ * only other consumer, and a lib must not import a component.
+ */
+export interface DocxRender {
+  /** The rendered body markup, straight from the shadow root. Unsanitized. */
+  html: string;
+  /** The stylesheet `docx-preview` generated for this document. */
+  css: string;
+}
 
 const PRINT_FRAME_LOAD_TIMEOUT_MS = 15_000;
 
@@ -75,6 +90,58 @@ function escapeHtml(value: string): string {
 
 const PRINT_PAGE_STYLE = '@page{margin:10mm}html,body{margin:0;padding:0}';
 
+/**
+ * Sanitize a docx render for the print frame.
+ *
+ * Why this exists at all: the frame below is built with `srcdoc` and
+ * deliberately carries no `sandbox` attribute (see the note in `printBlob`), so
+ * its document is same-origin with this page. Anything scriptable that reached
+ * `srcdoc` would run with the session cookie attached. The in-page preview does
+ * not need this — `docx-preview` builds DOM nodes there and never parses HTML —
+ * but serializing that DOM and re-parsing it as a document is exactly the step
+ * that would turn a crafted attribute back into live markup.
+ *
+ * Why not `sanitizeRichTextHtml` from `lib/richText.ts`: its config forbids
+ * `style`, `class`, `width`, and the `span`, `table`/`tr`/`td` and `img` tags —
+ * which is every single thing a docx render is made of. Reusing it would
+ * produce a wall of unstyled text. It is tuned for untrusted *mail bodies*,
+ * where presentation is noise; here the presentation is the document.
+ *
+ * So this config is permissive about presentation and relies on DOMPurify's
+ * defaults for the parts that matter: `<script>`, `on*` handlers and
+ * `javascript:` URLs are dropped, while `data:` images (what `useBase64URL`
+ * produces) are kept.
+ */
+function sanitizeDocxHtml(html: string): string {
+  return DOMPurify.sanitize(html, {
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'link', 'base', 'form'],
+    FORBID_ATTR: ['srcdoc'],
+    ALLOW_DATA_ATTR: false,
+  });
+}
+
+/**
+ * Neutralize the generated stylesheet before it goes inside `<style>`.
+ *
+ * The CSS is machine-generated, but it interpolates names taken from the
+ * document — a style or class name carrying `</style>` would close the element
+ * early and everything after it would be parsed as markup. There is no legal
+ * `<` in CSS here, so dropping it costs nothing.
+ */
+function sanitizeDocxCss(css: string): string {
+  return css.replace(/</g, '');
+}
+
+function docxPrintDocument(render: DocxRender, fileName: string): string {
+  return (
+    '<!doctype html><html dir="rtl" lang="he"><head><meta charset="utf-8">' +
+    `<title>${escapeHtml(fileName)}</title>` +
+    `<style>${PRINT_PAGE_STYLE}</style>` +
+    `<style>${sanitizeDocxCss(render.css)}</style>` +
+    `</head><body>${sanitizeDocxHtml(render.html)}</body></html>`
+  );
+}
+
 function imagePrintDocument(objectUrl: string, fileName: string): string {
   return (
     '<!doctype html><html><head><meta charset="utf-8">' +
@@ -118,6 +185,10 @@ function afterTwoAnimationFrames(): Promise<void> {
  *   `load` can fire before its image has painted, and printing then yields a
  *   blank page.
  * - Text is rendered as an HTML-escaped `<pre>`.
+ * - A docx prints the render the preview already produced, re-sanitized on the
+ *   way into `srcdoc`. Without that render in hand — the parse has not
+ *   finished, or the caller never had one — it saves the file instead, which
+ *   beats printing a document that is not the one on screen.
  *
  * The frame is positioned off-screen but **rendered** (not `display:none`):
  * Chrome will not instantiate its PDF viewer inside a non-rendered frame, and
@@ -135,12 +206,16 @@ function afterTwoAnimationFrames(): Promise<void> {
  *
  * `fallbackHref` is the file's server URL, used when the bytes themselves must
  * not be handed to the browser as a blob.
+ *
+ * `docxRender` is the serialized output of `DocxPreview`, required for — and
+ * only used by — `kind === 'docx'`.
  */
 export async function printBlob(
   blob: Blob,
   mime: string,
   fileName: string,
   fallbackHref: string,
+  docxRender?: DocxRender | null,
 ): Promise<void> {
   const kind = previewKindFor(mime, fileName);
 
@@ -149,7 +224,11 @@ export async function printBlob(
     return;
   }
 
-  if (kind === 'unsupported') {
+  // Every kind this function cannot render, plus a docx whose parse has not
+  // produced a render, exits here. `AttachmentViewer` keeps the button hidden
+  // in these cases; this is the backstop, and the reason the branch selection
+  // below names every kind explicitly instead of ending in an `else`.
+  if (kind === 'unsupported' || (kind === 'docx' && !docxRender)) {
     triggerBlobDownload(blob, fileName);
     return;
   }
@@ -218,8 +297,15 @@ export async function printBlob(
       frame.src = objectUrl;
     } else if (kind === 'image') {
       frame.srcdoc = imagePrintDocument(objectUrl, fileName);
-    } else {
+    } else if (kind === 'docx' && docxRender) {
+      frame.srcdoc = docxPrintDocument(docxRender, fileName);
+    } else if (kind === 'text') {
       frame.srcdoc = textPrintDocument(text ?? '', fileName);
+    } else {
+      // Unreachable: the guard above exits for every other kind. Saving the
+      // file is the honest answer if a new kind ever gets here.
+      fallBackToDownload();
+      return;
     }
 
     document.body.appendChild(frame);
