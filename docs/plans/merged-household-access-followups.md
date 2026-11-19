@@ -10,10 +10,9 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: **B2** and **B4**, **R8**–**R10** and **R17**, the two
-operational tasks the plan itself deferred (**T13**–**T14**), the **G2** coverage gap,
-and the minors. **G1**, **B1**, **B3**, **R4**, **R7**, **R11**, **R12**, **R14** and
-**R15** are done and kept as record. With batch 6 closed, the refresh envelope's
+What is open: **B2** and **B4**, the two operational tasks the plan itself deferred
+(**T13**–**T14**), the **G2** coverage gap, and the minors. Every **R** item is done —
+**R1**–**R17** — along with **G1**, **B1**, **B3** and N1, all kept as record. With batch 6 closed, the refresh envelope's
 `status` means what it says: `partial` exactly when something in the household
 actually failed, rather than `success` for a school that threw and `partial` for one
 that synced perfectly.
@@ -50,16 +49,17 @@ stays true.
 | 4 | **R4** + **R15** | **done** | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rode along: the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. The freshness card now takes the caller and selects children by the visibility edge; the badge is the caller's `cachedNewCount` sum plus the unattributed rows, added once by `unreadBadge` in `common/mail-scope.ts` — one rule, one home, for the two readers that each had their own copy of it. |
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | **done** | The only frontend items. R14 left a parent looking at an empty mailbox with no way forward, which was the worst *experience* open. The chip is now a server-side `?schoolId=` filter — which admits the unattributed rows, so the list follows the same NULL rule as batch 4's badge — the add-school form clears and re-gates on an edited selection, and the bulk-disconnect modal defaults to the plural copy instead of promising a one-school wipe. |
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | **done** | All three were the refresh envelope lying to the parent — R12 said `success` when a school failed, the minor said `partial` when one succeeded. Closed together, because fixing either alone only makes the others more visible. Three helpers now carry it: `studentScopeForContext` scopes every per-student task to the refreshing connection's children, `reportNoConnectionTarget` opens and fails a run for a connection-scoped refresh with no usable target, and the controller aggregates the envelope worst-wins over `PHASE_RANK`. R11's hole turned out to be in seven tasks, not the four recorded — six connection-loop tasks plus `releases`, the one per-student task missing the `every connection failed` guard. |
-| 7 | **R8**, **R9**, **R10**, **R17** | open | Four independent small correctness fixes in the auth/link path; one session, four tests. R17 is a two-line reorder. |
+| 7 | **R8**, **R9**, **R10**, **R17** | **done** | Four independent small correctness fixes in the auth/link path — each a branch or a status that meant something other than what it said. R17 turned out not to be a two-line reorder: the orphan lookup it would have moved is a cross-household existence oracle, so `assertLinkable` split into a free pre-limit half and a rate-limited one. R10's recorded precedent was wrong and the fix follows `auth.controller`'s envelope rather than the service's bare `Error`. |
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
 | 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1, 2, 3, 3.5, 4, 5 and 6 are done: no open item puts one household's data on
-another's *screen*, none puts a household's *request* in another's Mashov account, no
-reader left answers from the whole table, no frontend item is open, and the refresh
-envelope no longer misreports what happened. **Batch 7 is next.** Batch 7 is
-self-contained and can run in parallel with anything.
+Batches 1 through 7 are done: no open item puts one household's data on another's
+*screen*, none puts a household's *request* in another's Mashov account, no reader left
+answers from the whole table, no frontend item is open, the refresh envelope no longer
+misreports what happened, and no status or branch in the auth/link path answers
+something other than what it says. **Batch 8 is next** — two pre-existing bugs with no
+dependency on anything above. **8.5** (**G2**) is parallel with it.
 
 ---
 
@@ -619,11 +619,22 @@ refreshed from `credential.displayName`.
 `GET /auth/me` serves the original one forever, including after the school corrects it.
 
 **DoD**
-- [ ] The branch is gated on `existingConnBeforeLogin.userId !== (the AppUser for this
+- [x] The branch is gated on `existingConnBeforeLogin.userId !== (the AppUser for this
       `mashovUserId`)`, or the upsert moves before the early return.
-- [ ] `auth.service.spec.ts` asserts a second sign-in by the same single-school parent
+- [x] `auth.service.spec.ts` asserts a second sign-in by the same single-school parent
       refreshes `displayName`, and that a genuine cross-school adoption still does not
       create a second `AppUser`.
+
+**Done** (batch 7). Gated, not reordered: the `appUser.findUnique` already read a few
+lines below for `isFirstLogin` moves above the branch and the gate is a plain id
+comparison against it, so this is one query rather than two. Moving the whole `upsert`
+above the branch was rejected — it would write an `AppUser` row for a household about
+to be adopted into a different one, which ADR-0029's model avoids. No merge hop is
+needed in the gate: `mergedIntoUserId` is never written anywhere in `backend/`, so the
+merged-pointer sub-case is unreachable (see "Not recorded as items"). The cross-school
+spec was tightened while in there — it now mocks the credential's `AppUser` as a
+*different* household, so it proves the gate instead of relying on an unmocked
+`findUnique` answering `undefined`.
 
 ### R9 — `PUT /school-links/:id` 500s on the unique index this branch added
 
@@ -640,8 +651,15 @@ unguarded `update`, so the request 500s instead of returning the
 index it silently succeeded.
 
 **DoD**
-- [ ] `P2002` on that index maps to `409 CONNECTION_ALREADY_LINKED`.
-- [ ] A test asserts the 409 envelope rather than a 500.
+- [x] `P2002` on that index maps to `409 CONNECTION_ALREADY_LINKED`.
+- [x] A test asserts the 409 envelope rather than a 500.
+
+**Done** (batch 7). Narrowed on `meta.target` mentioning `username`, in both the
+field-array and constraint-name forms Prisma can return, and anything else rethrows: the
+same `update` also writes `encryptedPassword`, `lastLoginAt` and `mashovUniqueId`, so a
+blanket `P2002 -> 409` would one day label a different collision "username taken". A
+companion test pins that propagation. No `P2002` handling existed anywhere in
+`backend/src` before this, so it is the pattern now.
 
 ### R10 — The link rate limit answers 409 where the rules say 429
 
@@ -656,8 +674,24 @@ right. But any client keying off the status — or a proxy retry policy — sees
 rather than a throttle.
 
 **DoD**
-- [ ] 429, with the `RATE_LIMITED` code unchanged.
-- [ ] A test pins the status.
+- [x] 429, with the `RATE_LIMITED` code unchanged.
+- [x] A test pins the status.
+
+**Done** (batch 7). **The precedent recorded above is wrong as a model.**
+`AuthService.checkRateLimit` does reach 429, but as
+`Object.assign(new Error(...), { statusCode: 429 })` — a bare `Error` with no envelope,
+which `auth.controller.ts:100-114` catches and re-throws as an `HttpException` carrying
+one. Copying the *service* shape here would have dropped the `code` the frontend keys on
+(`frontend/src/lib/school-link-errors.ts:17`), so the fix follows the controller's
+shape, inside the service: `new HttpException({ error: { code: 'RATE_LIMITED', … } },
+HttpStatus.TOO_MANY_REQUESTS)`. The code and the Hebrew message are unchanged, so no
+frontend change was needed and none was made.
+
+Worth recording why this survived a suite that looks like it covers it:
+`tests/e2e/school-links.spec.ts:394` already asserted `status: 429` for `RATE_LIMITED`
+— against a **mocked route it fulfils itself**. A table of `{ code, status, hebrew }`
+that both seeds the response and asserts on it can only ever prove the frontend's
+mapping, never the backend's status.
 
 ### R11 — A targeted refresh of an inactive connection reports a clean sync and no run
 
@@ -999,8 +1033,27 @@ rate-limit slot**, on a school that cannot be added."
 a single upstream call. Both refusals are local and cheap.
 
 **DoD**
-- [ ] `assertLinkable` runs first, giving the comment its stated behaviour.
-- [ ] A test asserts a repeated local refusal does not consume the limit.
+- [x] `assertLinkable` runs first, giving the comment its stated behaviour.
+- [x] A test asserts a repeated local refusal does not consume the limit.
+
+**Done** (batch 7), as a split rather than the literal reorder this DoD asked for.
+`assertLinkable`'s orphan `findUnique` is an existence oracle on
+`(schoolCode, username)` across **every household on the deployment**; in front of the
+limit, an authenticated caller could probe it without bound to enumerate parent
+usernames school by school. So the method splits in two, and the ordering lives at the
+call site where it is legible:
+
+- `assertLinkableFromOwnLinks` — the `findMany` on the caller's own active rows plus
+  `CONNECTION_ALREADY_LINKED`, `SCHOOL_ALREADY_LINKED` and `LIMIT_REACHED`. Every
+  refusal here is decided from rows the caller already owns, so it tells them nothing
+  and costs nothing. Runs **before** `checkRateLimit`.
+- `assertNoForeignOwner` — the orphan lookup and its refusal. Stays **behind** the
+  limit.
+
+Two methods rather than one with an ordering comment, so neither can be called in the
+wrong place by accident. Two tests, not one: a repeated local refusal does not consume
+the limit, *and* a foreign-owner refusal still does — the second is what keeps a future
+"simplification" back into a single pre-limit call from passing.
 
 ### Not recorded as items
 
