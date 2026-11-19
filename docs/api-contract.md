@@ -68,6 +68,10 @@ client would put that collision rule in two languages).
 | `GET /dashboard` → `feed[]`, `GET /feed` → `data[]` | `schoolId`, `schoolShortLabel` |
 | `GET /mail/conversations` → `data[]` | `schoolId`, `schoolShortLabel` |
 
+`schoolId` is always one of the **caller's own** connections, on every one of these responses:
+a child two parents at one school share resolves to whichever connection belongs to the caller
+asking, never to the other parent's, so the id is always resolvable against `me.schools`.
+
 All four are `string \| null`. `null` is a real value and means **no badge**: an unstamped child,
 whose ownership is not yet known, and mail, which is household-wide and genuinely has no child.
 Clients must treat it as "unknown", never as a school named "null", and must leave such an item

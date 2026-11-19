@@ -39,6 +39,7 @@ import { ConnectionScopeService } from '../../backend/src/common/connection-scop
 import { MailService } from '../../backend/src/mail/mail.service';
 import { DashboardService } from '../../backend/src/dashboard/dashboard.service';
 import { FeedService } from '../../backend/src/feed/feed.service';
+import { ChildrenService } from '../../backend/src/children/children.service';
 import { UserItemStateService } from '../../backend/src/common/user-item-state.service';
 import type { FreshnessService } from '../../backend/src/sync/freshness.service';
 import type { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
@@ -571,6 +572,20 @@ describe('Two parents, one school, shared children', () => {
       );
     }
 
+    function makeChildren(): ChildrenService {
+      return new ChildrenService(
+        prisma as unknown as PrismaService,
+        { ensureStudentsAvailable: async () => undefined } as unknown as MashovSessionService,
+        {} as unknown as MashovHttpClient,
+        new UserItemStateService(prisma as unknown as PrismaService),
+        { get: () => undefined } as unknown as ConfigService,
+        new ConnectionScopeService(
+          prisma as unknown as PrismaService,
+          { decrypt: (value: string) => value } as unknown as EncryptionService,
+        ),
+      );
+    }
+
     /** Every feed item this fixture could produce, by source id. */
     async function feedSourceIds(userId: string): Promise<string[]> {
       const dashboard = await makeDashboard().getDashboard(userId);
@@ -658,6 +673,55 @@ describe('Two parents, one school, shared children', () => {
           expect(new Set(await sharedChildSchoolIds(USER_A))).toEqual(new Set([CONN_A]));
           expect(new Set(await sharedChildSchoolIds(USER_B))).toEqual(new Set([CONN_B]));
         }
+      });
+    });
+
+    describe('R6 — /children agrees with /dashboard and /feed', () => {
+      it('reports the same school for the shared child on all three', async () => {
+        // `/children` derived these four fields from the routing stamp while
+        // the other two went through the visibility edge, so the two endpoints
+        // disagreed about the same child: `/children` emitted an id the caller
+        // does not own with `schoolName`, `schoolShortLabel` and `semel` all
+        // null, so the badge vanished there while `/home` showed one.
+        const children = await makeChildren().getChildren(USER_A);
+        const dashboard = await makeDashboard().getDashboard(USER_A);
+        const feed = await makeFeed().getFeed(1, 100, USER_A);
+
+        const child = children.data.find((row) => row.studentGuid === SHARED);
+        const card = dashboard.children.find((row) => row.studentGuid === SHARED);
+        const item = feed.data.find((row) => row.studentGuid === SHARED);
+
+        expect(child?.schoolId).toBe(CONN_A);
+        expect(card?.schoolId).toBe(CONN_A);
+        expect(item?.schoolId).toBe(CONN_A);
+
+        expect(child?.schoolShortLabel).toBe(card?.schoolShortLabel);
+        expect(child?.schoolShortLabel).toBe(item?.schoolShortLabel);
+
+        // And the two fields only `/children` carries are populated, where
+        // they used to be null for exactly this child.
+        expect(child?.schoolName).not.toBeNull();
+        expect(child?.semel).toBe(SEMEL);
+      });
+
+      it('gives the other parent their own connection for the same child', async () => {
+        const children = await makeChildren().getChildren(USER_B);
+
+        expect(children.data.find((row) => row.studentGuid === SHARED)?.schoolId).toBe(CONN_B);
+      });
+
+      it('reports no school for the child nobody lists', async () => {
+        // All four `null` is the contract's "no badge", and the right answer
+        // while ownership is genuinely unknown.
+        const children = await makeChildren().getChildren(USER_A);
+        const child = children.data.find((row) => row.studentGuid === UNLINKED);
+
+        expect(child).toMatchObject({
+          schoolId: null,
+          schoolName: null,
+          schoolShortLabel: null,
+          semel: null,
+        });
       });
     });
 

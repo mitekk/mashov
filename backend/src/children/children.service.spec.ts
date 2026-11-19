@@ -2104,6 +2104,30 @@ describe('ChildrenService household isolation', () => {
     links: ['conn-mine', 'conn-theirs'],
   };
 
+  /**
+   * The connection rows behind the school fields, for both parents.
+   *
+   * One school, two parents, their own `displayLabel` each -- so a response
+   * carrying the other parent's label is visible rather than indistinguishable.
+   */
+  const CONNECTION_ROWS: Record<
+    string,
+    { id: string; schoolCode: number; schoolName: string; displayLabel: string | null }
+  > = {
+    'conn-mine': {
+      id: 'conn-mine',
+      schoolCode: 111,
+      schoolName: 'בית ספר אחד',
+      displayLabel: 'שלי',
+    },
+    'conn-theirs': {
+      id: 'conn-theirs',
+      schoolCode: 111,
+      schoolName: 'בית ספר אחד',
+      displayLabel: 'שלהם',
+    },
+  };
+
   /** Prisma that honours ownership on both the list and the single read. */
   function makePrisma(students: OwnedStudent[], myConnections: string[]) {
     // Interprets the real predicate shape: an OR of "some link names one of my
@@ -2124,12 +2148,25 @@ describe('ChildrenService household isolation', () => {
 
     return {
       studentConnection: {
-        findMany: jest.fn(({ where }) =>
-          Promise.resolve(
-            (students.find((student) => student.studentGuid === where.studentGuid)?.links ?? [])
-              .map((id) => ({ studentGuid: where.studentGuid, householdConnectionId: id })),
-          ),
-        ),
+        // Two shapes: one guid for the per-child guard, and `{ in: [...] }`
+        // for `linksForStudents`, which answers a whole list in one query.
+        findMany: jest.fn(({ where }) => {
+          const guids = (where.studentGuid as { in?: string[] } | string | undefined);
+          const wanted =
+            typeof guids === 'string'
+              ? [guids]
+              : guids?.in ?? students.map((student) => student.studentGuid);
+          return Promise.resolve(
+            students
+              .filter((student) => wanted.includes(student.studentGuid))
+              .flatMap((student) =>
+                student.links.map((id) => ({
+                  studentGuid: student.studentGuid,
+                  householdConnectionId: id,
+                })),
+              ),
+          );
+        }),
       },
       student: {
         findMany: jest.fn(({ where } = {}) =>
@@ -2151,7 +2188,20 @@ describe('ChildrenService household isolation', () => {
               : { schoolYear: 2027 },
           ),
         ),
-        findMany: jest.fn().mockResolvedValue(myConnections.map((id) => ({ id, schoolYear: 2027 }))),
+        // Two callers: `activeConnectionIdsFor`, which asks for one user's
+        // active connections, and the school map's detail read, which asks for
+        // rows by id and needs the labelling columns.
+        findMany: jest.fn((args?: { where?: Record<string, unknown> }) => {
+          const ids = (args?.where?.id as { in?: string[] } | undefined)?.in;
+          if (ids) {
+            return Promise.resolve(
+              ids
+                .map((id) => CONNECTION_ROWS[id])
+                .filter((row): row is (typeof CONNECTION_ROWS)[string] => Boolean(row)),
+            );
+          }
+          return Promise.resolve(myConnections.map((id) => ({ id, schoolYear: 2027 })));
+        }),
         findUnique: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
       },
       homeworkItem: {
@@ -2247,6 +2297,58 @@ describe('ChildrenService household isolation', () => {
 
     expect(forMine.data.map((child) => child.studentGuid)).toEqual(['guid-shared']);
     expect(forTheirs.data.map((child) => child.studentGuid)).toEqual(['guid-shared']);
+  });
+
+  /**
+   * R6 — `/children` derived its school fields from the routing stamp while
+   * `/dashboard` and `/feed` went through the visibility edge.
+   *
+   * For a child stamped to the other parent's connection, `/children` emitted
+   * a `schoolId` the caller does not own with `schoolName`, `schoolShortLabel`
+   * and `semel` all `null`: the badge vanished on `/children` while `/home`
+   * showed one, and `MorePageClient`'s unlink flow (`child.schoolId ===
+   * link.id`) could not clear the child it was about to delete.
+   */
+  it("reports the caller's own connection as the shared child's school", async () => {
+    const mine = makeService([SHARED], ['conn-mine']);
+
+    const result = await mine.getChildren('user-mine');
+
+    expect(result.data[0]).toMatchObject({
+      // Was 'conn-theirs', the stamp -- an id the caller does not own.
+      schoolId: 'conn-mine',
+      // All three were null, because the stamp was not in the caller's label
+      // map at all.
+      semel: 111,
+      schoolName: 'בית ספר אחד',
+      schoolShortLabel: 'שלי',
+    });
+  });
+
+  it('gives the other parent their own connection for the same child', async () => {
+    const theirs = makeService([SHARED], ['conn-theirs']);
+
+    const result = await theirs.getChildren('user-theirs');
+
+    expect(result.data[0]).toMatchObject({
+      schoolId: 'conn-theirs',
+      schoolShortLabel: 'שלהם',
+    });
+  });
+
+  it('reports no school for an unstamped, unlinked child rather than a foreign one', async () => {
+    // `null` across all four is the contract's "no badge", and the right
+    // answer while ownership is genuinely unknown.
+    const service = makeService([UNSTAMPED], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data[0]).toMatchObject({
+      schoolId: null,
+      schoolName: null,
+      schoolShortLabel: null,
+      semel: null,
+    });
   });
 
   it('lets both parents open a shared child, not just the stamped one', async () => {

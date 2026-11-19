@@ -4,7 +4,6 @@ import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 import type { ConnectionTarget } from '../session/connection-target';
 import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
-import { resolveSchoolLabels } from '../common/school-label';
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -16,6 +15,7 @@ import {
   type YearScope,
 } from '../common/school-year/school-year.scope';
 import { canSeeStudent, visibleStudentWhere } from '../common/student-links';
+import { buildStudentSchoolMap } from '../common/student-school-map';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -76,7 +76,14 @@ export class ChildrenService {
     // Which school each child belongs to. Resolved once for the list rather
     // than per child, and labelled as a set so two schools can never present
     // the same chip.
-    const schoolByConnection = await this.resolveSchoolLabels(userId);
+    //
+    // R6: this used to key the four school fields off the routing stamp
+    // against the caller's own label map, while `/dashboard` and `/feed` went
+    // through `buildStudentSchoolMap` and the visibility edge. For a child
+    // stamped to the other parent's connection the two endpoints therefore
+    // disagreed about the same child -- `/children` emitting an id the caller
+    // does not own with all three labels `null`. One helper, one answer.
+    const schoolByStudent = await buildStudentSchoolMap(this.prisma, students, userId);
 
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // Current year only: these are activity counts and staleness signals, and
@@ -136,14 +143,13 @@ export class ChildrenService {
           classNum: student.classNum,
           gender: student.gender,
           isActive: student.isActive,
-          // `null` for an unstamped child, which the UI reads as "no badge"
-          // rather than as a school called "null".
-          schoolId: student.householdConnectionId,
-          schoolName:
-            schoolByConnection.get(student.householdConnectionId ?? '')?.schoolName ?? null,
-          schoolShortLabel:
-            schoolByConnection.get(student.householdConnectionId ?? '')?.shortLabel ?? null,
-          semel: schoolByConnection.get(student.householdConnectionId ?? '')?.semel ?? null,
+          // All four `null` for a child whose school is not knowable from the
+          // caller's own connections, which the UI reads as "no badge" rather
+          // than as a school called "null".
+          schoolId: schoolByStudent.get(student.studentGuid)?.schoolId ?? null,
+          schoolName: schoolByStudent.get(student.studentGuid)?.schoolName ?? null,
+          schoolShortLabel: schoolByStudent.get(student.studentGuid)?.shortLabel ?? null,
+          semel: schoolByStudent.get(student.studentGuid)?.semel ?? null,
           recentHomeworkCount: activityCounts.recentHomeworkCount,
           recentBehaviorCount: activityCounts.recentBehaviorCount,
           positiveBehaviorCount: activityCounts.positiveBehaviorCount,
@@ -977,32 +983,6 @@ export class ChildrenService {
     }
 
     return student;
-  }
-
-  /**
-   * Each of a household's connections, with the short label a chip shows.
-   *
-   * Labels are resolved across the whole set, because two schools in one
-   * cluster routinely share everything up to a " - …" qualifier and two
-   * identical chips are unusable -- see src/common/school-label.ts.
-   */
-  private async resolveSchoolLabels(userId?: string) {
-    const connections = await this.prisma.householdConnection.findMany({
-      where: { active: true, ...(userId ? { userId } : {}) },
-      select: { id: true, schoolCode: true, schoolName: true, displayLabel: true },
-    });
-
-    const labels = resolveSchoolLabels(connections);
-    return new Map(
-      connections.map((connection) => [
-        connection.id,
-        {
-          semel: connection.schoolCode,
-          schoolName: connection.schoolName ?? String(connection.schoolCode),
-          shortLabel: labels.get(connection.id) ?? String(connection.schoolCode),
-        },
-      ]),
-    );
   }
 
   /**
