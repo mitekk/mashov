@@ -1171,6 +1171,63 @@ describe('MailService', () => {
         expect.objectContaining({ data: expect.objectContaining({ isUnread: true }) }),
       );
     });
+
+    // R2: the detail fetch used to write mailMessage rows with no
+    // householdConnectionId, while the conversation above them was stamped.
+    // ConnectionService.deleteOneConnection deletes messages by stamp and
+    // conversations by stamp, so a NULL-stamped message under a stamped
+    // conversation made the unlink violate mail_message_conversationId_fkey
+    // forever.
+    async function hydrateMessages(detail: object, conversationOverrides: object = {}) {
+      const messageUpsert = jest.fn().mockResolvedValue({});
+      const service = new MailService(
+        makeMockPrisma({
+          conversationFindUnique: jest
+            .fn()
+            .mockResolvedValue(makeConversation(conversationOverrides)),
+          messageFindMany: jest.fn().mockResolvedValue([]),
+          messageUpsert,
+        }),
+        makeMockMashovClient({ get: jest.fn().mockResolvedValue(detail) }),
+        makeMockScope(),
+      );
+      await service.getConversationDetail('conv-upstream-1');
+      return messageUpsert;
+    }
+
+    it('stamps the conversation household on messages it creates', async () => {
+      const messageUpsert = await hydrateMessages(makeUpstreamDetail(), {
+        householdConnectionId: 'conn-a',
+      });
+      expect(messageUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ householdConnectionId: 'conn-a' }),
+        }),
+      );
+    });
+
+    it('self-heals the stamp on messages it updates', async () => {
+      const messageUpsert = await hydrateMessages(makeUpstreamDetail(), {
+        householdConnectionId: 'conn-a',
+      });
+      expect(messageUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({ householdConnectionId: 'conn-a' }),
+        }),
+      );
+    });
+
+    it('leaves the stamp alone on update when the conversation is unstamped', async () => {
+      const messageUpsert = await hydrateMessages(makeUpstreamDetail(), {
+        householdConnectionId: null,
+      });
+      const call = messageUpsert.mock.calls[0][0] as {
+        update: Record<string, unknown>;
+        create: Record<string, unknown>;
+      };
+      expect(call.update).not.toHaveProperty('householdConnectionId');
+      expect(call.create.householdConnectionId).toBeNull();
+    });
   });
   describe('local read override', () => {
     const OLDER = new Date('2026-03-10T09:00:00Z');

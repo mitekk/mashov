@@ -428,6 +428,10 @@ export class MailService {
       hasAttachments: boolean;
       preventReply: boolean;
       locallyReadThroughAt: Date | null;
+      // The household the conversation belongs to, carried down so the
+      // messages this fetch writes are stamped the same way. Every caller
+      // passes the whole `mailConversation` row, so this costs them nothing.
+      householdConnectionId: string | null;
     },
     userId?: string,
   ): Promise<boolean> {
@@ -467,6 +471,7 @@ export class MailService {
       hasAttachments: boolean;
       preventReply: boolean;
       locallyReadThroughAt: Date | null;
+      householdConnectionId: string | null;
     },
     upstream: UpstreamConversationDetail,
   ): Promise<void> {
@@ -504,11 +509,21 @@ export class MailService {
         const files = Array.isArray(msg.files) ? msg.files : [];
         const recipients = Array.isArray(msg.recipients) ? msg.recipients : [];
 
+        // The conversation's own stamp, not the resolved upstream target: the
+        // unlink in ConnectionService deletes messages and conversations as one
+        // transaction and was written against message and conversation stamps
+        // being identical. Messages written here used to carry no stamp at all,
+        // so a NULL-stamped message under a stamped conversation made
+        // mailConversation.deleteMany violate mail_message_conversationId_fkey
+        // -- the same 500 on every retry (R2).
+        const stamp = fallbackConversation.householdConnectionId;
+
         return this.prisma.mailMessage.upsert({
           where: { messageId: msg.messageId },
           create: {
             messageId: msg.messageId,
             conversationId: msg.conversationId || conversationId,
+            householdConnectionId: stamp,
             senderId: msg.senderId ?? '',
             senderName: msg.senderName ?? '',
             subject: msg.subject ?? '',
@@ -524,6 +539,11 @@ export class MailService {
             rawPayload: msg as unknown as Prisma.InputJsonValue,
           },
           update: {
+            // Self-heal: rows written before this fix are NULL-stamped, and a
+            // re-fetch is the only thing that reaches them. Written only when
+            // the conversation itself is stamped, so an unstamped conversation
+            // cannot un-stamp a message a sync walk already attributed.
+            ...(stamp ? { householdConnectionId: stamp } : {}),
             senderId: msg.senderId ?? '',
             senderName: msg.senderName ?? '',
             subject: msg.subject ?? '',
