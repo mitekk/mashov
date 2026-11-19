@@ -310,12 +310,6 @@ export class MailService {
     await this.assertVisible(conversationId, conversation.householdConnectionId, userId);
 
     const referer = `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`;
-    // Resolved once for the whole download, including the retry below: the
-    // message's own stamp, so a bare messageId is enough and no join is
-    // needed.
-    const target = await this.scope.targetForMessage(messageId, userId).catch(() =>
-      this.scope.targetForConversation(conversationId, userId),
-    );
 
     let message = await this.getMessageInConversation(conversationId, messageId);
     if (!message) {
@@ -331,6 +325,21 @@ export class MailService {
       attachment = this.findMessageAttachment(refreshedMessage?.files, fileId);
     }
     if (!attachment) throw new NotFoundException(`Attachment not found: ${fileId}`);
+
+    // Resolved once for the whole download, including the retry below: the
+    // message's own stamp, so a bare messageId is enough and no join is
+    // needed.
+    //
+    // Resolved HERE, and not before the lookups above, because `messageId`
+    // comes from the caller and only `conversationId` has been checked against
+    // the household. `targetForMessage` reads the message's own stamp and the
+    // stamped branch of the fallback takes no caller, so resolving it earlier
+    // would decrypt another household's password inside this request on the
+    // strength of an id nothing had validated. By this line the message is
+    // known to be in a conversation the caller may see.
+    const target = await this.scope.targetForMessage(messageId, userId).catch(() =>
+      this.scope.targetForConversation(conversationId, userId),
+    );
 
     try {
       return await this.tryDownloadCandidates(
@@ -541,8 +550,15 @@ export class MailService {
    * "ownership unknown", and excluding them would empty the inbox on a
    * deployment that has not re-synced since the ownership migration.
    *
-   * No caller means no filter -- the digest and cron paths are server-side and
-   * deliberately global.
+   * No caller means no filter. Every mail route runs behind `AppSessionGuard`
+   * and none is `@Public()`, so on real traffic there is always a caller; the
+   * unscoped path is for a server-side caller with no user to speak of, and
+   * today the only thing that drives it is `tests/integration/api.test.ts`,
+   * whose requests are unauthenticated. Nothing in the crons or the digest
+   * reaches `MailService` at all -- `MailCountsTask` and `MailInboxTask` own
+   * their own queries. Said plainly here because an optional `userId` whose
+   * absence means "whole table" is only safe while that stays true, and
+   * R3-R6 are about to add callers.
    */
   private async householdMailScope(userId?: string): Promise<Prisma.MailConversationWhereInput> {
     const own = await this.ownConnectionIds(userId);
@@ -556,8 +572,8 @@ export class MailService {
   /**
    * The caller's active connection ids, or `null` when there is no caller.
    *
-   * `null` is not an empty list: it means "unscoped", which is what the crons
-   * and the digest need. An empty array is a real caller who has connected no
+   * `null` is not an empty list: it means "unscoped", for a caller-less
+   * server-side read. An empty array is a real caller who has connected no
    * school, and admits only the unstamped rows.
    *
    * Delegates to `activeConnectionIdsFor` rather than issuing its own query,
@@ -576,6 +592,17 @@ export class MailService {
    * "ownership unknown, re-stamp on the next walk", and excluding it would
    * empty the inbox on a deployment that has not re-synced since the
    * ownership migration.
+   *
+   * For a MUTATION that rule has a consequence the read case does not, and it
+   * is deliberate rather than overlooked: on a box with more than one active
+   * connection -- where the ownership backfill refused and unstamped rows
+   * therefore exist -- either household may archive or re-flag an
+   * unattributed row, and the other household sees that write. Upstream is
+   * still safe, because the call goes out under the acting household's own
+   * account. The alternative, refusing NULL on a mutation, makes a row the
+   * parent can see and cannot act on, and the next inbox walk stamps it
+   * within seven minutes. Recorded as a Minor in
+   * docs/plans/merged-household-access-followups.md.
    */
   private canSee(householdConnectionId: string | null, own: string[] | null): boolean {
     if (own === null) return true;
@@ -601,13 +628,13 @@ export class MailService {
    *
    * A foreign id is filtered out silently and the mutation reports the honest
    * `updated` count -- which is already how an id with no local row at all
-   * behaves, since `groupConversationsByConnection` drops it. What matters is
+   * behaves, since routing drops a row it has no stamp for. What matters is
    * that no local write happens for it and, above all, that no upstream call
    * goes out under the other household's credentials.
    *
    * With no caller every id is kept, including ids with no local row: that is
-   * the list today's unscoped `updateMany` is given, and the crons must keep
-   * behaving exactly as they did.
+   * the list the unscoped `updateMany` was given before this scoping existed,
+   * and the caller-less path must keep behaving exactly as it did.
    */
   private async visibleConversations(
     conversationIds: string[],
@@ -977,7 +1004,7 @@ export class MailService {
     // one request per connection with its own subset. A failure on one
     // connection must not stop the other's.
     await this.forEachConnectionSubset(
-      eligibleConversationIds,
+      visible,
       'markAsUnread',
       (subset, target) =>
         this.mashovClient.putForTarget('/api/mail/conversations/markAsUnread', subset, target, {
@@ -1008,7 +1035,7 @@ export class MailService {
     if (visibleIds.length === 0) return { updated: 0 };
 
     await this.forEachConnectionSubset(
-      visibleIds,
+      visible,
       'archive',
       (subset, target) =>
         this.mashovClient.putForTarget('/api/mail/conversations/move/archive', subset, target, {
@@ -1044,7 +1071,7 @@ export class MailService {
     const visibleIds = visible.map((row) => row.conversationId);
     if (visibleIds.length === 0) return { updated: 0 };
 
-    const grouped = await this.scope.groupConversationsByConnection(visibleIds);
+    const grouped = this.groupByConnection(visible);
     let totalUpdated = 0;
 
     for (const [connectionId, subset] of grouped) {
@@ -1092,6 +1119,38 @@ export class MailService {
   }
 
   /**
+   * Split acted-on rows by the connection that owns them.
+   *
+   * An id list from the client can span schools, and one upstream call cannot
+   * carry both: Mashov authenticates per school, so acting on a mixed list
+   * means one request per connection with its own subset. Unstamped rows group
+   * under `null` rather than being dropped -- before the backfill has run
+   * every row is unstamped, and dropping them would make archive silently do
+   * nothing.
+   *
+   * Takes the rows `visibleConversations` approved, rather than re-reading
+   * them: the ownership decision and the routing decision have to be made from
+   * ONE read of the stamp. Re-reading left a window in which `MailInboxTask`,
+   * which runs every seven minutes, could stamp a row between the two queries
+   * -- and the id would then route to the connection that had just claimed it,
+   * through `targetFor`, which takes no caller and would hand back that
+   * household's decrypted password.
+   */
+  private groupByConnection(
+    rows: Array<{ conversationId: string; householdConnectionId: string | null }>,
+  ): Map<string | null, string[]> {
+    const grouped = new Map<string | null, string[]>();
+    // The caller's order, not a query's, so each subset keeps the order the
+    // user acted in.
+    for (const row of rows) {
+      const bucket = grouped.get(row.householdConnectionId);
+      if (bucket) bucket.push(row.conversationId);
+      else grouped.set(row.householdConnectionId, [row.conversationId]);
+    }
+    return grouped;
+  }
+
+  /**
    * The distinct mailboxes a set of acted-on rows belongs to.
    *
    * An unstamped row contributes nothing, which is behaviour-preserving: no
@@ -1120,12 +1179,12 @@ export class MailService {
    * school's failure skipping the other school's call.
    */
   private async forEachConnectionSubset(
-    conversationIds: string[],
+    rows: Array<{ conversationId: string; householdConnectionId: string | null }>,
     label: string,
     call: (subset: string[], target: ConnectionTarget) => Promise<unknown>,
     userId?: string,
   ): Promise<void> {
-    const grouped = await this.scope.groupConversationsByConnection(conversationIds);
+    const grouped = this.groupByConnection(rows);
 
     for (const [connectionId, subset] of grouped) {
       try {

@@ -680,6 +680,33 @@ came out of the work rather than out of review; they are the Minors below.
 
 ## Minors
 
+- **Either household may mutate an unattributed conversation, and the other sees the
+  write.** Batch 1 admits `householdConnectionId: null` on a mail *mutation* for the
+  same reason every read on this branch admits it — NULL means "ownership unknown", and
+  refusing it would make a row the parent can see and cannot act on. The consequence
+  the read case does not have: on a box with more than one active connection, where the
+  ownership backfill refused and unstamped rows therefore exist, A archiving an
+  unattributed row clears it from B's inbox too, and `markUnread` writes a
+  `locallyMarkedUnreadAt` the sweep then honours. Upstream stays safe — the call goes
+  out under the acting household's own account. A live row is stamped by the next walk
+  within seven minutes, so the window is a row upstream has stopped returning, the same
+  shape as the entry below. Narrowing it means admitting NULL on a mutation only while
+  the database holds at most one active connection; recorded rather than done, because
+  it is the branch-wide NULL rule and not a mail decision. Stated in `canSee`'s comment
+  in `backend/src/mail/mail.service.ts`.
+- **A `?schoolId=` view excludes unattributed conversations.** The household scope's
+  `OR [own, null]` ANDed with `{ householdConnectionId: schoolId }` can match no NULL
+  row, so an unattributed conversation is in the unfiltered list and in no per-school
+  one. Same family as the entry below. No frontend caller is affected —
+  `InboxPageClient` filters by school client-side and never sends `schoolId` — so it is
+  API-surface only. Pinned as current behaviour in
+  `tests/integration/household-isolation.test.ts`.
+- **Opening a conversation can leave one connection's `cachedNewCount` stale for up to
+  five minutes.** Hydrating on open recomputes `isUnread` and no count, which is
+  pre-existing; what changed in batch 1 is that the user's next mail action elsewhere
+  no longer repairs it, because the refresh now writes only the connections that action
+  touched. `MailCountsTask` settles it within five minutes. The fix is one call to
+  `updateCachedNewCount` with the hydrated conversation's stamp.
 - An **unattributed unread conversation is in no badge and in every list.** Each
   `cachedNewCount` is scoped to its own connection and the badge sums those rows,
   so a `mail_conversation` at `householdConnectionId: null` is counted nowhere —

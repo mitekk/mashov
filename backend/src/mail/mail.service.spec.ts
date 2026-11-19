@@ -111,9 +111,6 @@ function makeMockScope(overrides: Partial<Record<string, jest.Mock>> = {}) {
       overrides.targetForConversation ?? jest.fn().mockResolvedValue(target),
     targetForMessage: overrides.targetForMessage ?? jest.fn().mockResolvedValue(target),
     listTargets: overrides.listTargets ?? jest.fn().mockResolvedValue([target]),
-    groupConversationsByConnection:
-      overrides.groupConversationsByConnection ??
-      jest.fn((ids: string[]) => Promise.resolve(new Map([['conn-1', ids]]))),
     studentGuidsForUser: overrides.studentGuidsForUser ?? jest.fn().mockResolvedValue([]),
     stampStudent: overrides.stampStudent ?? jest.fn().mockResolvedValue(undefined),
   } as unknown as ConnectionScopeService;
@@ -940,33 +937,47 @@ describe('MailService', () => {
       username: 'parent-b',
     };
 
-    /** Scope stub that really splits an id list between two mailboxes. */
+    /** Scope stub resolving each school's connection id to its own target. */
     function twoSchoolScope() {
-      const owners: Record<string, string> = {
-        'conv-a1': 'conn-a',
-        'conv-a2': 'conn-a',
-        'conv-b1': 'conn-b',
-      };
-      return {
+      return makeMockScope({
         targetFor: jest.fn((id: string) =>
           Promise.resolve(id === 'conn-a' ? TARGET_A : TARGET_B),
         ),
         targetForConversation: jest.fn().mockResolvedValue(TARGET_A),
         targetForMessage: jest.fn().mockResolvedValue(TARGET_A),
         listTargets: jest.fn().mockResolvedValue([TARGET_A, TARGET_B]),
-        groupConversationsByConnection: jest.fn((ids: string[]) => {
-          const grouped = new Map<string | null, string[]>();
-          for (const id of ids) {
-            const owner = owners[id] ?? null;
-            const bucket = grouped.get(owner);
-            if (bucket) bucket.push(id);
-            else grouped.set(owner, [id]);
-          }
-          return Promise.resolve(grouped);
+      });
+    }
+
+    /**
+     * The two mailboxes as the table holds them.
+     *
+     * The split is read from `householdConnectionId` now, by the same query
+     * that decides whether the caller may act on the row at all, so the
+     * fixture is a row set rather than a stub of the grouping.
+     */
+    const OWNERS: Record<string, string> = {
+      'conv-a1': 'conn-a',
+      'conv-a2': 'conn-a',
+      'conv-b1': 'conn-b',
+    };
+
+    function twoSchoolPrisma(overrides: Partial<Record<string, jest.Mock>> = {}) {
+      return makeMockPrisma({
+        conversationFindMany: jest.fn(({ where } = { where: {} }) => {
+          const ids: string[] = where?.conversationId?.in ?? Object.keys(OWNERS);
+          return Promise.resolve(
+            ids
+              .filter((conversationId) => conversationId in OWNERS)
+              .map((conversationId) => ({
+                conversationId,
+                householdConnectionId: OWNERS[conversationId],
+                sendTime: NOW,
+              })),
+          );
         }),
-        studentGuidsForUser: jest.fn().mockResolvedValue([]),
-        stampStudent: jest.fn(),
-      } as unknown as ConnectionScopeService;
+        ...overrides,
+      });
     }
 
     it('archive issues one call per school, each with only its own ids', async () => {
@@ -975,9 +986,7 @@ describe('MailService', () => {
       // 403 at best and silently wrong at worst.
       const mashovPut = jest.fn().mockResolvedValue({});
       const service = new MailService(
-        makeMockPrisma({
-          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 3 }),
-        }),
+        twoSchoolPrisma({ conversationUpdateMany: jest.fn().mockResolvedValue({ count: 3 }) }),
         makeMockMashovClient({ put: mashovPut }),
         twoSchoolScope(),
       );
@@ -1005,7 +1014,7 @@ describe('MailService', () => {
       );
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 3 });
       const service = new MailService(
-        makeMockPrisma({ conversationUpdateMany }),
+        twoSchoolPrisma({ conversationUpdateMany }),
         makeMockMashovClient({ put: mashovPut }),
         twoSchoolScope(),
       );
@@ -1022,13 +1031,7 @@ describe('MailService', () => {
     it('markUnread sends each school only its own eligible ids', async () => {
       const mashovPut = jest.fn().mockResolvedValue({});
       const service = new MailService(
-        makeMockPrisma({
-          conversationFindMany: jest.fn().mockResolvedValue([
-            { conversationId: 'conv-a1' },
-            { conversationId: 'conv-b1' },
-          ]),
-          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 2 }),
-        }),
+        twoSchoolPrisma({ conversationUpdateMany: jest.fn().mockResolvedValue({ count: 2 }) }),
         makeMockMashovClient({ put: mashovPut }),
         twoSchoolScope(),
       );
@@ -1050,7 +1053,7 @@ describe('MailService', () => {
       );
       const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
       const service = new MailService(
-        makeMockPrisma({ conversationUpdateMany }),
+        twoSchoolPrisma({ conversationUpdateMany }),
         makeMockMashovClient({ put: mashovPut }),
         twoSchoolScope(),
       );
@@ -1075,9 +1078,7 @@ describe('MailService', () => {
 
     it('sums the updated count across schools', async () => {
       const service = new MailService(
-        makeMockPrisma({
-          conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        }),
+        twoSchoolPrisma({ conversationUpdateMany: jest.fn().mockResolvedValue({ count: 1 }) }),
         makeMockMashovClient({ put: jest.fn().mockResolvedValue(1) }),
         twoSchoolScope(),
       );
@@ -1421,7 +1422,10 @@ describe('MailService household scoping', () => {
     { conversationId: 'conv-unstamped', householdConnectionId: null },
   ];
 
-  function makeService(overrides: Partial<Record<string, jest.Mock>> = {}) {
+  function makeService(
+    overrides: Partial<Record<string, jest.Mock>> = {},
+    scopeOverrides: Partial<Record<string, jest.Mock>> = {},
+  ) {
     const putForTarget = jest.fn().mockResolvedValue({});
     const getForTarget = jest.fn().mockResolvedValue({});
     const conversationUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
@@ -1440,7 +1444,7 @@ describe('MailService household scoping', () => {
     });
     const client = makeMockMashovClient({ putForTarget, getForTarget });
     return {
-      service: new MailService(prisma, client, makeMockScope()),
+      service: new MailService(prisma, client, makeMockScope(scopeOverrides)),
       prisma,
       putForTarget,
       getForTarget,
@@ -1553,6 +1557,33 @@ describe('MailService household scoping', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(getForTarget).not.toHaveBeenCalled();
     });
+
+    it('resolves no target for a messageId that is not in the conversation', async () => {
+      // `assertVisible` validates the conversation; the messageId is a second,
+      // unvalidated path to a `ConnectionTarget`, because `targetForMessage`
+      // reads the message's OWN stamp and `resolveOrFallback`'s stamped branch
+      // takes no caller. Resolving it before the message is known to belong to
+      // this conversation decrypts another household's password inside this
+      // request -- today harmless, and one reorder away from not being.
+      const targetForMessage = jest
+        .fn()
+        .mockResolvedValue({ ...SCOPE_TARGET, id: THEIRS, username: 'parent-theirs' });
+      const { service } = makeService(
+        {
+          conversationFindUnique: jest
+            .fn()
+            .mockResolvedValue(makeConversation({ householdConnectionId: MINE })),
+          // The message is not in this conversation, before or after hydration.
+          messageFindMany: jest.fn().mockResolvedValue([]),
+        },
+        { targetForMessage },
+      );
+
+      await expect(
+        service.downloadMessageAttachment('conv-mine', 'msg-theirs', 'file-1', CALLER),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(targetForMessage).not.toHaveBeenCalled();
+    });
   });
 
   describe('mutations', () => {
@@ -1585,10 +1616,72 @@ describe('MailService household scoping', () => {
       for (const callArgs of putForTarget.mock.calls) {
         expect(callArgs[1]).toEqual(['conv-mine']);
       }
-      for (const callArgs of conversationUpdateMany.mock.calls) {
-        const where = (callArgs[0] as { where: Record<string, unknown> }).where;
-        const ids = (where.conversationId as { in?: string[] } | undefined)?.in;
-        if (ids) expect(ids).not.toContain('conv-theirs');
+      // Collected and then asserted non-empty: a bare `for` over the calls
+      // would pass just as well if the mutation had stopped writing at all.
+      const writtenIdLists = conversationUpdateMany.mock.calls
+        .map(
+          (callArgs) =>
+            (
+              (callArgs[0] as { where: Record<string, unknown> }).where.conversationId as
+                | { in?: string[] }
+                | undefined
+            )?.in,
+        )
+        .filter((ids): ids is string[] => Array.isArray(ids));
+      expect(writtenIdLists.length).toBeGreaterThan(0);
+      for (const ids of writtenIdLists) {
+        expect(ids).toEqual(['conv-mine']);
+      }
+    });
+
+    /**
+     * The ownership check and the routing decision come from ONE read.
+     *
+     * Routing used to re-read the same rows through
+     * `ConnectionScopeService.groupConversationsByConnection`, which applied
+     * no ownership predicate of its own. `MailInboxTask` runs every seven
+     * minutes, so a stamp written between the two queries routed an id the
+     * caller was allowed to act on *while it was unstamped* to the connection
+     * that had since claimed it -- through `targetFor`, which takes no caller
+     * and hands back that household's decrypted password.
+     *
+     * The guard is the count: one stamp read per mutation, so there is no
+     * second answer for routing to disagree with. The routing assertions
+     * below pin that it is that read's stamp which is used.
+     */
+    it.each(MUTATIONS)('$name reads the stamps once and routes from them', async ({ call }) => {
+      const targetFor = jest.fn().mockResolvedValue(SCOPE_TARGET);
+      const targetForConversation = jest.fn().mockResolvedValue(SCOPE_TARGET);
+      const conversationFindMany = jest.fn(({ where } = { where: {} }) => {
+        const ids: string[] = where?.conversationId?.in ?? [];
+        return Promise.resolve(
+          rows
+            .filter((row) => ids.includes(row.conversationId))
+            .map((row) => ({ ...row, sendTime: NOW })),
+        );
+      });
+      const { service } = makeService(
+        { conversationFindMany },
+        { targetFor, targetForConversation },
+      );
+
+      await call(service, ['conv-mine', 'conv-unstamped']);
+
+      const stampReads = conversationFindMany.mock.calls.filter(
+        (callArgs) =>
+          (callArgs[0] as { select?: Record<string, unknown> } | undefined)?.select
+            ?.householdConnectionId === true,
+      );
+      expect(stampReads).toHaveLength(1);
+
+      // The stamped id routes through its own connection, the unstamped one
+      // through the conversation resolver WITH the caller, so its fallback is
+      // scoped to the household.
+      for (const callArgs of targetFor.mock.calls) {
+        expect(callArgs[0]).toBe(MINE);
+      }
+      for (const callArgs of targetForConversation.mock.calls) {
+        expect(callArgs).toEqual(['conv-unstamped', CALLER]);
       }
     });
 

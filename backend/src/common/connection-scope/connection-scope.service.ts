@@ -147,46 +147,6 @@ export class ConnectionScopeService {
   }
 
   /**
-   * Split conversation ids by the connection that owns them.
-   *
-   * An id list from the client can span schools, and one upstream call cannot
-   * carry both: Mashov authenticates per school, so archiving a mixed list
-   * means one request per connection with its own subset.
-   *
-   * Unstamped conversations group under `null` rather than being dropped.
-   * Before the backfill has run every row is unstamped, and dropping them
-   * would make archive silently do nothing. Ids with no local row at all are
-   * dropped — there is nothing to act on.
-   */
-  async groupConversationsByConnection(
-    conversationIds: string[],
-  ): Promise<Map<string | null, string[]>> {
-    const grouped = new Map<string | null, string[]>();
-    if (conversationIds.length === 0) return grouped;
-
-    const rows = await this.prisma.mailConversation.findMany({
-      where: { conversationId: { in: conversationIds } },
-      select: { conversationId: true, householdConnectionId: true },
-    });
-
-    const ownerByConversation = new Map(
-      rows.map((row) => [row.conversationId, row.householdConnectionId]),
-    );
-
-    // Iterating the caller's order, not the query's, so each subset keeps the
-    // order the user acted in.
-    for (const conversationId of conversationIds) {
-      if (!ownerByConversation.has(conversationId)) continue;
-      const owner = ownerByConversation.get(conversationId) ?? null;
-      const bucket = grouped.get(owner);
-      if (bucket) bucket.push(conversationId);
-      else grouped.set(owner, [conversationId]);
-    }
-
-    return grouped;
-  }
-
-  /**
    * Every child belonging to a household, by way of its connections.
    *
    * An empty list for a user with no connection is correct and load-bearing:

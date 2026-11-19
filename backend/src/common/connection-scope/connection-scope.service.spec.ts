@@ -305,44 +305,6 @@ describe('ConnectionScopeService', () => {
     });
   });
 
-  describe('groupConversationsByConnection', () => {
-    it('splits a mixed list into one entry per connection', async () => {
-      const { prisma } = makePrisma({
-        conversations: [
-          { conversationId: 'c1', householdConnectionId: 'conn-a' },
-          { conversationId: 'c2', householdConnectionId: 'conn-b' },
-          { conversationId: 'c3', householdConnectionId: 'conn-a' },
-        ],
-      });
-      const service = new ConnectionScopeService(prisma, encryption);
-
-      const grouped = await service.groupConversationsByConnection(['c1', 'c2', 'c3']);
-
-      expect([...grouped.keys()].sort()).toEqual(['conn-a', 'conn-b']);
-      expect(grouped.get('conn-a')).toEqual(['c1', 'c3']);
-      expect(grouped.get('conn-b')).toEqual(['c2']);
-    });
-
-    it('drops ids with no row and groups unstamped ones under null', async () => {
-      // An unstamped conversation still has to be actionable: before the
-      // backfill runs, every row is unstamped, and dropping them would make
-      // archive silently do nothing.
-      const { prisma } = makePrisma({
-        conversations: [
-          { conversationId: 'c1', householdConnectionId: null },
-          { conversationId: 'c2', householdConnectionId: 'conn-a' },
-        ],
-      });
-      const service = new ConnectionScopeService(prisma, encryption);
-
-      const grouped = await service.groupConversationsByConnection(['c1', 'c2', 'gone']);
-
-      expect(grouped.get(null)).toEqual(['c1']);
-      expect(grouped.get('conn-a')).toEqual(['c2']);
-      expect(grouped.has('gone')).toBe(false);
-    });
-  });
-
   describe('studentGuidsForUser', () => {
     it("returns only the children of that user's connections", async () => {
       const { prisma } = makePrisma({
