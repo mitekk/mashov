@@ -6,7 +6,12 @@ services:
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     ports:
-      - "5432:5432"
+      # Parameterised, default unchanged: the host's 5432 is often already
+      # taken by another project's database, and a hardcoded publish made the
+      # whole stack unliftable rather than just that one mapping. Containers
+      # reach the db as `db:5432` on the compose network, so DB_PORT moves the
+      # host side only.
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     shm_size: '256mb'

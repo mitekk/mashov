@@ -748,10 +748,12 @@ came out of the work rather than out of review; they are the Minors below.
   redirecting on a genuinely expired session. A comment on
   `MashovCredentialValidatorService` noting the code is load-bearing for the
   frontend's 401 handling would keep the two from drifting.
-- `docker-compose.yml` hardcodes `5432:5432` for `db`, so `npm run test:e2e` cannot
+- ~~`docker-compose.yml` hardcodes `5432:5432` for `db`, so `npm run test:e2e` cannot
   start on a machine with anything else on that port. Parameterising the host port
   (`${DB_PORT:-5432}:5432`) costs nothing; the e2e containers reach the db over the
-  compose network and do not need the publish at all.
+  compose network and do not need the publish at all.~~ **Done** — `${DB_PORT:-5432}:5432`,
+  documented in `README.md`. `DB_PORT=5433 npm run test:integration` is what the
+  integration gate for batch 1 was run with.
 - `tests/e2e/school-links.spec.ts:389` ("a successful link goes to the syncing screen
   for that school") is **flaky**: it failed once on `syncing-heading` not being found
   after `waitForURL` had already succeeded, then passed on an identical re-run. The page
