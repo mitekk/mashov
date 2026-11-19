@@ -16,9 +16,14 @@ deferred (**T13–T14**), and the minors. **G1** and **B1** are done and kept as
 A third review (`/code-review high`, 2026-11-19) ran after **R2** landed. It added
 **R13** and **R14** below and sharpened **B3**; everything else it found was already
 recorded here. **R1**, **R2**, B3's attachment leak and batch 3 (**R3**, **R5**,
-**R6**, **R13**, **N1** and the label-set minor) are done. **No cross-household read
-is open any more**: every remaining item is a degraded signal, a frontend gap or a
-pre-existing bug.
+**R6**, **R13**, **N1** and the label-set minor) are done, so **no cross-household
+*read* is open any more**.
+
+A fourth review (`/code-review high`, 2026-11-19, run after batch 3 landed) added
+**R15–R17**. One of them matters more than its number suggests: **R16** is a
+cross-household *write*, and it is the reachable path B3's remaining bullet said did
+not exist. So the branch is not clear of credential leaks after all, and R16 is the
+next gate.
 
 ## Pick-up order
 
@@ -29,19 +34,21 @@ stays true.
 
 | # | Items | Status | Why here |
 |---|---|---|---|
-| 1 | **R1** + **B3** + `updateCachedNewCount()` | **done**, 1 bullet left | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's remaining bullet — the stamped branch of `resolveOrFallback` generally — has no known reachable path and is not a production gate. |
+| 1 | **R1** + **B3** + `updateCachedNewCount()` | **done**, 1 bullet left | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's remaining bullet — the stamped branch of `resolveOrFallback` generally — was recorded as having no known reachable path; the fourth review found one, now **R16**. |
 | 2 | **R2** | **done** | A permanently broken unlink. Fixed with the stamp, the relation-filtered delete, one transaction for the whole unlink, and an index on `mail_message.conversationId`. |
 | 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor, and **N1** found while reading | **done** | One missing household predicate across four readers, on the `userId` threading batch 1 established. Closed the last place another household's data reached a screen. The mail scope moved to `common/mail-scope.ts` and the chip labels to `common/school-chips.ts`, so `/children`, `/dashboard`, `/feed` and the inbox now answer from one scoping path and one label resolution instead of four. |
-| 4 | **R4** | open | Same visibility-edge fix as batch 3, in a service with no callers in common. Was offered a ride with batch 3 and deliberately left out of it; it is now the next batch. |
+| 3.5 | **R16** + B3's remaining bullet | open | **The next gate.** One household's release request goes upstream under the other's decrypted password, which is R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closes both, and it is small enough not to wait behind R4. |
+| 4 | **R4** + **R15** | open | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rides along: it is the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. |
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | open | The only frontend items. R14 leaves a parent looking at an empty mailbox with no way forward, which is the worst *experience* left open. Needs an e2e run, so it is cheapest on its own. |
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
-| 7 | **R8**, **R9**, **R10** | open | Three independent small correctness fixes in the auth/link path; one session, three tests. |
+| 7 | **R8**, **R9**, **R10**, **R17** | open | Four independent small correctness fixes in the auth/link path; one session, four tests. R17 is a two-line reorder. |
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
 Batches 1, 2 and 3 are done, and with batch 3 no open item puts one household's data on
-another's screen. **Batch 4 is next.** Batches 4–7 are each self-contained; 7 can run in
-parallel with anything.
+another's *screen*. **Batch 3.5 is next**, because the fourth review found that one
+still puts a household's *request* in another's Mashov account. Batches 4–7 are each
+self-contained; 7 can run in parallel with anything.
 
 ---
 
@@ -258,13 +265,16 @@ refused, which is every deployment with more than one active connection.
       guard (the foreign-stamp case failed, the other 73 stayed green).
 - [ ] The stamped branch of `resolveOrFallback` itself still ignores `userId`, so
       `targetForStudent` and `targetForConversation` can still resolve a foreign stamp
-      when their callers' own ownership checks do not bound it. No path like the
-      attachment one is known to remain — `assertVisible` bounds the conversation
-      callers, and a shared child's stamp is the other parent's *by design* (ADR-0031),
-      which is R4/R6's territory rather than a leak. Recorded as the remaining general
-      case: the fix is to treat "stamped outside the caller's connections" as unstamped
-      and fall through to the `userId`-scoped fallback, which for a shared child lands
-      on the caller's own connection at the same school.
+      when their callers' own ownership checks do not bound it. The fix is to treat
+      "stamped outside the caller's connections" as unstamped and fall through to the
+      `userId`-scoped fallback, which for a shared child lands on the caller's own
+      connection at the same school.
+      **This bullet used to say no path like the attachment one was known to remain**,
+      on the reasoning that `assertVisible` bounds the conversation callers and a
+      shared child's stamp is the other parent's by design (ADR-0031), so it was
+      R4/R6's territory rather than a leak. That reasoning held only for *reads*. The
+      fourth review found the writes: see **R16**. The shared-child stamp is by design,
+      but sending a parent's request upstream under it is not.
 
 ---
 
@@ -654,6 +664,13 @@ first more visible, so do them together.
   `isLastSchool = (pendingUnlink && schoolCount <= 1) || schoolCount <= 1` reduces to
   `schoolCount <= 1`, and since the per-row modal only opens when
   `schoolLinks.length > 1` the `pendingUnlink` term is dead.
+  The fourth review added the half that is not merely dead code: with
+  `schoolCount = schoolLinks?.length ?? 1` on the line above, a two-school household
+  that opens the **bulk** disconnect before `['school-links']` resolves — cold cache,
+  slow network, or just after `invalidateHouseholdScopedQueries` — is told
+  "זה בית הספר היחיד המחובר" and shown the singular button, while two schools will be
+  wiped. The default should be the safe branch, or the modal should not open until the
+  count is known.
 - ~~`MailService.updateCachedNewCount()` called with **no argument** iterates every
   active connection in the database, writing to other households' rows on each of the
   caller's mail actions. The values it writes are per-connection and correct, so this
@@ -740,6 +757,115 @@ computed on the unfiltered totals too.
 - [ ] The empty state distinguishes "no mail at all" from "no mail at this school",
       and keeps a way to load more or clear the filter.
 - [ ] An e2e case selects a school whose mail is not on page 1 and asserts it appears.
+
+---
+
+## Fourth review (2026-11-19, after batch 3)
+
+`/code-review high` over `master...HEAD`, run after batch 3 landed. Nine items; five
+were already recorded (**R7**, **R14**, **R4**, **R12** and the `MorePageClient` dead
+term, whose entry below gains a second half from it), and the three here are new.
+The review found nothing wrong with batch 3 itself.
+
+### R15 — The unread badge can never count an unattributed conversation
+
+**Severity**: low. Narrow trigger, but it is the badge/list disagreement this branch
+set out to fix, with the opposite sign.
+
+**Cause.** `backend/src/mail/mail.service.ts:1282` `updateCachedNewCount` and
+`backend/src/sync/tasks/mail-counts.task.ts:130` both count
+`householdConnectionId: conn.id` only, while `householdMailScope` admits
+`householdConnectionId: null`. `getSummary` reads `cachedNewCount` whenever
+`_count._all > 0`, so for any household with a connection the badge is *only* those
+per-connection counts.
+
+**Description.** A NULL-stamped unread conversation is listed by the inbox and by
+`recentConversations`, and contributes 0 to the badge. Normally the next inbox walk
+stamps it and the numbers meet, so the window is seven minutes — but a conversation
+upstream has stopped returning is never re-stamped by any walk, and `MailInboxTask`'s
+sweep is scoped to `conn.id` so it cannot clear `isUnread` either. That row then shows
+as unread in the list permanently while the badge reports zero. Reachable on any
+database where the ownership backfill refused, which is every deployment with more than
+one active connection.
+
+Not a regression from batch 3: the asymmetry is batch 1's, and the dashboard's scoped
+fallback count (**R13**) is only read when the household has no connections at all, so
+it never meets this.
+
+**DoD**
+- [ ] The two writers and the reader agree about NULL. Either both count the caller's
+      stamps plus NULL, or the badge stops being a pure sum of `cachedNewCount` — but
+      one rule, decided once, not two.
+- [ ] A test with an unstamped unread conversation asserts the badge and the list agree.
+
+### R16 — A release request is sent upstream under the other parent's credentials
+
+**Severity**: **high**. One household writing into another's Mashov account with their
+decrypted password — the same class as **R1** and B3's attachment leak, and the only
+cross-household leak still open.
+
+**Cause.** `backend/src/common/connection-scope/connection-scope.service.ts:198` —
+`resolveOrFallback` honours `userId` only on its *fallback* branch; a non-null stamp
+resolves to that connection's target whoever is asking. (Its own doc comment says it
+"is scoped to the caller when there is one", which is true of the fallback branch
+only.) `children.service.ts:713`, `:729` and `:738` —
+`createStudentRelease` / `updateStudentRelease` / `deleteStudentRelease` — pass
+`await this.scope.targetForStudent(studentGuid, userId)`, and
+`targetForStudent` resolves the **student's routing stamp**.
+
+**Description.** Two parents at one school share a child (ADR-0016, ADR-0031); the
+child is stamped to whichever of them synced last. `requireStudent` admits the child
+for both, correctly, because the visibility edge lists both. But parent A's early-release
+request then resolves to parent B's connection and goes out with
+`putForTarget` / `deleteForTarget` under B's decrypted Mashov password, into B's
+account. Mashov accepts it — same school, same child, well-formed request — so the
+`I6` bound ("Mashov rejects it, so the symptom is an empty list rather than a leak")
+does not hold here, exactly as it did not hold for the attachment path.
+
+This is B3's remaining bullet with a reachable path, so fixing the stamped branch of
+`resolveOrFallback` closes both.
+
+**DoD**
+- [ ] The stamped branch treats "stamped outside the caller's connections" as unstamped
+      and falls through to the `userId`-scoped fallback — for a shared child that lands
+      on the caller's own connection at the same school, which is the right account to
+      write to. The caller-less path (crons, digest) keeps its global guess.
+- [ ] Fix the doc comment, which currently overstates the scoping.
+- [ ] An integration case asserts parent A's release request resolves to A's connection
+      for a child stamped to B, and that **no upstream call goes out** under B's
+      credentials — the shape B3's attachment cases use, since a guard that works only
+      because Mashov says no is not a guard.
+- [ ] Check `targetForConversation`'s callers while in there, which `assertVisible` is
+      believed to bound.
+
+### R17 — The link rate limit is spent on refusals it should not reach
+
+**Severity**: low.
+
+**Cause.** `backend/src/school-links/school-links.service.ts:90` — `checkRateLimit(userId)`
+runs *before* `assertLinkable(...)`, contradicting the comment two lines below it:
+"Checked before reaching upstream: no point spending a Mashov login, **or a
+rate-limit slot**, on a school that cannot be added."
+
+**Description.** Five attempts at an already-linked school, or five hits of
+`LIMIT_REACHED`, lock the parent out of linking any school for fifteen minutes without
+a single upstream call. Both refusals are local and cheap.
+
+**DoD**
+- [ ] `assertLinkable` runs first, giving the comment its stated behaviour.
+- [ ] A test asserts a repeated local refusal does not consume the limit.
+
+### Not recorded as items
+
+The review also flagged `auth.service.ts:288` — `resolveMergedOwner` is dead, because
+`mergedIntoUserId` is never written anywhere in `backend/`, and the state it documents
+("this user's only connection was absorbed into another household") is itself
+unreachable: `SchoolLinksService.assertLinkable:312` refuses linking in both directions
+with `CONNECTION_ALREADY_LINKED`, so a parent who signed in separately with two
+schools' credentials before this feature keeps two `AppUser`s and has no merge path.
+Left here as a note rather than an item because it is a *missing* migration path for a
+pre-feature account shape, which is **T13**'s territory to confirm against real data
+before anything is built for it.
 
 ---
 
