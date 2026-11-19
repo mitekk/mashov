@@ -331,13 +331,35 @@ describe('studentScopeForContext', () => {
     // The minor this exists for: a refresh scoped to school A used to ask A's
     // Mashov account about school B's children, collect a 403 each, and report
     // `partial` for a school that synced perfectly.
+    //
+    // Nested under `AND` rather than spread as a bare `OR`. Prisma treats the
+    // two identically, but a bare `OR` is a footgun: the next caller writing
+    // `where: { ...studentScopeForContext(ctx), OR: [...] }` would silently
+    // drop one of the two, and the loss widens the scope back to the whole
+    // table in one direction and narrows it in the other.
     expect(studentScopeForContext({ connectionId: 'conn-a' })).toEqual({
       isActive: true,
-      OR: [
-        { links: { some: { householdConnectionId: 'conn-a' } } },
-        { links: { none: {} } },
+      AND: [
+        {
+          OR: [
+            { links: { some: { householdConnectionId: 'conn-a' } } },
+            { links: { none: {} } },
+          ],
+        },
       ],
     });
+  });
+
+  it('survives a caller that merges its own OR', () => {
+    // The footgun itself. With the predicate under `AND` both survive the
+    // spread; as a bare `OR` the caller's would have replaced it.
+    const where = {
+      ...studentScopeForContext({ connectionId: 'conn-a' }),
+      OR: [{ classCode: 'ז' }],
+    };
+
+    expect(where.AND).toHaveLength(1);
+    expect(where.OR).toEqual([{ classCode: 'ז' }]);
   });
 
   it('still admits a child no connection lists', () => {
@@ -345,10 +367,10 @@ describe('studentScopeForContext', () => {
     // the next roster refresh", not "nobody's". Excluding them would stop
     // fetching for every child on a deployment whose backfill has not run.
     const scope = studentScopeForContext({ connectionId: 'conn-a' }) as {
-      OR: Array<Record<string, unknown>>;
+      AND: Array<{ OR: Array<Record<string, unknown>> }>;
     };
 
-    expect(scope.OR).toContainEqual({ links: { none: {} } });
+    expect(scope.AND[0].OR).toContainEqual({ links: { none: {} } });
   });
 
   it('ignores a schoolYear-only context', () => {
@@ -384,12 +406,20 @@ describe('reportNoConnectionTarget', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
-  it('opens a run for the requested connection', async () => {
+  it('keys the run per connection, not on the bare source name', async () => {
+    // The bare key is what `FreshnessService.getAllSourceHealth` reads as
+    // `latestRun = allRuns.get(source)`, while `latestSuccess` resolves across
+    // `source` AND `source:*`. So a bare failed row left the settings page
+    // showing the source `fresh` with a `lastAttemptAt` and
+    // `lastErrorMessage` belonging to a connection that cannot be used --
+    // confusing exactly the surface R11 exists to make readable. A suffixed
+    // key is the same shape the loop body would have written and pollutes
+    // nothing.
     const { service, openRun } = makeSyncRunService();
 
     await reportNoConnectionTarget(service, logger, 'achvas', 'conn-gone');
 
-    expect(openRun).toHaveBeenCalledWith('achvas', 'conn-gone');
+    expect(openRun).toHaveBeenCalledWith('achvas:conn-gone', 'conn-gone');
   });
 
   it('closes that run failed, with the reason in it', async () => {
@@ -443,7 +473,7 @@ describe('reportNoConnectionTarget', () => {
 
     const result = await reportNoConnectionTarget(service, logger, 'mail_counts', 'conn-x');
 
-    expect(openRun).toHaveBeenCalledWith('mail_counts', 'conn-x');
+    expect(openRun).toHaveBeenCalledWith('mail_counts:conn-x', 'conn-x');
     expect(result.errorMessages[0]).toContain('mail_counts');
   });
 });

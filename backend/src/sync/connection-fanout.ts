@@ -71,7 +71,13 @@ export function orderConnectionsForStudent<T extends FanoutConnection>(
 export function studentScopeForContext(context: SyncExecutionContext): Prisma.StudentWhereInput {
   return {
     isActive: true,
-    ...(context.connectionId ? connectionStudentWhere(context.connectionId) : {}),
+    // Nested under `AND`, not spread as a bare `OR`. Prisma treats the two
+    // identically, but a bare `OR` is a footgun for the next caller: writing
+    // `where: { ...studentScopeForContext(ctx), OR: [...] }` silently drops one
+    // of the two, and the loss widens the scope back to the whole table in one
+    // direction and narrows it in the other -- neither of which would fail a
+    // typecheck or a test.
+    ...(context.connectionId ? { AND: [connectionStudentWhere(context.connectionId)] } : {}),
   };
 }
 
@@ -107,7 +113,17 @@ export async function reportNoConnectionTarget(
     `${source}: connection ${connectionId} is not an active, user-owned connection; ` +
     `nothing was fetched`;
 
-  const syncRun = await syncRunService.openRun(source, connectionId);
+  // Suffixed per connection, which is the shape the loop body would have
+  // written for a usable one. The bare key is what
+  // `FreshnessService.getAllSourceHealth` reads as
+  // `latestRun = allRuns.get(source)`, while `latestSuccess` resolves across
+  // `source` AND `source:*` -- so a bare failed row left the settings page
+  // showing the source `fresh` with a `lastAttemptAt` and `lastErrorMessage`
+  // belonging to a connection that cannot be used. That is the one surface R11
+  // exists to make readable, so it must not be the one it muddies. The run
+  // stays queryable either way; what it must not do is stand in for the
+  // source's own health.
+  const syncRun = await syncRunService.openRun(`${source}:${connectionId}`, connectionId);
   await syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: message });
   logger.warn(message);
 
