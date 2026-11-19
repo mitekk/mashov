@@ -195,7 +195,7 @@ export class DashboardService {
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
     // Built alongside the name map, from the same rows, so a feed item can
     // say which school it came from without a second query per item.
-    const schoolMap = await buildStudentSchoolMap(this.prisma, students);
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students, userId);
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
@@ -346,7 +346,7 @@ export class DashboardService {
       orderBy: { fullName: 'asc' },
     });
 
-    const schoolMap = await buildStudentSchoolMap(this.prisma, students);
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students, userId);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const cards: ChildCard[] = await Promise.all(

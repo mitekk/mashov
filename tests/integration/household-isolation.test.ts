@@ -617,6 +617,50 @@ describe('Two parents, one school, shared children', () => {
       });
     });
 
+    describe("R5 — a child's school comes from the caller's own connections", () => {
+      /** The shared child's `schoolId`, as each surface reports it. */
+      async function sharedChildSchoolIds(userId: string): Promise<string[]> {
+        const dashboard = await makeDashboard().getDashboard(userId);
+        const feed = await makeFeed().getFeed(1, 100, userId);
+        return [
+          ...dashboard.children
+            .filter((child) => child.studentGuid === SHARED)
+            .map((child) => child.schoolId ?? 'null'),
+          ...feed.data
+            .filter((item) => item.studentGuid === SHARED)
+            .map((item) => item.schoolId ?? 'null'),
+        ];
+      }
+
+      it('reports each parent their own connection for the child they share', async () => {
+        // The child is stamped to B, which is the state B's sync leaves
+        // behind. A used to be handed CONN_B -- an id A does not own, which
+        // the client cannot resolve against `me.schools`, so A's chip could
+        // never match their own child.
+        const forA = await sharedChildSchoolIds(USER_A);
+        const forB = await sharedChildSchoolIds(USER_B);
+
+        expect(forA.length).toBeGreaterThan(0);
+        expect(new Set(forA)).toEqual(new Set([CONN_A]));
+        expect(forB.length).toBeGreaterThan(0);
+        expect(new Set(forB)).toEqual(new Set([CONN_B]));
+      });
+
+      it('does not depend on which parent synced last', async () => {
+        // The same oscillation B1 described: moving the stamp must not move
+        // either parent's badge.
+        for (const stamp of [CONN_A, CONN_B, CONN_A]) {
+          await prisma.student.update({
+            where: { studentGuid: SHARED },
+            data: { householdConnectionId: stamp },
+          });
+
+          expect(new Set(await sharedChildSchoolIds(USER_A))).toEqual(new Set([CONN_A]));
+          expect(new Set(await sharedChildSchoolIds(USER_B))).toEqual(new Set([CONN_B]));
+        }
+      });
+    });
+
     describe('R13 — the fallback badge belongs to the caller', () => {
       it('reports 0 for a user with no connection, not the other households', async () => {
         // The only state that reaches the fallback: `_count._all === 0`, which

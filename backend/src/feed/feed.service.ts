@@ -73,7 +73,7 @@ export class FeedService {
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
     // Built alongside the name map, from the same rows, so a feed item can
     // say which school it came from without a second query per item.
-    const schoolMap = await buildStudentSchoolMap(this.prisma, students);
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students, userId);
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
