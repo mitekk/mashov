@@ -20,10 +20,14 @@ recorded here. **R1**, **R2**, B3's attachment leak and batch 3 (**R3**, **R5**,
 *read* is open any more**.
 
 A fourth review (`/code-review high`, 2026-11-19, run after batch 3 landed) added
-**R15–R17**. One of them matters more than its number suggests: **R16** is a
-cross-household *write*, and it is the reachable path B3's remaining bullet said did
-not exist. So the branch is not clear of credential leaks after all, and R16 is the
-next gate.
+**R15–R17**. One of them mattered more than its number suggested: **R16** was a
+cross-household *write*, and the reachable path B3's remaining bullet said did not
+exist. It is **done** (batch 3.5, `3afde47`), and with it **no cross-household read or
+write is open any more** — every remaining item is a degraded signal, a frontend gap or
+a pre-existing bug. That sentence has been wrong once already, in the form "no
+cross-household read is open": it bounded reads and said nothing about writes. It is
+now a claim about both, and the thing that would falsify it is a resolver reached by a
+path whose own check is the only thing scoping it.
 
 ## Pick-up order
 
@@ -34,10 +38,10 @@ stays true.
 
 | # | Items | Status | Why here |
 |---|---|---|---|
-| 1 | **R1** + **B3** + `updateCachedNewCount()` | **done**, 1 bullet left | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's remaining bullet — the stamped branch of `resolveOrFallback` generally — was recorded as having no known reachable path; the fourth review found one, now **R16**. |
+| 1 | **R1** + **B3** + `updateCachedNewCount()` | **done**, 1 bullet left | The only finding where one household wrote another's data upstream with their credentials. Included the stamped-branch attachment leak the third review found. B3's remaining bullet — the stamped branch of `resolveOrFallback` generally — was recorded as having no known reachable path; the fourth review found one, fixed as **R16** in batch 3.5. |
 | 2 | **R2** | **done** | A permanently broken unlink. Fixed with the stamp, the relation-filtered delete, one transaction for the whole unlink, and an index on `mail_message.conversationId`. |
 | 3 | **R3**, **R5**, **R6**, **R13** + the label-set minor, and **N1** found while reading | **done** | One missing household predicate across four readers, on the `userId` threading batch 1 established. Closed the last place another household's data reached a screen. The mail scope moved to `common/mail-scope.ts` and the chip labels to `common/school-chips.ts`, so `/children`, `/dashboard`, `/feed` and the inbox now answer from one scoping path and one label resolution instead of four. |
-| 3.5 | **R16** + B3's remaining bullet | open | **The next gate.** One household's release request goes upstream under the other's decrypted password, which is R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closes both, and it is small enough not to wait behind R4. |
+| 3.5 | **R16** + B3's remaining bullet | **done** | One household's release request went upstream under the other's decrypted password — R1's class, not a cleanup. One fix in the stamped branch of `resolveOrFallback` closed both: a foreign stamp is now no stamp, and the fallback under it prefers the caller's connection at the stamped school. `targetFor` took the same optional caller while in there. |
 | 4 | **R4** + **R15** | open | Same visibility-edge fix as batch 3, in a service with no callers in common. R15 rides along: it is the same "the writers and the reader disagree about NULL" shape, in the mail counts rather than the freshness read. |
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | open | The only frontend items. R14 leaves a parent looking at an empty mailbox with no way forward, which is the worst *experience* left open. Needs an e2e run, so it is cheapest on its own. |
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | open | All three are the refresh envelope lying to the parent — R12 says `success` when a school failed, the minor says `partial` when one succeeded. |
@@ -45,10 +49,10 @@ stays true.
 | 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1, 2 and 3 are done, and with batch 3 no open item puts one household's data on
-another's *screen*. **Batch 3.5 is next**, because the fourth review found that one
-still puts a household's *request* in another's Mashov account. Batches 4–7 are each
-self-contained; 7 can run in parallel with anything.
+Batches 1, 2, 3 and 3.5 are done: no open item puts one household's data on another's
+*screen*, and none puts a household's *request* in another's Mashov account.
+**Batch 4 is next.** Batches 4–7 are each self-contained; 7 can run in parallel with
+anything.
 
 ---
 
@@ -263,12 +267,12 @@ refused, which is every deployment with more than one active connection.
       either household. Red before the fix was worse than predicted — the call
       **resolved**, i.e. B got the file. Plus 2 unit cases, verified red by deleting the
       guard (the foreign-stamp case failed, the other 73 stayed green).
-- [ ] The stamped branch of `resolveOrFallback` itself still ignores `userId`, so
-      `targetForStudent` and `targetForConversation` can still resolve a foreign stamp
-      when their callers' own ownership checks do not bound it. The fix is to treat
-      "stamped outside the caller's connections" as unstamped and fall through to the
-      `userId`-scoped fallback, which for a shared child lands on the caller's own
-      connection at the same school.
+- [x] The stamped branch of `resolveOrFallback` ignored `userId`, so
+      `targetForStudent` and `targetForConversation` could resolve a foreign stamp
+      when their callers' own ownership checks did not bound it. Fixed in `3afde47`
+      with **R16**: "stamped outside the caller's connections" is now unstamped, and
+      the `userId`-scoped fallback under it prefers the caller's connection at the
+      stamped school.
       **This bullet used to say no path like the attachment one was known to remain**,
       on the reasoning that `assertVisible` bounds the conversation callers and a
       shared child's stamp is the other parent's by design (ADR-0031), so it was
@@ -800,6 +804,8 @@ it never meets this.
 
 ### R16 — A release request is sent upstream under the other parent's credentials
 
+**Status: FIXED** in `3afde47`, closing B3's remaining bullet with it.
+
 **Severity**: **high**. One household writing into another's Mashov account with their
 decrypted password — the same class as **R1** and B3's attachment leak, and the only
 cross-household leak still open.
@@ -826,17 +832,33 @@ This is B3's remaining bullet with a reachable path, so fixing the stamped branc
 `resolveOrFallback` closes both.
 
 **DoD**
-- [ ] The stamped branch treats "stamped outside the caller's connections" as unstamped
-      and falls through to the `userId`-scoped fallback — for a shared child that lands
-      on the caller's own connection at the same school, which is the right account to
-      write to. The caller-less path (crons, digest) keeps its global guess.
-- [ ] Fix the doc comment, which currently overstates the scoping.
-- [ ] An integration case asserts parent A's release request resolves to A's connection
-      for a child stamped to B, and that **no upstream call goes out** under B's
-      credentials — the shape B3's attachment cases use, since a guard that works only
-      because Mashov says no is not a guard.
-- [ ] Check `targetForConversation`'s callers while in there, which `assertVisible` is
-      believed to bound.
+- [x] The stamped branch treats "stamped outside the caller's connections" as unstamped
+      and falls through to the `userId`-scoped fallback. The fallback **prefers the
+      caller's connection at the stamped school**, which is what makes "the right
+      account to write to" true rather than merely likely: without it a two-school
+      household resolves to whichever of its own connections was used last, which is
+      the wrong school's credential for this child. A stamp on a connection with no
+      `userId` is still honoured — the branch-wide "ownership unknown" rule, and what
+      every row of a deployment predating linking looks like. The caller-less path
+      (crons, digest) keeps the stamp authoritative and its global guess.
+- [x] Fixed the doc comment, which overstated the scoping.
+- [x] **3 integration cases** in `tests/integration/household-isolation.test.ts`, on
+      the existing shared-child fixture with per-connection passwords added: A's
+      `create`/`update`/`deleteStudentRelease` for the child stamped to B all resolve
+      to A's connection and spend A's password, B's own request still routes through B,
+      and the child only B lists is refused before any credential is resolved. Red was
+      exactly the predicted shape — all three of A's calls went out as
+      `parent-b` / `enc-parent-b`. The two control cases passed before the fix too.
+- [x] **7 unit cases** in `connection-scope.service.spec.ts`, 4 red before the fix,
+      including a signed-in user with *no connection at all* resolving to another
+      household's decrypted password, and the two-school case the school preference
+      exists for.
+- [x] Checked `targetForConversation`'s callers, and `targetFor`'s. Both of the
+      latter (`MailService.unarchive`, `forEachConnectionSubset`) reach the resolver
+      with an id grouped out of their own `visibleConversations` read, which bounds
+      them — the same kind of bound that held for the conversation callers right up to
+      the one it did not. `targetFor` therefore took the same optional caller and
+      refuses a foreign id, so the resolver no longer depends on its callers for this.
 
 ### R17 — The link rate limit is spent on refusals it should not reach
 
