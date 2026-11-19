@@ -1314,3 +1314,215 @@ describe('Two mailboxes, two households', () => {
     });
   });
 });
+
+/**
+ * The label-set minor — one connection set, one label resolution.
+ *
+ * `resolveSchoolLabels` is a whole-list decision: two schools in one cluster
+ * routinely share everything up to a " - …" qualifier, and a collision reverts
+ * BOTH sides to their full names, because two chips reading the same thing are
+ * worse than two long ones -- the parent cannot tell which filter they
+ * pressed. Only a view of every school can make that call.
+ *
+ * `ChildrenService` resolved it over the household's whole connection set and
+ * `common/student-school-map.ts` only over the schools present in the list, so
+ * one school showed its expanded full name on a page listing both and its
+ * short colliding label on a page listing one. R6 put `/children` on the
+ * shared helper, which makes the two agree -- on the narrower answer. This is
+ * the other half.
+ *
+ * The fixture is the discriminating one: two schools whose short labels
+ * collide and ONE child, so the list holds a single school and cannot see the
+ * collision by itself.
+ */
+describe('Two schools whose short labels collide', () => {
+  const LABEL_SEMEL_X = 778897;
+  const LABEL_SEMEL_Y = 778896;
+  const LABEL_USER = 'hhl-user';
+  const LABEL_CONN_X = 'hhl-conn-x';
+  const LABEL_CONN_Y = 'hhl-conn-y';
+  const LABEL_CHILD = 'hhl-guid-x';
+  const LABEL_CONV = 'hhl-conv-x';
+  /** Identical up to the " - …" qualifier `shorten` drops. */
+  const SCHOOL_X = 'תיכון הרצל - שלוחה א';
+  const SCHOOL_Y = 'תיכון הרצל - שלוחה ב';
+
+  let prisma: PrismaClient;
+
+  beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    await prisma.$connect();
+  });
+
+  afterAll(async () => {
+    await cleanup();
+    await prisma.$disconnect();
+  });
+
+  async function cleanup(): Promise<void> {
+    await prisma.mailConversation.deleteMany({ where: { conversationId: LABEL_CONV } });
+    await prisma.studentConnection.deleteMany({ where: { studentGuid: LABEL_CHILD } });
+    await prisma.student.deleteMany({ where: { studentGuid: LABEL_CHILD } });
+    await prisma.householdConnection.deleteMany({
+      where: { schoolCode: { in: [LABEL_SEMEL_X, LABEL_SEMEL_Y] } },
+    });
+    await prisma.appUser.deleteMany({ where: { id: LABEL_USER } });
+  }
+
+  async function seed(): Promise<void> {
+    await cleanup();
+
+    await prisma.appUser.create({
+      data: {
+        id: LABEL_USER,
+        mashovUserId: `upstream-${LABEL_USER}`,
+        username: 'label-parent',
+        displayName: 'label-parent',
+        semel: LABEL_SEMEL_X,
+      },
+    });
+
+    for (const [id, schoolCode, schoolName] of [
+      [LABEL_CONN_X, LABEL_SEMEL_X, SCHOOL_X],
+      [LABEL_CONN_Y, LABEL_SEMEL_Y, SCHOOL_Y],
+    ] as Array<[string, number, string]>) {
+      await prisma.householdConnection.create({
+        data: {
+          id,
+          userId: LABEL_USER,
+          username: 'label-parent',
+          schoolCode,
+          schoolYear: YEAR,
+          encryptedPassword: 'enc',
+          schoolName,
+          // No parent-chosen label, so the collision rule is what decides.
+          displayLabel: null,
+          active: true,
+        },
+      });
+    }
+
+    // ONE child, at X only. This is what makes the fixture discriminating: a
+    // reader labelling only the schools in its own list sees no collision.
+    await prisma.student.create({
+      data: {
+        studentGuid: LABEL_CHILD,
+        privateName: 'ילד',
+        familyName: 'כלשהו',
+        fullName: 'ילד הרצל',
+        classCode: 'ז',
+        classNum: 1,
+        gender: 'M',
+        isActive: true,
+        householdConnectionId: LABEL_CONN_X,
+      },
+    });
+    await prisma.studentConnection.create({
+      data: {
+        studentGuid: LABEL_CHILD,
+        householdConnectionId: LABEL_CONN_X,
+        lastSeenInRosterAt: new Date(),
+      },
+    });
+
+    // ...and one conversation, also at X only, so the inbox page is the same
+    // single-school shape as the children list.
+    await prisma.mailConversation.create({
+      data: {
+        conversationId: LABEL_CONV,
+        subject: 'נושא',
+        senderNamePreview: 'מורה',
+        sendTime: new Date('2026-11-11T08:00:00Z'),
+        isUnread: true,
+        labels: [],
+        lastFetchedAt: new Date('2026-11-11T08:05:00Z'),
+        householdConnectionId: LABEL_CONN_X,
+      },
+    });
+  }
+
+  beforeEach(seed);
+
+  function makeChildren(): ChildrenService {
+    return new ChildrenService(
+      prisma as unknown as PrismaService,
+      { ensureStudentsAvailable: async () => undefined } as unknown as MashovSessionService,
+      {} as unknown as MashovHttpClient,
+      new UserItemStateService(prisma as unknown as PrismaService),
+      { get: () => undefined } as unknown as ConfigService,
+      new ConnectionScopeService(
+        prisma as unknown as PrismaService,
+        { decrypt: (value: string) => value } as unknown as EncryptionService,
+      ),
+    );
+  }
+
+  function makeDashboard(): DashboardService {
+    return new DashboardService(
+      prisma as unknown as PrismaService,
+      {
+        computeFreshness: async () => ({ state: 'fresh', lastSyncAt: null, staleSources: [] }),
+      } as unknown as FreshnessService,
+      { ensureStudentsAvailable: async () => undefined } as unknown as MashovSessionService,
+      new UserItemStateService(prisma as unknown as PrismaService),
+      { get: () => undefined } as unknown as ConfigService,
+    );
+  }
+
+  it('shows the collision-expanded name even on a list holding one school', async () => {
+    const children = await makeChildren().getChildren(LABEL_USER);
+    const child = children.data.find((row) => row.studentGuid === LABEL_CHILD);
+
+    // Not 'תיכון הרצל', which is what both schools shorten to and what a
+    // list-local resolution produces here.
+    expect(child?.schoolShortLabel).toBe(SCHOOL_X);
+  });
+
+  it('agrees with the dashboard, which holds the same one school', async () => {
+    const children = await makeChildren().getChildren(LABEL_USER);
+    const dashboard = await makeDashboard().getDashboard(LABEL_USER);
+
+    const child = children.data.find((row) => row.studentGuid === LABEL_CHILD);
+    const card = dashboard.children.find((row) => row.studentGuid === LABEL_CHILD);
+
+    expect(card?.schoolShortLabel).toBe(SCHOOL_X);
+    expect(card?.schoolShortLabel).toBe(child?.schoolShortLabel);
+  });
+
+  it('shows the same expanded name in the inbox', async () => {
+    // The third reader with the same inconsistency: it resolved over the
+    // connections present in the PAGE, so a page holding one of two colliding
+    // schools disagreed with both the others.
+    const mail = new MailService(
+      prisma as unknown as PrismaService,
+      {
+        getForTarget: async () => ({}),
+        getResponseForTarget: async () => ({ data: new ArrayBuffer(0), headers: {}, status: 200 }),
+        putForTarget: async () => 1,
+        deleteForTarget: async () => ({}),
+      } as unknown as MashovHttpClient,
+      new ConnectionScopeService(
+        prisma as unknown as PrismaService,
+        { decrypt: (value: string) => value } as unknown as EncryptionService,
+      ),
+    );
+
+    const inbox = await mail.getConversations(1, 100, 'all', undefined, LABEL_USER);
+    const row = inbox.data.find((item) => item.conversationId === LABEL_CONV);
+
+    expect(row?.schoolShortLabel).toBe(SCHOOL_X);
+  });
+
+  it('still shortens when nothing collides', async () => {
+    // So the fix is the set rule rather than "always use the full name": with
+    // the second school unlinked there is no collision left to expand.
+    await prisma.householdConnection.update({
+      where: { id: LABEL_CONN_Y },
+      data: { active: false },
+    });
+
+    const children = await makeChildren().getChildren(LABEL_USER);
+
+    expect(children.data[0]?.schoolShortLabel).toBe('תיכון הרצל');
+  });
+});

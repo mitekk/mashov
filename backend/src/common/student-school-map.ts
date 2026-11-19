@@ -1,6 +1,7 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveSchoolLabels } from './school-label';
-import { activeConnectionIdsFor, linksForStudents } from './student-links';
+import { linksForStudents } from './student-links';
+import { schoolChipsForUser } from './school-chips';
 
 /** Which school a child belongs to, as a response field needs it. */
 export interface StudentSchool {
@@ -55,10 +56,18 @@ export async function buildStudentSchoolMap(
     owned.map((student) => student.studentGuid),
   );
 
-  // `null` means "no caller, so nothing to intersect against" -- not an empty
-  // set, which is a real caller who has connected no school and gets no badge
-  // on any child.
-  const own = userId ? new Set(await activeConnectionIdsFor(prisma, userId)) : null;
+  // The caller's whole connection set, already labelled as a set. `null`
+  // means "no caller, so nothing to intersect against" -- not an empty map,
+  // which is a real caller who has connected no school and gets no badge on
+  // any child.
+  //
+  // Two things come from it: which connections the caller may be answered
+  // from, and the chip labels. The labels have to be resolved over the
+  // household rather than over the schools in THIS list, because a collision
+  // reverts both sides to their full names and a list holding one of two
+  // colliding schools cannot see the collision at all.
+  const chips = userId ? await schoolChipsForUser(prisma, userId) : null;
+  const own = chips ? new Set(chips.keys()) : null;
 
   /**
    * The connection this child's school should be read from, for this caller.
@@ -92,15 +101,37 @@ export async function buildStudentSchoolMap(
   ];
   if (connectionIds.length === 0) return map;
 
-  // `connectionIds` already holds only the caller's own ids when there is a
-  // caller, because `resolvedFor` cannot return anything else -- so `byId`,
-  // and every label resolved from it, is the caller's set.
+  // With a caller the chip map already holds every connection `resolvedFor`
+  // could have returned -- it cannot return anything outside `own` -- so there
+  // is nothing left to look up.
+  const byId = chips ?? (await connectionsById(prisma, connectionIds));
+
+  for (const student of owned) {
+    const resolved = resolvedFor(student.studentGuid, student.householdConnectionId);
+    const school = resolved ? byId.get(resolved) : undefined;
+    if (school) map.set(student.studentGuid, school);
+  }
+  return map;
+}
+
+/**
+ * The same shape as a chip, for the caller-less read.
+ *
+ * Here the labels genuinely can only be resolved over the connections in the
+ * list, because there is no household to resolve them over. Unchanged
+ * behaviour for the digest and the unauthenticated reads.
+ */
+async function connectionsById(
+  prisma: PrismaService,
+  connectionIds: string[],
+): Promise<Map<string, StudentSchool>> {
   const connections = await prisma.householdConnection.findMany({
     where: { id: { in: connectionIds } },
     select: { id: true, schoolCode: true, schoolName: true, displayLabel: true },
   });
   const labels = resolveSchoolLabels(connections);
-  const byId = new Map(
+
+  return new Map(
     connections.map((connection) => [
       connection.id,
       {
@@ -111,11 +142,4 @@ export async function buildStudentSchoolMap(
       },
     ]),
   );
-
-  for (const student of owned) {
-    const resolved = resolvedFor(student.studentGuid, student.householdConnectionId);
-    const school = resolved ? byId.get(resolved) : undefined;
-    if (school) map.set(student.studentGuid, school);
-  }
-  return map;
 }

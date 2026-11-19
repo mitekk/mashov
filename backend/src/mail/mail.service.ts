@@ -8,6 +8,7 @@ import { ConnectionScopeService } from '../common/connection-scope/connection-sc
 import { resolveSchoolLabels } from '../common/school-label';
 import { activeConnectionIdsFor } from '../common/student-links';
 import { householdMailScope } from '../common/mail-scope';
+import { schoolChipsForUser } from '../common/school-chips';
 import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
@@ -182,19 +183,39 @@ export class MailService {
       this.prisma.mailConversation.count({ where }),
     ]);
 
-    const labels = resolveSchoolLabels(
-      [
-        ...new Map(
-          items
-            .map((item) => item.connection)
-            // Truthy, not `!== null`: Prisma yields null for a missing
-            // relation, but a row read without the include yields undefined,
-            // and both mean "no school".
-            .filter((connection): connection is NonNullable<typeof connection> => Boolean(connection))
-            .map((connection) => [connection.id, connection]),
-        ).values(),
-      ],
-    );
+    // The caller's whole connection set, labelled as a set. Resolving over the
+    // connections present in THIS page gave the same school a short colliding
+    // label on a page holding one of two colliding schools and its expanded
+    // full name on a page holding both -- and disagreed with `/children` and
+    // `/dashboard`, which now both read this map.
+    const chips = userId ? await schoolChipsForUser(this.prisma, userId) : null;
+    // The caller-less read has no household to resolve over, so it keeps the
+    // joined relation -- which is also the fallback for a conversation stamped
+    // to a connection the chip map does not hold.
+    const labels =
+      chips ??
+      resolveSchoolLabels(
+        [
+          ...new Map(
+            items
+              .map((item) => item.connection)
+              // Truthy, not `!== null`: Prisma yields null for a missing
+              // relation, but a row read without the include yields undefined,
+              // and both mean "no school".
+              .filter((connection): connection is NonNullable<typeof connection> => Boolean(connection))
+              .map((connection) => [connection.id, connection]),
+          ).values(),
+        ],
+      );
+
+    /** The chip label for one conversation's school, or `null` for no badge. */
+    const shortLabelFor = (connection: { id: string; schoolName: string | null; schoolCode: number } | null) => {
+      if (!connection) return null;
+      const resolved = labels.get(connection.id);
+      if (typeof resolved === 'string') return resolved;
+      if (resolved) return resolved.shortLabel;
+      return connection.schoolName ?? String(connection.schoolCode);
+    };
 
     return {
       data: items.map((item) => ({
@@ -210,11 +231,7 @@ export class MailService {
         lastFetchedAt: item.lastFetchedAt.toISOString(),
         // `null` on an unstamped conversation, which the UI reads as no badge.
         schoolId: item.connection?.id ?? null,
-        schoolShortLabel: item.connection
-          ? labels.get(item.connection.id) ??
-            item.connection.schoolName ??
-            String(item.connection.schoolCode)
-          : null,
+        schoolShortLabel: shortLabelFor(item.connection),
       })),
       pagination: {
         page,
