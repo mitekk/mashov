@@ -647,10 +647,16 @@ name, not a bug in the gate, and ADR-0029 does not settle it. Signing in with A'
 password refreshes it. Pick this up with **B4**, which is the same question about contact
 details.
 
-Also uncovered, and unchanged by this batch: nothing tests
-`adoptionEnabled() === false`. The kill switch is still the first conjunct of the gate,
-so its behaviour is byte-identical before and after — but the batch touched that
-condition and the switch has no coverage at all.
+One thing the review got wrong, recorded so it is not re-found: the adoption kill switch
+*is* covered, by `'reproduces the old behaviour exactly when the kill switch is off'`
+(`auth.service.spec.ts:949`), which pins the forking behaviour the switch restores.
+
+What the same look did find is worth more. `jest.clearAllMocks()` clears calls but
+**not implementations**, and `mockPrisma` is one shared object for the whole file — so
+two of the adoption specs were reaching the gate on whatever `appUser.findUnique`
+resolution the previously-run test happened to leave behind, and failed with a
+`TypeError` when run alone with `-t`. Both now mock it explicitly. Any spec in this file
+that depends on a mock it does not set is passing on test order.
 
 ### R9 — `PUT /school-links/:id` 500s on the unique index this branch added
 

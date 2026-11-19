@@ -216,12 +216,18 @@ describe('ConnectionService', () => {
       // A blanket P2002 -> 409 in a method that also writes
       // `encryptedPassword`, `lastLoginAt` and `mashovUniqueId` would
       // mislabel a future constraint as a taken username.
+      //
+      // The target is deliberately hypothetical: `household_connection` has
+      // exactly one non-PK unique index today, so no OTHER P2002 is reachable
+      // from this update and no real column name would make a truer fixture.
+      // What this pins is the behaviour waiting for whoever adds the second
+      // index -- their collision must not come back as "username taken".
       mockPrisma.householdConnection.findFirst.mockResolvedValue(existingConn);
       mockHttp.post = jest.fn().mockResolvedValue({ data: {} });
       const other = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
         code: 'P2002',
         clientVersion: '5.0.0',
-        meta: { target: ['mashovUniqueId'] },
+        meta: { target: ['someColumnAddedLater'] },
       });
       mockPrisma.householdConnection.update.mockRejectedValue(other);
 

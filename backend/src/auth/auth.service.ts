@@ -239,8 +239,11 @@ export class AuthService {
     const existingUser = await this.prisma.appUser.findUnique({
       where: { mashovUserId },
     });
+    // `=== null`, matching `isFirstLogin` below: Prisma's `findUnique` answers
+    // `null`, never `undefined`, and spelling both guards the same way keeps
+    // that invariant in the code rather than only in Prisma's contract.
     const ownsConnection =
-      existingUser != null && existingConnBeforeLogin?.userId === existingUser.id;
+      existingUser !== null && existingConnBeforeLogin?.userId === existingUser.id;
 
     if (this.adoptionEnabled() && existingConnBeforeLogin?.userId && !ownsConnection) {
       const ownerId = existingConnBeforeLogin.userId;

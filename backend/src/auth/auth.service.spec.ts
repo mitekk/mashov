@@ -737,6 +737,12 @@ describe('AuthService login adoption', () => {
       mashovUniqueId: 'uniq',
       userId: 'household-1',
     });
+    // Explicit, and it has to be: `jest.clearAllMocks()` clears calls but not
+    // implementations, so an unmocked `findUnique` here answers whatever the
+    // previously-run test left on the shared mock. This is the
+    // production-common adoption shape -- no AppUser yet for the second
+    // school's credential -- and it should not depend on test order.
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
 
     const result = await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
 
@@ -816,6 +822,7 @@ describe('AuthService login adoption', () => {
       mashovUniqueId: 'uniq',
       userId: 'household-1',
     });
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
     mockHttp.post = jest.fn().mockResolvedValue({
       data: {
         ...mockLoginResponse,
