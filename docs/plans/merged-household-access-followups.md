@@ -5,13 +5,33 @@ implemented steps 1–12 of [the plan](merged-household-access.md). See
 [ADR-0029](../adr/0029-household-merge-and-login-adoption.md) and
 [ADR-0030](../adr/0030-per-connection-data-scoping.md) for the decisions it rests on.
 
-The whole-branch review graded nine items Critical or Important; eight were fixed on
-the branch. What is left is below: four bugs (**B1–B4**), the two operational tasks
-the plan itself deferred (**T13–T14**), one test-infrastructure gap (**G1**), and the
-minors.
+Two whole-branch reviews have run. The first graded nine items Critical or Important;
+eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. The
+second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
+recorded here as **R1–R12**.
 
-**Read B1 first.** It is the one that breaks a stated requirement, and B2 and B4 are
-cheaper to fix once its design question is settled.
+What is open: **B2–B4** and **R1–R12**, the two operational tasks the plan itself
+deferred (**T13–T14**), and the minors. **G1** and **B1** are done and kept as record.
+
+## Pick-up order
+
+Each batch is one session's work and leaves the tree green on its own. Within a batch
+the items share a seam, so splitting them costs more than doing them together.
+
+| # | Items | Why here |
+|---|---|---|
+| 1 | **R1** + **B3** + `updateCachedNewCount()` | The only finding where one household writes another's data upstream with their credentials. B3's `userId`-threading bullet is the same edit. |
+| 2 | **R2** | A permanently broken unlink, independent of everything else, and small. |
+| 3 | **R3**, **R5**, **R6** + the label-set minor | One missing predicate across three readers. Needs the `userId` threading batch 1 establishes. |
+| 4 | **R4** | Same visibility-edge fix as batch 3, in a service with no callers in common. Could ride along with batch 3 if that one goes quickly. |
+| 5 | **R12** + the "connection-scoped refresh fans out over every child" minor | Both are the refresh envelope lying to the parent, in opposite directions. **R11** fits here too. |
+| 6 | **R8**, **R9**, **R10** | Three independent small correctness fixes in the auth/link path; one session, three tests. |
+| 7 | **R7** + the `MorePageClient` dead term | The only frontend items. Needs an e2e run, so it is cheapest on its own. |
+| 8 | **B2**, **B4** | Pre-existing bugs with no dependency on the above. |
+| 9 | **T13**, then **T14** | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. |
+
+Batches 1 and 2 are the two to do before this branch goes anywhere near production.
+Batches 3–7 are each self-contained; 6 and 7 can run in parallel with anything.
 
 ---
 
@@ -217,6 +237,302 @@ parent will assume the school has.
       details came from.
 - [ ] `GET /settings/profile` returns per-school profiles, or accepts a connection id.
 - [ ] A test covers a two-school household with differing contact details on each.
+
+---
+
+## Bugs the second review found (2026-11-19)
+
+`/code-review high` over `master...HEAD`, run after **G1** landed. Twelve items, none
+of them already recorded in this file. Every file:line below is as of `8f40e99`.
+
+**R1, R3, R5 and R6 are one finding seen from four angles**: the per-household scoping
+this branch introduced was wired into `MailService.getSummary` and the sync tasks, and
+never into the mail read/mutate paths, the feed, or the per-child school labels. Fix
+them as one pass, not four. **R1 also subsumes most of B3's second DoD bullet** —
+threading `userId` into `MailService` is the same edit — so do B3 with it.
+
+### R1 — Every mail path except the badge is unscoped, and `?schoolId=` is unchecked
+
+**Severity**: high. The only finding on this branch where one household reads *and
+writes* another's data with the other's credentials.
+
+**Cause.** `backend/src/mail/mail.service.ts:153` — `getConversations` never receives a
+`userId` from `mail.controller.ts` and applies no `householdMailScope`. Same for
+`getConversationDetail` (`:219`), `markConversationsRead` (`:785`), `markUnread`
+(`:838`), `archive` (`:881`), `unarchive` (`:902`) and the attachment download. The
+branch added `householdMailScope` and wired it into `getSummary` only.
+
+**Description.** On a box with two households:
+
+- `GET /mail/conversations` returns every household's mail while `/mail/summary` counts
+  only the caller's — the badge and the list disagree on the same screen, which is the
+  class of bug `283c053` was about.
+- The new `?schoolId=` query param goes straight into `buildInboxWhere` with no
+  ownership check, so `GET /mail/conversations?schoolId=<another household's connection
+  id>` returns that household's inbox. `/school-links` and `/sync/*` both 404 on a
+  foreign `schoolId`; this does not.
+- `PUT /mail/conversations/archive` with a foreign `conversationId` archives it locally
+  and, via `groupConversationsByConnection` → `targetFor`, **upstream with that
+  household's Mashov credentials**.
+
+**DoD**
+- [ ] Every `MailService` method that reads or mutates conversations takes the caller's
+      `userId` and applies `householdMailScope`, the controller passes it, and
+      `?schoolId=` 404s on a connection the caller does not own.
+- [ ] A test seeds two households and asserts the list, the detail, archive/unarchive
+      and `markUnread` all refuse the other household's `conversationId`, and that a
+      foreign `?schoolId=` 404s. `tests/integration/household-isolation.test.ts` is the
+      natural home; `mail-sweep-unattributed.test.ts` already has a two-mailbox fixture
+      to copy.
+- [ ] B3's `userId`-threading bullet is ticked by the same change.
+
+### R2 — Unlinking a school 500s for any parent who has ever opened a conversation
+
+**Severity**: high. A permanently broken `DELETE /school-links/:id`, recoverable only
+by hand in the database.
+
+**Cause.** `backend/src/connection/connection.service.ts:283` deletes `mailMessage` by
+`householdConnectionId: connection.id`, then `mailConversation` by the same key,
+relying on the stamps being in sync — the comment above it notes the FK and the
+required order. But `MailService.fetchAndStoreConversationDetail`
+(`mail.service.ts:486`) upserts `mailMessage` rows with **no `householdConnectionId`
+at all**.
+
+**Description.** Every message the inbox-list payload did not carry — i.e. the body of
+every conversation the parent has actually opened — stays NULL-stamped while its
+conversation is stamped. `mailConversation.deleteMany` then violates
+`mail_message_conversationId_fkey`, the whole `$transaction` aborts, and the unlink
+500s. It is not transient: it fails identically on every retry.
+
+**DoD**
+- [ ] The detail fetch stamps `householdConnectionId` on the messages it writes
+      (`create` **and** `update` branches, so existing rows self-heal), **and** the
+      unlink deletes messages by `conversationId IN (…)` rather than by stamp — belt
+      and braces, because rows written before the fix are already NULL.
+- [ ] A test opens a conversation detail, then unlinks that school, and asserts 204
+      with the conversation and its messages gone.
+
+### R3 — `/dashboard` and `/feed` render other households' mail
+
+**Severity**: high (same gap as R1, read-only).
+
+**Cause.** `backend/src/dashboard/dashboard.service.ts:190` — `getFeed` scopes its
+`student` read with `householdStudentWhere` and its homework/behaviour reads through
+`historyScopeForStudents`, but `mailConversation.findMany` has **no `where` at all**.
+`backend/src/feed/feed.service.ts:78` has only an `archived` filter, and its
+`student.findMany` (`:60`) is unscoped too, unlike the dashboard's.
+
+**Description.** Other households' mail subjects and sender-name previews appear as
+feed items on `/home`, each with `schoolId: null` so the school chip filter leaves them
+visible.
+
+**DoD**
+- [ ] Both feed readers scope conversations by `householdMailScope` and students by the
+      visibility edge.
+- [ ] A test asserts household A's `/dashboard` and `/feed` contain no item sourced
+      from B's mailbox or B's children.
+
+### R4 — The freshness card reads every household in the database
+
+**Severity**: medium. Degrades a signal the parent is told to trust.
+
+**Cause.** `backend/src/sync/freshness.service.ts:142` — `computeContentFreshness`
+reads *every* active connection with no `userId` and reports the worst verdict, while
+`contentFreshnessForConnection` selects that connection's children by the **routing
+stamp** (`householdConnectionId: connection.id`) rather than the visibility edge.
+
+**Description.** This is the B1 shape surviving in one more place. Two parents at one
+school share a child; the child is stamped to whichever connection synced last, so the
+other connection resolves `studentGuids: []` → `no_content`, which
+`worstContentFreshness` ranks above `current` and degrades the *whole* dashboard's
+freshness card. Separately, any unrelated household linking a fresh school drags every
+household's card to `no_content`.
+
+**DoD**
+- [ ] The student predicate uses the visibility edge (`connectionStudentWhere`), and
+      the aggregation is per household (`userId` threaded in).
+- [ ] A test with two households asserts one household's empty connection does not
+      change the other's verdict.
+
+### R5 — `resolvedFor` can hand a caller another household's connection id and label
+
+**Severity**: medium.
+
+**Cause.** `backend/src/common/student-school-map.ts:53` — `resolvedFor` falls back to
+`links[0]` and prefers the stamp whenever it is *among the links*, with no filter to
+the caller's own connections; `byId` is then built from
+`householdConnection.findMany({ where: { id: { in: connectionIds } } })`, also
+unfiltered.
+
+**Description.** For a child both parents at one school list, parent B's `/dashboard`
+and `/feed` get `schoolId` = parent A's connection UUID and `schoolShortLabel` = A's
+parent-chosen `displayLabel`. That leaks A's id and label, and because
+`HomePageClient.semelOf` / `InboxPageClient.semelOf` resolve `schoolId` against
+`me.schools`, the lookup misses and the child's school chip can never match it.
+
+**DoD**
+- [ ] `buildStudentSchoolMap` takes the caller's connection ids and intersects before
+      choosing.
+- [ ] A test asserts the shared child's `schoolId` is always one of the caller's own
+      connections.
+
+### R6 — `/children` derives school fields from the stamp while `/home` uses the edge
+
+**Severity**: medium.
+
+**Cause.** `backend/src/children/children.service.ts:141` — `getChildren` derives
+`schoolId` / `schoolName` / `schoolShortLabel` / `semel` from
+`student.householdConnectionId` keyed against `resolveSchoolLabels(userId)` (the
+caller's connections only), while `DashboardService` and `FeedService` go through
+`buildStudentSchoolMap` and the visibility edge.
+
+**Description.** For a child stamped to the other parent's connection, `/children`
+emits a `schoolId` the caller does not own with `schoolName` / `schoolShortLabel` /
+`semel` all `null`. So the `SchoolBadge` disappears on `/children` while `/home` shows
+one, and `MorePageClient`'s unlink flow (`child.schoolId === link.id`,
+`MorePageClient.tsx:60`) fails to clear the selected child it is about to delete. It
+also contradicts `docs/api-contract.md:66`, which lists these as the per-child school
+fields.
+
+**DoD**
+- [ ] `/children` resolves school fields through the same helper the feed uses, so the
+      two endpoints cannot disagree.
+- [ ] A test asserts the same child's `schoolId` and `schoolShortLabel` match across
+      `/children`, `/dashboard` and `/feed`.
+- [ ] While in here: the label-set inconsistency already in **Minors**
+      (`resolveSchoolLabels` resolves over the whole connection set,
+      `student-school-map.ts` only over the connections present in the list) is the
+      same seam — fix both or neither.
+
+### R7 — The add-school form can submit a school the input is no longer showing
+
+**Severity**: medium. A parent gets a credentials error naming a school they did not
+choose.
+
+**Cause.** `frontend/src/app/more/schools/new/AddSchoolPageClient.tsx:106` renders
+`SchoolAutocomplete` without `onClear`. Its own prop doc says the prop exists because
+"editing the text after picking a school would leave the selection in place and submit
+a school the input is no longer showing"; the mismatch branch at
+`SchoolAutocomplete.tsx:174` calls `onClear?.()`, a no-op here. `SignInPageClient`
+passes it; this page does not.
+
+**Description.** Select a school, then edit the text: the input shows the typed text
+while `selectedSchool` still holds the old school, so `POST /school-links` goes out
+with the wrong `semel` and fails `INVALID_CREDENTIALS` against a school the parent
+never picked — the one error message in the table that will read as a lie.
+
+**DoD**
+- [ ] `AddSchoolPageClient` passes `onClear`.
+- [ ] `tests/e2e/school-links.spec.ts` covers select-then-edit: the submit button is
+      disabled, or the request carries the typed school.
+
+### R8 — A returning sign-in takes the adoption branch, so `displayName` never updates
+
+**Severity**: medium. A wrong name served indefinitely.
+
+**Cause.** `backend/src/auth/auth.service.ts:234` — the adoption branch triggers on
+`existingConnBeforeLogin?.userId` being set, which is true for **every** returning
+sign-in, not just a cross-school one. It returns before the `appUser.upsert` at `:262`,
+whose `update: { username, displayName }` is the only place `AppUser.displayName` is
+refreshed from `credential.displayName`.
+
+**Description.** After the very first login, a parent's display name is frozen.
+`GET /auth/me` serves the original one forever, including after the school corrects it.
+
+**DoD**
+- [ ] The branch is gated on `existingConnBeforeLogin.userId !== (the AppUser for this
+      `mashovUserId`)`, or the upsert moves before the early return.
+- [ ] `auth.service.spec.ts` asserts a second sign-in by the same single-school parent
+      refreshes `displayName`, and that a genuine cross-school adoption still does not
+      create a second `AppUser`.
+
+### R9 — `PUT /school-links/:id` 500s on the unique index this branch added
+
+**Severity**: medium.
+
+**Cause.** `backend/src/connection/connection.service.ts:167` — `updateConnection`
+writes `username: newUsername` with no handling for
+`@@unique([schoolCode, username])`, which this branch introduced.
+
+**Description.** A `username` that already exists at that school — the other parent's
+account, or an orphan row left by an earlier unlink — raises Prisma `P2002` out of an
+unguarded `update`, so the request 500s instead of returning the
+`409 / CONNECTION_ALREADY_LINKED` envelope `.claude/rules/api.md` requires. Before the
+index it silently succeeded.
+
+**DoD**
+- [ ] `P2002` on that index maps to `409 CONNECTION_ALREADY_LINKED`.
+- [ ] A test asserts the 409 envelope rather than a 500.
+
+### R10 — The link rate limit answers 409 where the rules say 429
+
+**Severity**: low.
+
+**Cause.** `backend/src/school-links/school-links.service.ts:439` — `checkRateLimit`
+throws `ConflictException` for `RATE_LIMITED`. `.claude/rules/api.md` specifies 429,
+and `AuthService.checkRateLimit` already uses `statusCode: 429`.
+
+**Description.** The frontend maps the `code`, not the status, so the Hebrew message is
+right. But any client keying off the status — or a proxy retry policy — sees a conflict
+rather than a throttle.
+
+**DoD**
+- [ ] 429, with the `RATE_LIMITED` code unchanged.
+- [ ] A test pins the status.
+
+### R11 — A targeted refresh of an inactive connection reports a clean sync and no run
+
+**Severity**: low, but it is a silent success that makes a real failure undiagnosable.
+
+**Cause.** `backend/src/sync/tasks/achvas.task.ts:75` (identically
+`notifications.task.ts:70`, `user-details.task.ts:59`, `mail-counts.task.ts`):
+`useSharedSession` is `!context.connectionId && <no connections>`, so it is `false`
+when `context.connectionId` is set — but `connectionList` / `targets` is then `[]` if
+that connection is inactive or has `userId: null`.
+
+**Description.** The loop body never runs: no `syncRun` is opened, nothing is fetched,
+and the task returns `status: 'success'` with every count zero. A targeted refresh of a
+just-deactivated connection therefore reports a clean sync and leaves no trace in
+`sync_run`. The pre-branch code fell through to the shared env session and opened a run
+either way.
+
+**DoD**
+- [ ] An empty target list on a connection-scoped run is reported, not silently
+      successful — a `skipped` status or a `sync_run` recording why.
+- [ ] A test covers a targeted refresh of a deactivated connection.
+
+### R12 — `POST /sync/refresh` returns only the first school's envelope
+
+**Severity**: medium. A failed school reported to the parent as a clean sync.
+
+**Cause.** `backend/src/sync/sync.controller.ts:126` runs one `refreshAll` per
+connection, then returns `{ ...results[0], schools }`. Every legacy field — `status`,
+`tasks`, `tasksFailed`, the counts — describes the **first** connection only.
+
+**Description.** For a two-school household where A succeeds and B fails outright, the
+endpoint answers `status: 'success'` with A's task list, and `/more`'s refresh button
+reports a clean sync. `GET /sync/status` already aggregates correctly with `PHASE_RANK`.
+
+Note the interaction with the **Minors** entry about a connection-scoped refresh
+fanning out over every child: that one makes a *successful* school report `partial`,
+this one makes a *failed* school report `success`. Fixing R12 alone would make the
+first more visible, so do them together.
+
+**DoD**
+- [ ] `status` is `'partial'` if any result is, and the counts are summed.
+- [ ] `sync.controller.spec.ts` covers one-of-two-failing.
+
+### Two sub-findings too small for an item of their own
+
+- `frontend/src/components/.../MorePageClient.tsx:42` —
+  `isLastSchool = (pendingUnlink && schoolCount <= 1) || schoolCount <= 1` reduces to
+  `schoolCount <= 1`, and since the per-row modal only opens when
+  `schoolLinks.length > 1` the `pendingUnlink` term is dead.
+- `MailService.updateCachedNewCount()` called with **no argument** iterates every
+  active connection in the database, writing to other households' rows on each of the
+  caller's mail actions. The values it writes are per-connection and correct, so this
+  is write amplification and a cross-tenant write, not wrong data. Natural to fix
+  inside R1.
 
 ---
 
