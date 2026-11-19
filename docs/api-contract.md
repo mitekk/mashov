@@ -51,7 +51,7 @@
 | POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
 | GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, connectedSchool: ConnectedSchool \| null, schools: MeSchool[] }` | 200, 401 | planned |
-| PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404 | **deprecated** |
+| PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404, 409 | **deprecated** |
 | DELETE | `/api/v1/connection` | Yes | — | `{ ok: true }` | 200, 401, 404 | **deprecated** |
 
 ### School identity on the data
@@ -102,7 +102,7 @@ the only things they can mean since both predate a household having more than on
 |---|---|---|---|---|---|
 | GET | `/api/v1/school-links` | Yes | — | `{ data: SchoolLink[], pagination }` | 200, 401 |
 | POST | `/api/v1/school-links` | Yes | `{ semel, username, password }` | `SchoolLink` | 201, 400, 401, 409, 422, 429, 502 |
-| PUT | `/api/v1/school-links/:id` | Yes | `{ username?, password? }` | `SchoolLink` | 200, 400, 401, 404, 502 |
+| PUT | `/api/v1/school-links/:id` | Yes | `{ username?, password? }` | `SchoolLink` | 200, 400, 401, 404, 409, 502 |
 | DELETE | `/api/v1/school-links/:id` | Yes | — | — | 204, 401, 404 |
 | DELETE | `/api/v1/school-links` | Yes | — | — | 204, 401 |
 
