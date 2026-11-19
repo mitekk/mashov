@@ -539,10 +539,20 @@ export class MailService {
             rawPayload: msg as unknown as Prisma.InputJsonValue,
           },
           update: {
-            // Self-heal: rows written before this fix are NULL-stamped, and a
-            // re-fetch is the only thing that reaches them. Written only when
-            // the conversation itself is stamped, so an unstamped conversation
-            // cannot un-stamp a message a sync walk already attributed.
+            // Written only when the conversation itself is stamped, so an
+            // unstamped conversation cannot un-stamp a message a sync walk
+            // already attributed -- the same rule as the walk's own re-stamp in
+            // sync/tasks/mail-inbox.task.ts.
+            //
+            // This is the `update` branch's whole job: a consistency rule, NOT
+            // the thing that heals rows written before the fix. It barely
+            // reaches them. getConversationDetail hydrates only when no stored
+            // message has a renderable body, and every row the old detail fetch
+            // wrote has one -- that is what the fetch is for. So a legacy
+            // NULL-stamped row is re-fetched here only through the
+            // attachment-download fallbacks. What actually reaches those rows is
+            // the sync walk, for conversations upstream still returns, and the
+            // unlink's own conversation-keyed delete predicate.
             ...(stamp ? { householdConnectionId: stamp } : {}),
             senderId: msg.senderId ?? '',
             senderName: msg.senderName ?? '',

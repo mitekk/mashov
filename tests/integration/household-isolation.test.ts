@@ -556,6 +556,8 @@ describe('Two mailboxes, two households', () => {
   const CONV_B = 'hhm-conv-b';
   const CONV_NULL = 'hhm-conv-null';
   const MAIL_CONVERSATIONS = [CONV_A, CONV_B, CONV_NULL];
+  const MSG_B = 'hhm-msg-b';
+  const MSG_NULL = 'hhm-msg-null';
 
   let prisma: PrismaClient;
   let upstream: {
@@ -666,6 +668,43 @@ describe('Two mailboxes, two households', () => {
         // Ownership unknown, which this branch admits for everyone rather than
         // hiding from both parents.
         conversation(CONV_NULL, null),
+      ],
+    });
+
+    // One message under each of the OTHER two conversations. The unlink's
+    // message predicate is the one delete on this branch that was deliberately
+    // WIDENED, so the fixture has to hold rows it must not reach: B's, and an
+    // unattributed one that belongs to nobody. Without these, a predicate that
+    // widened all the way to every conversation in the database would still
+    // pass every case here.
+    await prisma.mailMessage.createMany({
+      data: [
+        {
+          messageId: MSG_B,
+          conversationId: CONV_B,
+          householdConnectionId: MAIL_CONN_B,
+          senderId: 'sender-b',
+          senderName: 'מורה',
+          subject: `נושא ${CONV_B}`,
+          bodyHtmlSanitized: '<p>גוף ההודעה</p>',
+          sendTime: new Date('2026-11-10T08:00:00Z'),
+          isNew: true,
+          recipients: [],
+          files: [],
+        },
+        {
+          messageId: MSG_NULL,
+          conversationId: CONV_NULL,
+          householdConnectionId: null,
+          senderId: 'sender-null',
+          senderName: 'מורה',
+          subject: `נושא ${CONV_NULL}`,
+          bodyHtmlSanitized: '<p>גוף ההודעה</p>',
+          sendTime: new Date('2026-11-10T08:00:00Z'),
+          isNew: true,
+          recipients: [],
+          files: [],
+        },
       ],
     });
   }
@@ -818,6 +857,28 @@ describe('Two mailboxes, two households', () => {
 
     const MSG_A = 'hhm-msg-a';
 
+    /**
+     * The blast radius. `conversationId IN (…)` is wider than the stamp
+     * predicate it replaced, so what has to be asserted is not only that A's
+     * rows go but that nothing else does: B's conversation and its message,
+     * and the unattributed conversation and its message, which belong to no
+     * connection and so cannot be deleted by either arm.
+     */
+    async function expectOthersUntouched(): Promise<void> {
+      await expect(
+        prisma.mailConversation.count({ where: { conversationId: CONV_B } }),
+      ).resolves.toBe(1);
+      await expect(
+        prisma.mailMessage.count({ where: { messageId: MSG_B } }),
+      ).resolves.toBe(1);
+      await expect(
+        prisma.mailConversation.count({ where: { conversationId: CONV_NULL } }),
+      ).resolves.toBe(1);
+      await expect(
+        prisma.mailMessage.count({ where: { messageId: MSG_NULL } }),
+      ).resolves.toBe(1);
+    }
+
     it('unlinks after the detail fetch has written a message', async () => {
       const mail = makeMailService();
       upstream.getForTarget.mockResolvedValue({
@@ -861,6 +922,7 @@ describe('Two mailboxes, two households', () => {
       await expect(
         prisma.mailMessage.count({ where: { conversationId: CONV_A } }),
       ).resolves.toBe(0);
+      await expectOthersUntouched();
     });
 
     it('unlinks when a message under its conversation is NULL-stamped', async () => {
@@ -893,6 +955,7 @@ describe('Two mailboxes, two households', () => {
       await expect(
         prisma.mailMessage.count({ where: { messageId: MSG_A } }),
       ).resolves.toBe(0);
+      await expectOthersUntouched();
     });
   });
 });

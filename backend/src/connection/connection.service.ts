@@ -299,11 +299,22 @@ export class ConnectionService {
       // is a constraint violation.
       //
       // The `OR` is deliberate. The `conversationId` arm is the correctness
-      // fix. The stamp arm keeps a message stamped to this connection from
-      // surviving if its conversation ever belongs elsewhere -- harmless on its
-      // own, because the `connection` relation is `onDelete: SetNull`, but free
-      // to keep. An empty `in: []` matches nothing and the stamp arm still
-      // applies.
+      // fix. The stamp arm catches a message stamped to this connection whose
+      // conversation belongs elsewhere -- it DELETES that message rather than
+      // un-stamping it, which is more than the schema's own
+      // `onDelete: SetNull` would do, so it is not free: it is the same
+      // trade-off the `conversationId` arm already makes.
+      //
+      // `MailConversation.conversationId` is globally `@unique`, so a
+      // conversation two mailboxes hold is ONE row stamped to whichever
+      // connection walked it last. Unlinking that connection deletes the row
+      // (the predicate below, unchanged on this branch) and the FK then
+      // requires its messages to go too, whoever else could still see them.
+      // Before this change that case did not survive -- it was the 500. A
+      // narrower message predicate cannot fix it; only a conversation key that
+      // is per-household could, which is a schema change.
+      //
+      // An empty `in: []` matches nothing and the stamp arm still applies.
       this.prisma.mailMessage.deleteMany({
         where: {
           OR: [
