@@ -106,6 +106,13 @@ the same account being claimed.
 
 ## Known defect: the merge half is missing, and the flow it blocks is legitimate
 
+> **Closed.** Implemented and superseded by
+> [ADR-0032](0032-household-merge-trust-model.md), which also corrects the
+> reversibility claim above: unlink **deletes** the connection row rather than
+> setting `userId = null`, and the method it calls `deleteOneConnection` is
+> `deleteConnection`. The section below is kept as the record of what was
+> missing and why it mattered.
+
 The transaction this ADR's reversibility story implies — re-parent the connection, set
 `mergedIntoUserId`, revoke the orphan's `AppSession`s *and* their Redis mirrors,
 re-point `DigestRecipient`, copy non-conflicting `UserItemState` — **is not
