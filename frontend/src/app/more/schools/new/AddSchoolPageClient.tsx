@@ -31,6 +31,19 @@ export default function AddSchoolPageClient() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /**
+   * The school another household already holds, once the backend has offered
+   * to move it here -- `null` until then.
+   *
+   * A merge revokes the other sign-in's sessions and moves its state, so it
+   * never rides along on the first submit. The parent sees what it would do
+   * and says yes, and the confirm re-sends the credentials the form still
+   * holds with `confirmMerge: true`.
+   */
+  const [pendingMerge, setPendingMerge] = useState<{
+    schoolName: string;
+    childrenCount: number;
+  } | null>(null);
 
   const linkMutation = useMutation({
     mutationFn: createSchoolLink,
@@ -44,7 +57,22 @@ export default function AddSchoolPageClient() {
     },
     onError: (err) => {
       if (err instanceof ApiError) {
-        const code = (err.body as { error?: { code?: string } })?.error?.code;
+        const body = err.body as {
+          error?: {
+            code?: string;
+            merge?: { schoolName?: string; childrenCount?: number };
+          };
+        };
+        const code = body?.error?.code;
+        // Not a failure: there is something the parent can do, so the screen
+        // asks rather than reports.
+        if (code === 'MERGE_AVAILABLE') {
+          setPendingMerge({
+            schoolName: body.error?.merge?.schoolName ?? selectedSchool?.name ?? '',
+            childrenCount: body.error?.merge?.childrenCount ?? 0,
+          });
+          return;
+        }
         setErrorMsg(schoolLinkErrorMessage(code));
         return;
       }
@@ -55,6 +83,7 @@ export default function AddSchoolPageClient() {
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setErrorMsg(null);
+    setPendingMerge(null);
 
     if (!selectedSchool) {
       setErrorMsg('יש לבחור בית ספר');
@@ -156,6 +185,53 @@ export default function AddSchoolPageClient() {
               className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
             />
           </div>
+
+          {pendingMerge && (
+            <div
+              data-testid="add-school-merge-confirm"
+              role="alert"
+              className="space-y-3 rounded-xl bg-primary/10 px-3 py-3 text-sm text-foreground"
+            >
+              <p className="font-semibold">
+                {pendingMerge.schoolName} מחובר לחשבון נפרד באפליקציה
+              </p>
+              <p className="text-muted-foreground">
+                אם תאחדו אותם, הילדים משני בתי הספר יופיעו כאן יחד
+                {pendingMerge.childrenCount > 0 &&
+                  ` (${pendingMerge.childrenCount} ילדים בבית הספר הזה)`}
+                , וההתחברות הנפרדת לבית הספר הזה תפסיק לעבוד. אפשר לנתק את בית
+                הספר בכל שלב.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  data-testid="add-school-merge-confirm-btn"
+                  disabled={linkMutation.isPending}
+                  onClick={() => {
+                    if (!selectedSchool) return;
+                    setPendingMerge(null);
+                    linkMutation.mutate({
+                      semel: selectedSchool.semel,
+                      username: username.trim(),
+                      password,
+                      confirmMerge: true,
+                    });
+                  }}
+                  className="flex-1 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60"
+                >
+                  {linkMutation.isPending ? 'מאחד...' : 'איחוד בתי הספר'}
+                </button>
+                <button
+                  type="button"
+                  data-testid="add-school-merge-cancel-btn"
+                  onClick={() => setPendingMerge(null)}
+                  className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-foreground hover:bg-accent transition-colors"
+                >
+                  ביטול
+                </button>
+              </div>
+            </div>
+          )}
 
           {errorMsg && (
             <p

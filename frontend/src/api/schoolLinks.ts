@@ -10,6 +10,14 @@ export interface CreateSchoolLinkRequest {
   semel: number;
   username: string;
   password: string;
+  /**
+   * The parent's explicit yes to absorbing another household's school.
+   *
+   * Omitted on the first submit: the backend then answers `409
+   * MERGE_AVAILABLE` and the form shows what the merge would do. The confirm
+   * re-sends the same credentials with this set.
+   */
+  confirmMerge?: boolean;
 }
 
 export function createSchoolLink(body: CreateSchoolLinkRequest): Promise<SchoolLink> {

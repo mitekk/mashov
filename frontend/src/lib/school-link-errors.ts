@@ -15,6 +15,10 @@ const MESSAGES: Record<string, string> = {
   NO_ACTIVE_CHILDREN: 'כל הילדים בחשבון הזה אינם פעילים בבית הספר',
   LIMIT_REACHED: 'ניתן לחבר עד 4 בתי ספר',
   RATE_LIMITED: 'יותר מדי ניסיונות. נסו שוב בעוד רבע שעה',
+  // Reached only if the confirm step below is bypassed -- the page handles
+  // this code with a confirmation, not an error. The wording names the action
+  // rather than the conflict, because there is something the parent can do.
+  MERGE_AVAILABLE: 'בית הספר הזה מחובר לחשבון נפרד באפליקציה. אשרו כדי לאחד אותם',
 };
 
 export const SCHOOL_LINK_FALLBACK_MESSAGE = 'אירעה שגיאה, נסו שוב מאוחר יותר';

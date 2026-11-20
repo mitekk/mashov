@@ -500,4 +500,139 @@ test.describe('School links — adding', () => {
     // account.
     await expect(page.getByTestId('syncing-heading')).toHaveText('מחברים את בית הספר…');
   });
+  // B2's UI contract. The DoD's literal "sign in to B first, then add B from
+  // A" is not reachable in this harness: `auth.setup.ts` writes a bypass
+  // cookie and every spec intercepts `**/api/v1/**`, so nothing here reaches a
+  // real backend. What the e2e owns is the two-step shape -- offer, confirm,
+  // resubmit with the flag -- and the real end-to-end is proved against
+  // Postgres and Redis in tests/integration/household-merge.test.ts.
+  test('a merge is offered, confirmed, and then resubmitted with the flag', async ({
+    page,
+  }) => {
+    const bodies: Array<Record<string, unknown>> = [];
+
+    await seed(page, {
+      schools: [SCHOOL_A],
+      links: [link(SCHOOL_A)],
+      onCreate: async (route) => {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        bodies.push(body);
+        if (body.confirmMerge === true) {
+          await route.fulfill({ status: 201, json: link(SCHOOL_B, { lastSyncAt: null }) });
+          return;
+        }
+        await route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: 'MERGE_AVAILABLE',
+              message: 'merge available',
+              details: [],
+              merge: { schoolName: SCHOOL_B.schoolName, childrenCount: 2 },
+            },
+          },
+        });
+      },
+    });
+    await page.route('**/api/v1/auth/schools', (route) =>
+      route.fulfill({
+        json: [{ semel: SCHOOL_B.semel, name: SCHOOL_B.schoolName, years: [2026] }],
+      }),
+    );
+    await page.route('**/api/v1/sync/status*', (route) =>
+      route.fulfill({
+        json: {
+          done: false,
+          sourcesCompleted: 1,
+          sourcesTotal: 17,
+          run: {
+            status: 'running',
+            phase: 'running',
+            refreshId: 'r1',
+            startedAt: new Date().toISOString(),
+            endedAt: null,
+            tasksTotal: 17,
+            tasksSettled: 1,
+            tasksFailed: 0,
+            currentTask: 'homework',
+            tasks: [],
+            schools: [],
+          },
+        },
+      }),
+    );
+    await page.route('**/api/v1/sync/refresh*', (route) =>
+      route.fulfill({ json: { status: 'success', tasks: [] } }),
+    );
+
+    await page.goto('/more/schools/new');
+    await page.getByTestId('add-school-selector').click();
+    await page.getByTestId(`school-option-${SCHOOL_B.semel}`).click();
+    await page.getByTestId('add-school-username').fill('parent-b');
+    await page.getByTestId('add-school-password').fill('pw');
+    await page.getByTestId('add-school-submit-btn').click();
+
+    // Not an error. A merge is something the parent can do, so the screen
+    // names the action and the consequences rather than reporting a conflict.
+    const confirm = page.getByTestId('add-school-merge-confirm');
+    await expect(confirm).toBeVisible();
+    await expect(confirm).toContainText(SCHOOL_B.schoolName);
+    await expect(page.getByTestId('add-school-error')).toHaveCount(0);
+
+    await page.getByTestId('add-school-merge-confirm-btn').click();
+
+    await page.waitForURL(`**/auth/syncing?schoolId=${SCHOOL_B.id}`);
+    // Resubmitted with the credentials the form still held, plus the flag.
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].confirmMerge).toBeUndefined();
+    expect(bodies[1]).toMatchObject({
+      semel: SCHOOL_B.semel,
+      username: 'parent-b',
+      password: 'pw',
+      confirmMerge: true,
+    });
+  });
+
+  test('a parent can back out of a merge without it happening', async ({ page }) => {
+    const bodies: Array<Record<string, unknown>> = [];
+
+    await seed(page, {
+      schools: [SCHOOL_A],
+      links: [link(SCHOOL_A)],
+      onCreate: async (route) => {
+        bodies.push(route.request().postDataJSON() as Record<string, unknown>);
+        await route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: 'MERGE_AVAILABLE',
+              message: 'merge available',
+              details: [],
+              merge: { schoolName: SCHOOL_B.schoolName, childrenCount: 1 },
+            },
+          },
+        });
+      },
+    });
+    await page.route('**/api/v1/auth/schools', (route) =>
+      route.fulfill({
+        json: [{ semel: SCHOOL_B.semel, name: SCHOOL_B.schoolName, years: [2026] }],
+      }),
+    );
+
+    await page.goto('/more/schools/new');
+    await page.getByTestId('add-school-selector').click();
+    await page.getByTestId(`school-option-${SCHOOL_B.semel}`).click();
+    await page.getByTestId('add-school-username').fill('parent-b');
+    await page.getByTestId('add-school-password').fill('pw');
+    await page.getByTestId('add-school-submit-btn').click();
+
+    await expect(page.getByTestId('add-school-merge-confirm')).toBeVisible();
+    await page.getByTestId('add-school-merge-cancel-btn').click();
+
+    await expect(page.getByTestId('add-school-merge-confirm')).toHaveCount(0);
+    // One request, and no second one carrying the flag.
+    expect(bodies).toHaveLength(1);
+    expect(page.url()).toContain('/more/schools/new');
+  });
 });
