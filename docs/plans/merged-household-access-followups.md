@@ -52,7 +52,7 @@ stays true.
 | 7 | **R8**, **R9**, **R10**, **R17** | **done** | Four independent small correctness fixes in the auth/link path — each a branch or a status that meant something other than what it said. R17 turned out not to be a two-line reorder: the orphan lookup it would have moved is a cross-household existence oracle, so `assertLinkable` split into a free pre-limit half and a rate-limited one. R10's recorded precedent was wrong and the fix follows `auth.controller`'s envelope rather than the service's bare `Error`. |
 | 8 | **B2**, **B4** | **done** | The two pre-existing bugs, and the only items on the branch that predated it. They shared nothing — different services, different screens, no common seam — so B4 went first and was green and committed before B2 spent the session. B4 turned out worse than "a stale number": the school label and the contact details came from two different queries, so a two-school parent was shown school A's phone number captioned with school B's name. B2 was the whole session: `findForeignOwner` now returns a verdict instead of throwing, the decision moves after the password is proven, and the merge runs in one transaction with the Redis session mirror deleted on both sides of it. See [ADR-0032](../adr/0032-household-merge-trust-model.md). |
 | 8.5 | **G2** | **done** | A coverage gap, not a behaviour one: the school preference `3afde47` added was proved against the unit spec's in-memory Prisma and not against real Postgres. Closed by `tests/integration/connection-scope-school-preference.test.ts` — its own two-school seed and cleanup, as anticipated. Watched red first by removing the preference: the caller's resolve landed on their newer school-**B** connection for a child stamped at school **A**, which is their own password spent on an account that holds nothing about that child. |
-| 9 | **T13**, then **T14** | **T14 all but the PRD**; **T13** open | T13 needs real second-school Mashov credentials and a full cron cycle, so it cannot run unattended. T14's deletions, field removals and `.env.example` entries all landed; only the PRD edit is left, and it needs the user-invoked `/prd` skill, since `.claude/rules/prd.md` forbids editing `PRD-current.md` by hand. `.env.example` is denied by the session's permission settings — the same block the implementing session hit, rather than the `DB_PORT` fix this row used to claim had lifted it — so the parent appended those two entries themselves. |
+| 9 | **T13**, then **T14** | **T14 done**; **T13** open | T13 needs real second-school Mashov credentials and a full cron cycle, so it cannot run unattended. T14 is closed: the deletions, the field removals, the `.env.example` entries and **PRD-v3** all landed. Two of its bullets needed the parent rather than the code — `.env.example` is denied by the session's permission settings (the same block the implementing session hit, not the `DB_PORT` fix this row used to claim had lifted it), so they appended those two entries from the drafted text, and the PRD went through the user-invoked `/prd` skill as `.claude/rules/prd.md` requires. |
 
 Batches 1 through 8 are done: no open item puts one household's data on another's
 *screen*, none puts a household's *request* in another's Mashov account, no reader left
@@ -60,12 +60,11 @@ answers from the whole table, no frontend item is open, the refresh envelope no 
 misreports what happened, no status or branch in the auth/link path answers something
 other than what it says, and no screen captions one school's contact details with
 another's name. **No *bug* is open.** What remains is **T13** (needing real second-school
-credentials and a full cron cycle), **T14**'s PRD bullet, and the minors. **8.5** (**G2**) is done, so the school
+credentials and a full cron cycle) and the minors. **8.5** (**G2**) is done, so the school
 preference is proved against real Postgres rather than only against the unit spec's
-fake. **9** is all but done: **T14** is closed except its
-PRD bullet, which needs the user-invoked `/prd` skill, and **T13** cannot run
-unattended at all — it needs real second-school Mashov credentials and a full cron
-cycle.
+fake. **9**'s **T14** is done, including **PRD-v3**. Only
+**T13** is left, and it cannot run unattended at all — it needs real second-school
+Mashov credentials and a full cron cycle.
 
 ---
 
@@ -1285,12 +1284,13 @@ Step 14. The ADRs (0029, 0030) and `docs/api-contract.md` are **done**. What rem
 - [x] Delete `backend/src/connection/connection.controller.ts` and
       `frontend/src/api/connection.ts`, whose `PUT`/`DELETE /connection` are
       documented aliases over the same service methods as `/school-links`.
-- [ ] Update the PRD's Phase 2 multi-tenancy claim and open question 2 **via the
+- [x] Update the PRD's Phase 2 multi-tenancy claim and open question 2 **via the
       `/prd` skill** — `.claude/rules/prd.md` forbids editing `PRD-current.md` by
-      hand. Question 2's answer is now partly wrong: it says "each user creates their
-      own connection", which **B1** breaks. **Still open**: `/prd` is a user-invoked
-      skill, and the rule forbids the by-hand edit that would close this box without
-      it.
+      hand. Question 2's answer was more than "partly wrong": it said "not a Phase 2
+      supported scenario; each user creates their own connection; same `mashovUserId`
+      would collide on upsert — return 409", and the collision it predicted **is**
+      **B1**. Landed as **PRD-v3** (`docs/prd/PRD-v3.md`, `PRD-current.md`, the
+      version table, `prd_version: v3`).
 - [x] Add `MAIL_SWEEP_ENABLED` and `MASHOV_ENABLE_SCHOOL_LINK_ADOPTION` to
       `.env.example`. Both are in `README.md` and `docker-compose.yml`. Both default
       to on, so nothing breaks without them. `.env.example` is denied by the session's
@@ -1303,10 +1303,29 @@ Step 14. The ADRs (0029, 0030) and `docs/api-contract.md` are **done**. What rem
       `SchoolLinksService.createLink` behind the adoption flag too, so `false` now
       withdraws the merge offer as well as the sign-in adoption.
 
-**Mostly done** (batch 9). The two deletions, the two field removals and the two
-`.env.example` entries landed. Only the `/prd` bullet is left, and it is blocked on
-something outside the code rather than on work: `/prd` is user-invoked and
-`.claude/rules/prd.md` forbids the by-hand edit that would close the box without it.
+**Done** (batch 9). The two deletions, the two field removals, the two `.env.example`
+entries and the PRD snapshot all landed.
+
+The PRD bullet named two stale claims; reading v2 end to end found **fourteen**, and
+leaving the other twelve would have left the snapshot internally contradictory — v2
+listed "multiple school connections per user" under *Out of Scope* while the branch
+shipped a cap of four. So v3 corrects all of them and adds **FR-31 … FR-38** for Phase
+2.1 rather than renumbering Phase 2, so FR-1 … FR-30 keep their meanings and the
+existing cross-references stay valid. The twelve beyond the brief: the Overview's
+one-parent-one-school framing; the singular school in Users & Roles; FR-16's
+per-account disconnect that signed the parent out (it does not, deliberately); FR-20's
+"Phase 2 does not support this in the UI"; FR-26 and the `me` row still specifying
+`connectedSchool`; the two `/connection` rows in the endpoint table; the schema section
+missing `student_connection`, `mergedIntoUserId` and the per-connection scoping columns;
+the Settings flow's "Disconnect account"; the two Out-of-Scope bullets; and **Open
+Question 1**, which asked about an endpoint that no longer exists and whose answer is
+forced by a `Restrict` FK rather than chosen. DoD 6 was kept and a Phase 2.1 list
+added: DoD 6 is the *easy* isolation case, and nine routes passed it while having no
+ownership guard at all.
+
+One thing deliberately left alone: FR-7's "5 failed attempts per IP per 15 min". R17
+added a *separate* per-user limit on `/school-links`; the login limit is unchanged, so
+the PRD was already right there.
 
 Three findings while removing them:
 
