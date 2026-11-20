@@ -65,6 +65,10 @@ const mockPrisma = {
   digestReportedItem: { deleteMany: jest.fn() },
   digestDelivery: { deleteMany: jest.fn() },
   subjectEnrollment: { deleteMany: jest.fn() },
+  // The merge pointer an earlier household merge wrote. Unlink has to clear
+  // it, or ADR-0029's claim that unlinking lets a later B sign-in re-form its
+  // own household stays false.
+  appUser: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
   $transaction: jest.fn().mockResolvedValue([]),
 };
 
@@ -659,6 +663,68 @@ describe('ConnectionService', () => {
       const touchedModels = deletedWheres().map((entry) => entry.model);
       expect(touchedModels).not.toContain('appUser');
       expect(touchedModels).not.toContain('appSession');
+    });
+
+    // B2's reversibility half. A merge sets `mergedIntoUserId` on the orphan
+    // AppUser; unlinking the school that was merged in has to release it, or
+    // `resolveMergedOwner` keeps dragging that account's next sign-in into
+    // this household forever.
+    it('clears the merge pointer for the school being unlinked', async () => {
+      mockPrisma.householdConnection.findMany.mockResolvedValue([
+        { ...CONN_B, upstreamUserId: 'mashov-b' },
+      ]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany.mockResolvedValue([]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+      mockPrisma.appUser.updateMany.mockClear();
+
+      await service.deleteConnection('user-1', 'conn-b');
+
+      // Scoped to the orphan this connection belongs to, not to every
+      // pointer at this household: the orphan's `AppUser.mashovUserId` is the
+      // merged connection's `upstreamUserId`.
+      expect(mockPrisma.appUser.updateMany).toHaveBeenCalledWith({
+        where: { mergedIntoUserId: 'user-1', mashovUserId: { in: ['mashov-b'] } },
+        data: { mergedIntoUserId: null },
+      });
+    });
+
+    it('does not release another school\'s orphan when unlinking this one', async () => {
+      // If household A holds schools A and B with B merged in, unlinking A
+      // must not free B's orphan -- B's connection is still sitting in A, so
+      // a B sign-in would correctly adopt into A and the released pointer
+      // would be a lie.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([
+        { ...CONN_A, upstreamUserId: 'mashov-a' },
+      ]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany.mockResolvedValue([]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+      mockPrisma.appUser.updateMany.mockClear();
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      const [call] = mockPrisma.appUser.updateMany.mock.calls as Array<[
+        { where: { mashovUserId: { in: string[] } } },
+      ]>;
+      expect(call[0].where.mashovUserId.in).toEqual(['mashov-a']);
+      expect(call[0].where.mashovUserId.in).not.toContain('mashov-b');
+    });
+
+    it('clears nothing for a connection with no upstream user id', async () => {
+      // A null `upstreamUserId` identifies no orphan, so there is no pointer
+      // it could safely clear.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([
+        { ...CONN_A, upstreamUserId: null },
+      ]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany.mockResolvedValue([]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+      mockPrisma.appUser.updateMany.mockClear();
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      expect(mockPrisma.appUser.updateMany).not.toHaveBeenCalled();
     });
 
     it('never selects NULL-stamped students, even on the last school', async () => {

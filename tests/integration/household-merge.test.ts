@@ -380,6 +380,34 @@ describe('Household merge — adding a school another household already owns', (
     await prisma.householdConnection.deleteMany({ where: { id: 'hm-conn-b2' } });
   });
 
+  // ADR-0029's reversibility claim, which was false until B2: unlinking the
+  // merged-in school must release the orphan so a later B sign-in re-forms its
+  // own household rather than being dragged back here forever.
+  it('releases the orphan when the merged-in school is unlinked', async () => {
+    await seed();
+    await addSchoolB(true);
+    expect((await prisma.appUser.findUnique({ where: { id: USER_B } }))?.mergedIntoUserId).toBe(
+      USER_A,
+    );
+
+    await schoolLinks.deleteLink(USER_A, CONN_B);
+
+    const orphan = await prisma.appUser.findUnique({ where: { id: USER_B } });
+    expect(orphan?.mergedIntoUserId).toBeNull();
+  });
+
+  it("leaves the orphan's pointer alone when the OTHER school is unlinked", async () => {
+    await seed();
+    await addSchoolB(true);
+
+    await schoolLinks.deleteLink(USER_A, CONN_A);
+
+    // B's connection is still sitting in household A, so a B sign-in would
+    // correctly adopt into A — releasing the pointer here would be a lie.
+    const orphan = await prisma.appUser.findUnique({ where: { id: USER_B } });
+    expect(orphan?.mergedIntoUserId).toBe(USER_A);
+  });
+
   it('answers INVALID_CREDENTIALS with no hint that the account exists elsewhere', async () => {
     await seed();
     const { UnauthorizedException } = await import(

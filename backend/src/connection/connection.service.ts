@@ -269,6 +269,32 @@ export class ConnectionService {
       operations.push(...(await this.prepareConnectionDeletion(connection, deletingIds)));
     }
 
+    // B2's reversibility half. A household merge sets `mergedIntoUserId` on
+    // the orphan AppUser; unlinking the school that was merged in has to
+    // release it, or `AuthService.resolveMergedOwner` keeps dragging that
+    // account's next sign-in into this household and ADR-0029's claim that
+    // unlink lets B re-form its own household stays false.
+    //
+    // Scoped precisely, not to every pointer at this household: the orphan's
+    // `AppUser.mashovUserId` equals the merged connection's
+    // `upstreamUserId`. Clearing by `mergedIntoUserId` alone would, for a
+    // household holding schools A and B with B merged in, release B's orphan
+    // when the parent unlinked A -- while B's connection was still sitting
+    // here. Read before the transaction, because the transaction deletes the
+    // rows these ids come from. A connection with a null `upstreamUserId`
+    // identifies no orphan and clears nothing.
+    const mergedUpstreamIds = connections
+      .map((connection) => connection.upstreamUserId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    if (mergedUpstreamIds.length > 0) {
+      operations.push(
+        this.prisma.appUser.updateMany({
+          where: { mergedIntoUserId: userId, mashovUserId: { in: mergedUpstreamIds } },
+          data: { mergedIntoUserId: null },
+        }),
+      );
+    }
+
     await this.prisma.$transaction(operations);
 
     // The upstream cookies for these connections live in process memory and
