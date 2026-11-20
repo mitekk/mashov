@@ -222,6 +222,18 @@ frontend confirm step and [ADR-0032](../adr/0032-household-merge-trust-model.md)
       against real Redis: the token resolves before the merge and `validateSession`
       answers `null` after it, with `session:<token>` gone. A mocked Redis cannot prove
       that, which is why the case is an integration test and not a unit one.
+      **The first version of this box was ticked wrongly**, and the whole-branch review
+      caught it: the post-commit pass was `revokeAllSessionsForUser`, which deletes keys
+      only for sessions its own `revokedAt: null` query returns — and the transaction had
+      already revoked all of them, so it found nothing and cleared nothing. The
+      pre-transaction delete was the only clearing that ever happened, leaving the race
+      it was supposed to close wide open: a request that re-validated mid-transaction saw
+      a row whose uncommitted `revokedAt` was invisible to it, repopulated
+      `session:<token>` with a rolling 300s TTL, and — since `validateSession` answers
+      from the cache without a DB read — kept the orphan signed into a household owning
+      nothing, indefinitely. The sequential integration test could not see it. A second
+      case now replays the repopulation from inside the transaction, and the token list
+      read before the transaction is re-deleted after it.
 - [x] `ConnectionService.deleteConnection` clears `mergedIntoUserId`, so unlinking
       genuinely lets a later B sign-in re-form its own household. (The DoD said
       `deleteOneConnection`; no such method exists.) Scoped to orphans whose
@@ -272,7 +284,35 @@ and Redis.
 active connection. `AppUser.mergedIntoUserId` is documented as "this AppUser's **only**
 connection was absorbed", so pulling one school out of a live two-school household would
 revoke its sessions and leave the pointer naming a household that still exists. That
-state keeps `409 CONNECTION_ALREADY_LINKED`.
+state keeps `409 CONNECTION_ALREADY_LINKED`. Both that and the connection's ownership are
+re-asserted **inside** the transaction, since the verdict is reached before an upstream
+login that takes seconds.
+
+**What the whole-branch review changed.** Six fixes, each with a test watched red first.
+The Redis hole above was the one that mattered. Beyond it: the merge is now gated on
+`MASHOV_ENABLE_SCHOOL_LINK_ADOPTION`, which it was bypassing — a switch covering only
+sign-in would have gone inert for exactly the households that had merged, since
+`mergedIntoUserId` routes their next sign-in regardless. The frontend confirm card now
+carries the credentials the offer was made for and withdraws itself on any edit; before,
+a parent who read the offer, decided the username was wrong, edited it and clicked
+confirm sent the *edited* credentials under a consent given for the original ones — and
+if that account was also foreign-owned, merged a household they were never shown. B4's
+unstamped-row fallback reproduced B4 itself in B4's own population: the backfill refuses
+to stamp on any database with two or more active connections, so both rows start
+unstamped, and borrowing the creating credential's row for the newest connection
+captioned one school's number with the other's name until the next sync — the fallback
+now requires the connection's own `upstreamUserId` to match, or to be absent. The stated
+reason for leaving unstamped `SchoolActivity` rows behind was wrong (NULLs are distinct in
+a Postgres unique index, so no collision was possible) and is corrected to the real one.
+And `ProfileCard`'s `data-testid` is stable again with the connection id on a data
+attribute — suffixing a server-generated cuid into the testid amounted to dropping the
+hook, since no test can predict it.
+
+**One pre-existing flake fixed in passing.** `'a successful link goes to the syncing
+screen for that school'` stubbed `POST /sync/refresh` to answer instantly, and
+`SyncingPageClient` does `triggerSyncRefresh().then(leave)` — so the heading it asserts
+was racing a navigation away, and the spec passed only when the machine was loaded enough.
+Both that stub and the new merge spec's hold the response open.
 
 ---
 

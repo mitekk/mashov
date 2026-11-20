@@ -8,11 +8,14 @@ interface ProfileCardProps {
 
 export function ProfileCard({ profile }: ProfileCardProps) {
   return (
-    // The testid is suffixed with the connection id because a two-school
-    // household renders one card per school, and N identical testids break
-    // Playwright's strict mode for anything that later selects one.
+    // The testid stays stable -- a connection id is a server-generated cuid,
+    // so a suffixed one is unguessable from a test and amounts to dropping
+    // the hook. Per-card selectability comes from the data attribute instead:
+    // `[data-testid="profile-card"][data-connection-id="..."]`, or
+    // `.filter({ has: ... })` over the stable one.
     <div
-      data-testid={`profile-card-${profile.householdConnectionId}`}
+      data-testid="profile-card"
+      data-connection-id={profile.householdConnectionId}
       className="card-base p-4 space-y-3"
     >
       <div className="flex items-center gap-3">

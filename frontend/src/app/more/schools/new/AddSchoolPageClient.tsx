@@ -36,13 +36,24 @@ export default function AddSchoolPageClient() {
    * to move it here -- `null` until then.
    *
    * A merge revokes the other sign-in's sessions and moves its state, so it
-   * never rides along on the first submit. The parent sees what it would do
-   * and says yes, and the confirm re-sends the credentials the form still
-   * holds with `confirmMerge: true`.
+   * never rides along on the first submit: the parent sees what it would do
+   * and says yes.
+   *
+   * It carries the credentials the offer was made for, rather than re-reading
+   * the form at confirm time. Otherwise the consent and the request are two
+   * different things: a parent reading the offer may well decide the username
+   * was wrong and edit it, and clicking confirm would then send the edited
+   * credentials under a consent given for the original ones -- merging, if
+   * that account is also foreign-owned, a household they were never shown.
+   * `clearPendingMerge` withdraws the offer on any edit as well, so the card
+   * on screen always describes the request the button would send.
    */
   const [pendingMerge, setPendingMerge] = useState<{
     schoolName: string;
     childrenCount: number;
+    semel: number;
+    username: string;
+    password: string;
   } | null>(null);
 
   const linkMutation = useMutation({
@@ -55,7 +66,7 @@ export default function AddSchoolPageClient() {
       // the connection exists but its data does not yet.
       router.replace(`/auth/syncing?schoolId=${encodeURIComponent(link.id)}`);
     },
-    onError: (err) => {
+    onError: (err, variables) => {
       if (err instanceof ApiError) {
         const body = err.body as {
           error?: {
@@ -66,10 +77,13 @@ export default function AddSchoolPageClient() {
         const code = body?.error?.code;
         // Not a failure: there is something the parent can do, so the screen
         // asks rather than reports.
-        if (code === 'MERGE_AVAILABLE') {
+        if (code === 'MERGE_AVAILABLE' && variables) {
           setPendingMerge({
             schoolName: body.error?.merge?.schoolName ?? selectedSchool?.name ?? '',
             childrenCount: body.error?.merge?.childrenCount ?? 0,
+            semel: variables.semel,
+            username: variables.username,
+            password: variables.password,
           });
           return;
         }
@@ -79,6 +93,16 @@ export default function AddSchoolPageClient() {
       setErrorMsg(SCHOOL_LINK_FALLBACK_MESSAGE);
     },
   });
+
+  /**
+   * Withdraw a merge offer the form no longer describes.
+   *
+   * Called from every input that feeds the request, so the card on screen and
+   * the request the confirm button would send can never disagree.
+   */
+  function clearPendingMerge(): void {
+    setPendingMerge(null);
+  }
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -134,12 +158,18 @@ export default function AddSchoolPageClient() {
         >
           <SchoolAutocomplete
             value={selectedSchool}
-            onSelect={setSelectedSchool}
+            onSelect={(school) => {
+              clearPendingMerge();
+              setSelectedSchool(school);
+            }}
             // Typing over the picked school drops the selection. Without this
             // the form submitted a school the input was no longer showing, and
             // the `INVALID_CREDENTIALS` that came back named a school the
             // parent never chose.
-            onClear={() => setSelectedSchool(null)}
+            onClear={() => {
+              clearPendingMerge();
+              setSelectedSchool(null);
+            }}
             inputTestId="add-school-selector"
             optionTestIdPrefix="school-option"
             // Shown but unselectable: preventing the error beats reporting it,
@@ -162,7 +192,10 @@ export default function AddSchoolPageClient() {
               autoComplete="off"
               dir="ltr"
               value={username}
-              onChange={(event) => setUsername(event.target.value)}
+              onChange={(event) => {
+                clearPendingMerge();
+                setUsername(event.target.value);
+              }}
               className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
             />
           </div>
@@ -181,7 +214,10 @@ export default function AddSchoolPageClient() {
               autoComplete="off"
               dir="ltr"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(event) => {
+                clearPendingMerge();
+                setPassword(event.target.value);
+              }}
               className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
             />
           </div>
@@ -207,16 +243,14 @@ export default function AddSchoolPageClient() {
                   type="button"
                   data-testid="add-school-merge-confirm-btn"
                   disabled={linkMutation.isPending}
-                  onClick={() => {
-                    if (!selectedSchool) return;
-                    setPendingMerge(null);
+                  onClick={() =>
                     linkMutation.mutate({
-                      semel: selectedSchool.semel,
-                      username: username.trim(),
-                      password,
+                      semel: pendingMerge.semel,
+                      username: pendingMerge.username,
+                      password: pendingMerge.password,
                       confirmMerge: true,
-                    });
-                  }}
+                    })
+                  }
                   className="flex-1 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-60"
                 >
                   {linkMutation.isPending ? 'מאחד...' : 'איחוד בתי הספר'}
@@ -224,6 +258,7 @@ export default function AddSchoolPageClient() {
                 <button
                   type="button"
                   data-testid="add-school-merge-cancel-btn"
+                  disabled={linkMutation.isPending}
                   onClick={() => setPendingMerge(null)}
                   className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-foreground hover:bg-accent transition-colors"
                 >

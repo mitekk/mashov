@@ -484,9 +484,17 @@ test.describe('School links — adding', () => {
         },
       }),
     );
-    await page.route('**/api/v1/sync/refresh*', (route) =>
-      route.fulfill({ json: { status: 'success', tasks: [] } }),
-    );
+    // Held open deliberately. `SyncingPageClient` does
+    // `triggerSyncRefresh().then(leave)` and `leave()` replaces the URL with
+    // /children, so a stub that answers instantly races both assertions
+    // below -- this spec passed only when the machine was loaded enough for
+    // the heading to render first. What it is about is the headline a linking
+    // parent sees *while* the sync runs; leaving when the refresh resolves is
+    // covered on its own in auth.spec.ts.
+    await page.route('**/api/v1/sync/refresh*', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await route.fulfill({ json: { status: 'success', tasks: [] } });
+    });
 
     await page.goto('/more/schools/new');
     await page.getByTestId('add-school-selector').click();
@@ -561,9 +569,12 @@ test.describe('School links — adding', () => {
         },
       }),
     );
-    await page.route('**/api/v1/sync/refresh*', (route) =>
-      route.fulfill({ json: { status: 'success', tasks: [] } }),
-    );
+    // Held open, so `leave()` cannot replace the URL before the
+    // `waitForURL` below -- same race as the spec above.
+    await page.route('**/api/v1/sync/refresh*', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await route.fulfill({ json: { status: 'success', tasks: [] } });
+    });
 
     await page.goto('/more/schools/new');
     await page.getByTestId('add-school-selector').click();
@@ -591,6 +602,67 @@ test.describe('School links — adding', () => {
       password: 'pw',
       confirmMerge: true,
     });
+  });
+
+  // The consent and the request have to be the same thing. Reading the offer,
+  // a parent may well decide the username was wrong and edit it -- the card
+  // is still on screen, so clicking confirm sent the EDITED credentials under
+  // a consent given for the original ones. If that other account is also
+  // foreign-owned and mergeable, the backend merges a household the parent was
+  // never shown.
+  test('confirming sends the credentials the offer was made for', async ({ page }) => {
+    const bodies: Array<Record<string, unknown>> = [];
+
+    await seed(page, {
+      schools: [SCHOOL_A],
+      links: [link(SCHOOL_A)],
+      onCreate: async (route) => {
+        const body = route.request().postDataJSON() as Record<string, unknown>;
+        bodies.push(body);
+        if (body.confirmMerge === true) {
+          await route.fulfill({ status: 201, json: link(SCHOOL_B, { lastSyncAt: null }) });
+          return;
+        }
+        await route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: 'MERGE_AVAILABLE',
+              message: 'merge available',
+              details: [],
+              merge: { schoolName: SCHOOL_B.schoolName, childrenCount: 1 },
+            },
+          },
+        });
+      },
+    });
+    await page.route('**/api/v1/auth/schools', (route) =>
+      route.fulfill({
+        json: [{ semel: SCHOOL_B.semel, name: SCHOOL_B.schoolName, years: [2026] }],
+      }),
+    );
+    await page.route('**/api/v1/sync/status*', (route) =>
+      route.fulfill({ json: { done: true, sourcesCompleted: 17, sourcesTotal: 17, run: null } }),
+    );
+    await page.route('**/api/v1/sync/refresh*', (route) =>
+      route.fulfill({ json: { status: 'success', tasks: [] } }),
+    );
+
+    await page.goto('/more/schools/new');
+    await page.getByTestId('add-school-selector').click();
+    await page.getByTestId(`school-option-${SCHOOL_B.semel}`).click();
+    await page.getByTestId('add-school-username').fill('parent-b');
+    await page.getByTestId('add-school-password').fill('pw');
+    await page.getByTestId('add-school-submit-btn').click();
+
+    await expect(page.getByTestId('add-school-merge-confirm')).toBeVisible();
+
+    // Edited after the offer. Editing the form must withdraw the offer rather
+    // than silently retarget it.
+    await page.getByTestId('add-school-username').fill('someone-else');
+
+    await expect(page.getByTestId('add-school-merge-confirm')).toHaveCount(0);
+    expect(bodies).toHaveLength(1);
   });
 
   test('a parent can back out of a merge without it happening', async ({ page }) => {

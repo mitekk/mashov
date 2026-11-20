@@ -284,6 +284,9 @@ describe('SchoolLinksService.createLink', () => {
     // callback against this same object, which is how the assertions below
     // see the writes without a real database.
     const connectionUpdate = jest.fn().mockResolvedValue({ id: 'conn-foreign' });
+    // Guarded: the re-point is an updateMany keyed on the owner we decided
+    // against, so a connection that changed hands under us updates 0 rows.
+    const connectionUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const appUserUpdate = jest.fn().mockResolvedValue({});
     const sessionFindMany = jest
       .fn()
@@ -312,6 +315,7 @@ describe('SchoolLinksService.createLink', () => {
       linkUpsert,
       studentUpdateMany,
       connectionUpdate,
+      connectionUpdateMany,
       appUserUpdate,
       sessionFindMany,
       sessionUpdateMany,
@@ -353,6 +357,7 @@ describe('SchoolLinksService.createLink', () => {
           ),
           count: connectionCount,
           update: connectionUpdate,
+          updateMany: connectionUpdateMany,
           upsert,
         },
         appUser: { update: appUserUpdate },
@@ -581,7 +586,7 @@ describe('SchoolLinksService.createLink', () => {
     it('performs the merge when the parent confirms it', async () => {
       const {
         prisma,
-        connectionUpdate,
+        connectionUpdateMany,
         appUserUpdate,
         sessionUpdateMany,
         digestUpdateMany,
@@ -615,9 +620,11 @@ describe('SchoolLinksService.createLink', () => {
       expect(transaction).toHaveBeenCalled();
       // Re-parented with the audit fields: who asserted "this account is
       // mine", and when. Nothing reads them for scoping (ADR-0029).
-      expect(connectionUpdate).toHaveBeenCalledWith(
+      expect(connectionUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'conn-foreign' },
+          // Keyed on the owner the verdict was made against, so a connection
+          // that changed hands in the meantime matches nothing.
+          where: { id: 'conn-foreign', userId: 'someone-else' },
           data: expect.objectContaining({ userId: 'user-1', linkedByUserId: 'user-1' }),
         }),
       );
@@ -637,7 +644,18 @@ describe('SchoolLinksService.createLink', () => {
       // revoked in Postgres stays live until the key is gone. Deleted both
       // before the transaction (self-healing on rollback) and after it
       // (closing the repopulation race).
-      expect(del).toHaveBeenCalledWith('session:tok-orphan');
+      // TWICE, on both sides of the transaction, and that is not belt-and-
+      // braces: `revokeAllSessionsForUser` only deletes keys for sessions its
+      // own `revokedAt: null` query returns, and the transaction has already
+      // revoked every one of them -- so post-commit it finds nothing and
+      // clears nothing. A request that re-validated mid-transaction (the
+      // uncommitted `revokedAt` is invisible to it) repopulates the key with
+      // a rolling 300s TTL and the orphan's session survives indefinitely.
+      // The second pass over the tokens read BEFORE the transaction is what
+      // actually closes that.
+      expect(del.mock.calls.filter(([key]) => key === 'session:tok-orphan')).toHaveLength(2);
+      // Still called, for a different reason: it catches a session minted
+      // *during* the merge, which the pre-read list cannot know about.
       expect(revokeAllSessionsForUser).toHaveBeenCalledWith('someone-else');
       expect(digestUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -670,6 +688,112 @@ describe('SchoolLinksService.createLink', () => {
       );
       // And the link is then persisted as any other link is.
       expect(upsert).toHaveBeenCalled();
+    });
+
+    // `MASHOV_ENABLE_SCHOOL_LINK_ADOPTION=false` is documented as the switch
+    // for turning the whole trust model off. The merge is a strictly MORE
+    // invasive version of it -- it revokes the other household's sessions and
+    // moves its rows -- so the switch has to cover it too, or it goes inert
+    // for exactly the households that merged.
+    it('refuses the merge when adoption is disabled', async () => {
+      const previous = process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
+      process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION = 'false';
+      try {
+        const { prisma, transaction } = makePrisma({ orphanUserId: 'someone-else' });
+        const service = makeService(prisma, {
+          validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+        });
+
+        await expect(
+          service.createLink('user-1', {
+            semel: 999999,
+            username: 'parent-b',
+            password: 'pw',
+            confirmMerge: true,
+          }),
+        ).rejects.toMatchObject({
+          response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
+        });
+        expect(transaction).not.toHaveBeenCalled();
+      } finally {
+        if (previous === undefined) delete process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
+        else process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION = previous;
+      }
+    });
+
+    it('does not offer a merge when adoption is disabled', async () => {
+      const previous = process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
+      process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION = 'false';
+      try {
+        const { prisma } = makePrisma({ orphanUserId: 'someone-else' });
+        const service = makeService(prisma, {
+          validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+        });
+
+        const error = await service
+          .createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' })
+          .then(
+            () => null,
+            (err: unknown) => err,
+          );
+
+        expect(error).toMatchObject({
+          response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
+        });
+        expect(JSON.stringify(error)).not.toContain('MERGE');
+      } finally {
+        if (previous === undefined) delete process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
+        else process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION = previous;
+      }
+    });
+
+    // The gate is decided before an upstream login that takes seconds. Inside
+    // the transaction it has to hold again, or the two things it exists to
+    // prevent happen anyway.
+    it('aborts the merge if the connection changed owner under it', async () => {
+      const { prisma, connectionUpdateMany, appUserUpdate } = makePrisma({
+        orphanUserId: 'someone-else',
+      });
+      // Someone else re-parented it between the verdict and the commit.
+      connectionUpdateMany.mockResolvedValue({ count: 0 });
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+      });
+
+      await expect(
+        service.createLink('user-1', {
+          semel: 999999,
+          username: 'parent-b',
+          password: 'pw',
+          confirmMerge: true,
+        }),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
+      });
+      expect(appUserUpdate).not.toHaveBeenCalled();
+    });
+
+    it('aborts the merge if the other household gained a school under it', async () => {
+      const { prisma, connectionCount, appUserUpdate } = makePrisma({
+        orphanUserId: 'someone-else',
+      });
+      // mergeable at verdict time, not mergeable by commit time.
+      connectionCount.mockResolvedValueOnce(0).mockResolvedValue(1);
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+      });
+
+      await expect(
+        service.createLink('user-1', {
+          semel: 999999,
+          username: 'parent-b',
+          password: 'pw',
+          confirmMerge: true,
+        }),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
+      });
+      expect(appUserUpdate).not.toHaveBeenCalled();
     });
 
     it('ignores confirmMerge when there is no foreign owner to merge', async () => {

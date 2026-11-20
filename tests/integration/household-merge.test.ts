@@ -42,6 +42,7 @@ import { SchoolLinksService } from '../../backend/src/school-links/school-links.
 import { AppSessionService } from '../../backend/src/app-session/app-session.service';
 import { RedisService } from '../../backend/src/redis/redis.service';
 import { SyncService } from '../../backend/src/sync/sync.service';
+import { PrismaService } from '../../backend/src/prisma/prisma.service';
 import { MashovCredentialValidatorService } from '../../backend/src/common/mashov-login/mashov-credential-validator.service';
 
 const SEMEL_A = 661101;
@@ -86,6 +87,7 @@ describe('Household merge — adding a school another household already owns', (
   let schoolLinks: SchoolLinksService;
   let appSession: AppSessionService;
   let redis: RedisService;
+  let prismaService: PrismaService;
   const validate = jest.fn();
 
   beforeAll(async () => {
@@ -120,6 +122,7 @@ describe('Household merge — adding a school another household already owns', (
     schoolLinks = moduleRef.get(SchoolLinksService);
     appSession = moduleRef.get(AppSessionService);
     redis = moduleRef.get(RedisService);
+    prismaService = moduleRef.get(PrismaService);
   });
 
   afterAll(async () => {
@@ -347,6 +350,54 @@ describe('Household merge — adding a school another household already owns', (
     const row = await prisma.appSession.findUnique({ where: { sessionToken: token } });
     expect(row?.revokedAt).not.toBeNull();
     // The whole point: the token must not still resolve.
+    expect(await appSession.validateSession(token)).toBeNull();
+  });
+
+  // The race the two Redis passes exist for, made deterministic.
+  //
+  // `revokeAllSessionsForUser` deletes keys only for sessions its own
+  // `revokedAt: null` query returns -- and the merge transaction has already
+  // revoked every one of them, so for those it finds nothing. If the
+  // pre-transaction delete were the only clearing, a request that
+  // re-validated while the transaction was open (the uncommitted `revokedAt`
+  // is invisible to it) would repopulate `session:<token>` with a rolling
+  // 300s TTL, and because `validateSession` answers from the cache without a
+  // DB read, that session would survive indefinitely -- authenticated as a
+  // household that now owns nothing, so every page silently empty. Which is
+  // the exact state B2's DoD says cannot happen.
+  it('survives a session cache repopulated mid-transaction', async () => {
+    await seed();
+
+    const token = await appSession.createSession(USER_B);
+    expect(await appSession.validateSession(token)).toBe(USER_B);
+
+    // Replay what such a request leaves behind, from inside the transaction,
+    // after the merge's own writes and before the commit.
+    const realTransaction = prismaService.$transaction.bind(prismaService);
+    const spy = jest
+      .spyOn(prismaService, '$transaction')
+      .mockImplementationOnce((arg: unknown) =>
+        (realTransaction as (a: unknown) => Promise<unknown>)(async (tx: unknown) => {
+          const result = await (arg as (t: unknown) => Promise<unknown>)(tx);
+          await redis.set(
+            `session:${token}`,
+            JSON.stringify({
+              userId: USER_B,
+              expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+            }),
+            300,
+          );
+          return result;
+        }),
+      );
+
+    try {
+      await addSchoolB(true);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await redis.get(`session:${token}`)).toBeNull();
     expect(await appSession.validateSession(token)).toBeNull();
   });
 

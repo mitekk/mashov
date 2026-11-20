@@ -15,6 +15,7 @@ import { SyncService } from '../sync/sync.service';
 import { ConnectionService } from '../connection/connection.service';
 import { MashovCredentialValidatorService } from '../common/mashov-login/mashov-credential-validator.service';
 import { AppSessionService } from '../app-session/app-session.service';
+import { householdAdoptionEnabled } from '../common/adoption-flag';
 import { resolveSchoolLabels } from '../common/school-label';
 import {
   connectionStudentWhere,
@@ -208,14 +209,10 @@ export class SchoolLinksService {
         // connection was absorbed", and pulling one school out of a live
         // two-school household would leave that pointer naming a household
         // that still exists. That state keeps the old refusal; the parent can
-        // unlink from the other household's side.
-        throw new ConflictException({
-          error: {
-            code: 'CONNECTION_ALREADY_LINKED',
-            message: 'This account is already linked',
-            details: [],
-          },
-        });
+        // unlink from the other household's side. The same refusal covers
+        // `MASHOV_ENABLE_SCHOOL_LINK_ADOPTION=false`, which turns the whole
+        // trust model off.
+        throw this.alreadyLinked();
       }
 
       if (!input.confirmMerge) {
@@ -413,19 +410,46 @@ export class SchoolLinksService {
     // rather than refused, which is what makes unlink-then-relink work.
     const existing = await this.prisma.householdConnection.findUnique({
       where: { schoolCode_username: { schoolCode: semel, username } },
-      select: { id: true, userId: true, upstreamUserId: true },
+      select: { id: true, userId: true },
     });
     if (!existing?.userId || existing.userId === userId) return null;
 
-    const otherActive = await this.prisma.householdConnection.count({
-      where: { userId: existing.userId, active: true, id: { not: existing.id } },
-    });
+    // The same switch that turns sign-in adoption off turns the merge off. A
+    // merge is a strictly more invasive form of the same trust model, and a
+    // switch covering only sign-in would go inert for the households that had
+    // already merged -- `mergedIntoUserId` routes their next sign-in anyway.
+    if (!householdAdoptionEnabled()) {
+      return { ownerUserId: existing.userId, connectionId: existing.id, mergeable: false };
+    }
+
+    const otherActive = await this.countOtherActiveConnections(existing.userId, existing.id);
 
     return {
       ownerUserId: existing.userId,
       connectionId: existing.id,
       mergeable: otherActive === 0,
     };
+  }
+
+  /** Active connections one household holds besides the named one. */
+  private async countOtherActiveConnections(
+    userId: string,
+    exceptConnectionId: string,
+  ): Promise<number> {
+    return this.prisma.householdConnection.count({
+      where: { userId, active: true, id: { not: exceptConnectionId } },
+    });
+  }
+
+  /** The refusal a non-mergeable foreign owner gets, in one place. */
+  private alreadyLinked(): ConflictException {
+    return new ConflictException({
+      error: {
+        code: 'CONNECTION_ALREADY_LINKED',
+        message: 'This account is already linked',
+        details: [],
+      },
+    });
   }
 
   /**
@@ -473,10 +497,24 @@ export class SchoolLinksService {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.householdConnection.update({
-        where: { id: connectionId },
+      // Re-asserted inside the transaction, because the verdict was reached
+      // before an upstream login that takes seconds. Keyed on the owner it
+      // was reached against: a connection that changed hands in the meantime
+      // matches nothing, and 0 rows aborts rather than silently stealing it.
+      const repointed = await tx.householdConnection.updateMany({
+        where: { id: connectionId, userId: orphanUserId },
         data: { userId, linkedByUserId: userId, linkedAt: new Date() },
       });
+      if (repointed.count === 0) throw this.alreadyLinked();
+
+      // And the orphan must still be an orphan. Without this, a household
+      // that added a second school inside that window gets split anyway --
+      // exactly what the `mergeable` verdict exists to prevent -- leaving
+      // `mergedIntoUserId` naming a household that still exists.
+      const stillOther = await tx.householdConnection.count({
+        where: { userId: orphanUserId, active: true, id: { not: connectionId } },
+      });
+      if (stillOther > 0) throw this.alreadyLinked();
 
       await tx.appUser.update({
         where: { id: orphanUserId },
@@ -501,10 +539,19 @@ export class SchoolLinksService {
       // required with no AppUser relation, so the orphan's consent rows would
       // otherwise strand on an AppUser nobody signs into. Scoped to the
       // connection that is travelling, which makes it collision-free against
-      // `[userId, householdConnectionId, schoolYear, activityId]`; a row
-      // stamped to no connection names no school and stays with the retired
-      // AppUser rather than risking a collision with the surviving
-      // household's own unstamped row.
+      // `[userId, householdConnectionId, schoolYear, activityId]` -- A cannot
+      // hold a row stamped to a connection it never owned.
+      //
+      // A row stamped to NO connection is deliberately left behind, and not
+      // because it would collide: `householdConnectionId` is nullable and
+      // Postgres treats NULLs as distinct in a unique index, so two
+      // `(A, NULL, year, activityId)` rows coexist fine. The reason is that
+      // `activityId` is a per-school counter -- literally `1` in the captured
+      // payload -- so an unstamped row names no school and no particular
+      // activity. Re-pointing it would put an unattributable consent request
+      // in the merged household's list, next to A's own unstamped row for
+      // "activity 1". It stays with the retired AppUser, which
+      // `mergedIntoUserId` keeps interpretable.
       await tx.schoolActivity.updateMany({
         where: { userId: orphanUserId, householdConnectionId: connectionId },
         data: { userId },
@@ -531,7 +578,26 @@ export class SchoolLinksService {
       }
     });
 
+    // Both halves are load-bearing, and neither replaces the other.
+    //
+    // `revokeAllSessionsForUser` catches a session minted *during* the merge,
+    // which the pre-read list above cannot know about. It cannot catch the
+    // sessions this merge just revoked: it deletes keys only for what its own
+    // `revokedAt: null` query returns, and the transaction has already set
+    // `revokedAt` on all of them -- so for those it finds nothing and clears
+    // nothing.
+    //
+    // Re-deleting the pre-read tokens is what closes the repopulation race: a
+    // request that re-validated while the transaction was open saw a row
+    // whose uncommitted `revokedAt` was invisible to it, repopulated
+    // `session:<token>` with a rolling 300s TTL, and -- because
+    // `validateSession` answers from the cache without a DB read -- would
+    // otherwise keep that session alive indefinitely, authenticated as a
+    // household that now owns nothing.
     await this.appSession.revokeAllSessionsForUser(orphanUserId);
+    for (const session of before) {
+      await this.redis.del(`session:${session.sessionToken}`);
+    }
 
     this.logger.warn(
       `Merged household ${orphanUserId} into ${userId} via connection ${connectionId}; ` +

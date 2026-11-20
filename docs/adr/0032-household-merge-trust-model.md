@@ -74,7 +74,17 @@ name crosses the boundary. The frontend renders it as a confirmation in a parent
 separate sign-in stops working; both schools' children appear here; the school can be unlinked
 at any time), not as an error.
 
-### 3. Only a genuine orphan is merged
+### 3. The adoption kill switch covers the merge
+
+`MASHOV_ENABLE_SCHOOL_LINK_ADOPTION=false` is documented as the single switch for turning
+this trust model off. The merge is a strictly *more* invasive form of it, so it is gated on
+the same flag — `common/adoption-flag.ts`, now shared by `AuthService.login` and
+`SchoolLinksService.createLink`. A switch covering only sign-in would go inert for exactly
+the households that had already merged, since `mergedIntoUserId` routes their next sign-in
+regardless. With the flag off, a foreign-owned connection gets the old
+`409 CONNECTION_ALREADY_LINKED` and no offer.
+
+### 4. Only a genuine orphan is merged
 
 `AppUser.mergedIntoUserId` is documented as "this AppUser's **only** connection was absorbed".
 So the merge is offered only when the foreign owner holds no other active connection. A
@@ -82,10 +92,15 @@ household actively using two schools is not an orphan: pulling one school out of
 revoke a live household's sessions and leave the pointer naming a household that still exists.
 That state keeps `409 CONNECTION_ALREADY_LINKED`; the parent can unlink from the other side.
 
+Both this and the connection's ownership are **re-asserted inside the transaction**, because the
+verdict is reached before an upstream login that takes seconds: the re-point is an
+`updateMany` keyed on the owner it was decided against, and 0 rows aborts rather than
+quietly stealing a connection that changed hands.
+
 This distinction is observable only *after* the caller has proved that school's password, at
 which point adoption already grants them the whole household — so it is not a new oracle.
 
-### 4. What moves, and what does not
+### 5. What moves, and what does not
 
 Everything keyed on `householdConnectionId` or `studentGuid` — mail, notifications, students,
 releases, homework, behaviour, sync runs, the parent profile — travels with the re-parented
@@ -97,13 +112,13 @@ connection and is not touched. What is keyed on `userId` moves, in one `$transac
 | `AppUser` (orphan) | `mergedIntoUserId` = surviving household | makes the retired row interpretable |
 | `AppSession` (orphan) | every unrevoked row revoked | §5 |
 | `DigestRecipient` | plain `updateMany` re-point | the unique key is `[studentGuid, channel, address]` and **omits `userId`**, so the same tuple cannot exist under both households — a skip-on-conflict branch here would be dead code |
-| `SchoolActivity` | re-point, **scoped to the travelling connection** | not named in B2; found in flight. `userId` is required with no AppUser relation, so these consent rows would strand on an AppUser nobody can sign into. Scoping to the connection is what makes it collision-free against `[userId, householdConnectionId, schoolYear, activityId]`; a row stamped to no connection names no school and stays with the retired AppUser |
+| `SchoolActivity` | re-point, **scoped to the travelling connection** | not named in B2; found in flight. `userId` is required with no AppUser relation, so these consent rows would strand on an AppUser nobody can sign into. Scoping to the connection makes it collision-free against `[userId, householdConnectionId, schoolYear, activityId]` — A cannot hold a row stamped to a connection it never owned. A row stamped to *no* connection is left behind, not because it would collide (`householdConnectionId` is nullable and Postgres treats NULLs as distinct, so `(A, NULL, year, id)` rows coexist) but because `activityId` is a per-school counter: an unstamped row names no school and no particular activity, and re-pointing it would put an unattributable consent request in the merged household's list |
 | `UserItemState` | `createMany({ skipDuplicates: true })` | **copied, not moved**, and the surviving household's value wins on conflict. A merge that 500s halfway on a unique violation is worse than one that keeps A's preference |
 
 The orphan `AppUser` row **survives**: `AppSession.userId` is a required relation with no
 `onDelete`, so Postgres restricts the delete — and keeping it is what ADR-0029 intends anyway.
 
-### 5. The Redis session mirror is deleted both before and after the transaction
+### 6. The Redis session mirror is deleted both before and after the transaction
 
 `validateSession` returns `payload.userId` straight from the cache without a database read,
 and the payload carries no `revokedAt` while it rolls its own TTL. So the DB revoke alone
@@ -113,15 +128,24 @@ The keys are therefore deleted **twice**, and the order is the decision:
 
 - **Before** the transaction — self-healing if it rolls back, because the next request
   re-validates against a still-live row and repopulates the cache.
-- **After** it, via `AppSessionService.revokeAllSessionsForUser` — closes the race where a
-  request between the first delete and the commit repopulated the cache from the
-  not-yet-revoked row, and catches a session minted mid-merge.
+- **After** it, over the token list read before it, closing the race where a request between
+  the first delete and the commit repopulated the cache from the not-yet-revoked row.
+- **After** it, also via `AppSessionService.revokeAllSessionsForUser`, which catches a session
+  minted *during* the merge — one the pre-read list cannot know about.
 
-Neither pass alone is airtight. `revokeAllSessionsForUser` issues its own prisma calls, so it
-is **not** enlistable in the transaction; the DB revoke happens inside, that method runs after
-the commit.
+The second and third are **both** needed, and the first review of this code caught why:
+`revokeAllSessionsForUser` deletes keys only for sessions its own `revokedAt: null` query
+returns, and the transaction has already revoked every one of them, so for those it finds
+nothing and clears nothing. Relying on it alone left the window wide open — a request that
+re-validated mid-transaction saw a row whose uncommitted `revokedAt` was invisible to it,
+repopulated `session:<token>` with a rolling 300s TTL, and kept the orphan's session alive
+indefinitely against a household that owned nothing. `tests/integration/household-merge.test.ts`
+replays exactly that, by writing the key back from inside the transaction.
 
-### 6. Sign-in after a merge goes through adoption, not through the pointer
+`revokeAllSessionsForUser` issues its own prisma calls, so it is **not** enlistable in the
+transaction; the DB revoke happens inside, that method runs after the commit.
+
+### 7. Sign-in after a merge goes through adoption, not through the pointer
 
 Worth stating because it is easy to assume otherwise. After a merge, connection B carries
 `userId = A` and B's own `AppUser` still exists. On a B sign-in, `existingUser` is B's

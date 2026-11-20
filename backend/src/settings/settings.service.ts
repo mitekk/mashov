@@ -145,29 +145,52 @@ export class SettingsService {
     // The stamp is legitimately null three ways, so a missing one is not a
     // missing profile: `user-details.task`'s shared-session branch passes no
     // connection, the `connection_scoping` backfill left rows it could not
-    // attribute, and `onDelete: SetNull` nulls it on unlink. Fall back to the
-    // row keyed on the creating credential, and only for the newest
-    // connection -- that is what the screen showed before, now labelled with
-    // the school it is being shown under rather than an unrelated one. A row
-    // stamped to some *other* connection is deliberately not borrowed: it is
-    // the caller's own profile, but relabelling it with this school's name is
-    // the bug itself.
-    let fallback: Awaited<ReturnType<typeof this.prisma.parentProfile.findUnique>> | undefined;
-    const newestConnectionId = connections[0].id;
+    // attribute, and `onDelete: SetNull` nulls it on unlink. So an unstamped
+    // row keyed on the creating credential still has to answer.
+    //
+    // Which school it answers *for* is decided once, below, and never
+    // guessed loosely -- guessing is B4. Three things the fallback must not
+    // do, each of them the original bug in a different costume:
+    //
+    //  - borrow a row stamped to some OTHER connection. That is the caller's
+    //    own profile, but relabelling it with this school's name is the bug.
+    //  - borrow an unstamped row whose `upstreamUserId` contradicts the
+    //    connection's. `upstreamUserId` is a per-school id and the fallback is
+    //    keyed on the credential that CREATED the AppUser -- usually the
+    //    *other* school. The backfill refuses to stamp on any database with
+    //    two or more active connections, so on a real two-school deployment
+    //    both rows start unstamped and a loose borrow captions school A's
+    //    phone number with school B's name until the next sync.
+    //  - appear under more than one school. One row is one school's details.
+    const needsFallback = connections.some((connection) => !stamped.has(connection.id));
+    const fallback = needsFallback
+      ? await this.prisma.parentProfile.findUnique({
+          where: { upstreamUserId: appUser.mashovUserId },
+        })
+      : null;
+
+    let fallbackConnectionId: string | null = null;
+    if (fallback && fallback.householdConnectionId === null) {
+      // A matching `upstreamUserId` is positive evidence of which school the
+      // row came from, and beats the newest-sign-in guess.
+      const byUpstream = connections.find(
+        (connection) =>
+          !!connection.upstreamUserId &&
+          connection.upstreamUserId === fallback.upstreamUserId,
+      );
+      const newest = connections[0];
+      fallbackConnectionId =
+        byUpstream?.id ??
+        // No evidence either way -- the newest connection does not claim a
+        // different upstream user. That is what the screen showed before, now
+        // captioned with the school it is shown under.
+        (newest.upstreamUserId ? null : newest.id);
+    }
 
     const entries = [];
     for (const connection of connections) {
       let profile = stamped.get(connection.id) ?? null;
-
-      if (!profile && connection.id === newestConnectionId) {
-        if (fallback === undefined) {
-          fallback = await this.prisma.parentProfile.findUnique({
-            where: { upstreamUserId: appUser.mashovUserId },
-          });
-        }
-        if (fallback && fallback.householdConnectionId === null) profile = fallback;
-      }
-
+      if (!profile && connection.id === fallbackConnectionId) profile = fallback;
       if (!profile) continue;
 
       entries.push({

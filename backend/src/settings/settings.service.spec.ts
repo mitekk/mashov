@@ -251,6 +251,99 @@ describe('SettingsService', () => {
       ]);
     });
 
+    // The fallback reproduced B4 in exactly the population B4 is about. The
+    // `connection_scoping` backfill REFUSES to stamp on any database with two
+    // or more active connections, so on a real two-school deployment both
+    // `parent_profile` rows start unstamped -- and the fallback is keyed on
+    // the credential that CREATED the AppUser, i.e. usually the other school.
+    // Borrowing it for the newest connection captioned school A's phone
+    // number with school B's name all over again, until the next sync stamped
+    // the rows. The connection row already carries the `upstreamUserId` that
+    // settles it.
+    it('does not borrow an unstamped row that belongs to another school', async () => {
+      const service = new SettingsService(
+        makeMockPrisma({
+          appUserFindUnique: jest
+            .fn()
+            .mockResolvedValue({ mashovUserId: 'mashov-a', displayName: 'App User' }),
+          profileFindMany: jest.fn().mockResolvedValue([]),
+          profileFindUnique: jest.fn().mockResolvedValue({
+            // School A's profile: the credential that created the AppUser.
+            upstreamUserId: 'mashov-a',
+            displayName: null,
+            email: 'parent@school-a.example',
+            cellphone: '050-1111111',
+            detailsState: 2,
+            updatedAt: new Date('2026-03-12T09:00:00Z'),
+            householdConnectionId: null,
+          }),
+          householdFindMany: jest.fn().mockResolvedValue([
+            // Newest sign-in is school B, whose own upstream id differs.
+            {
+              id: 'conn-b',
+              schoolName: 'School B',
+              schoolYear: 2026,
+              schoolCode: 2222,
+              upstreamUserId: 'mashov-b',
+            },
+            {
+              id: 'conn-a',
+              schoolName: 'School A',
+              schoolYear: 2026,
+              schoolCode: 1111,
+              upstreamUserId: 'mashov-a',
+            },
+          ]),
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      const result = await service.getProfile('app-user-1');
+
+      // School A's number must not appear under School B's name. It is
+      // attributed to School A, whose upstream id it matches.
+      expect(result).toEqual([
+        expect.objectContaining({
+          householdConnectionId: 'conn-a',
+          schoolName: 'School A',
+          cellphone: '050-1111111',
+        }),
+      ]);
+    });
+
+    it('still borrows an unstamped row when the connection knows no upstream id', async () => {
+      // A connection whose `upstreamUserId` is null cannot contradict the
+      // row, so this keeps today's behaviour rather than blanking the card.
+      const service = new SettingsService(
+        makeMockPrisma({
+          profileFindMany: jest.fn().mockResolvedValue([]),
+          profileFindUnique: jest.fn().mockResolvedValue({
+            upstreamUserId: 'mashov-1',
+            displayName: 'Parent Name',
+            email: 'parent@example.com',
+            cellphone: '050-1234567',
+            detailsState: 2,
+            updatedAt: new Date('2026-03-12T09:00:00Z'),
+            householdConnectionId: null,
+          }),
+          householdFindMany: jest.fn().mockResolvedValue([
+            {
+              id: 'conn-new',
+              schoolName: 'Newest School',
+              schoolYear: 2026,
+              schoolCode: 2222,
+              upstreamUserId: null,
+            },
+          ]),
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      await expect(service.getProfile('app-user-1')).resolves.toEqual([
+        expect.objectContaining({ householdConnectionId: 'conn-new' }),
+      ]);
+    });
+
     // A row stamped to a connection outside the caller's active set is not
     // relabelled with the newest school's name. Being keyed on the caller's
     // own `mashovUserId` makes it theirs, but it is not this school's.

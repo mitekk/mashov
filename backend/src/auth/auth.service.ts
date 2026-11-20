@@ -13,6 +13,7 @@ import { EncryptionService } from '../session/encryption.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
 import { SchoolLinksService } from '../school-links/school-links.service';
 import type { MeSchool } from '../school-links/school-links.service';
+import { householdAdoptionEnabled } from '../common/adoption-flag';
 import {
   createMashovAxios,
   isUpstreamUnreachable,
@@ -358,9 +359,7 @@ export class AuthService {
    * if adoption ever proves to be the wrong call, not as an opt-in.
    */
   private adoptionEnabled(): boolean {
-    const raw = process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
-    if (raw === undefined || raw.trim().length === 0) return true;
-    return raw.trim().toLowerCase() !== 'false';
+    return householdAdoptionEnabled();
   }
 
   /**
