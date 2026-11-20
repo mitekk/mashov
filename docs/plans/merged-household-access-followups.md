@@ -10,9 +10,10 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: **B2** and **B4**, the two operational tasks the plan itself deferred
-(**T13**–**T14**), the **G2** coverage gap, and the minors. Every **R** item is done —
-**R1**–**R17** — along with **G1**, **B1**, **B3** and N1, all kept as record. With batch 6 closed, the refresh envelope's
+What is open: the two operational tasks the plan itself deferred (**T13**–**T14**), the
+**G2** coverage gap, and the minors. **No bug is open at all** — every **B** item is
+done (**B1**–**B4**), as is every **R** item (**R1**–**R17**), along with **G1** and N1,
+all kept as record. With batch 6 closed, the refresh envelope's
 `status` means what it says: `partial` exactly when something in the household
 actually failed, rather than `success` for a school that threw and `partial` for one
 that synced perfectly.
@@ -50,16 +51,19 @@ stays true.
 | 5 | **R7**, **R14** + the `MorePageClient` dead term | **done** | The only frontend items. R14 left a parent looking at an empty mailbox with no way forward, which was the worst *experience* open. The chip is now a server-side `?schoolId=` filter — which admits the unattributed rows, so the list follows the same NULL rule as batch 4's badge — the add-school form clears and re-gates on an edited selection, and the bulk-disconnect modal defaults to the plural copy instead of promising a one-school wipe. |
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | **done** | All three were the refresh envelope lying to the parent — R12 said `success` when a school failed, the minor said `partial` when one succeeded. Closed together, because fixing either alone only makes the others more visible. Three helpers now carry it: `studentScopeForContext` scopes every per-student task to the refreshing connection's children, `reportNoConnectionTarget` opens and fails a run for a connection-scoped refresh with no usable target, and the controller aggregates the envelope worst-wins over `PHASE_RANK`. R11's hole turned out to be in seven tasks, not the four recorded — six connection-loop tasks plus `releases`, the one per-student task missing the `every connection failed` guard. |
 | 7 | **R8**, **R9**, **R10**, **R17** | **done** | Four independent small correctness fixes in the auth/link path — each a branch or a status that meant something other than what it said. R17 turned out not to be a two-line reorder: the orphan lookup it would have moved is a cross-household existence oracle, so `assertLinkable` split into a free pre-limit half and a rate-limited one. R10's recorded precedent was wrong and the fix follows `auth.controller`'s envelope rather than the service's bare `Error`. |
-| 8 | **B2**, **B4** | open | Pre-existing bugs with no dependency on the above. |
+| 8 | **B2**, **B4** | **done** | The two pre-existing bugs, and the only items on the branch that predated it. They shared nothing — different services, different screens, no common seam — so B4 went first and was green and committed before B2 spent the session. B4 turned out worse than "a stale number": the school label and the contact details came from two different queries, so a two-school parent was shown school A's phone number captioned with school B's name. B2 was the whole session: `findForeignOwner` now returns a verdict instead of throwing, the decision moves after the password is proven, and the merge runs in one transaction with the Redis session mirror deleted on both sides of it. See [ADR-0032](../adr/0032-household-merge-trust-model.md). |
 | 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
-Batches 1 through 7 are done: no open item puts one household's data on another's
+Batches 1 through 8 are done: no open item puts one household's data on another's
 *screen*, none puts a household's *request* in another's Mashov account, no reader left
 answers from the whole table, no frontend item is open, the refresh envelope no longer
-misreports what happened, and no status or branch in the auth/link path answers
-something other than what it says. **Batch 8 is next** — two pre-existing bugs with no
-dependency on anything above. **8.5** (**G2**) is parallel with it.
+misreports what happened, no status or branch in the auth/link path answers something
+other than what it says, and no screen captions one school's contact details with
+another's name. **No *bug* is open.** What remains is **T13**–**T14** (the operational
+tasks, needing real second-school credentials and a full cron cycle), **G2** (a coverage
+gap, not a behaviour one) and the minors. **8.5** (**G2**) is next, and parallel with
+anything.
 
 ---
 
@@ -183,28 +187,92 @@ A parent has no reason to know which school to sign into first, so this is reach
 by ordinary use, not by misuse.
 
 **Manual workaround today**: sign into B, `DELETE /api/v1/school-links` to release the
-connection (which sets `userId = null` and keeps the row), then sign into A and add B.
-It works, and it discards B's read/unread and archive flags, which live on the orphan
-`AppUser`.
+connection, then sign into A and add B. It works, and it is far more destructive than
+this paragraph used to claim. It said the unlink "sets `userId = null` and keeps the
+row" and discards only B's read/unread and archive flags. It does not:
+`prepareConnectionDeletion` ends with `householdConnection.delete`
+(`connection.service.ts:452`), so the unlink **deletes** the connection along with its
+children, mail, notifications, releases, activities, parent profile and digest rows —
+B's entire dataset, re-fetched from scratch after the re-add. ADR-0029 carried the same
+wrong claim and is corrected.
 
 **DoD**
-- [ ] `POST /school-links` for a connection owned by *another* `AppUser` offers a
+**Status: FIXED** in `db7a8b7` (the merge) and `a4fb036` (the unlink pointer), with the
+frontend confirm step and [ADR-0032](../adr/0032-household-merge-trust-model.md).
+
+**DoD**
+- [x] `POST /school-links` for a connection owned by *another* `AppUser` offers a
       merge rather than a flat 409, after proving the caller holds that school's
       password (the same authorisation adoption already relies on).
-- [ ] The merge runs in one transaction: connection re-parented with
+      `assertNoForeignOwner` became `findForeignOwner`, returning
+      `{ ownerUserId, connectionId, mergeable }` instead of throwing. The *lookup*
+      stays exactly where **R17** put it — behind the rate limit, because it is an
+      existence oracle on `(schoolCode, username)` across every household — and only
+      the *verdict* moved after `validator.validate`. That strictly **reduces** what an
+      unauthorised caller learns: today's refusal arrived with no password proven at
+      all.
+- [x] The merge runs in one transaction: connection re-parented with
       `linkedByUserId`/`linkedAt`, `mergedIntoUserId` set on the orphan,
       **every orphan `AppSession` revoked including its Redis mirror**,
       `DigestRecipient` re-pointed, non-conflicting `UserItemState` copied and
-      conflicts skipped.
-- [ ] A live orphan session cannot survive the merge into a state where every page
-      silently empties — asserted by test.
-- [ ] `ConnectionService.deleteOneConnection` clears `mergedIntoUserId`, so unlinking
-      genuinely lets a later B sign-in re-form its own household. Without this,
-      ADR-0029's reversibility claim stays false.
-- [ ] `resolveMergedOwner`'s existing one-hop/cycle/self-pointer tests still pass
-      unchanged.
-- [ ] An e2e case covers sign-in-to-B-first → add-B-from-A → both schools' children
-      visible in one session.
+      conflicts skipped — with A's value kept on conflict, because a merge that 500s
+      halfway is worse than one that keeps the surviving household's preference.
+- [x] A live orphan session cannot survive the merge into a state where every page
+      silently empties — asserted in `tests/integration/household-merge.test.ts`
+      against real Redis: the token resolves before the merge and `validateSession`
+      answers `null` after it, with `session:<token>` gone. A mocked Redis cannot prove
+      that, which is why the case is an integration test and not a unit one.
+- [x] `ConnectionService.deleteConnection` clears `mergedIntoUserId`, so unlinking
+      genuinely lets a later B sign-in re-form its own household. (The DoD said
+      `deleteOneConnection`; no such method exists.) Scoped to orphans whose
+      `AppUser.mashovUserId` matches an `upstreamUserId` of the connections being
+      deleted — clearing every pointer at the household would release B's orphan when
+      the parent unlinked **A**, while B's connection was still sitting here.
+- [x] `resolveMergedOwner`'s existing one-hop/cycle/self-pointer tests still pass
+      unchanged. They were never touched; the column now being written is the point.
+      Traced while there: on a post-merge B sign-in the **adoption** branch fires
+      (`existingUser` is B's AppUser, `ownsConnection` is false), so
+      `resolveMergedOwner` is not consulted on the common path at all — it matters only
+      once connection B no longer exists, which unlink's hard delete makes reachable.
+- [x] An e2e case covers the confirm flow: `MERGE_AVAILABLE` → confirm step →
+      `confirmMerge: true` resubmit → the syncing screen for that school, plus a
+      back-out case that sends no second request.
+
+**Done** (batch 8). Four findings worth keeping.
+
+**Batch 7's rate-limit test was adapted, not broken.** The brief said
+`'does spend a rate-limit slot on a foreign-owner refusal'` must stay green *unchanged*.
+It cannot: it stubs `validator.validate` as a bare `jest.fn()` resolving `undefined`, so
+once the decision moves after validation the flow reaches `login.data` and throws
+something else. R17's actual invariant is `incr` being called with
+`ratelimit:school-link:user-1` — the oracle staying bounded — and that assertion is
+verbatim; only the expected code changed, to `MERGE_AVAILABLE`.
+
+**`SchoolActivity` was not in this DoD and had to move.** Required `userId`, no AppUser
+relation, so the orphan's consent rows would have stranded on an AppUser nobody can sign
+into. Re-pointed scoped to the travelling connection, which is what makes it
+collision-free against `[userId, householdConnectionId, schoolYear, activityId]`; a row
+stamped to no connection names no school and stays with the retired AppUser rather than
+risking a collision with the surviving household's own unstamped row.
+
+**`DigestRecipient` conflicts are unreachable.** Its unique key is
+`[studentGuid, channel, address]` and **omits `userId`**, so the same tuple cannot exist
+twice globally and the orphan and A can never hold the same row. The brief's
+skip-on-conflict rule there would have been dead code; a plain `updateMany` re-point is
+collision-free.
+
+**The e2e is a UI contract, not a real sign-in.** The whole suite is route-mocked —
+`tests/e2e/auth.setup.ts` writes a bypass cookie and every spec intercepts
+`**/api/v1/**` — so no spec reaches a real backend and the DoD's literal "sign in to B
+first, add B from A" is not reachable in that harness. The e2e owns the two-step shape;
+the real end-to-end is `tests/integration/household-merge.test.ts` against real Postgres
+and Redis.
+
+**One scope decision.** The merge is offered only when the foreign owner holds no other
+active connection. `AppUser.mergedIntoUserId` is documented as "this AppUser's **only**
+connection was absorbed", so pulling one school out of a live two-school household would
+revoke its sessions and leave the pointer naming a household that still exists. That
+state keeps `409 CONNECTION_ALREADY_LINKED`.
 
 ---
 
@@ -307,11 +375,53 @@ school A's value on `/more`, with nothing indicating which school it came from. 
 originally graded this cosmetic; it is not, because the number shown is the one the
 parent will assume the school has.
 
+**Status: FIXED** in `3df3509`.
+
 **DoD**
-- [ ] `/more` either lists a profile per school, or labels which school the shown
-      details came from.
-- [ ] `GET /settings/profile` returns per-school profiles, or accepts a connection id.
-- [ ] A test covers a two-school household with differing contact details on each.
+- [x] `/more` either lists a profile per school, or labels which school the shown
+      details came from. One card per school, heading pluralised the way the schools
+      section above it already does, `data-testid` suffixed with the connection id so N
+      cards stay individually selectable.
+- [x] `GET /settings/profile` returns per-school profiles, or accepts a connection id.
+      A list, not a `?connectionId=` parameter: the endpoint has exactly one consumer,
+      so an array cost one type and one card change, while a parameter would have
+      pushed school-selection UI onto a screen with no school switcher. The read is
+      `parentProfile.findMany` bounded by the caller's own
+      `{ userId, active: true }` connection ids — never `findFirst`, which is how the
+      original cross-household leak worked — ordered to match `listLinks` so the cards
+      and the school rows beneath them agree.
+- [x] A test covers a two-school household with differing contact details on each —
+      in both the unit spec and `tests/integration/auth.test.ts` against real Postgres.
+
+**Done** (batch 8).
+
+**This was worse than the item said.** It was recorded as a stale value: a parent who
+updated their phone at school B still saw school A's. The real shape is a *mislabel*.
+The school name, year and code came from a `lastLoginAt`-ordered
+`householdConnection.findFirst`, while the contact details came from a
+`parentProfile.findUnique` keyed on `appUser.mashovUserId` — the credential that
+*created* the AppUser, i.e. the first school signed into. Two different queries, which
+for a two-school household name two different schools. `ProfileCard` prints
+`{schoolName} · {schoolYear}` directly under the parent's name with email and phone
+beneath, so the screen presented **school A's phone number captioned as school B's** —
+not a number that was merely old, but one attributed to a school that never held it.
+
+**No migration was needed.** `ParentProfile.householdConnectionId` already existed,
+indexed, nullable and non-unique, and `user-details.task.ts` already stamped it under a
+comment naming this exact fix.
+
+**The `mashovUserId` fallback had to stay, because a null stamp is legitimate** three
+ways: `user-details.task`'s `useSharedSession` branch passes no connection, the
+`20261120010000_connection_scoping` backfill left rows it could not attribute, and
+`onDelete: SetNull` nulls it on unlink. An unstamped row therefore still answers, for
+the newest connection only — today's behaviour, now correctly labelled. A row stamped to
+some *other* connection is deliberately **not** borrowed: it is the caller's own
+profile, but relabelling it with this school's name is the bug itself.
+
+**R8's residual is untouched and still points here.** The `displayName ??
+appUser.displayName` fallback is kept, because nothing writes
+`ParentProfile.displayName` and dropping it would blank the name for every caller — so
+the name shown is still the one the *creating* credential set. Recorded under R8.
 
 ---
 
