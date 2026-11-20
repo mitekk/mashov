@@ -849,10 +849,18 @@ describe('Two parents, one school, shared children', () => {
     });
 
     describe('N1 — the school card belongs to the caller', () => {
-      it("does not show the other household's school", async () => {
-        // `findFirst({ where: { active: true } })` ordered by `lastLoginAt`
-        // desc, so the most recently used household in the whole table won.
-        // Renaming B's school and touching its row makes B that household.
+      it('names no household school at all any more', async () => {
+        // N1 was `findFirst({ where: { active: true } })` ordered by
+        // `lastLoginAt` desc, so the most recently used household in the whole
+        // table won the `school` field. Renaming B's school and touching its
+        // row makes B that household -- which is the seed that made the leak
+        // observable, and is kept so this spec still describes the state N1
+        // was found in.
+        //
+        // T14 deleted the field. On real Postgres, against a fixture where
+        // another household IS the most recent, the assertion is that the
+        // response carries no household-wide school name for it to be wrong
+        // about. Every school label here is per-item, resolved per child.
         await prisma.householdConnection.update({
           where: { id: CONN_B },
           data: { schoolName: 'בית ספר אחר', lastLoginAt: new Date() },
@@ -860,7 +868,8 @@ describe('Two parents, one school, shared children', () => {
 
         const dashboard = await makeDashboard().getDashboard(USER_A);
 
-        expect(dashboard.school.schoolName).toBe('בית ספר משותף');
+        expect(dashboard).not.toHaveProperty('school');
+        expect(JSON.stringify(dashboard)).not.toContain('בית ספר אחר');
       });
     });
   });

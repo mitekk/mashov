@@ -50,9 +50,7 @@
 | GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | planned |
 | POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
-| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, connectedSchool: ConnectedSchool \| null, schools: MeSchool[] }` | 200, 401 | planned |
-| PUT | `/api/v1/connection` | Yes | `{ username?: string, password?: string }` | `{ ok: true }` | 200, 400, 401, 404, 409 | **deprecated** |
-| DELETE | `/api/v1/connection` | Yes | — | `{ ok: true }` | 200, 401, 404 | **deprecated** |
+| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, schools: MeSchool[] }` | 200, 401 | planned |
 
 ### School identity on the data
 
@@ -93,10 +91,21 @@ every page's school badge needs — `['me']` is already cached by the app shell 
 `/school-links` carries the management-only fields. One service method feeds both, so they
 cannot disagree about which schools a household has.
 
-`connectedSchool` is **deprecated**: it is `schools[0]` and cannot describe a household with two
-schools. `PUT`/`DELETE /connection` are deprecated aliases over the same service methods as
-`/school-links`; `PUT` means "the most recently used school" and `DELETE` means "every school",
-the only things they can mean since both predate a household having more than one.
+**Removed in T14**, and recorded here because a client written against an older copy of this
+table will have read them:
+
+- `me.connectedSchool` was `schools[0]` under a singular name, so it could not describe a
+  household with two schools. Use `me.schools`; `isPrimary` on `/school-links` is the only
+  remaining "most recently used" hint, and it is a display hint.
+- `DashboardResponse.school` was the household's most recently used connection, with the same
+  problem. Every school label on that response is per-item now (`schoolId`,
+  `schoolShortLabel`), resolved per child.
+- `PUT`/`DELETE /api/v1/connection` were aliases over the same service methods as
+  `/school-links`; `PUT` meant "the most recently used school" and `DELETE` meant "every
+  school", the only things they could mean since both predate a household having more than
+  one. Use `PUT /api/v1/school-links/:id` and `DELETE /api/v1/school-links` — note the latter
+  answers **204 with no body** where the alias answered `200 { ok: true }`. Both paths now
+  404.
 
 | Method | Path | Auth | Request | Response | Codes |
 |---|---|---|---|---|---|

@@ -795,9 +795,9 @@ export class SchoolLinksService {
       schoolYear: connection.schoolYear,
       username: connection.username,
       childrenCount: countByConnection.get(connection.id) ?? 0,
-      // The most recently used school. It is a display hint only -- nothing
-      // reads it for scoping, and the deprecated `connectedSchool` is built
-      // from the same first element.
+      // The most recently used school. A display hint only: nothing reads it
+      // for scoping, and since T14 deleted `me.connectedSchool` it is the one
+      // place left that calls any school primary.
       isPrimary: index === 0,
       lastLoginAt: connection.lastLoginAt?.toISOString() ?? null,
       lastSyncAt: lastSyncByConnection.get(connection.id)?.toISOString() ?? null,

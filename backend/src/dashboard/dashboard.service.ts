@@ -101,20 +101,23 @@ export class DashboardService {
     // query count stays flat.
     const mailScope = await householdMailScope(this.prisma, userId);
 
-    const [students, summary, feed, freshness, school] = await Promise.all([
+    const [students, summary, feed, freshness] = await Promise.all([
       this.getChildren(yearScope, userId),
       this.getSummary(yearScope, mailScope, userId),
       this.getFeed(windowScope, mailScope, userId),
       this.getFreshness(userId),
-      this.getSchoolInfo(userId),
     ]);
 
+    // No `school` field: it was the household's most recently used connection
+    // under a singular name, which cannot describe two schools -- and in the
+    // form N1 found it (no `userId`) it was another household's school name on
+    // this parent's dashboard. Deleted in T14; every school label on this
+    // response is per-item, resolved through `buildStudentSchoolMap`.
     return {
       freshness,
       summary,
       feed,
       children: students,
-      school,
     };
   }
 
@@ -431,27 +434,6 @@ export class DashboardService {
       state: result.state,
       lastSyncAt: result.lastSyncAt,
       staleSources: result.staleSources,
-    };
-  }
-
-  /**
-   * The deprecated `school` field, due for deletion in T14.
-   *
-   * N1: `{ active: true }` with no `userId` read whichever household had
-   * logged in most recently, so a single-school parent could be shown another
-   * household's `schoolName` and `schoolYear` on their own dashboard. Still a
-   * cross-household read on the screen today, whatever its future.
-   */
-  private async getSchoolInfo(userId?: string) {
-    const household = await this.prisma.householdConnection.findFirst({
-      where: { active: true, ...(userId ? { userId } : {}) },
-      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-      select: { schoolName: true, schoolYear: true },
-    });
-
-    return {
-      schoolName: household?.schoolName ?? '',
-      schoolYear: household?.schoolYear ?? new Date().getFullYear(),
     };
   }
 

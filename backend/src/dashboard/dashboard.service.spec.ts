@@ -236,6 +236,28 @@ const CURRENT_YEAR_ONLY = yearWhere(2027);
 
 describe('DashboardService', () => {
   describe('getDashboard', () => {
+    it('carries no deprecated `school` field (T14)', async () => {
+      // It was the household's most recently used connection under a singular
+      // name, so it could not describe two schools -- and N1 was this exact
+      // read without a `userId`, putting another household's school name on a
+      // single-school parent's dashboard. Every per-item school label is
+      // `schoolId`/`schoolShortLabel` now, resolved per child.
+      //
+      // Asserted as an absent KEY: a falsy check would also pass against the
+      // field still being there and empty, which is what it answered for a
+      // parent with no connection.
+      const { service } = makeService({ startYear: '2026' });
+
+      const result = await service.getDashboard('user-1');
+
+      expect(Object.keys(result).sort()).toEqual([
+        'children',
+        'feed',
+        'freshness',
+        'summary',
+      ]);
+    });
+
     it('includes a prior-year item in the latest-20 lists once the window is open', async () => {
       const { service, homeworkFindMany } = makeService({
         startYear: '2026',
@@ -360,19 +382,19 @@ describe('DashboardService', () => {
       expect(result.summary.newConversations).toBe(7);
     });
 
-    it('scopes the school card to the caller (N1)', async () => {
+    it('reads no connection for a school card at all any more (N1)', async () => {
+      // N1 was the deprecated `school` field: a `findFirst` on
+      // `{ active: true }` with no `userId`, which showed a single-school
+      // parent another household's school name. Batch 3 scoped it to the
+      // caller; T14 deleted the field, so the read is gone rather than
+      // narrowed. That is the stronger assertion, and the one that survives:
+      // a `userId` predicate can be dropped again, an absent query cannot
+      // leak.
       const { service, connectionFindFirst } = makeService();
 
       await service.getDashboard('user-1');
 
-      // The deprecated `school` field, due for deletion in T14, but a
-      // cross-household read on the screen until then: `{ active: true }`
-      // alone showed a single-school parent another household's school.
-      expect(connectionFindFirst).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { active: true, userId: 'user-1' },
-        }),
-      );
+      expect(connectionFindFirst).not.toHaveBeenCalled();
     });
 
     it('leaves the caller-less reads unscoped', async () => {
@@ -382,9 +404,8 @@ describe('DashboardService', () => {
       await service.getDashboard();
 
       expect(mailFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
-      expect(connectionFindFirst).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { active: true } }),
-      );
+      // Caller-less too: nothing on this response names a household's school.
+      expect(connectionFindFirst).not.toHaveBeenCalled();
     });
   });
 });

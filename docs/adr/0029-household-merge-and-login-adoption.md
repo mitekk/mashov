@@ -154,10 +154,12 @@ only one linked school.** True in practice — a child is enrolled at one school
 `studentGuid` key across six tables is the price of expressing otherwise, and it is not paid
 here.
 
-**Deprecated for one release.** `me.connectedSchool` and `DashboardResponse.school` both encode
-"the household has one school" and are populated from the first element of the new list.
-`PUT /connection` and `DELETE /connection` are aliases over the same service methods as
-`/school-links`.
+**Deprecated for one release — and now removed (T14).** `me.connectedSchool` and
+`DashboardResponse.school` both encoded "the household has one school" and were populated from
+the first element of the new list; `PUT /connection` and `DELETE /connection` were aliases over
+the same service methods as `/school-links`. All four are gone: the two fields are absent keys
+rather than nulls, and both `/connection` paths 404. `docs/api-contract.md` carries the
+migration note for a client written against an older copy of the table.
 
 ## Alternatives considered
 

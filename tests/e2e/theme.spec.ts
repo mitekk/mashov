@@ -17,7 +17,6 @@ async function mockCoreRoutes(page: Page) {
       mashovUserId: 'theme-user-1',
       username: 'theme-parent',
       displayName: 'Theme Parent',
-      connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
       schools: [
         {
           id: 'conn-mock-1',
@@ -54,7 +53,6 @@ async function mockCoreRoutes(page: Page) {
           oneLineStatus: 'ok',
         },
       ],
-      school: { schoolName: 'Test School', schoolYear: 2026 },
     }),
   );
 

@@ -609,8 +609,16 @@ describe('AuthService', () => {
 
       const result = await service.getMe('user-1');
 
-      expect(result.connectedSchool).toEqual({ schoolName: 'My School', schoolYear: 2026 });
       expect(result.username).toBe('test');
+      expect(result.schools).toEqual([
+        {
+          id: 'conn-1',
+          semel: 540175,
+          schoolName: 'My School',
+          shortLabel: 'My School',
+          schoolYear: 2026,
+        },
+      ]);
     });
 
     it('returns every connected school, newest sign-in first', async () => {
@@ -630,9 +638,12 @@ describe('AuthService', () => {
       expect(result.schools.map((school) => school.id)).toEqual(['conn-b', 'conn-a']);
     });
 
-    it('builds the deprecated connectedSchool from schools[0]', async () => {
-      // Derived rather than queried separately, so the two cannot disagree
-      // about which school is primary.
+    it('carries no `connectedSchool`, in either shape (T14)', async () => {
+      // It was `schools[0]` under a singular name, and a household with two
+      // schools has no primary one -- so the honest fix is deletion, not a
+      // better query. Asserted as an absent KEY rather than a falsy value:
+      // `toBeUndefined()` would also pass against `connectedSchool: null`,
+      // which is the field still being there and empty.
       mockPrisma.appUser.findUnique.mockResolvedValue({
         id: 'user-1',
         mashovUserId: 'mashov-1',
@@ -646,7 +657,12 @@ describe('AuthService', () => {
 
       const result = await service.getMe('user-1');
 
-      expect(result.connectedSchool).toEqual({ schoolName: 'B', schoolYear: 2027 });
+      expect(Object.keys(result).sort()).toEqual([
+        'displayName',
+        'mashovUserId',
+        'schools',
+        'username',
+      ]);
     });
 
     it('returns an empty schools list rather than omitting it', async () => {
@@ -663,7 +679,6 @@ describe('AuthService', () => {
       const result = await service.getMe('user-1');
 
       expect(result.schools).toEqual([]);
-      expect(result.connectedSchool).toBeNull();
     });
 
     it('throws 401 when user not found', async () => {
@@ -671,12 +686,28 @@ describe('AuthService', () => {
       await expect(service.getMe('ghost')).rejects.toThrow(UnauthorizedException);
     });
 
-    it('returns null connectedSchool when no active connection', async () => {
-      mockPrisma.appUser.findUnique.mockResolvedValue({ id: 'u1', mashovUserId: 'm1', username: 'u', displayName: 'U' });
-      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    it('still answers for a user with no active connection', async () => {
+      // The empty household used to be interesting because it was the one
+      // state `connectedSchool` was null in. What has to stay true without it
+      // is that `getMe` answers at all rather than throwing -- it is the app
+      // shell's first read, and a parent between unlinking and re-linking
+      // reaches it.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'u1',
+        mashovUserId: 'm1',
+        username: 'u',
+        displayName: 'U',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
 
       const result = await service.getMe('u1');
-      expect(result.connectedSchool).toBeNull();
+
+      expect(result).toEqual({
+        mashovUserId: 'm1',
+        username: 'u',
+        displayName: 'U',
+        schools: [],
+      });
     });
   });
 

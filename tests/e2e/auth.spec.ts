@@ -44,7 +44,6 @@ const MOCK_ME = {
   mashovUserId: 'mock-user-001',
   username: 'testparent',
   displayName: 'Test Parent',
-  connectedSchool: { schoolName: 'בית ספר לדוגמה', schoolYear: 2026 },
   schools: [
     {
       id: 'conn-mock-1',
@@ -61,7 +60,6 @@ const MOCK_EMPTY_DASHBOARD = {
   summary: { newConversations: 0, recentHomeworkCount: 0, recentBehaviorCount: 0, childrenCount: 0 },
   feed: [],
   children: [],
-  school: { schoolName: 'בית ספר לדוגמה', schoolYear: 2026 },
 };
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000';

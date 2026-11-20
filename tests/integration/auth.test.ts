@@ -6,7 +6,8 @@
  * - GET  /api/v1/auth/me (with and without cookie)
  * - DELETE /api/v1/auth/session (logout)
  * - Session validation paths: Redis cache-hit, cache-miss, revoked, expired
- * - PUT  /api/v1/connection and DELETE /api/v1/connection
+ * - PUT  /api/v1/school-links/:id and DELETE /api/v1/school-links, plus the
+ *   retired /api/v1/connection aliases they replaced (T14)
  * - User isolation: two users cannot see each other's data
  * - Security headers: HttpOnly, SameSite on Set-Cookie
  * - Password never returned in any response
@@ -614,39 +615,92 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // PUT /api/v1/connection
+  // The retired /connection aliases (T14)
   // ──────────────────────────────────────────────────────────────────────────
 
-  describe('PUT /api/v1/connection', () => {
-    it('returns 200 ok when connection update succeeds', async () => {
+  /**
+   * `PUT`/`DELETE /api/v1/connection` were documented aliases over the same
+   * service methods `/school-links` calls, kept "for one release" while the
+   * frontend stopped reading them. T14 deleted the controller, and these two
+   * specs are what stop it coming back by accident -- a reinstated alias means
+   * a second route reaching `deleteConnection(userId)` with no connection id,
+   * which is the shape that could only ever mean "every school".
+   *
+   * 404 rather than 405: Nest has no `connection` controller at all now, so
+   * there is no route to answer the method.
+   */
+  describe('the retired /connection aliases', () => {
+    it('answers 404 for both verbs, with a session', async () => {
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'connretired', password: 'pass' });
+
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const put = await request(app.getHttpServer())
+        .put('/api/v1/connection')
+        .set('Cookie', `mashov_session=${sessionCookie}`)
+        .send({ username: 'newuser', password: 'newpass' });
+      expect(put.status).toBe(404);
+
+      const del = await request(app.getHttpServer())
+        .delete('/api/v1/connection')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+      expect(del.status).toBe(404);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PUT /api/v1/school-links/:id
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * The successor to the `PUT /connection` spec above, which was the only
+   * HTTP-level coverage either verb had. Same assertion, addressed to one
+   * school by id rather than to "the most recently used one".
+   */
+  describe('PUT /api/v1/school-links/:id', () => {
+    it('returns 200 ok when the credentials update succeeds', async () => {
       const loginRes = await request(app.getHttpServer())
         .post('/api/v1/auth/login')
         .send({ semel: 540175, username: 'connupdate', password: 'oldpass' });
 
       const sessionCookie = extractSessionCookie(loginRes);
 
-      // Mock upstream re-validation in ConnectionService
-      const connService = app.get(
-        (await import('../../backend/src/connection/connection.service')).ConnectionService,
+      const user = await prisma.appUser.findFirst({ where: { username: 'connupdate' } });
+      const link = await prisma.householdConnection.findFirst({
+        where: { userId: user!.id },
+      });
+      expect(link).not.toBeNull();
+
+      // Upstream re-validation is mocked: this spec is about the route, the
+      // guard and the envelope, not about Mashov accepting a password.
+      const linksService = app.get(
+        (await import('../../backend/src/school-links/school-links.service'))
+          .SchoolLinksService,
       );
       const updateSpy = jest
-        .spyOn(connService, 'updateConnection')
-        .mockResolvedValueOnce({ ok: true });
+        .spyOn(linksService, 'updateLink')
+        .mockResolvedValueOnce({ ok: true } as never);
 
       const res = await request(app.getHttpServer())
-        .put('/api/v1/connection')
+        .put(`/api/v1/school-links/${link!.id}`)
         .set('Cookie', `mashov_session=${sessionCookie}`)
         .send({ username: 'newuser', password: 'newpass' });
 
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(true);
+      expect(updateSpy).toHaveBeenCalledWith(user!.id, link!.id, {
+        username: 'newuser',
+        password: 'newpass',
+      });
 
       updateSpy.mockRestore();
     });
 
     it('returns 401 when no session cookie provided', async () => {
       const res = await request(app.getHttpServer())
-        .put('/api/v1/connection')
+        .put('/api/v1/school-links/any-id')
         .send({ username: 'user', password: 'pass' });
 
       expect(res.status).toBe(401);
@@ -654,10 +708,10 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
   });
 
   // ──────────────────────────────────────────────────────────────────────────
-  // DELETE /api/v1/connection
+  // DELETE /api/v1/school-links
   // ──────────────────────────────────────────────────────────────────────────
 
-  describe('DELETE /api/v1/connection', () => {
+  describe('DELETE /api/v1/school-links', () => {
     it('removes all associated data but preserves app_user record', async () => {
       // Seed a student tied to this user's connection
       const loginRes = await request(app.getHttpServer())
@@ -684,11 +738,14 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
       });
 
       const res = await request(app.getHttpServer())
-        .delete('/api/v1/connection')
+        .delete('/api/v1/school-links')
         .set('Cookie', `mashov_session=${sessionCookie}`);
 
-      expect(res.status).toBe(200);
-      expect(res.body.ok).toBe(true);
+      // 204 and no body, per `.claude/rules/api.md`. The retired alias
+      // answered 200 with `{ ok: true }`, which is the one observable
+      // difference between the two and the reason this is not a rename.
+      expect(res.status).toBe(204);
+      expect(res.body).toEqual({});
 
       // Connection deleted
       const conn = await prisma.householdConnection.findFirst({
@@ -702,7 +759,7 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
     });
 
     it('returns 401 when no session cookie provided', async () => {
-      const res = await request(app.getHttpServer()).delete('/api/v1/connection');
+      const res = await request(app.getHttpServer()).delete('/api/v1/school-links');
       expect(res.status).toBe(401);
     });
   });

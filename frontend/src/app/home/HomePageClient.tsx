@@ -36,10 +36,6 @@ const EMPTY_DASHBOARD: DashboardResponse = {
   },
   feed: [],
   children: [],
-  school: {
-    schoolName: '',
-    schoolYear: new Date().getFullYear(),
-  },
 };
 
 function HomePageContent() {

@@ -92,17 +92,11 @@ export interface DashboardChildCard {
   schoolShortLabel: string | null;
 }
 
-export interface SchoolInfo {
-  schoolName: string;
-  schoolYear: number;
-}
-
 export interface DashboardResponse {
   freshness: FreshnessStatus;
   summary: DashboardSummary;
   feed: FeedItem[];
   children: DashboardChildCard[];
-  school: SchoolInfo;
 }
 
 // ─── Feed ──────────────────────────────────────────────────────────────────
@@ -581,11 +575,6 @@ export interface MailBulkActionResponse {
 
 // ─── Auth / User ───────────────────────────────────────────────────────────
 
-export interface ConnectedSchool {
-  schoolName: string;
-  schoolYear: number;
-}
-
 /** The slice of a school link every page's badge needs. */
 export interface MeSchool {
   id: string;
@@ -600,8 +589,6 @@ export interface AppUser {
   mashovUserId: string;
   username: string;
   displayName: string;
-  /** @deprecated use `schools`; this is `schools[0]` and cannot describe two. */
-  connectedSchool: ConnectedSchool | null;
   /**
    * Every connected school, newest sign-in first; `[]` when none.
    *

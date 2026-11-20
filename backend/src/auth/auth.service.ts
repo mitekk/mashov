@@ -544,8 +544,6 @@ export class AuthService {
     mashovUserId: string;
     username: string;
     displayName: string;
-    /** @deprecated kept for one release; built from `schools[0]`. */
-    connectedSchool: { schoolName: string; schoolYear: number } | null;
     schools: MeSchool[];
   }> {
     const appUser = await this.prisma.appUser.findUnique({
@@ -563,23 +561,13 @@ export class AuthService {
     // GET /school-links carries only the management-only fields on top.
     const schools = await this.schoolLinksService.listMeSchools(userId);
 
-    // Built from schools[0] rather than its own query, so the two can never
-    // disagree about which school is primary. Deprecated: it cannot honestly
-    // describe a household with two schools, and the frontend stops reading it
-    // in the cleanup step.
-    const connectedSchool =
-      schools.length > 0
-        ? {
-            schoolName: schools[0].schoolName,
-            schoolYear: schools[0].schoolYear,
-          }
-        : null;
-
+    // `connectedSchool` used to ride along here as `schools[0]` under a
+    // singular name. Deleted in T14: a household with two schools has no
+    // primary one, so there was no query that could have made it honest.
     return {
       mashovUserId: appUser.mashovUserId,
       username: appUser.username,
       displayName: appUser.displayName,
-      connectedSchool,
       schools,
     };
   }

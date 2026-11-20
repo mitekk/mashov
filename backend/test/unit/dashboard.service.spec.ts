@@ -112,14 +112,13 @@ describe('DashboardService', () => {
       expect(result).toHaveProperty('feed');
       expect(result).toHaveProperty('children');
       expect(result).toHaveProperty('freshness');
-      expect(result).toHaveProperty('school');
+      // `school` was the household's most recently used connection under a
+      // singular name; T14 removed it, and every school label on this
+      // response is per-item now.
+      expect(result).not.toHaveProperty('school');
 
       expect(result.freshness).toHaveProperty('state');
       expect(result.freshness).toHaveProperty('lastSyncAt');
-      expect(result.school).toEqual({
-        schoolName: 'Test School',
-        schoolYear: 2026,
-      });
     });
 
     it('summary uses newConversations key (not unreadConversations)', async () => {

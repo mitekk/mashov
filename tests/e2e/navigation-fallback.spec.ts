@@ -20,7 +20,6 @@ async function mockBaseRoutes(page: Page) {
       mashovUserId: 'nav-user-1',
       username: 'nav-parent',
       displayName: 'Navigation Parent',
-      connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
       schools: [
         {
           id: 'conn-mock-1',
@@ -76,7 +75,6 @@ async function mockBaseRoutes(page: Page) {
           oneLineStatus: '1 homework',
         },
       ],
-      school: { schoolName: 'Test School', schoolYear: 2026 },
     }),
   );
 
@@ -650,7 +648,6 @@ test.describe('Navigation and fallback hardening', () => {
           },
         ],
         children: [],
-        school: { schoolName: 'Test', schoolYear: 2026 },
       }),
     );
     await page.route('**/api/v1/sync/refresh', (route) =>

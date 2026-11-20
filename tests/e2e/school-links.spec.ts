@@ -66,10 +66,6 @@ async function seed(
         mashovUserId: 'e2e-parent-1',
         username: 'e2e-parent',
         displayName: 'E2E Parent',
-        connectedSchool: {
-          schoolName: options.schools[0]?.schoolName ?? '',
-          schoolYear: options.schools[0]?.schoolYear ?? 2026,
-        },
         schools: options.schools,
       },
     }),
@@ -128,7 +124,6 @@ async function seed(
         },
         feed: [],
         children: [],
-        school: { schoolName: '', schoolYear: 2026 },
       },
     }),
   );
