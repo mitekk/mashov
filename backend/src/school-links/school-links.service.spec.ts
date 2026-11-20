@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchoolLinksService } from './school-links.service';
 
@@ -57,6 +58,7 @@ function makeService(
     validator?: unknown;
     sync?: unknown;
     connectionService?: unknown;
+    appSession?: unknown;
   } = {},
 ) {
   return new SchoolLinksService(
@@ -64,6 +66,7 @@ function makeService(
     (overrides.redis ?? {
       incr: jest.fn().mockResolvedValue(1),
       expire: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
     }) as never,
     (overrides.encryption ?? { encrypt: jest.fn((value: string) => `enc:${value}`) }) as never,
     (overrides.schoolYear ?? {
@@ -76,6 +79,9 @@ function makeService(
     (overrides.connectionService ?? {
       updateConnection: jest.fn().mockResolvedValue({ ok: true }),
       deleteConnection: jest.fn().mockResolvedValue({ ok: true }),
+    }) as never,
+    (overrides.appSession ?? {
+      revokeAllSessionsForUser: jest.fn().mockResolvedValue(undefined),
     }) as never,
   );
 }
@@ -264,18 +270,58 @@ describe('SchoolLinksService.createLink', () => {
   function makePrisma(options: {
     existing?: Array<{ id: string; schoolCode: number; username: string }>;
     orphanUserId?: string | null;
+    /** Active connections the foreign owner holds BESIDES the one being added. */
+    orphanOtherActive?: number;
+    orphanSessions?: Array<{ sessionToken: string }>;
+    orphanItemStates?: Array<Record<string, unknown>>;
   } = {}) {
     const upsert = jest.fn().mockResolvedValue({ id: 'conn-new' });
     const studentUpsert = jest.fn().mockResolvedValue({});
     const linkUpsert = jest.fn().mockResolvedValue({});
     const studentUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
 
+    // Everything the merge transaction writes. `$transaction` runs the
+    // callback against this same object, which is how the assertions below
+    // see the writes without a real database.
+    const connectionUpdate = jest.fn().mockResolvedValue({ id: 'conn-foreign' });
+    const appUserUpdate = jest.fn().mockResolvedValue({});
+    const sessionFindMany = jest
+      .fn()
+      .mockResolvedValue(options.orphanSessions ?? [{ sessionToken: 'tok-orphan' }]);
+    const sessionUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const digestUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const activityUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const itemStateFindMany = jest
+      .fn()
+      .mockResolvedValue(options.orphanItemStates ?? []);
+    const itemStateCreateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const connectionCount = jest
+      .fn()
+      .mockResolvedValue(options.orphanOtherActive ?? 0);
+
+    const prisma: Record<string, unknown> = {};
+    const transaction = jest.fn((arg: unknown) =>
+      typeof arg === 'function'
+        ? (arg as (tx: unknown) => Promise<unknown>)(prisma)
+        : Promise.resolve([]),
+    );
+
     return {
       upsert,
       studentUpsert,
       linkUpsert,
       studentUpdateMany,
-      prisma: {
+      connectionUpdate,
+      appUserUpdate,
+      sessionFindMany,
+      sessionUpdateMany,
+      digestUpdateMany,
+      activityUpdateMany,
+      itemStateFindMany,
+      itemStateCreateMany,
+      connectionCount,
+      transaction,
+      prisma: Object.assign(prisma, {
         householdConnection: {
           findMany: jest.fn(({ select }) =>
             Promise.resolve(
@@ -297,10 +343,24 @@ describe('SchoolLinksService.createLink', () => {
             ),
           ),
           findUnique: jest.fn().mockResolvedValue(
-            options.orphanUserId === undefined ? null : { userId: options.orphanUserId },
+            options.orphanUserId === undefined
+              ? null
+              : {
+                  id: 'conn-foreign',
+                  userId: options.orphanUserId,
+                  upstreamUserId: 'mashov-foreign',
+                },
           ),
+          count: connectionCount,
+          update: connectionUpdate,
           upsert,
         },
+        appUser: { update: appUserUpdate },
+        appSession: { findMany: sessionFindMany, updateMany: sessionUpdateMany },
+        digestRecipient: { updateMany: digestUpdateMany },
+        schoolActivity: { updateMany: activityUpdateMany },
+        userItemState: { findMany: itemStateFindMany, createMany: itemStateCreateMany },
+        $transaction: transaction,
         studentConnection: {
           upsert: linkUpsert,
           groupBy: jest.fn().mockResolvedValue([
@@ -312,7 +372,7 @@ describe('SchoolLinksService.createLink', () => {
           updateMany: studentUpdateMany,
         },
         syncRun: { groupBy: jest.fn().mockResolvedValue([]) },
-      } as unknown as PrismaService,
+      }) as unknown as PrismaService,
     };
   }
 
@@ -438,15 +498,221 @@ describe('SchoolLinksService.createLink', () => {
       ).rejects.toMatchObject({ response: { error: { code: 'LIMIT_REACHED' } } });
     });
 
-    it("refuses an account already owned by another household", async () => {
+    // B2. This used to be a flat `CONNECTION_ALREADY_LINKED` with no way
+    // forward in the app: a parent who signed into school B first could never
+    // add B from school A's session, and nothing explained why. It is now an
+    // offer -- but only once the caller has proved they hold that school's
+    // password, which is the same authorisation adoption relies on
+    // (ADR-0029). The stub therefore has to resolve a real login payload; a
+    // bare `jest.fn()` no longer reaches the decision.
+    it('offers a merge for an account another household owns', async () => {
+      const { prisma, upsert } = makePrisma({ orphanUserId: 'someone-else' });
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+      });
+
+      await expect(
+        service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' }),
+      ).rejects.toMatchObject({
+        response: {
+          error: {
+            code: 'MERGE_AVAILABLE',
+            // What the parent needs to recognise the household, and nothing
+            // more: no email, no phone, no other parent's name.
+            merge: { schoolName: 'תיכון רמון', childrenCount: 1 },
+          },
+        },
+      });
+      // Two calls, not one. A merge revokes another household's sessions and
+      // moves its state; it must not ride along on submitting the form.
+      expect(upsert).not.toHaveBeenCalled();
+    });
+
+    // A wrong password must answer the same thing it answers for any school.
+    // Deciding the merge after validation strictly REDUCES what a caller
+    // learns: today's refusal arrives with no password proven at all.
+    it('answers INVALID_CREDENTIALS with no hint that the account exists elsewhere', async () => {
       const { prisma } = makePrisma({ orphanUserId: 'someone-else' });
-      const service = makeService(prisma, { validator: { validate: jest.fn() } });
+      const service = makeService(prisma, {
+        validator: {
+          validate: jest.fn().mockRejectedValue(
+            new UnauthorizedException({
+              error: { code: 'INVALID_CREDENTIALS', message: 'bad', details: [] },
+            }),
+          ),
+        },
+      });
+
+      const error = await service
+        .createLink('user-1', { semel: 999999, username: 'parent-b', password: 'wrong' })
+        .then(
+          () => null,
+          (err: unknown) => err,
+        );
+
+      expect(error).toMatchObject({
+        response: { error: { code: 'INVALID_CREDENTIALS' } },
+      });
+      expect(JSON.stringify(error)).not.toContain('MERGE');
+      expect(JSON.stringify(error)).not.toContain('someone-else');
+    });
+
+    // `AppUser.mergedIntoUserId` is defined for the case where the AppUser's
+    // ONLY connection was absorbed. A household actively using two schools is
+    // not an orphan, and pulling one school out of it would leave the pointer
+    // naming a household that still exists -- so that state keeps today's
+    // refusal.
+    it('refuses rather than offers when the other household has more schools', async () => {
+      const { prisma } = makePrisma({
+        orphanUserId: 'someone-else',
+        orphanOtherActive: 1,
+      });
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+      });
 
       await expect(
         service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' }),
       ).rejects.toMatchObject({
         response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
       });
+    });
+
+    it('performs the merge when the parent confirms it', async () => {
+      const {
+        prisma,
+        connectionUpdate,
+        appUserUpdate,
+        sessionUpdateMany,
+        digestUpdateMany,
+        activityUpdateMany,
+        itemStateCreateMany,
+        transaction,
+        upsert,
+      } = makePrisma({
+        orphanUserId: 'someone-else',
+        orphanItemStates: [
+          { userId: 'someone-else', itemType: 'homework', itemId: 'hw-1', isNew: false, isArchived: true },
+        ],
+      });
+      const revokeAllSessionsForUser = jest.fn().mockResolvedValue(undefined);
+      const del = jest.fn().mockResolvedValue(undefined);
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+        redis: { incr: jest.fn().mockResolvedValue(1), expire: jest.fn(), del },
+        appSession: { revokeAllSessionsForUser },
+      });
+
+      await expect(
+        service.createLink('user-1', {
+          semel: 999999,
+          username: 'parent-b',
+          password: 'pw',
+          confirmMerge: true,
+        }),
+      ).resolves.toBeTruthy();
+
+      expect(transaction).toHaveBeenCalled();
+      // Re-parented with the audit fields: who asserted "this account is
+      // mine", and when. Nothing reads them for scoping (ADR-0029).
+      expect(connectionUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'conn-foreign' },
+          data: expect.objectContaining({ userId: 'user-1', linkedByUserId: 'user-1' }),
+        }),
+      );
+      expect(appUserUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'someone-else' },
+          data: { mergedIntoUserId: 'user-1' },
+        }),
+      );
+      expect(sessionUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'someone-else', revokedAt: null },
+        }),
+      );
+      // The Redis mirror is what actually ends a session: `validateSession`
+      // answers from `session:<token>` without consulting the DB, so a row
+      // revoked in Postgres stays live until the key is gone. Deleted both
+      // before the transaction (self-healing on rollback) and after it
+      // (closing the repopulation race).
+      expect(del).toHaveBeenCalledWith('session:tok-orphan');
+      expect(revokeAllSessionsForUser).toHaveBeenCalledWith('someone-else');
+      expect(digestUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'someone-else' },
+          data: { userId: 'user-1' },
+        }),
+      );
+      expect(activityUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'someone-else', householdConnectionId: 'conn-foreign' },
+          data: { userId: 'user-1' },
+        }),
+      );
+      // Copied, not moved, and conflicts skipped: the surviving household's
+      // own value for an item it already has wins, because a merge that 500s
+      // halfway is worse than one that keeps A's preference.
+      expect(itemStateCreateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skipDuplicates: true,
+          data: [
+            {
+              userId: 'user-1',
+              itemType: 'homework',
+              itemId: 'hw-1',
+              isNew: false,
+              isArchived: true,
+            },
+          ],
+        }),
+      );
+      // And the link is then persisted as any other link is.
+      expect(upsert).toHaveBeenCalled();
+    });
+
+    it('ignores confirmMerge when there is no foreign owner to merge', async () => {
+      const { prisma, transaction, appUserUpdate, upsert } = makePrisma({
+        orphanUserId: null,
+      });
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+      });
+
+      await expect(
+        service.createLink('user-1', {
+          semel: 999999,
+          username: 'parent-b',
+          password: 'pw',
+          confirmMerge: true,
+        }),
+      ).resolves.toBeTruthy();
+      expect(transaction).not.toHaveBeenCalled();
+      expect(appUserUpdate).not.toHaveBeenCalled();
+      expect(upsert).toHaveBeenCalled();
+    });
+
+    it('refuses to merge a household with more schools even when confirmed', async () => {
+      const { prisma, transaction } = makePrisma({
+        orphanUserId: 'someone-else',
+        orphanOtherActive: 2,
+      });
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+      });
+
+      await expect(
+        service.createLink('user-1', {
+          semel: 999999,
+          username: 'parent-b',
+          password: 'pw',
+          confirmMerge: true,
+        }),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
+      });
+      expect(transaction).not.toHaveBeenCalled();
     });
 
     it('re-parents an unowned connection rather than refusing it', async () => {
@@ -525,17 +791,22 @@ describe('SchoolLinksService.createLink', () => {
       // an authenticated attacker must not be able to probe it unbounded to
       // enumerate parent usernames per school. That one check stays behind
       // the limit.
+      //
+      // B2 moved the *decision* after credential validation, so this case now
+      // ends in MERGE_AVAILABLE rather than a flat refusal -- but R17's
+      // invariant is about the lookup, not the verdict: the oracle stays
+      // behind the limit either way.
       const { prisma } = makePrisma({ orphanUserId: 'someone-else' });
       const incr = jest.fn().mockResolvedValue(1);
       const service = makeService(prisma, {
         redis: { incr, expire: jest.fn() },
-        validator: { validate: jest.fn() },
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
       });
 
       await expect(
         service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' }),
       ).rejects.toMatchObject({
-        response: { error: { code: 'CONNECTION_ALREADY_LINKED' } },
+        response: { error: { code: 'MERGE_AVAILABLE' } },
       });
       expect(incr).toHaveBeenCalledWith('ratelimit:school-link:user-1');
     });

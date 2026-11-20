@@ -11,7 +11,7 @@ import {
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
-import { IsInt, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, MinLength } from 'class-validator';
 import { Type } from 'class-transformer';
 import type { Request } from 'express';
 import { SchoolLinksService } from './school-links.service';
@@ -39,6 +39,18 @@ class CreateSchoolLinkDto {
   @IsString()
   @MinLength(1)
   password!: string;
+
+  /**
+   * The parent's explicit yes to absorbing another household's school.
+   *
+   * Absent or false, a school another household owns answers
+   * `409 MERGE_AVAILABLE` once the password is proven; the confirm is this
+   * same POST with the credentials the form still holds. A merge revokes the
+   * other household's sessions, so it never rides along on the first submit.
+   */
+  @IsOptional()
+  @IsBoolean()
+  confirmMerge?: boolean;
 }
 
 class UpdateSchoolLinkDto {

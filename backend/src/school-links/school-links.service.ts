@@ -14,6 +14,7 @@ import { SchoolYearService } from '../common/school-year/school-year.service';
 import { SyncService } from '../sync/sync.service';
 import { ConnectionService } from '../connection/connection.service';
 import { MashovCredentialValidatorService } from '../common/mashov-login/mashov-credential-validator.service';
+import { AppSessionService } from '../app-session/app-session.service';
 import { resolveSchoolLabels } from '../common/school-label';
 import {
   connectionStudentWhere,
@@ -75,6 +76,7 @@ export class SchoolLinksService {
     private readonly validator: MashovCredentialValidatorService,
     private readonly syncService: SyncService,
     private readonly connectionService: ConnectionService,
+    private readonly appSession: AppSessionService,
   ) {}
 
   /**
@@ -87,7 +89,22 @@ export class SchoolLinksService {
    */
   async createLink(
     userId: string,
-    input: { semel: number; username: string; password: string },
+    input: {
+      semel: number;
+      username: string;
+      password: string;
+      /**
+       * The parent's explicit "yes, move that household's school here".
+       *
+       * Two calls rather than one: a merge revokes another household's
+       * sessions and moves its state, so it must not happen as a side effect
+       * of submitting the add-school form. The confirm re-sends the
+       * credentials the form still holds -- one extra upstream login, which
+       * the rate limit already bounds -- rather than parking a decrypted
+       * password or a merge ticket in Redis.
+       */
+      confirmMerge?: boolean;
+    },
   ): Promise<SchoolLink> {
     const semel = Number(input.semel);
 
@@ -100,7 +117,15 @@ export class SchoolLinksService {
 
     await this.checkRateLimit(userId);
 
-    await this.assertNoForeignOwner(userId, semel, input.username);
+    // Looked up here, decided much later. R17 put this query behind the rate
+    // limit because it is an existence oracle on (schoolCode, username)
+    // across every household on the deployment; the *verdict* waits until the
+    // caller has proved they hold this school's password, because that proof
+    // is the whole authorisation for a merge -- the same one adoption relies
+    // on (ADR-0029). Moving the decision later strictly reduces what an
+    // unauthorised caller learns: today's refusal arrives with no password
+    // proven at all.
+    const foreignOwner = await this.findForeignOwner(userId, semel, input.username);
 
     // This school's year is resolved independently. It can legitimately differ
     // from the household's other school -- that is the whole reason the year
@@ -168,6 +193,51 @@ export class SchoolLinksService {
           message: 'No children found in this account',
           details: [],
         },
+      });
+    }
+
+    // After the credentials and the roster are both proven, and before
+    // anything is persisted.
+    if (foreignOwner) {
+      const schoolName =
+        login.data.accessToken?.schoolSettings?.schoolName ?? String(semel);
+
+      if (!foreignOwner.mergeable) {
+        // A household actively using other schools is not an orphan:
+        // `AppUser.mergedIntoUserId` is documented as "this AppUser's ONLY
+        // connection was absorbed", and pulling one school out of a live
+        // two-school household would leave that pointer naming a household
+        // that still exists. That state keeps the old refusal; the parent can
+        // unlink from the other household's side.
+        throw new ConflictException({
+          error: {
+            code: 'CONNECTION_ALREADY_LINKED',
+            message: 'This account is already linked',
+            details: [],
+          },
+        });
+      }
+
+      if (!input.confirmMerge) {
+        throw new ConflictException({
+          error: {
+            code: 'MERGE_AVAILABLE',
+            message:
+              'This Mashov account is connected to a separate household in this app',
+            details: [],
+            // Only what a parent needs to recognise what they are about to
+            // move -- and both values come from the login THEY just
+            // authenticated, not from the other household's rows. No email,
+            // no phone, no other parent's name.
+            merge: { schoolName, childrenCount: children.length },
+          },
+        });
+      }
+
+      await this.performMerge({
+        userId,
+        orphanUserId: foreignOwner.ownerUserId,
+        connectionId: foreignOwner.connectionId,
       });
     }
 
@@ -316,34 +386,157 @@ export class SchoolLinksService {
   }
 
   /**
-   * Refuse an account another household already owns.
+   * Who else owns this Mashov account, if anyone -- a verdict, not a throw.
    *
    * Behind the rate limit on purpose, unlike the checks above: this lookup is
    * an existence oracle on `(schoolCode, username)` across every household on
    * the deployment, so an authenticated caller who could probe it without
-   * bound could enumerate parent usernames school by school.
+   * bound could enumerate parent usernames school by school. It returns rather
+   * than throwing so the caller can decide between a merge and a refusal only
+   * after `validator.validate` has succeeded.
    */
-  private async assertNoForeignOwner(
+  private async findForeignOwner(
     userId: string,
     semel: number,
     username: string,
-  ): Promise<void> {
+  ): Promise<{
+    ownerUserId: string;
+    connectionId: string;
+    /**
+     * True when this is the owner's only active connection -- the state
+     * `AppUser.mergedIntoUserId` is defined for.
+     */
+    mergeable: boolean;
+  } | null> {
     // A connection that exists but belongs to nobody -- unlinked earlier, or
     // created by a first sign-in that was never adopted -- is re-parented
     // rather than refused, which is what makes unlink-then-relink work.
-    const orphan = await this.prisma.householdConnection.findUnique({
+    const existing = await this.prisma.householdConnection.findUnique({
       where: { schoolCode_username: { schoolCode: semel, username } },
-      select: { userId: true },
+      select: { id: true, userId: true, upstreamUserId: true },
     });
-    if (orphan?.userId && orphan.userId !== userId) {
-      throw new ConflictException({
-        error: {
-          code: 'CONNECTION_ALREADY_LINKED',
-          message: 'This account is already linked',
-          details: [],
-        },
-      });
+    if (!existing?.userId || existing.userId === userId) return null;
+
+    const otherActive = await this.prisma.householdConnection.count({
+      where: { userId: existing.userId, active: true, id: { not: existing.id } },
+    });
+
+    return {
+      ownerUserId: existing.userId,
+      connectionId: existing.id,
+      mergeable: otherActive === 0,
+    };
+  }
+
+  /**
+   * Absorb an orphan household into the caller's.
+   *
+   * The transaction ADR-0029's reversibility story implied and nothing
+   * implemented: re-parent the connection, point the orphan `AppUser` at the
+   * surviving household, revoke the orphan's sessions, and move the rows that
+   * are keyed on `userId` rather than on the connection. Everything keyed on
+   * `householdConnectionId` or `studentGuid` -- mail, notifications, students,
+   * releases, homework, behaviour, sync runs -- travels with the re-parented
+   * connection and is not touched here.
+   *
+   * The orphan `AppUser` row survives: `AppSession.userId` is a required
+   * relation with no `onDelete`, so it cannot be deleted, and keeping it is
+   * what makes `mergedIntoUserId` an audit trail rather than a hole.
+   *
+   * The Redis session mirror is the load-bearing part, and the order is the
+   * interesting bit. `AppSessionService.validateSession` answers from
+   * `session:<token>` **without consulting the database** and rolls its own
+   * TTL, so a session revoked in Postgres stays live until the key is gone.
+   * The keys are therefore deleted BOTH before and after the transaction:
+   * the pre-commit delete is self-healing if the transaction rolls back (the
+   * next request re-validates against a still-live row and repopulates), and
+   * the post-commit pass closes the race where a request repopulated the
+   * cache from the not-yet-revoked row. Neither alone is airtight.
+   * `revokeAllSessionsForUser` issues its own prisma calls, so it is not
+   * enlistable in the transaction -- the DB revoke happens inside it and that
+   * method runs after the commit, where it also catches a session minted
+   * mid-merge.
+   */
+  private async performMerge(args: {
+    userId: string;
+    orphanUserId: string;
+    connectionId: string;
+  }): Promise<void> {
+    const { userId, orphanUserId, connectionId } = args;
+
+    const before = await this.prisma.appSession.findMany({
+      where: { userId: orphanUserId, revokedAt: null },
+      select: { sessionToken: true },
+    });
+    for (const session of before) {
+      await this.redis.del(`session:${session.sessionToken}`);
     }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.householdConnection.update({
+        where: { id: connectionId },
+        data: { userId, linkedByUserId: userId, linkedAt: new Date() },
+      });
+
+      await tx.appUser.update({
+        where: { id: orphanUserId },
+        data: { mergedIntoUserId: userId },
+      });
+
+      await tx.appSession.updateMany({
+        where: { userId: orphanUserId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      // The unique key is `[studentGuid, channel, address]` and OMITS
+      // `userId`, so the same tuple cannot exist under both households
+      // globally -- the re-point is collision-free and a skip-on-conflict
+      // branch here would be unreachable code.
+      await tx.digestRecipient.updateMany({
+        where: { userId: orphanUserId },
+        data: { userId },
+      });
+
+      // Not named in B2, found while reading: `SchoolActivity.userId` is
+      // required with no AppUser relation, so the orphan's consent rows would
+      // otherwise strand on an AppUser nobody signs into. Scoped to the
+      // connection that is travelling, which makes it collision-free against
+      // `[userId, householdConnectionId, schoolYear, activityId]`; a row
+      // stamped to no connection names no school and stays with the retired
+      // AppUser rather than risking a collision with the surviving
+      // household's own unstamped row.
+      await tx.schoolActivity.updateMany({
+        where: { userId: orphanUserId, householdConnectionId: connectionId },
+        data: { userId },
+      });
+
+      // Copied rather than moved, conflicts skipped: the surviving
+      // household's own read/unread and archive value wins for an item it
+      // already holds. A merge that 500s halfway on a unique violation is
+      // worse than one that keeps A's preference.
+      const states = await tx.userItemState.findMany({
+        where: { userId: orphanUserId },
+      });
+      if (states.length > 0) {
+        await tx.userItemState.createMany({
+          data: states.map((state) => ({
+            userId,
+            itemType: state.itemType,
+            itemId: state.itemId,
+            isNew: state.isNew,
+            isArchived: state.isArchived,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    });
+
+    await this.appSession.revokeAllSessionsForUser(orphanUserId);
+
+    this.logger.warn(
+      `Merged household ${orphanUserId} into ${userId} via connection ${connectionId}; ` +
+        `${before.length} session(s) revoked`,
+    );
   }
 
   /**
