@@ -10,10 +10,9 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: the two operational tasks the plan itself deferred (**T13**–**T14**), the
-**G2** coverage gap, and the minors. **No bug is open at all** — every **B** item is
-done (**B1**–**B4**), as is every **R** item (**R1**–**R17**), along with **G1** and N1,
-all kept as record. With batch 6 closed, the refresh envelope's
+What is open: the two operational tasks the plan itself deferred (**T13**–**T14**), and
+the minors. **No bug is open at all** — every **B** item is done (**B1**–**B4**), as is
+every **R** item (**R1**–**R17**), along with **G1**, **G2** and N1, all kept as record. With batch 6 closed, the refresh envelope's
 `status` means what it says: `partial` exactly when something in the household
 actually failed, rather than `success` for a school that threw and `partial` for one
 that synced perfectly.
@@ -52,7 +51,7 @@ stays true.
 | 6 | **R12** + **R11** + the "connection-scoped refresh fans out over every child" minor | **done** | All three were the refresh envelope lying to the parent — R12 said `success` when a school failed, the minor said `partial` when one succeeded. Closed together, because fixing either alone only makes the others more visible. Three helpers now carry it: `studentScopeForContext` scopes every per-student task to the refreshing connection's children, `reportNoConnectionTarget` opens and fails a run for a connection-scoped refresh with no usable target, and the controller aggregates the envelope worst-wins over `PHASE_RANK`. R11's hole turned out to be in seven tasks, not the four recorded — six connection-loop tasks plus `releases`, the one per-student task missing the `every connection failed` guard. |
 | 7 | **R8**, **R9**, **R10**, **R17** | **done** | Four independent small correctness fixes in the auth/link path — each a branch or a status that meant something other than what it said. R17 turned out not to be a two-line reorder: the orphan lookup it would have moved is a cross-household existence oracle, so `assertLinkable` split into a free pre-limit half and a rate-limited one. R10's recorded precedent was wrong and the fix follows `auth.controller`'s envelope rather than the service's bare `Error`. |
 | 8 | **B2**, **B4** | **done** | The two pre-existing bugs, and the only items on the branch that predated it. They shared nothing — different services, different screens, no common seam — so B4 went first and was green and committed before B2 spent the session. B4 turned out worse than "a stale number": the school label and the contact details came from two different queries, so a two-school parent was shown school A's phone number captioned with school B's name. B2 was the whole session: `findForeignOwner` now returns a verdict instead of throwing, the decision moves after the password is proven, and the merge runs in one transaction with the Redis session mirror deleted on both sides of it. See [ADR-0032](../adr/0032-household-merge-trust-model.md). |
-| 8.5 | **G2** | open | A coverage gap, not a behaviour one: the school preference `3afde47` added is proved against the unit spec's in-memory Prisma and not against real Postgres. Needs a two-school seed with its own cleanup, which is why it was not bolted onto batch 3.5. Cheap, and parallel with anything. |
+| 8.5 | **G2** | **done** | A coverage gap, not a behaviour one: the school preference `3afde47` added was proved against the unit spec's in-memory Prisma and not against real Postgres. Closed by `tests/integration/connection-scope-school-preference.test.ts` — its own two-school seed and cleanup, as anticipated. Watched red first by removing the preference: the caller's resolve landed on their newer school-**B** connection for a child stamped at school **A**, which is their own password spent on an account that holds nothing about that child. |
 | 9 | **T13**, then **T14** | open | T13 needs real second-school credentials and a full cron cycle; T14 closes the branch out. `.env.example` is reachable again as of the `DB_PORT` commit, so T14's last bullet is no longer blocked. |
 
 Batches 1 through 8 are done: no open item puts one household's data on another's
@@ -61,9 +60,10 @@ answers from the whole table, no frontend item is open, the refresh envelope no 
 misreports what happened, no status or branch in the auth/link path answers something
 other than what it says, and no screen captions one school's contact details with
 another's name. **No *bug* is open.** What remains is **T13**–**T14** (the operational
-tasks, needing real second-school credentials and a full cron cycle), **G2** (a coverage
-gap, not a behaviour one) and the minors. **8.5** (**G2**) is next, and parallel with
-anything.
+tasks) and the minors. **8.5** (**G2**) is done, so the school
+preference is proved against real Postgres rather than only against the unit spec's
+fake. **9** (**T13**, then **T14**) is what remains, and **T13** cannot run unattended:
+it needs real second-school Mashov credentials and a full cron cycle.
 
 ---
 
@@ -1404,10 +1404,25 @@ because `household-isolation`'s shared `cleanup()` deletes connections by
 `schoolCode: SEMEL` alone and would leave the second school's rows behind.
 
 **DoD**
-- [ ] An integration case on real Postgres: one household with connections at two
+- [x] An integration case on real Postgres: one household with connections at two
       schools, a child stamped to the *other* parent at school A, and A's resolve
       landing on the caller's school-A connection rather than their more recently used
       school-B one. Its own seed and cleanup, scoped to both school codes.
+
+**Done** (batch 8.5). `tests/integration/connection-scope-school-preference.test.ts`.
+Five cases, not one: the preference itself, R16's no-foreign-credential postcondition
+re-asserted in the first fixture where a *wrong* preference could satisfy it by
+accident, the owning household still reaching its own stamp, the unstamped child still
+reaching the generic `lastLoginAt desc` pick (the preference narrows the stamped case
+only, and that is worth pinning), and the caller-less crons keeping the global fallback.
+Proved red by removing the preference: only the first case failed, landing on the
+caller's school-**B** connection — their own credential, so no leak, but the wrong
+school's account, which answers with nothing about that child.
+
+The second school code is the whole reason this needed its own file. `household-isolation`'s
+`cleanup()` deletes connections by `schoolCode: SEMEL` alone; this one deletes by
+`{ in: [SEMEL_A, SEMEL_B] }`, and the full suite was run to prove the two fixtures do
+not collide (12 suites / 322 tests).
 
 ---
 
