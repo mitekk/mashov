@@ -52,7 +52,7 @@ stays true.
 | 7 | **R8**, **R9**, **R10**, **R17** | **done** | Four independent small correctness fixes in the auth/link path — each a branch or a status that meant something other than what it said. R17 turned out not to be a two-line reorder: the orphan lookup it would have moved is a cross-household existence oracle, so `assertLinkable` split into a free pre-limit half and a rate-limited one. R10's recorded precedent was wrong and the fix follows `auth.controller`'s envelope rather than the service's bare `Error`. |
 | 8 | **B2**, **B4** | **done** | The two pre-existing bugs, and the only items on the branch that predated it. They shared nothing — different services, different screens, no common seam — so B4 went first and was green and committed before B2 spent the session. B4 turned out worse than "a stale number": the school label and the contact details came from two different queries, so a two-school parent was shown school A's phone number captioned with school B's name. B2 was the whole session: `findForeignOwner` now returns a verdict instead of throwing, the decision moves after the password is proven, and the merge runs in one transaction with the Redis session mirror deleted on both sides of it. See [ADR-0032](../adr/0032-household-merge-trust-model.md). |
 | 8.5 | **G2** | **done** | A coverage gap, not a behaviour one: the school preference `3afde47` added was proved against the unit spec's in-memory Prisma and not against real Postgres. Closed by `tests/integration/connection-scope-school-preference.test.ts` — its own two-school seed and cleanup, as anticipated. Watched red first by removing the preference: the caller's resolve landed on their newer school-**B** connection for a child stamped at school **A**, which is their own password spent on an account that holds nothing about that child. |
-| 9 | **T13**, then **T14** | **T14 mostly done**; **T13** open | T13 needs real second-school Mashov credentials and a full cron cycle, so it cannot run unattended. T14's two deletions and two field removals landed; its remaining two bullets are blocked outside the code — the PRD edit needs the user-invoked `/prd` skill (`.claude/rules/prd.md` forbids editing `PRD-current.md` by hand) and `.env.example` is denied by the session's permission settings, which is the same block the implementing session hit rather than the `DB_PORT` fix this row claimed had lifted it. |
+| 9 | **T13**, then **T14** | **T14 all but the PRD**; **T13** open | T13 needs real second-school Mashov credentials and a full cron cycle, so it cannot run unattended. T14's deletions, field removals and `.env.example` entries all landed; only the PRD edit is left, and it needs the user-invoked `/prd` skill, since `.claude/rules/prd.md` forbids editing `PRD-current.md` by hand. `.env.example` is denied by the session's permission settings — the same block the implementing session hit, rather than the `DB_PORT` fix this row used to claim had lifted it — so the parent appended those two entries themselves. |
 
 Batches 1 through 8 are done: no open item puts one household's data on another's
 *screen*, none puts a household's *request* in another's Mashov account, no reader left
@@ -60,13 +60,12 @@ answers from the whole table, no frontend item is open, the refresh envelope no 
 misreports what happened, no status or branch in the auth/link path answers something
 other than what it says, and no screen captions one school's contact details with
 another's name. **No *bug* is open.** What remains is **T13** (needing real second-school
-credentials and a full cron cycle), two bullets of **T14** that are blocked outside the
-code, and the minors. **8.5** (**G2**) is done, so the school
+credentials and a full cron cycle), **T14**'s PRD bullet, and the minors. **8.5** (**G2**) is done, so the school
 preference is proved against real Postgres rather than only against the unit spec's
-fake. **9** is partly done: **T14**'s deletions landed, its PRD
-bullet needs the user-invoked `/prd` skill and its `.env.example` bullet is denied by
-the session's permission settings, and **T13** cannot run unattended at all — it needs
-real second-school Mashov credentials and a full cron cycle.
+fake. **9** is all but done: **T14** is closed except its
+PRD bullet, which needs the user-invoked `/prd` skill, and **T13** cannot run
+unattended at all — it needs real second-school Mashov credentials and a full cron
+cycle.
 
 ---
 
@@ -1292,15 +1291,22 @@ Step 14. The ADRs (0029, 0030) and `docs/api-contract.md` are **done**. What rem
       own connection", which **B1** breaks. **Still open**: `/prd` is a user-invoked
       skill, and the rule forbids the by-hand edit that would close this box without
       it.
-- [ ] Add `MAIL_SWEEP_ENABLED` and `MASHOV_ENABLE_SCHOOL_LINK_ADOPTION` to
-      `.env.example`. Both are in `README.md` and `docker-compose.yml`. **Still
-      open**, and for the same reason as last time: `.env.example` is denied by the
-      session's own permission settings, in the implementing session and again in the
-      batch-9 one. Both default to on, so nothing breaks without them.
+- [x] Add `MAIL_SWEEP_ENABLED` and `MASHOV_ENABLE_SCHOOL_LINK_ADOPTION` to
+      `.env.example`. Both are in `README.md` and `docker-compose.yml`. Both default
+      to on, so nothing breaks without them. `.env.example` is denied by the session's
+      permission settings — in the implementing session and again in the batch-9 one,
+      so the row's claim that the `DB_PORT` commit had lifted that block was wrong —
+      and the block is on the **file**, not the work: the parent appended the two
+      entries themselves from the text drafted here. The descriptions are lifted from
+      `README.md:178-179` and `docker-compose.yml:73-80` so the three places agree,
+      plus one clause neither of those carries yet: batch 8 put
+      `SchoolLinksService.createLink` behind the adoption flag too, so `false` now
+      withdraws the merge offer as well as the sign-in adoption.
 
-**Mostly done** (batch 9). The two deletions and the two field removals landed; the
-`/prd` bullet and the `.env.example` bullet are both blocked on something outside the
-code, not on work left to do.
+**Mostly done** (batch 9). The two deletions, the two field removals and the two
+`.env.example` entries landed. Only the `/prd` bullet is left, and it is blocked on
+something outside the code rather than on work: `/prd` is user-invoked and
+`.claude/rules/prd.md` forbids the by-hand edit that would close the box without it.
 
 Three findings while removing them:
 
