@@ -28,7 +28,7 @@ export default function MorePage() {
   const queryClient = useQueryClient();
 
   const { data: health, isLoading: healthLoading, isError: healthError } = useSourceHealth();
-  const { data: profile } = useProfile();
+  const { data: profiles } = useProfile();
   const { data: me } = useMe();
   const { data: schoolLinks } = useSchoolLinks();
   const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
@@ -126,13 +126,20 @@ export default function MorePage() {
           </section>
         )}
 
-        {/* Profile */}
-        {profile && (
+        {/* Profile -- one card per linked school. `upstreamUserId` is a
+            per-school id, so a two-school parent has two sets of contact
+            details and both are current; one card captioned with one school
+            and filled from the other is B4. */}
+        {profiles && profiles.length > 0 && (
           <section>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              פרטי הורה
+              {profiles.length === 1 ? 'פרטי הורה' : 'פרטי הורה לפי בית ספר'}
             </h2>
-            <ProfileCard profile={profile} />
+            <div className="space-y-3">
+              {profiles.map((profile) => (
+                <ProfileCard key={profile.householdConnectionId} profile={profile} />
+              ))}
+            </div>
           </section>
         )}
 

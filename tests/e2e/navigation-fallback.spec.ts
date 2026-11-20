@@ -294,17 +294,20 @@ async function mockBaseRoutes(page: Page) {
     }),
   );
   await page.route('**/api/v1/settings/profile', (route) =>
-    json(route, {
-      upstreamUserId: 'user-1',
-      displayName: 'Parent',
-      email: 'parent@example.com',
-      cellphone: '0500000000',
-      schoolName: 'Test School',
-      schoolYear: 2026,
-      schoolCode: 1234,
-      detailsState: 1,
-      updatedAt: new Date().toISOString(),
-    }),
+    json(route, [
+      {
+        householdConnectionId: 'conn-1',
+        upstreamUserId: 'user-1',
+        displayName: 'Parent',
+        email: 'parent@example.com',
+        cellphone: '0500000000',
+        schoolName: 'Test School',
+        schoolYear: 2026,
+        schoolCode: 1234,
+        detailsState: 1,
+        updatedAt: new Date().toISOString(),
+      },
+    ]),
   );
   await page.route('**/api/v1/sync/refresh', (route) =>
     json(route, { started: true, message: 'ok' }, 202),

@@ -98,56 +98,98 @@ export class SettingsService {
   }
 
   /**
-   * The caller's own profile.
+   * The caller's profile at every school they have linked, one entry each.
    *
    * This was `parentProfile.findFirst()` and
-   * `householdConnection.findFirst({ active: true })` — neither filtered by
+   * `householdConnection.findFirst({ active: true })` -- neither filtered by
    * user. Any signed-in parent received *a* profile: some arbitrary
    * household's `displayName`, `email` and `cellphone`, plus their school.
    * More sensitive than the student identifiers that
    * `getSourceHealth` was leaking, and on the same controller.
    *
-   * `ParentProfile` has no `userId`; it is keyed on `upstreamUserId`, which is
-   * Mashov's `credential.userId` — the same value stored as
-   * `AppUser.mashovUserId` at login. So the caller's app-user row is the hop
-   * from a session to a profile, and the household is filtered by `userId`
-   * directly.
+   * Scoping it to the caller fixed the leak but left B4: the contact details
+   * were read by `appUser.mashovUserId` -- the credential that *created* the
+   * AppUser, i.e. the first school signed into -- while the school name, year
+   * and code came from a separate `lastLoginAt`-ordered read. The two can name
+   * different schools, so a two-school parent was shown school A's phone
+   * number under school B's name, on a screen where they will assume the
+   * school holds the number displayed. `ParentProfile.householdConnectionId`
+   * exists for exactly this: `upstreamUserId` is a per-school id, so a
+   * two-school household has two rows and both are correct.
+   *
+   * The caller's own active connections bound the profile read -- never a bare
+   * `findFirst`, which is how the original leak worked. Ordering matches
+   * `SchoolLinksService.listLinks` so the cards and the school rows beneath
+   * them agree.
    */
   async getProfile(userId: string | null) {
-    if (!userId) return null;
+    if (!userId) return [];
 
     const appUser = await this.prisma.appUser.findUnique({
       where: { id: userId },
       select: { mashovUserId: true, displayName: true },
     });
-    if (!appUser) return null;
+    if (!appUser) return [];
 
-    const [profile, household] = await Promise.all([
-      this.prisma.parentProfile.findUnique({
-        where: { upstreamUserId: appUser.mashovUserId },
-      }),
-      this.prisma.householdConnection.findFirst({
-        where: { userId, active: true },
-        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-      }),
-    ]);
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { userId, active: true },
+      orderBy: [{ lastLoginAt: 'desc' }, { createdAt: 'asc' }],
+    });
+    if (connections.length === 0) return [];
 
-    if (!profile) return null;
+    const profiles = await this.prisma.parentProfile.findMany({
+      where: { householdConnectionId: { in: connections.map((conn) => conn.id) } },
+    });
+    const stamped = new Map(profiles.map((profile) => [profile.householdConnectionId, profile]));
 
-    return {
-      upstreamUserId: profile.upstreamUserId,
-      // `user-details.task` never writes ParentProfile.displayName, so for most
-      // callers it is null. Unscoped, the page showed whichever profile
-      // findFirst happened to return; scoped, it would go blank — so fall back
-      // to the name login already recorded for this user.
-      displayName: profile.displayName ?? appUser.displayName ?? '',
-      email: profile.email ?? '',
-      cellphone: profile.cellphone ?? '',
-      schoolName: household?.schoolName ?? '',
-      schoolYear: household?.schoolYear ?? new Date().getFullYear(),
-      schoolCode: household?.schoolCode ?? 0,
-      detailsState: profile.detailsState,
-      updatedAt: profile.updatedAt.toISOString(),
-    };
+    // The stamp is legitimately null three ways, so a missing one is not a
+    // missing profile: `user-details.task`'s shared-session branch passes no
+    // connection, the `connection_scoping` backfill left rows it could not
+    // attribute, and `onDelete: SetNull` nulls it on unlink. Fall back to the
+    // row keyed on the creating credential, and only for the newest
+    // connection -- that is what the screen showed before, now labelled with
+    // the school it is being shown under rather than an unrelated one. A row
+    // stamped to some *other* connection is deliberately not borrowed: it is
+    // the caller's own profile, but relabelling it with this school's name is
+    // the bug itself.
+    let fallback: Awaited<ReturnType<typeof this.prisma.parentProfile.findUnique>> | undefined;
+    const newestConnectionId = connections[0].id;
+
+    const entries = [];
+    for (const connection of connections) {
+      let profile = stamped.get(connection.id) ?? null;
+
+      if (!profile && connection.id === newestConnectionId) {
+        if (fallback === undefined) {
+          fallback = await this.prisma.parentProfile.findUnique({
+            where: { upstreamUserId: appUser.mashovUserId },
+          });
+        }
+        if (fallback && fallback.householdConnectionId === null) profile = fallback;
+      }
+
+      if (!profile) continue;
+
+      entries.push({
+        householdConnectionId: connection.id,
+        upstreamUserId: profile.upstreamUserId,
+        // `user-details.task` never writes ParentProfile.displayName, so for
+        // most callers it is null. Unscoped, the page showed whichever profile
+        // findFirst happened to return; scoped, it would go blank -- so fall
+        // back to the name login already recorded for this user. That name is
+        // the one the *creating* credential set, which is R8's residual and
+        // not fixed here.
+        displayName: profile.displayName ?? appUser.displayName ?? '',
+        email: profile.email ?? '',
+        cellphone: profile.cellphone ?? '',
+        schoolName: connection.schoolName ?? '',
+        schoolYear: connection.schoolYear ?? new Date().getFullYear(),
+        schoolCode: connection.schoolCode ?? 0,
+        detailsState: profile.detailsState,
+        updatedAt: profile.updatedAt.toISOString(),
+      });
+    }
+
+    return entries;
   }
 }

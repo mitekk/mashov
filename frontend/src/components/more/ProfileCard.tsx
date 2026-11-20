@@ -8,7 +8,13 @@ interface ProfileCardProps {
 
 export function ProfileCard({ profile }: ProfileCardProps) {
   return (
-    <div data-testid="profile-card" className="card-base p-4 space-y-3">
+    // The testid is suffixed with the connection id because a two-school
+    // household renders one card per school, and N identical testids break
+    // Playwright's strict mode for anything that later selects one.
+    <div
+      data-testid={`profile-card-${profile.householdConnectionId}`}
+      className="card-base p-4 space-y-3"
+    >
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
           <User className="w-5 h-5 text-primary" />

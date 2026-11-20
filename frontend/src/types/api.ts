@@ -413,6 +413,10 @@ export interface SourceHealthResponse {
 }
 
 export interface ParentProfile {
+  /// Which linked school these details were read from. `upstreamUserId` is a
+  /// per-school id, so a two-school household has one entry per school and
+  /// the caption must say which one.
+  householdConnectionId: string;
   upstreamUserId: string;
   displayName: string;
   email: string;

@@ -138,17 +138,20 @@ async function seed(
   );
   await page.route('**/api/v1/settings/profile', (route) =>
     route.fulfill({
-      json: {
-        upstreamUserId: 'e2e-parent-1',
-        displayName: 'E2E Parent',
-        email: '',
-        cellphone: '',
-        schoolName: SCHOOL_A.schoolName,
-        schoolYear: 2026,
-        schoolCode: SCHOOL_A.semel,
-        detailsState: 1,
-        updatedAt: new Date().toISOString(),
-      },
+      json: [
+        {
+          householdConnectionId: 'conn-a',
+          upstreamUserId: 'e2e-parent-1',
+          displayName: 'E2E Parent',
+          email: '',
+          cellphone: '',
+          schoolName: SCHOOL_A.schoolName,
+          schoolYear: 2026,
+          schoolCode: SCHOOL_A.semel,
+          detailsState: 1,
+          updatedAt: new Date().toISOString(),
+        },
+      ],
     }),
   );
   await page.route('**/api/v1/children', (route) => route.fulfill({ json: { data: [] } }));

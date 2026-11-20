@@ -10,6 +10,7 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     parentProfile: {
       findFirst: overrides.profileFindFirst ?? jest.fn().mockResolvedValue(null),
       findUnique: overrides.profileFindUnique ?? jest.fn().mockResolvedValue(null),
+      findMany: overrides.profileFindMany ?? jest.fn().mockResolvedValue([]),
     },
     appUser: {
       findUnique:
@@ -18,6 +19,7 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     },
     householdConnection: {
       findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
+      findMany: overrides.householdFindMany ?? jest.fn().mockResolvedValue([]),
     },
   } as unknown as jest.Mocked<PrismaService>;
 }
@@ -87,56 +89,130 @@ describe('SettingsService', () => {
   });
 
   describe('getProfile', () => {
-    it('returns merged profile + household fields in contract shape', async () => {
+    // One school: the same fields the screen always showed, now in a list and
+    // carrying the connection they were read for.
+    it('returns one entry per school in contract shape', async () => {
       const service = new SettingsService(
         makeMockPrisma({
-          profileFindUnique: jest.fn().mockResolvedValue({
-            upstreamUserId: 'mashov-1',
-            displayName: 'Parent Name',
-            email: 'parent@example.com',
-            cellphone: '050-1234567',
-            detailsState: 2,
-            updatedAt: new Date('2026-03-12T09:00:00Z'),
-          }),
-          householdFindFirst: jest.fn().mockResolvedValue({
-            schoolName: 'Test School',
-            schoolYear: 2026,
-            schoolCode: 1234,
-          }),
+          profileFindMany: jest.fn().mockResolvedValue([
+            {
+              upstreamUserId: 'mashov-1',
+              displayName: 'Parent Name',
+              email: 'parent@example.com',
+              cellphone: '050-1234567',
+              detailsState: 2,
+              updatedAt: new Date('2026-03-12T09:00:00Z'),
+              householdConnectionId: 'conn-1',
+            },
+          ]),
+          householdFindMany: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 'conn-1', schoolName: 'Test School', schoolYear: 2026, schoolCode: 1234 },
+            ]),
         }),
         makeMockFreshnessService({}),
       );
 
       const result = await service.getProfile('app-user-1');
-      expect(result).toEqual({
-        upstreamUserId: 'mashov-1',
-        displayName: 'Parent Name',
-        email: 'parent@example.com',
-        cellphone: '050-1234567',
-        schoolName: 'Test School',
-        schoolYear: 2026,
-        schoolCode: 1234,
-        detailsState: 2,
-        updatedAt: '2026-03-12T09:00:00.000Z',
-      });
+      expect(result).toEqual([
+        {
+          householdConnectionId: 'conn-1',
+          upstreamUserId: 'mashov-1',
+          displayName: 'Parent Name',
+          email: 'parent@example.com',
+          cellphone: '050-1234567',
+          schoolName: 'Test School',
+          schoolYear: 2026,
+          schoolCode: 1234,
+          detailsState: 2,
+          updatedAt: '2026-03-12T09:00:00.000Z',
+        },
+      ]);
     });
 
-    it('returns null when parent profile does not exist', async () => {
+    // B4. The school label came from a `lastLoginAt`-ordered findFirst while
+    // the contact details came from a findUnique on the *creating*
+    // credential's upstream id, so a two-school parent was shown school A's
+    // phone number under school B's name. Each school's details now travel
+    // with their own school.
+    it('labels each school with its own contact details', async () => {
       const service = new SettingsService(
         makeMockPrisma({
+          appUserFindUnique: jest
+            .fn()
+            .mockResolvedValue({ mashovUserId: 'mashov-a', displayName: 'App User' }),
+          profileFindMany: jest.fn().mockResolvedValue([
+            {
+              upstreamUserId: 'mashov-a',
+              displayName: null,
+              email: 'parent@school-a.example',
+              cellphone: '050-1111111',
+              detailsState: 2,
+              updatedAt: new Date('2026-03-12T09:00:00Z'),
+              householdConnectionId: 'conn-a',
+            },
+            {
+              upstreamUserId: 'mashov-b',
+              displayName: null,
+              email: 'parent@school-b.example',
+              cellphone: '050-2222222',
+              detailsState: 2,
+              updatedAt: new Date('2026-03-13T09:00:00Z'),
+              householdConnectionId: 'conn-b',
+            },
+          ]),
+          // Newest sign-in first, matching `listLinks`' ordering so the cards
+          // and the school rows under them agree.
+          householdFindMany: jest.fn().mockResolvedValue([
+            { id: 'conn-b', schoolName: 'School B', schoolYear: 2026, schoolCode: 2222 },
+            { id: 'conn-a', schoolName: 'School A', schoolYear: 2026, schoolCode: 1111 },
+          ]),
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      const result = await service.getProfile('app-user-1');
+
+      expect(result).toHaveLength(2);
+      expect(result.map((entry) => [entry.schoolName, entry.cellphone])).toEqual([
+        ['School B', '050-2222222'],
+        ['School A', '050-1111111'],
+      ]);
+      expect(result.map((entry) => entry.householdConnectionId)).toEqual([
+        'conn-b',
+        'conn-a',
+      ]);
+      // The creating credential's row must not be relabelled with the other
+      // school's name -- that relabelling is the bug.
+      expect(
+        result.find((entry) => entry.schoolName === 'School B')?.email,
+      ).toBe('parent@school-b.example');
+    });
+
+    it('returns an empty list when no profile exists for any school', async () => {
+      const service = new SettingsService(
+        makeMockPrisma({
+          profileFindMany: jest.fn().mockResolvedValue([]),
           profileFindUnique: jest.fn().mockResolvedValue(null),
+          householdFindMany: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 'conn-1', schoolName: 'Test School', schoolYear: 2026, schoolCode: 1234 },
+            ]),
         }),
         makeMockFreshnessService({}),
       );
 
-      const result = await service.getProfile('app-user-1');
-      expect(result).toBeNull();
+      await expect(service.getProfile('app-user-1')).resolves.toEqual([]);
     });
 
-    // `parentProfile.findFirst()` with no filter returned *a* profile, not the
-    // caller's: any signed-in user got some arbitrary household's displayName,
-    // email and cellphone. The household read was unfiltered the same way.
-    it("reads the profile keyed on the caller's own upstream id", async () => {
+    // The stamp is legitimately null three ways: the shared-session branch of
+    // `user-details.task` passes no connection, the connection-scoping
+    // backfill left rows it could not attribute, and `onDelete: SetNull` nulls
+    // it on unlink. An unstamped row still has to answer, labelled with the
+    // newest connection -- which is exactly what the screen showed before.
+    it('falls back to the unstamped row for the newest connection', async () => {
       const profileFindUnique = jest.fn().mockResolvedValue({
         upstreamUserId: 'mashov-1',
         displayName: 'Parent Name',
@@ -144,12 +220,85 @@ describe('SettingsService', () => {
         cellphone: '050-1234567',
         detailsState: 2,
         updatedAt: new Date('2026-03-12T09:00:00Z'),
+        householdConnectionId: null,
       });
-      const householdFindFirst = jest.fn().mockResolvedValue({
-        schoolName: 'Test School',
-        schoolYear: 2026,
-        schoolCode: 1234,
-      });
+
+      const service = new SettingsService(
+        makeMockPrisma({
+          profileFindMany: jest.fn().mockResolvedValue([]),
+          profileFindUnique,
+          householdFindMany: jest.fn().mockResolvedValue([
+            { id: 'conn-new', schoolName: 'Newest School', schoolYear: 2026, schoolCode: 2222 },
+            { id: 'conn-old', schoolName: 'Older School', schoolYear: 2026, schoolCode: 1111 },
+          ]),
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      const result = await service.getProfile('app-user-1');
+
+      expect(profileFindUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { upstreamUserId: 'mashov-1' } }),
+      );
+      // One entry, not two: the unstamped row is one school's details and we
+      // do not know which, so it is attributed to the newest sign-in only.
+      expect(result).toEqual([
+        expect.objectContaining({
+          householdConnectionId: 'conn-new',
+          schoolName: 'Newest School',
+          cellphone: '050-1234567',
+        }),
+      ]);
+    });
+
+    // A row stamped to a connection outside the caller's active set is not
+    // relabelled with the newest school's name. Being keyed on the caller's
+    // own `mashovUserId` makes it theirs, but it is not this school's.
+    it('does not relabel a row stamped to another connection', async () => {
+      const service = new SettingsService(
+        makeMockPrisma({
+          profileFindMany: jest.fn().mockResolvedValue([]),
+          profileFindUnique: jest.fn().mockResolvedValue({
+            upstreamUserId: 'mashov-1',
+            displayName: 'Parent Name',
+            email: 'parent@example.com',
+            cellphone: '050-1234567',
+            detailsState: 2,
+            updatedAt: new Date('2026-03-12T09:00:00Z'),
+            householdConnectionId: 'conn-gone',
+          }),
+          householdFindMany: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 'conn-new', schoolName: 'Newest School', schoolYear: 2026, schoolCode: 2222 },
+            ]),
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      await expect(service.getProfile('app-user-1')).resolves.toEqual([]);
+    });
+
+    // `parentProfile.findFirst()` with no filter returned *a* profile, not the
+    // caller's: any signed-in user got some arbitrary household's displayName,
+    // email and cellphone. The household read was unfiltered the same way.
+    it("reads profiles only for the caller's own connections", async () => {
+      const profileFindMany = jest.fn().mockResolvedValue([
+        {
+          upstreamUserId: 'mashov-1',
+          displayName: 'Parent Name',
+          email: 'parent@example.com',
+          cellphone: '050-1234567',
+          detailsState: 2,
+          updatedAt: new Date('2026-03-12T09:00:00Z'),
+          householdConnectionId: 'conn-1',
+        },
+      ]);
+      const householdFindMany = jest
+        .fn()
+        .mockResolvedValue([
+          { id: 'conn-1', schoolName: 'Test School', schoolYear: 2026, schoolCode: 1234 },
+        ]);
       const appUserFindUnique = jest
         .fn()
         .mockResolvedValue({ mashovUserId: 'mashov-1', displayName: 'App User' });
@@ -158,9 +307,9 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({
           appUserFindUnique,
-          profileFindUnique,
+          profileFindMany,
           profileFindFirst,
-          householdFindFirst,
+          householdFindMany,
         }),
         makeMockFreshnessService({}),
       );
@@ -170,43 +319,47 @@ describe('SettingsService', () => {
       expect(appUserFindUnique).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: 'app-user-1' } }),
       );
-      expect(profileFindUnique).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { upstreamUserId: 'mashov-1' } }),
-      );
-      expect(householdFindFirst).toHaveBeenCalledWith(
+      expect(householdFindMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { userId: 'app-user-1', active: true } }),
+      );
+      // The profile read is bounded by the ids the household read returned --
+      // never by a bare lookup over the whole table.
+      expect(profileFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { householdConnectionId: { in: ['conn-1'] } },
+        }),
       );
       // An unfiltered findFirst is how the leak worked; it must not be reachable.
       expect(profileFindFirst).not.toHaveBeenCalled();
     });
 
-    it('returns null and reads nothing without a caller', async () => {
+    it('returns an empty list and reads nothing without a caller', async () => {
       const appUserFindUnique = jest.fn();
-      const profileFindUnique = jest.fn();
-      const householdFindFirst = jest.fn();
+      const profileFindMany = jest.fn();
+      const householdFindMany = jest.fn();
       const service = new SettingsService(
-        makeMockPrisma({ appUserFindUnique, profileFindUnique, householdFindFirst }),
+        makeMockPrisma({ appUserFindUnique, profileFindMany, householdFindMany }),
         makeMockFreshnessService({}),
       );
 
-      await expect(service.getProfile(null)).resolves.toBeNull();
+      await expect(service.getProfile(null)).resolves.toEqual([]);
       expect(appUserFindUnique).not.toHaveBeenCalled();
-      expect(profileFindUnique).not.toHaveBeenCalled();
-      expect(householdFindFirst).not.toHaveBeenCalled();
+      expect(profileFindMany).not.toHaveBeenCalled();
+      expect(householdFindMany).not.toHaveBeenCalled();
     });
 
-    it('returns null when the caller no longer exists', async () => {
-      const profileFindUnique = jest.fn();
+    it('returns an empty list when the caller no longer exists', async () => {
+      const profileFindMany = jest.fn();
       const service = new SettingsService(
         makeMockPrisma({
           appUserFindUnique: jest.fn().mockResolvedValue(null),
-          profileFindUnique,
+          profileFindMany,
         }),
         makeMockFreshnessService({}),
       );
 
-      await expect(service.getProfile('ghost')).resolves.toBeNull();
-      expect(profileFindUnique).not.toHaveBeenCalled();
+      await expect(service.getProfile('ghost')).resolves.toEqual([]);
+      expect(profileFindMany).not.toHaveBeenCalled();
     });
 
     // `user-details.task` never writes ParentProfile.displayName, so for most
@@ -219,20 +372,28 @@ describe('SettingsService', () => {
           appUserFindUnique: jest
             .fn()
             .mockResolvedValue({ mashovUserId: 'mashov-1', displayName: 'Real Name' }),
-          profileFindUnique: jest.fn().mockResolvedValue({
-            upstreamUserId: 'mashov-1',
-            displayName: null,
-            email: 'parent@example.com',
-            cellphone: '050-1234567',
-            detailsState: 2,
-            updatedAt: new Date('2026-03-12T09:00:00Z'),
-          }),
+          profileFindMany: jest.fn().mockResolvedValue([
+            {
+              upstreamUserId: 'mashov-1',
+              displayName: null,
+              email: 'parent@example.com',
+              cellphone: '050-1234567',
+              detailsState: 2,
+              updatedAt: new Date('2026-03-12T09:00:00Z'),
+              householdConnectionId: 'conn-1',
+            },
+          ]),
+          householdFindMany: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 'conn-1', schoolName: 'Test School', schoolYear: 2026, schoolCode: 1234 },
+            ]),
         }),
         makeMockFreshnessService({}),
       );
 
       const result = await service.getProfile('app-user-1');
-      expect(result?.displayName).toBe('Real Name');
+      expect(result[0]?.displayName).toBe('Real Name');
     });
   });
 

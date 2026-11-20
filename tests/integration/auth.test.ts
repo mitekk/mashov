@@ -1006,7 +1006,7 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
   // ──────────────────────────────────────────────────────────────────────────
 
   describe('GET /api/v1/settings/profile', () => {
-    it("returns the caller's own profile in contract shape", async () => {
+    it("returns the caller's own profile per school in contract shape", async () => {
       const loginRes = await request(app.getHttpServer())
         .post('/api/v1/auth/login')
         .send({ semel: 540175, username: 'profile-shape', password: 'pass' });
@@ -1030,14 +1030,21 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
         .set('Cookie', `mashov_session=${sessionCookie}`);
 
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
+      // One school linked, one entry. The row carries no
+      // `householdConnectionId` -- the shared-session branch and the
+      // connection-scoping backfill both leave it null -- so this is also the
+      // null-stamp fallback against real Postgres.
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body).toHaveLength(1);
+      expect(res.body[0]).toMatchObject({
         upstreamUserId: user!.mashovUserId,
         displayName: 'My Own Name',
         email: 'mine@example.com',
         cellphone: '0500000001',
       });
-      expect(typeof res.body.schoolYear).toBe('number');
-      expect(typeof res.body.updatedAt).toBe('string');
+      expect(typeof res.body[0].householdConnectionId).toBe('string');
+      expect(typeof res.body[0].schoolYear).toBe('number');
+      expect(typeof res.body[0].updatedAt).toBe('string');
     });
 
     it('returns 401 when unauthenticated', async () => {
@@ -1085,14 +1092,17 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
         .set('Cookie', `mashov_session=${cookieA}`);
 
       expect(resA.status).toBe(200);
-      expect(resA.body.upstreamUserId).toBe(userA!.mashovUserId);
+      expect(resA.body).toHaveLength(1);
+      expect(resA.body[0].upstreamUserId).toBe(userA!.mashovUserId);
+      // Over the whole array, not one object: the shape changed, the
+      // assertion must not weaken with it.
       const payload = JSON.stringify(resA.body);
       expect(payload).not.toContain('stranger@example.com');
       expect(payload).not.toContain('0509999999');
       expect(payload).not.toContain('Someone Else');
     });
 
-    it('returns null when the caller has no profile row yet, even if others do', async () => {
+    it('returns an empty list when the caller has no profile row yet, even if others do', async () => {
       // Before scoping this returned the other household's profile instead.
       const loginA = await request(app.getHttpServer())
         .post('/api/v1/auth/login')
@@ -1119,8 +1129,79 @@ describe('Phase 2 — Auth & Session Integration Tests', () => {
         .set('Cookie', `mashov_session=${cookieA}`);
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({});
+      expect(res.body).toEqual([]);
       expect(JSON.stringify(res.body)).not.toContain('stranger@example.com');
+    });
+
+    // B4. The school label came from a `lastLoginAt`-ordered findFirst while
+    // the contact details came from a findUnique on the credential that
+    // created the AppUser, so a two-school parent saw one school's phone
+    // number captioned with the other school's name.
+    it("labels each school's contact details with that school", async () => {
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ semel: 540175, username: 'profile-two-schools', password: 'pass' });
+      const sessionCookie = extractSessionCookie(loginRes);
+
+      const user = await prisma.appUser.findFirst({
+        where: { username: 'profile-two-schools' },
+      });
+      const first = await prisma.householdConnection.findFirst({
+        where: { userId: user!.id },
+      });
+      expect(first).not.toBeNull();
+
+      const second = await prisma.householdConnection.create({
+        data: {
+          schoolCode: 777777,
+          schoolYear: 2026,
+          schoolName: 'School B',
+          username: 'profile-two-schools-b',
+          encryptedPassword: 'x',
+          userId: user!.id,
+          lastLoginAt: new Date('2026-03-20T00:00:00Z'),
+        },
+      });
+      await prisma.householdConnection.update({
+        where: { id: first!.id },
+        data: { schoolName: 'School A', lastLoginAt: new Date('2026-03-10T00:00:00Z') },
+      });
+
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: user!.mashovUserId,
+          email: 'at-a@example.com',
+          cellphone: '0500000011',
+          detailsState: 1,
+          householdConnectionId: first!.id,
+        },
+      });
+      await prisma.parentProfile.create({
+        data: {
+          upstreamUserId: `${user!.mashovUserId}-b`,
+          email: 'at-b@example.com',
+          cellphone: '0500000022',
+          detailsState: 1,
+          householdConnectionId: second.id,
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/settings/profile')
+        .set('Cookie', `mashov_session=${sessionCookie}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(2);
+      // Newest sign-in first, matching the school rows below the cards.
+      expect(
+        res.body.map((entry: { schoolName: string; cellphone: string }) => [
+          entry.schoolName,
+          entry.cellphone,
+        ]),
+      ).toEqual([
+        ['School B', '0500000022'],
+        ['School A', '0500000011'],
+      ]);
     });
   });
 

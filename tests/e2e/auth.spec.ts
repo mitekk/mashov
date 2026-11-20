@@ -118,17 +118,20 @@ async function mockMorePageQueries(page: Page): Promise<void> {
 
   await page.route('**/api/v1/settings/profile', async (route) => {
     await route.fulfill({
-      json: {
-        upstreamUserId: 'mock-user-001',
-        displayName: 'Test Parent',
-        email: '',
-        cellphone: '',
-        schoolName: 'בית ספר לדוגמה',
-        schoolYear: 2026,
-        schoolCode: 540175,
-        detailsState: 1,
-        updatedAt: new Date().toISOString(),
-      },
+      json: [
+        {
+          householdConnectionId: 'conn-1',
+          upstreamUserId: 'mock-user-001',
+          displayName: 'Test Parent',
+          email: '',
+          cellphone: '',
+          schoolName: 'בית ספר לדוגמה',
+          schoolYear: 2026,
+          schoolCode: 540175,
+          detailsState: 1,
+          updatedAt: new Date().toISOString(),
+        },
+      ],
     });
   });
 }
