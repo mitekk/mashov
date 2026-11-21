@@ -5,6 +5,7 @@ import type { ConversationListItem } from '@/types/api';
 import { formatAbsoluteHe, formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
+import { SchoolBadge } from '@/components/school/SchoolBadge';
 
 interface ConversationItemProps {
   conversation: ConversationListItem;
@@ -35,6 +36,12 @@ export function ConversationItem({
         >
           {conversation.senderNamePreview}
         </p>
+        {/* Self-hiding below two schools, so a one-school row is unchanged. */}
+        <SchoolBadge
+          schoolShortLabel={conversation.schoolShortLabel}
+          testId={`conversation-school-${conversation.conversationId}`}
+          className="flex-shrink-0"
+        />
         <time
           dateTime={conversation.sendTime}
           title={formatAbsoluteHe(conversation.sendTime)}

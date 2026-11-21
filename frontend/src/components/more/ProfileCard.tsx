@@ -8,7 +8,16 @@ interface ProfileCardProps {
 
 export function ProfileCard({ profile }: ProfileCardProps) {
   return (
-    <div data-testid="profile-card" className="card-base p-4 space-y-3">
+    // The testid stays stable -- a connection id is a server-generated cuid,
+    // so a suffixed one is unguessable from a test and amounts to dropping
+    // the hook. Per-card selectability comes from the data attribute instead:
+    // `[data-testid="profile-card"][data-connection-id="..."]`, or
+    // `.filter({ has: ... })` over the stable one.
+    <div
+      data-testid="profile-card"
+      data-connection-id={profile.householdConnectionId}
+      className="card-base p-4 space-y-3"
+    >
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
           <User className="w-5 h-5 text-primary" />

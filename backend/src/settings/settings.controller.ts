@@ -26,7 +26,7 @@ export class SettingsController {
       orderBy: { lastLoginAt: 'desc' },
     });
 
-    return this.settingsService.getSourceHealth(connection?.id ?? null);
+    return this.settingsService.getSourceHealth(connection?.id ?? null, userId);
   }
 
   @Get('profile')

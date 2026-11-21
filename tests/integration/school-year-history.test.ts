@@ -24,6 +24,7 @@ import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { MashovSessionService } from '../../backend/src/session/mashov-session.service';
 import type { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
 import type { UserItemStateService } from '../../backend/src/common/user-item-state.service';
+import type { ConnectionScopeService } from '../../backend/src/common/connection-scope/connection-scope.service';
 import type { SyncTaskRunResult } from '../../backend/src/sync/sync.types';
 
 const STUDENT_GUID = 'hist-student-1';
@@ -184,6 +185,9 @@ describe('School-year history window', () => {
       {} as unknown as UserItemStateService,
       // Window wide open: the timetable must still not double up.
       config('2025'),
+      // ConnectionScopeService: this read never leaves the database, so the
+      // upstream target resolver is never reached.
+      {} as unknown as ConnectionScopeService,
     );
 
     const result = await children.getTimetable(STUDENT_GUID);

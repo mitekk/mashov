@@ -19,6 +19,7 @@ import { PrismaModule } from "../../backend/src/prisma/prisma.module";
 import { SessionModule } from "../../backend/src/session/session.module";
 import { DashboardModule } from "../../backend/src/dashboard/dashboard.module";
 import { MashovHttpClient } from "../../backend/src/session/mashov-http.client";
+import { EncryptionService } from "../../backend/src/session/encryption.service";
 import { HttpExceptionFilter } from "../../backend/src/common/filters/http-exception.filter";
 
 const TEST_STUDENT_GUID = "test-student-guid-001";
@@ -54,6 +55,8 @@ describe("API Integration Tests (isNew refactor contract)", () => {
   let prisma: PrismaClient;
   let mashovGetMock: jest.Mock;
   let mashovPutMock: jest.Mock;
+  let mashovDeleteMock: jest.Mock;
+  let encryption: EncryptionService;
 
   beforeAll(async () => {
     prisma = new PrismaClient({
@@ -63,6 +66,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
 
     mashovGetMock = jest.fn().mockResolvedValue({ messages: [] });
     mashovPutMock = jest.fn().mockResolvedValue({});
+    mashovDeleteMock = jest.fn().mockResolvedValue({});
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [
@@ -81,9 +85,24 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       .useValue({
         get: mashovGetMock,
         put: mashovPutMock,
+        // The per-connection methods, which is what every user-facing read
+        // uses since the household work: `getForTarget(url, target, config)`
+        // and `putForTarget(url, data, target, config)`. They delegate to the
+        // same mocks with the target dropped, so the assertions below still
+        // read as "this path, this body, these headers" -- the target is a
+        // credential bundle, not part of the request these tests describe.
+        getForTarget: (url: string, _target: unknown, config?: unknown) =>
+          mashovGetMock(url, config),
+        getResponseForTarget: (url: string, _target: unknown, config?: unknown) =>
+          mashovGetMock(url, config),
+        putForTarget: (url: string, data: unknown, _target: unknown, config?: unknown) =>
+          mashovPutMock(url, data, config),
+        deleteForTarget: (url: string, _target: unknown, config?: unknown) =>
+          mashovDeleteMock(url, config),
       })
       .compile();
 
+    encryption = moduleFixture.get(EncryptionService);
     app = moduleFixture.createNestApplication();
     app.setGlobalPrefix("api/v1", { exclude: ["/health"] });
     app.useGlobalFilters(new HttpExceptionFilter());
@@ -113,7 +132,31 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     mashovGetMock.mockResolvedValue({ messages: [] });
     mashovPutMock.mockReset();
     mashovPutMock.mockResolvedValue({});
+    mashovDeleteMock.mockReset();
+    mashovDeleteMock.mockResolvedValue({});
   });
+
+  /**
+   * An active connection with a password that actually decrypts.
+   *
+   * Every user-facing upstream read resolves a `ConnectionTarget` first, and a
+   * row whose password will not decrypt is skipped rather than used -- so a
+   * literal 'enc' here would leave the request with no connection at all and
+   * the response empty.
+   */
+  async function seedConnection(): Promise<string> {
+    const connection = await prisma.householdConnection.create({
+      data: {
+        schoolCode: 480001,
+        schoolYear: 2027,
+        username: "api-test-parent",
+        encryptedPassword: encryption.encrypt("pw"),
+        schoolName: "Test School",
+        active: true,
+      },
+    });
+    return connection.id;
+  }
 
   describe("GET /health", () => {
     it("returns 200 with status ok and connected db", async () => {
@@ -174,6 +217,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     });
 
     it("GET lessons/plans returns {data} and proxies upstream with weeklyPlan referer", async () => {
+      await seedConnection();
       await seedStudent(prisma);
 
       mashovGetMock.mockImplementation(async (path: string) => {
@@ -215,6 +259,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     });
 
     it("GET lessons/history returns {data} and gracefully falls back to empty array on upstream error", async () => {
+      await seedConnection();
       await seedStudent(prisma);
 
       mashovGetMock.mockImplementationOnce(async (path: string) => {
@@ -953,6 +998,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     });
 
     it("GET /api/v1/mail/conversations/:id lazy-fetches detail and sanitizes html body", async () => {
+      await seedConnection();
       await prisma.mailConversation.create({
         data: {
           conversationId: "conv-lazy",
@@ -1039,6 +1085,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     });
 
     it("PUT /api/v1/mail/conversations/mark-unread proxies raw id array to upstream", async () => {
+      await seedConnection();
       await prisma.mailConversation.create({
         data: {
           conversationId: "conv-mark-unread",
@@ -1062,6 +1109,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     });
 
     it("PUT /api/v1/mail/conversations/archive removes inbox conversation locally", async () => {
+      await seedConnection();
       await prisma.mailConversation.create({
         data: {
           conversationId: "conv-archive",
@@ -1103,6 +1151,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     });
 
     it("PUT /api/v1/mail/conversations/unarchive restores archived conversation to inbox and sets isNew=true", async () => {
+      await seedConnection();
       await prisma.mailConversation.create({
         data: {
           conversationId: "conv-unarchive",

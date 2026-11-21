@@ -3,6 +3,12 @@ import sanitizeHtml = require('sanitize-html');
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import type { ConnectionTarget } from '../session/connection-target';
+import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
+import { resolveSchoolLabels } from '../common/school-label';
+import { activeConnectionIdsFor } from '../common/student-links';
+import { householdMailScope, unreadBadge } from '../common/mail-scope';
+import { schoolChipsForUser } from '../common/school-chips';
 import { deriveIsUnread } from './unread';
 
 interface UpstreamMessage {
@@ -76,23 +82,29 @@ export class MailService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mashovClient: MashovHttpClient,
+    private readonly scope: ConnectionScopeService,
   ) {}
 
-  async getSummary() {
-    const [localNewConversations, household, recentConversations, lastSync] = await Promise.all([
-      this.prisma.mailConversation.count({
-        where: {
-          isUnread: true,
-          NOT: { labels: { array_contains: ['archived'] } },
-        },
-      }),
-      this.prisma.householdConnection.findFirst({
-        where: { active: true },
-        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedNewCount: true },
-      }),
+  /**
+   * The inbox badge and the three most recent unread conversations.
+   *
+   * Takes the caller, because the badge is a SUM now. Reading one connection's
+   * row was accidentally tenant-safe; summing `{ active: true }` across the
+   * whole table is not -- two households each with 5 unread would both have
+   * been shown 10.
+   *
+   * The badge itself is `unreadBadge`, which owns the NULL rule: the summed
+   * per-connection counts plus the unattributed rows, counted once (R15). The
+   * same rule serves the dashboard's copy of this summary.
+   */
+  async getSummary(userId?: string) {
+    const ownScope = await this.householdMailScope(userId);
+
+    const [newConversations, recentConversations, lastSync] = await Promise.all([
+      unreadBadge(this.prisma, userId, ownScope),
       this.prisma.mailConversation.findMany({
         where: {
+          ...ownScope,
           isUnread: true,
           NOT: { labels: { array_contains: ['archived'] } },
         },
@@ -105,8 +117,6 @@ export class MailService {
         select: { endedAt: true },
       }),
     ]);
-
-    const newConversations = household?.cachedNewCount ?? localNewConversations;
 
     return {
       newConversations,
@@ -123,17 +133,91 @@ export class MailService {
     };
   }
 
-  async getConversations(page: number, limit: number, filter: 'all' | 'new' | 'archived') {
-    const where = this.buildInboxWhere(filter);
+  async getConversations(
+    page: number,
+    limit: number,
+    filter: 'all' | 'new' | 'archived',
+    /**
+     * Narrows to one school's mailbox, plus the mail whose ownership is not
+     * yet known; omitted, every mailbox.
+     */
+    schoolId?: string,
+    userId?: string,
+  ) {
+    await this.assertOwnedSchool(schoolId, userId);
+    // Separate predicates, not one merged object: the household scope is an
+    // `OR`, the school filter is an `OR`, and `buildInboxWhere` returns a flat
+    // object, so merging any two of them would let one overwrite the other.
+    //
+    // The school filter admits `householdConnectionId: null` alongside the
+    // chosen school, because ownership-unknown is not somebody else's mail --
+    // it is mail whose stamp the next walk will fill in. That is the
+    // branch-wide rule (`matchesSchoolFilter`, `unreadBadge`): hiding such a
+    // row behind a chip it can never match would make it unreachable.
+    const where: Prisma.MailConversationWhereInput = {
+      AND: [
+        await this.householdMailScope(userId),
+        this.buildInboxWhere(filter),
+        ...(schoolId
+          ? [
+              {
+                OR: [
+                  { householdConnectionId: schoolId },
+                  { householdConnectionId: null },
+                ],
+              } satisfies Prisma.MailConversationWhereInput,
+            ]
+          : []),
+      ],
+    };
     const [items, total] = await Promise.all([
       this.prisma.mailConversation.findMany({
         where,
         orderBy: { sendTime: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
+        // Joined rather than resolved per row: the conversation already has
+        // the connection, and the inbox shows its label on every line.
+        include: {
+          connection: { select: { id: true, schoolCode: true, schoolName: true, displayLabel: true } },
+        },
       }),
       this.prisma.mailConversation.count({ where }),
     ]);
+
+    // The caller's whole connection set, labelled as a set. Resolving over the
+    // connections present in THIS page gave the same school a short colliding
+    // label on a page holding one of two colliding schools and its expanded
+    // full name on a page holding both -- and disagreed with `/children` and
+    // `/dashboard`, which now both read this map.
+    const chips = userId ? await schoolChipsForUser(this.prisma, userId) : null;
+    // The caller-less read has no household to resolve over, so it keeps the
+    // joined relation -- which is also the fallback for a conversation stamped
+    // to a connection the chip map does not hold.
+    const labels =
+      chips ??
+      resolveSchoolLabels(
+        [
+          ...new Map(
+            items
+              .map((item) => item.connection)
+              // Truthy, not `!== null`: Prisma yields null for a missing
+              // relation, but a row read without the include yields undefined,
+              // and both mean "no school".
+              .filter((connection): connection is NonNullable<typeof connection> => Boolean(connection))
+              .map((connection) => [connection.id, connection]),
+          ).values(),
+        ],
+      );
+
+    /** The chip label for one conversation's school, or `null` for no badge. */
+    const shortLabelFor = (connection: { id: string; schoolName: string | null; schoolCode: number } | null) => {
+      if (!connection) return null;
+      const resolved = labels.get(connection.id);
+      if (typeof resolved === 'string') return resolved;
+      if (resolved) return resolved.shortLabel;
+      return connection.schoolName ?? String(connection.schoolCode);
+    };
 
     return {
       data: items.map((item) => ({
@@ -147,6 +231,9 @@ export class MailService {
         preventReply: item.preventReply,
         labels: this.asStringArray(item.labels),
         lastFetchedAt: item.lastFetchedAt.toISOString(),
+        // `null` on an unstamped conversation, which the UI reads as no badge.
+        schoolId: item.connection?.id ?? null,
+        schoolShortLabel: shortLabelFor(item.connection),
       })),
       pagination: {
         page,
@@ -157,7 +244,7 @@ export class MailService {
     };
   }
 
-  async getConversationDetail(conversationId: string) {
+  async getConversationDetail(conversationId: string, userId?: string) {
     const conversation = await this.prisma.mailConversation.findUnique({
       where: { conversationId },
     });
@@ -165,6 +252,7 @@ export class MailService {
     if (!conversation) {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
+    await this.assertVisible(conversationId, conversation.householdConnectionId, userId);
 
     // Check if full messages with body exist in DB
     const existingMessages = await this.prisma.mailMessage.findMany({
@@ -176,7 +264,7 @@ export class MailService {
     );
 
     if (!hasRenderableBody) {
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
     }
 
     const messages = await this.prisma.mailMessage.findMany({
@@ -231,6 +319,7 @@ export class MailService {
     conversationId: string,
     messageId: string,
     fileId: string,
+    userId?: string,
   ): Promise<DownloadedFile> {
     const conversation = await this.prisma.mailConversation.findUnique({
       where: { conversationId },
@@ -238,23 +327,69 @@ export class MailService {
     if (!conversation) {
       throw new NotFoundException(`Conversation not found: ${conversationId}`);
     }
+    await this.assertVisible(conversationId, conversation.householdConnectionId, userId);
 
     const referer = `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`;
 
     let message = await this.getMessageInConversation(conversationId, messageId);
     if (!message) {
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
       message = await this.getMessageInConversation(conversationId, messageId);
     }
     if (!message) throw new NotFoundException(`Message not found: ${messageId}`);
 
     let attachment = this.findMessageAttachment(message.files, fileId);
     if (!attachment) {
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
       const refreshedMessage = await this.getMessageInConversation(conversationId, messageId);
       attachment = this.findMessageAttachment(refreshedMessage?.files, fileId);
+      // Keep the row the stamp check below reads in step with the one the
+      // attachment came from: the hydration above can re-stamp it.
+      if (refreshedMessage) message = refreshedMessage;
     }
     if (!attachment) throw new NotFoundException(`Attachment not found: ${fileId}`);
+
+    // The MESSAGE's stamp, checked against the caller before a single
+    // credential is resolved.
+    //
+    // `assertVisible` above checked the CONVERSATION, and that is not enough
+    // here. An unattributed conversation (`householdConnectionId IS NULL`) is
+    // visible to every household by the branch-wide NULL rule -- which is
+    // load-bearing, not an oversight -- while the messages under it can carry
+    // a stamp of their own, because the ownership backfill refuses on any
+    // database with more than one active connection. So "the caller may see
+    // the conversation" did not bound whose credentials this download would
+    // spend.
+    //
+    // It had to, because `resolveOrFallback` honours `userId` only on its
+    // FALLBACK branch: a non-null stamp resolves to that connection whoever is
+    // asking (ADR-0030's `I6` ruling). That ruling's stated bound -- "Mashov
+    // rejects it, so the symptom is an empty list rather than a leak" -- does
+    // not hold on this path. The credentials and the message genuinely belong
+    // together, so Mashov accepts, and the other household's file comes back.
+    //
+    // The same `canSee` rule as everywhere else, so NULL stays admitted: a
+    // stricter rule here would empty the attachment path on every deployment
+    // that has not re-synced. And the same 404 as a genuinely missing message
+    // two lines up, so the answer cannot be used to tell a foreign message
+    // from an absent one.
+
+    if (!this.canSee(message.householdConnectionId, await this.ownConnectionIds(userId))) {
+      throw new NotFoundException(`Message not found: ${messageId}`);
+    }
+
+    // Resolved once for the whole download, including the retry below: the
+    // message's own stamp, so a bare messageId is enough and no join is
+    // needed.
+    //
+    // Resolved HERE, and not before the lookups above, because `messageId`
+    // comes from the caller and only `conversationId` had been checked against
+    // the household at that point. By this line the message is known to be in
+    // a conversation the caller may see AND to carry a stamp the caller may
+    // spend.
+    const target = await this.scope.targetForMessage(messageId, userId).catch(() =>
+      this.scope.targetForConversation(conversationId, userId),
+    );
 
     try {
       return await this.tryDownloadCandidates(
@@ -267,10 +402,11 @@ export class MailService {
         }),
         referer,
         attachment.fileName,
+        target,
       );
     } catch {
       // Attachment URLs may be short-lived; refresh from upstream and retry once.
-      await this.hydrateConversationFromUpstream(conversationId, conversation);
+      await this.hydrateConversationFromUpstream(conversationId, conversation, userId);
       const refreshedMessage = await this.getMessageInConversation(conversationId, messageId);
       const refreshedAttachment = this.findMessageAttachment(refreshedMessage?.files, fileId);
       if (!refreshedAttachment) {
@@ -287,6 +423,7 @@ export class MailService {
         }),
         referer,
         refreshedAttachment.fileName,
+        target,
       );
     }
   }
@@ -341,11 +478,17 @@ export class MailService {
       hasAttachments: boolean;
       preventReply: boolean;
       locallyReadThroughAt: Date | null;
+      // The household the conversation belongs to, carried down so the
+      // messages this fetch writes are stamped the same way. Every caller
+      // passes the whole `mailConversation` row, so this costs them nothing.
+      householdConnectionId: string | null;
     },
+    userId?: string,
   ): Promise<boolean> {
     try {
-      const upstream = await this.mashovClient.get<UpstreamConversationDetail>(
+      const upstream = await this.mashovClient.getForTarget<UpstreamConversationDetail>(
         `/api/mail/conversations/${conversationId}`,
+        await this.scope.targetForConversation(conversationId, userId),
         {
           headers: {
             Referer: `https://web.mashov.info/students/main/mailbox/conversation/${conversationId}`,
@@ -378,6 +521,7 @@ export class MailService {
       hasAttachments: boolean;
       preventReply: boolean;
       locallyReadThroughAt: Date | null;
+      householdConnectionId: string | null;
     },
     upstream: UpstreamConversationDetail,
   ): Promise<void> {
@@ -415,11 +559,21 @@ export class MailService {
         const files = Array.isArray(msg.files) ? msg.files : [];
         const recipients = Array.isArray(msg.recipients) ? msg.recipients : [];
 
+        // The conversation's own stamp, not the resolved upstream target: the
+        // unlink in ConnectionService deletes messages and conversations as one
+        // transaction and was written against message and conversation stamps
+        // being identical. Messages written here used to carry no stamp at all,
+        // so a NULL-stamped message under a stamped conversation made
+        // mailConversation.deleteMany violate mail_message_conversationId_fkey
+        // -- the same 500 on every retry (R2).
+        const stamp = fallbackConversation.householdConnectionId;
+
         return this.prisma.mailMessage.upsert({
           where: { messageId: msg.messageId },
           create: {
             messageId: msg.messageId,
             conversationId: msg.conversationId || conversationId,
+            householdConnectionId: stamp,
             senderId: msg.senderId ?? '',
             senderName: msg.senderName ?? '',
             subject: msg.subject ?? '',
@@ -435,6 +589,21 @@ export class MailService {
             rawPayload: msg as unknown as Prisma.InputJsonValue,
           },
           update: {
+            // Written only when the conversation itself is stamped, so an
+            // unstamped conversation cannot un-stamp a message a sync walk
+            // already attributed -- the same rule as the walk's own re-stamp in
+            // sync/tasks/mail-inbox.task.ts.
+            //
+            // This is the `update` branch's whole job: a consistency rule, NOT
+            // the thing that heals rows written before the fix. It barely
+            // reaches them. getConversationDetail hydrates only when no stored
+            // message has a renderable body, and every row the old detail fetch
+            // wrote has one -- that is what the fetch is for. So a legacy
+            // NULL-stamped row is re-fetched here only through the
+            // attachment-download fallbacks. What actually reaches those rows is
+            // the sync walk, for conversations upstream still returns, and the
+            // unlink's own conversation-keyed delete predicate.
+            ...(stamp ? { householdConnectionId: stamp } : {}),
             senderId: msg.senderId ?? '',
             senderName: msg.senderName ?? '',
             subject: msg.subject ?? '',
@@ -454,7 +623,147 @@ export class MailService {
     );
   }
 
-  private buildInboxWhere(filter: 'all' | 'new' | 'archived'): Prisma.MailConversationWhereInput {
+  /**
+   * Restricts a mail read to the caller's own mailboxes.
+   *
+   * The rule itself lives in `common/mail-scope.ts`, because the dashboard and
+   * the feed render mail too and one scoping path for one table is the point.
+   * Kept as a method so this service's call sites read unchanged.
+   */
+  private householdMailScope(userId?: string): Promise<Prisma.MailConversationWhereInput> {
+    return householdMailScope(this.prisma, userId);
+  }
+
+  /**
+   * The caller's active connection ids, or `null` when there is no caller.
+   *
+   * `null` is not an empty list: it means "unscoped", for a caller-less
+   * server-side read. An empty array is a real caller who has connected no
+   * school, and admits only the unstamped rows.
+   *
+   * Delegates to `activeConnectionIdsFor` rather than issuing its own query,
+   * so mail's notion of "the caller's connections" is the same one the student
+   * visibility edge uses and the two cannot drift.
+   */
+  private async ownConnectionIds(userId?: string): Promise<string[] | null> {
+    if (!userId) return null;
+    return activeConnectionIdsFor(this.prisma, userId);
+  }
+
+  /**
+   * Whether a caller may act on a row with this stamp.
+   *
+   * NULL is admitted, as it is everywhere else on this branch: it means
+   * "ownership unknown, re-stamp on the next walk", and excluding it would
+   * empty the inbox on a deployment that has not re-synced since the
+   * ownership migration.
+   *
+   * For a MUTATION that rule has a consequence the read case does not, and it
+   * is deliberate rather than overlooked: on a box with more than one active
+   * connection -- where the ownership backfill refused and unstamped rows
+   * therefore exist -- either household may archive or re-flag an
+   * unattributed row, and the other household sees that write. Upstream is
+   * still safe, because the call goes out under the acting household's own
+   * account. The alternative, refusing NULL on a mutation, makes a row the
+   * parent can see and cannot act on, and the next inbox walk stamps it
+   * within seven minutes. Recorded as a Minor in
+   * docs/plans/merged-household-access-followups.md.
+   */
+  private canSee(householdConnectionId: string | null, own: string[] | null): boolean {
+    if (own === null) return true;
+    if (householdConnectionId === null) return true;
+    return own.includes(householdConnectionId);
+  }
+
+  /** A conversation the caller may not act on is a 404, never a 403. */
+  private async assertVisible(
+    conversationId: string,
+    householdConnectionId: string | null,
+    userId?: string,
+  ): Promise<void> {
+    if (this.canSee(householdConnectionId, await this.ownConnectionIds(userId))) return;
+    // The same message as the not-found case on purpose: a distinguishable
+    // answer would confirm the id names a real conversation.
+    throw new NotFoundException(`Conversation not found: ${conversationId}`);
+  }
+
+  /**
+   * The requested ids the caller may act on, in the caller's order, with
+   * their stamps.
+   *
+   * A foreign id is filtered out silently and the mutation reports the honest
+   * `updated` count -- which is already how an id with no local row at all
+   * behaves, since routing drops a row it has no stamp for. What matters is
+   * that no local write happens for it and, above all, that no upstream call
+   * goes out under the other household's credentials.
+   *
+   * With no caller every id is kept, including ids with no local row: that is
+   * the list the unscoped `updateMany` was given before this scoping existed,
+   * and the caller-less path must keep behaving exactly as it did.
+   */
+  private async visibleConversations(
+    conversationIds: string[],
+    userId?: string,
+  ): Promise<Array<{ conversationId: string; householdConnectionId: string | null }>> {
+    if (conversationIds.length === 0) return [];
+    const own = await this.ownConnectionIds(userId);
+
+    const rows = await this.prisma.mailConversation.findMany({
+      where: { conversationId: { in: conversationIds } },
+      select: { conversationId: true, householdConnectionId: true },
+    });
+    const stampByConversation = new Map(
+      rows.map((row) => [row.conversationId, row.householdConnectionId ?? null]),
+    );
+
+    const visible: Array<{ conversationId: string; householdConnectionId: string | null }> = [];
+    for (const conversationId of conversationIds) {
+      if (!stampByConversation.has(conversationId)) {
+        if (own === null) visible.push({ conversationId, householdConnectionId: null });
+        continue;
+      }
+      const householdConnectionId = stampByConversation.get(conversationId) ?? null;
+      if (this.canSee(householdConnectionId, own)) {
+        visible.push({ conversationId, householdConnectionId });
+      }
+    }
+    return visible;
+  }
+
+  /**
+   * A `schoolId` belonging to another household is a 404, not a 403.
+   *
+   * The same reasoning as `SyncController.resolveConnections`: a 403 would
+   * confirm the id exists. No caller means no check, which keeps the
+   * server-side paths unchanged.
+   */
+  private async assertOwnedSchool(schoolId?: string, userId?: string): Promise<void> {
+    if (!schoolId || !userId) return;
+
+    const owned = await this.prisma.householdConnection.findFirst({
+      where: { id: schoolId, userId, active: true },
+      select: { id: true },
+    });
+    if (owned) return;
+
+    throw new NotFoundException({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'No such school is connected to this account',
+        details: [],
+      },
+    });
+  }
+
+  /**
+   * The `filter`/`labels` half of the inbox predicate.
+   *
+   * The school filter is deliberately NOT here: it is an `OR`, and this
+   * returns a flat object that `getConversations` combines by `AND`.
+   */
+  private buildInboxWhere(
+    filter: 'all' | 'new' | 'archived',
+  ): Prisma.MailConversationWhereInput {
     if (filter === 'archived') {
       return { labels: { array_contains: ['archived'] } };
     }
@@ -576,6 +885,7 @@ export class MailService {
     candidates: Array<string | undefined | null>,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
     const uniqueCandidates = Array.from(new Set(
       candidates
@@ -586,7 +896,12 @@ export class MailService {
     let lastError: string | null = null;
     for (const candidate of uniqueCandidates) {
       try {
-        return await this.downloadBinaryFromUpstream(candidate, referer, fallbackFileName);
+        return await this.downloadBinaryFromUpstream(
+          candidate,
+          referer,
+          fallbackFileName,
+          target,
+        );
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         // Try next candidate URL.
@@ -603,13 +918,18 @@ export class MailService {
     pathOrUrl: string,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
-    const response = await this.mashovClient.getResponse<ArrayBuffer>(pathOrUrl, {
-      responseType: 'arraybuffer',
-      headers: {
-        Referer: referer,
+    const response = await this.mashovClient.getResponseForTarget<ArrayBuffer>(
+      pathOrUrl,
+      target,
+      {
+        responseType: 'arraybuffer',
+        headers: {
+          Referer: referer,
+        },
       },
-    });
+    );
 
     const headers = (response.headers ?? {}) as Record<string, string | string[] | undefined>;
     const contentType = this.readHeader(headers, 'content-type');
@@ -672,9 +992,13 @@ export class MailService {
     return fallbackMatch?.[1] ?? null;
   }
 
-  async markConversationsRead(conversationIds: string[]) {
+  async markConversationsRead(conversationIds: string[], userId?: string) {
+    const visible = await this.visibleConversations(conversationIds, userId);
+    const visibleIds = visible.map((row) => row.conversationId);
+    if (visibleIds.length === 0) return { updated: 0 };
+
     await this.prisma.mailConversation.updateMany({
-      where: { conversationId: { in: conversationIds } },
+      where: { conversationId: { in: visibleIds } },
       data: { isUnread: false, locallyMarkedUnreadAt: null },
     });
 
@@ -691,11 +1015,11 @@ export class MailService {
     // keeps both sides in one parsing domain.
     const [conversations, messages] = await Promise.all([
       this.prisma.mailConversation.findMany({
-        where: { conversationId: { in: conversationIds } },
+        where: { conversationId: { in: visibleIds } },
         select: { conversationId: true, sendTime: true },
       }),
       this.prisma.mailMessage.findMany({
-        where: { conversationId: { in: conversationIds } },
+        where: { conversationId: { in: visibleIds } },
         select: { conversationId: true, sendTime: true },
       }),
     ]);
@@ -720,12 +1044,12 @@ export class MailService {
       });
     }
 
-    await this.updateCachedNewCount();
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
-    return { updated: conversationIds.length };
+    return { updated: visibleIds.length };
   }
 
-  async markUnread(conversationIds: string[]) {
+  async markUnread(conversationIds: string[], userId?: string) {
     const eligibleConversations = await this.prisma.mailConversation.findMany({
       where: {
         conversationId: { in: conversationIds },
@@ -733,24 +1057,29 @@ export class MailService {
       },
       select: { conversationId: true },
     });
-    const eligibleConversationIds = eligibleConversations.map((item) => item.conversationId);
+    const visible = await this.visibleConversations(
+      eligibleConversations.map((item) => item.conversationId),
+      userId,
+    );
+    const eligibleConversationIds = visible.map((row) => row.conversationId);
 
     if (eligibleConversationIds.length === 0) {
       return { updated: 0 };
     }
 
-    try {
-      await this.mashovClient.put(
-        '/api/mail/conversations/markAsUnread',
-        eligibleConversationIds,
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-        },
-      );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Upstream markAsUnread failed: ${msg}; updating DB only`);
-    }
+    // An id list from the client can span schools, and one upstream call
+    // cannot carry both: Mashov authenticates per school, so a mixed list is
+    // one request per connection with its own subset. A failure on one
+    // connection must not stop the other's.
+    await this.forEachConnectionSubset(
+      visible,
+      'markAsUnread',
+      (subset, target) =>
+        this.mashovClient.putForTarget('/api/mail/conversations/markAsUnread', subset, target, {
+          headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+        }),
+      userId,
+    );
 
     const updated = await this.prisma.mailConversation.updateMany({
       where: {
@@ -763,27 +1092,28 @@ export class MailService {
       data: { isUnread: true, locallyReadThroughAt: null, locallyMarkedUnreadAt: new Date() },
     });
 
-    await this.updateCachedNewCount();
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
     return { updated: updated.count };
   }
 
-  async archive(conversationIds: string[]) {
-    try {
-      await this.mashovClient.put(
-        '/api/mail/conversations/move/archive',
-        conversationIds,
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-        },
-      );
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Upstream archive failed: ${msg}; updating DB only`);
-    }
+  async archive(conversationIds: string[], userId?: string) {
+    const visible = await this.visibleConversations(conversationIds, userId);
+    const visibleIds = visible.map((row) => row.conversationId);
+    if (visibleIds.length === 0) return { updated: 0 };
+
+    await this.forEachConnectionSubset(
+      visible,
+      'archive',
+      (subset, target) =>
+        this.mashovClient.putForTarget('/api/mail/conversations/move/archive', subset, target, {
+          headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+        }),
+      userId,
+    );
 
     const updated = await this.prisma.mailConversation.updateMany({
-      where: { conversationId: { in: conversationIds } },
+      where: { conversationId: { in: visibleIds } },
       data: {
         isUnread: false,
         labels: ['archived'] as unknown as Prisma.InputJsonValue,
@@ -791,67 +1121,187 @@ export class MailService {
       },
     });
 
-    await this.updateCachedNewCount();
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
     return { updated: updated.count };
   }
 
-  async unarchive(conversationIds: string[]) {
+  async unarchive(conversationIds: string[], userId?: string) {
     // No unarchive endpoint is documented in apis/; markAsUnread is the closest upstream
     // lever we have. It answers with the number of conversations it actually marked
     // (apis/put-api-mail-conversations-markAsUnread.md), which is what tells us whether
     // the unread state we are about to store locally is real.
-    let markedUnreadUpstream = false;
-    try {
-      const marked = await this.mashovClient.put<unknown>(
-        '/api/mail/conversations/markAsUnread',
-        conversationIds,
-        {
-          headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+    // Both the upstream confirmation and the local write are per connection.
+    // Collapsing them to one boolean would let one school's failed call
+    // suppress the other school's *confirmed* unread -- the two mailboxes know
+    // nothing about each other, and their answers must not be mixed.
+    const visible = await this.visibleConversations(conversationIds, userId);
+    const visibleIds = visible.map((row) => row.conversationId);
+    if (visibleIds.length === 0) return { updated: 0 };
+
+    const grouped = this.groupByConnection(visible);
+    let totalUpdated = 0;
+
+    for (const [connectionId, subset] of grouped) {
+      let markedUnreadUpstream = false;
+      try {
+        const target = connectionId
+          ? await this.scope.targetFor(connectionId, userId)
+          : await this.scope.targetForConversation(subset[0], userId);
+        const marked = await this.mashovClient.putForTarget<unknown>(
+          '/api/mail/conversations/markAsUnread',
+          subset,
+          target,
+          {
+            headers: { Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
+          },
+        );
+        markedUnreadUpstream = typeof marked === 'number' ? marked > 0 : true;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Upstream unarchive(markAsUnread) failed for connection ${connectionId ?? 'unstamped'}: ${msg}; updating DB only`,
+        );
+      }
+
+      const updated = await this.prisma.mailConversation.updateMany({
+        where: { conversationId: { in: subset } },
+        data: {
+          labels: [] as unknown as Prisma.InputJsonValue,
+          locallyReadThroughAt: null,
+          // Only claim unread when upstream confirms it. conv.isNew is the read-state
+          // authority, and a conversation archived while read is read -- inventing unread
+          // here would inflate the badge, which is the bug this branch exists to fix. If
+          // the call failed, the next walk settles the real state within 7 minutes.
+          ...(markedUnreadUpstream
+            ? { isUnread: true, locallyMarkedUnreadAt: new Date() }
+            : {}),
         },
-      );
-      markedUnreadUpstream = typeof marked === 'number' ? marked > 0 : true;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Upstream unarchive(markAsUnread) failed: ${msg}; updating DB only`);
+      });
+      totalUpdated += updated.count;
     }
 
-    const updated = await this.prisma.mailConversation.updateMany({
-      where: { conversationId: { in: conversationIds } },
-      data: {
-        labels: [] as unknown as Prisma.InputJsonValue,
-        locallyReadThroughAt: null,
-        // Only claim unread when upstream confirms it. conv.isNew is the read-state
-        // authority, and a conversation archived while read is read -- inventing unread
-        // here would inflate the badge, which is the bug this branch exists to fix. If
-        // the call failed, the next walk settles the real state within 7 minutes.
-        ...(markedUnreadUpstream
-          ? { isUnread: true, locallyMarkedUnreadAt: new Date() }
-          : {}),
-      },
-    });
+    await this.updateCachedNewCount(this.touchedConnectionIds(visible));
 
-    await this.updateCachedNewCount();
-
-    return { updated: updated.count };
+    return { updated: totalUpdated };
   }
 
-  private async updateCachedNewCount(): Promise<void> {
-    const newCount = await this.prisma.mailConversation.count({
-      where: {
-        isUnread: true,
-        NOT: { labels: { array_contains: ['archived'] } },
-      },
-    });
+  /**
+   * Split acted-on rows by the connection that owns them.
+   *
+   * An id list from the client can span schools, and one upstream call cannot
+   * carry both: Mashov authenticates per school, so acting on a mixed list
+   * means one request per connection with its own subset. Unstamped rows group
+   * under `null` rather than being dropped -- before the backfill has run
+   * every row is unstamped, and dropping them would make archive silently do
+   * nothing.
+   *
+   * Takes the rows `visibleConversations` approved, rather than re-reading
+   * them: the ownership decision and the routing decision have to be made from
+   * ONE read of the stamp. Re-reading left a window in which `MailInboxTask`,
+   * which runs every seven minutes, could stamp a row between the two queries
+   * -- and the id would then route to the connection that had just claimed it,
+   * through `targetFor`, which takes no caller and would hand back that
+   * household's decrypted password.
+   */
+  private groupByConnection(
+    rows: Array<{ conversationId: string; householdConnectionId: string | null }>,
+  ): Map<string | null, string[]> {
+    const grouped = new Map<string | null, string[]>();
+    // The caller's order, not a query's, so each subset keeps the order the
+    // user acted in.
+    for (const row of rows) {
+      const bucket = grouped.get(row.householdConnectionId);
+      if (bucket) bucket.push(row.conversationId);
+      else grouped.set(row.householdConnectionId, [row.conversationId]);
+    }
+    return grouped;
+  }
 
-    const household = await this.prisma.householdConnection.findFirst({
-      where: { active: true },
-    });
+  /**
+   * The distinct mailboxes a set of acted-on rows belongs to.
+   *
+   * An unstamped row contributes nothing, which is behaviour-preserving: no
+   * connection owns it, so its unread state was never in any
+   * `cachedNewCount`, and the old table-wide sweep did not move a count for it
+   * either.
+   */
+  private touchedConnectionIds(
+    rows: Array<{ householdConnectionId: string | null }>,
+  ): string[] {
+    return [
+      ...new Set(
+        rows
+          .map((row) => row.householdConnectionId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+  }
 
-    if (household) {
+  /**
+   * Run one upstream call per owning connection, each with only its own ids.
+   *
+   * Per-connection failure is warn-and-continue, as the single-connection
+   * version was: the local write still happens and the next inbox walk
+   * settles the real state within seven minutes. What must not happen is one
+   * school's failure skipping the other school's call.
+   */
+  private async forEachConnectionSubset(
+    rows: Array<{ conversationId: string; householdConnectionId: string | null }>,
+    label: string,
+    call: (subset: string[], target: ConnectionTarget) => Promise<unknown>,
+    userId?: string,
+  ): Promise<void> {
+    const grouped = this.groupByConnection(rows);
+
+    for (const [connectionId, subset] of grouped) {
+      try {
+        const target = connectionId
+          ? await this.scope.targetFor(connectionId, userId)
+          : await this.scope.targetForConversation(subset[0], userId);
+        await call(subset, target);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Upstream ${label} failed for connection ${connectionId ?? 'unstamped'}: ${msg}; updating DB only`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Recompute `cachedNewCount` per connection, each from its own mailbox.
+   *
+   * MailCountsTask writes the same number every five minutes and MailInboxTask
+   * after every walk, so this has to agree with them exactly or a user action
+   * and the cron fight over one number. Unscoped -- one count written to one
+   * arbitrary row -- is what made the badge report the union of both schools.
+   *
+   * Takes the connections the action actually touched -- which may span
+   * schools, so it is a list rather than one id. It used to be called with no
+   * argument and then refreshed every active connection in the database, so
+   * one parent archiving one conversation rewrote every other household's
+   * count too: write amplification and a cross-tenant write for a number that
+   * could not have changed.
+   *
+   * Counts this connection's STAMPED rows and nothing else, which is half of
+   * R15's single rule: an unattributed row is added once by `unreadBadge`, on
+   * read. Counting NULL here as well would count it once per connection, and
+   * the badge sums these rows.
+   */
+  private async updateCachedNewCount(connectionIds: string[]): Promise<void> {
+    for (const connection of connectionIds.map((id) => ({ id }))) {
       await this.prisma.householdConnection.update({
-        where: { id: household.id },
-        data: { cachedNewCount: newCount },
+        where: { id: connection.id },
+        data: {
+          cachedNewCount: await this.prisma.mailConversation.count({
+            where: {
+              householdConnectionId: connection.id,
+              isUnread: true,
+              NOT: { labels: { array_contains: ['archived'] } },
+            },
+          }),
+        },
       });
     }
   }

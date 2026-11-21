@@ -1,14 +1,18 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { householdMailScope, unreadBadge } from '../common/mail-scope';
+import { buildStudentSchoolMap } from '../common/student-school-map';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
 import {
-  currentYearScope,
-  historyScope,
-  schoolYearWindowFor,
+  historyScopeForStudents,
+  yearScopeForStudents,
+  type StudentYearScope,
 } from '../common/school-year/school-year.scope';
+import { visibleStudentWhere } from '../common/student-links';
 
 export interface FeedItem {
   id: string;
@@ -16,6 +20,17 @@ export interface FeedItem {
   sourceId: string;
   studentGuid: string | null;
   studentName: string | null;
+  /**
+   * Which school this item's child belongs to, or `null` for a mail item.
+   *
+   * `null` is also what an unstamped child reports, which the UI reads as "no
+   * badge" rather than as a school called "null". Mail is household-wide and
+   * genuinely has no child, so it carries none either -- the school filter
+   * leaves those visible rather than hiding them under a chip they cannot
+   * match.
+   */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
   title: string;
   summary: string;
   category: string;
@@ -29,10 +44,16 @@ export interface FeedItem {
   linkPath: string;
 }
 
-/** The current year alone: counts, and every staleness signal. */
-type YearScope = { schoolYear: { in: number[] } };
+/**
+ * The current year alone: counts, and every staleness signal.
+ *
+ * Cross-child, so it is the per-connection pair shape -- each school's
+ * children at that school's year. A single household-wide year hides the other
+ * school's children every September.
+ */
+type YearScope = StudentYearScope;
 /** The configured history window: the lists, where more data is the point. */
-type HistoryWhere = ReturnType<typeof historyScope>;
+type HistoryWhere = StudentYearScope;
 
 export interface ChildCard {
   studentGuid: string;
@@ -46,6 +67,9 @@ export interface ChildCard {
   positiveBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
+  /** `null` for a child with no ownership stamp: the UI shows no badge. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
 }
 
 @Injectable()
@@ -65,41 +89,54 @@ export class DashboardService {
     // counts and `latestUpdateAt` stay on the current year. In September the
     // feed therefore shows last year's items rather than being empty, and
     // `latestUpdateAt` is what still reports the new year as quiet.
-    const window = await schoolYearWindowFor(this.prisma, this.configService, userId);
-    const yearScope = currentYearScope(window.current);
-    const windowScope = historyScope(window);
+    const yearScope = await yearScopeForStudents(this.prisma, userId);
+    const windowScope = await historyScopeForStudents(
+      this.prisma,
+      this.configService,
+      userId,
+    );
 
-    const [students, summary, feed, freshness, school] = await Promise.all([
+    // Resolved once here rather than inside each reader: both `getSummary` and
+    // `getFeed` need it, both are private and called only from here, so the
+    // query count stays flat.
+    const mailScope = await householdMailScope(this.prisma, userId);
+
+    const [students, summary, feed, freshness] = await Promise.all([
       this.getChildren(yearScope, userId),
-      this.getSummary(yearScope),
-      this.getFeed(windowScope, userId),
-      this.getFreshness(),
-      this.getSchoolInfo(),
+      this.getSummary(yearScope, mailScope, userId),
+      this.getFeed(windowScope, mailScope, userId),
+      this.getFreshness(userId),
     ]);
 
+    // No `school` field: it was the household's most recently used connection
+    // under a singular name, which cannot describe two schools -- and in the
+    // form N1 found it (no `userId`) it was another household's school name on
+    // this parent's dashboard. Deleted in T14; every school label on this
+    // response is per-item, resolved through `buildStudentSchoolMap`.
     return {
       freshness,
       summary,
       feed,
       children: students,
-      school,
     };
   }
 
-  private async getSummary(yearScope: YearScope) {
-    const [localNewConversations, household, students, recentHomework, recentBehavior] = await Promise.all([
-      this.prisma.mailConversation.count({
-        where: {
-          isUnread: true,
-          NOT: { labels: { array_contains: ['archived'] } },
-        },
+  private async getSummary(
+    yearScope: YearScope,
+    mailScope: Prisma.MailConversationWhereInput,
+    userId?: string,
+  ) {
+    const [newConversations, students, recentHomework, recentBehavior] = await Promise.all([
+      // The same badge the inbox shows, by the same rule, from one place
+      // (R15): the caller's per-connection counts plus the unattributed rows,
+      // counted once. Two copies of these six lines are how R13 -- this one
+      // missing the household predicate entirely -- survived batch 1.
+      unreadBadge(this.prisma, userId, mailScope),
+      // childrenCount is the caller's children, not everyone's. It feeds the
+      // "N children" line on the dashboard.
+      this.prisma.student.count({
+        where: { isActive: true, ...(await this.householdStudentWhere(userId)) },
       }),
-      this.prisma.householdConnection.findFirst({
-        where: { active: true },
-        orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-        select: { cachedNewCount: true },
-      }),
-      this.prisma.student.count({ where: { isActive: true } }),
       this.prisma.homeworkItem.count({
         where: {
           lessonDate: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
@@ -114,8 +151,6 @@ export class DashboardService {
         },
       }),
     ]);
-    const newConversations = household?.cachedNewCount ?? localNewConversations;
-
     return {
       newConversations,
       recentHomeworkCount: recentHomework,
@@ -124,12 +159,22 @@ export class DashboardService {
     };
   }
 
-  private async getFeed(yearScope: HistoryWhere, userId?: string): Promise<FeedItem[]> {
+  private async getFeed(
+    yearScope: HistoryWhere,
+    mailScope: Prisma.MailConversationWhereInput,
+    userId?: string,
+  ): Promise<FeedItem[]> {
     const students = await this.prisma.student.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(await this.householdStudentWhere(userId)),
+      },
       select: { studentGuid: true, fullName: true },
     });
     const studentMap = new Map(students.map((s) => [s.studentGuid, s.fullName]));
+    // Built alongside the name map, from the same rows, so a feed item can
+    // say which school it came from without a second query per item.
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students, userId);
 
     const [homework, behaviors, conversations] = await Promise.all([
       this.prisma.homeworkItem.findMany({
@@ -142,7 +187,11 @@ export class DashboardService {
         orderBy: { eventAt: 'desc' },
         take: 20,
       }),
+      // R3: this read had no `where` at all, so another household's mail
+      // subjects and sender-name previews rendered as feed items on `/home` --
+      // with `schoolId: null`, so the school chip could not even hide them.
       this.prisma.mailConversation.findMany({
+        where: mailScope,
         orderBy: { sendTime: 'desc' },
         take: 20,
       }),
@@ -170,6 +219,9 @@ export class DashboardService {
         summary: hw.homeworkText,
         studentGuid: hw.studentGuid,
         studentName: studentMap.get(hw.studentGuid) ?? null,
+        schoolId: schoolMap.get(hw.studentGuid)?.schoolId ?? null,
+        schoolShortLabel:
+          schoolMap.get(hw.studentGuid)?.shortLabel ?? null,
         category: 'homework',
         priority: 'medium',
         isPositive: false,
@@ -193,6 +245,9 @@ export class DashboardService {
         summary: b.remark ?? b.achvaName,
         studentGuid: b.studentGuid,
         studentName: studentMap.get(b.studentGuid) ?? null,
+        schoolId: schoolMap.get(b.studentGuid)?.schoolId ?? null,
+        schoolShortLabel:
+          schoolMap.get(b.studentGuid)?.shortLabel ?? null,
         category: 'behavior',
         priority: isPositive ? 'low' : 'high',
         isPositive,
@@ -214,6 +269,9 @@ export class DashboardService {
         summary: conv.senderNamePreview ?? conv.subject,
         studentGuid: null,
         studentName: null,
+        // Mail is household-wide: it has no child and therefore no school.
+        schoolId: null,
+        schoolShortLabel: null,
         category: 'mail',
         priority: conv.isUnread ? 'high' : 'medium',
         isPositive: false,
@@ -243,12 +301,31 @@ export class DashboardService {
     return [];
   }
 
+  /**
+   * The `where` fragment restricting a student list to one household.
+   *
+   * Reads the visibility edge, not the routing stamp: a child two parents
+   * share carries one stamp, so a stamp predicate emptied the dashboard of
+   * whichever parent had not synced most recently (ADR-0031). A child with no
+   * links is admitted -- no link means "ownership unknown, link on the next
+   * roster refresh", not "no owner".
+   */
+  private async householdStudentWhere(userId?: string) {
+    if (!userId) return {};
+
+    return visibleStudentWhere(this.prisma, userId);
+  }
+
   private async getChildren(yearScope: YearScope, userId?: string): Promise<ChildCard[]> {
     const students = await this.prisma.student.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(await this.householdStudentWhere(userId)),
+      },
       orderBy: { fullName: 'asc' },
     });
 
+    const schoolMap = await buildStudentSchoolMap(this.prisma, students, userId);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const cards: ChildCard[] = await Promise.all(
@@ -335,6 +412,8 @@ export class DashboardService {
           positiveBehaviorCount: positiveBehavior,
           latestUpdateAt,
           oneLineStatus,
+          schoolId: schoolMap.get(student.studentGuid)?.schoolId ?? null,
+          schoolShortLabel: schoolMap.get(student.studentGuid)?.shortLabel ?? null,
         };
       }),
     );
@@ -342,25 +421,19 @@ export class DashboardService {
     return cards;
   }
 
-  private async getFreshness() {
-    const result = await this.freshnessService.computeFreshness();
+  /**
+   * The freshness card, for this caller's schools only (R4).
+   *
+   * Without the caller, `computeContentFreshness` took the worst verdict
+   * across every active connection in the table, so an unrelated household's
+   * freshly linked school reported as a frozen or empty year here.
+   */
+  private async getFreshness(userId?: string) {
+    const result = await this.freshnessService.computeFreshness(userId);
     return {
       state: result.state,
       lastSyncAt: result.lastSyncAt,
       staleSources: result.staleSources,
-    };
-  }
-
-  private async getSchoolInfo() {
-    const household = await this.prisma.householdConnection.findFirst({
-      where: { active: true },
-      orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-      select: { schoolName: true, schoolYear: true },
-    });
-
-    return {
-      schoolName: household?.schoolName ?? '',
-      schoolYear: household?.schoolYear ?? new Date().getFullYear(),
     };
   }
 

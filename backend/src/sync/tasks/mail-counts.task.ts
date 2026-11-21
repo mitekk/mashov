@@ -4,6 +4,7 @@ import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
+import { reportNoConnectionTarget } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import { MailInboxTask } from './mail-inbox.task';
 
@@ -52,13 +53,20 @@ export class MailCountsTask {
       select: { startedAt: true },
     });
 
+    // All three counts are scoped to the mailbox being reported on. Unscoped,
+    // the breakdown described the union of every household's mail while
+    // `upstreamCount` described one school's -- so the diagnostic for the
+    // disagreement was itself the thing disagreeing.
+    const ownScope = { householdConnectionId: connectionId ?? null };
+
     const [archived, orphans, locallyOverridden] = await Promise.all([
       this.prisma.mailConversation.count({
-        where: { labels: { array_contains: ['archived'] } },
+        where: { ...ownScope, labels: { array_contains: ['archived'] } },
       }),
       lastInboxRun
         ? this.prisma.mailConversation.count({
             where: {
+              ...ownScope,
               isUnread: true,
               NOT: { labels: { array_contains: ['archived'] } },
               lastFetchedAt: { lt: lastInboxRun.startedAt },
@@ -66,7 +74,7 @@ export class MailCountsTask {
           })
         : Promise.resolve<number | 'unknown'>('unknown'),
       this.prisma.mailConversation.count({
-        where: { locallyReadThroughAt: { not: null } },
+        where: { ...ownScope, locallyReadThroughAt: { not: null } },
       }),
     ]);
 
@@ -82,6 +90,19 @@ export class MailCountsTask {
       },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
+
+    // R11: a named connection with no usable target. `useSharedSession` is
+    // false here, so the loop below would not run at all -- no run, nothing
+    // fetched, `success` with every count zero.
+    if (context.connectionId && connections.length === 0) {
+      return reportNoConnectionTarget(
+        this.syncRunService,
+        this.logger,
+        MailCountsTask.SOURCE,
+        context.connectionId,
+      );
+    }
+
     const useSharedSession = !context.connectionId && connections.length === 0;
     const connectionList = useSharedSession ? [null] : connections;
 
@@ -115,18 +136,30 @@ export class MailCountsTask {
 
         const unreadCount = data?.unreadConversations ?? 0;
 
+        // Scoped to this connection's own mailbox. Unscoped, each connection
+        // wrote the UNION of every household's unread into its own
+        // cachedNewCount -- so the badge, which sums those rows, reported the
+        // union once per school. Two schools, double the real number.
         const localUnreadCount = await this.prisma.mailConversation.count({
           where: {
+            householdConnectionId: conn ? conn.id : null,
             isUnread: true,
             NOT: { labels: { array_contains: ['archived'] } },
           },
         });
 
-        // Update cachedNewCount on this specific connection (or the first active one for shared session)
-        const target = conn ?? await this.prisma.householdConnection.findFirst({ where: { active: true } });
-        if (target) {
+        // Written only for the connection this run belongs to. The shared
+        // session owns the NULL-stamped rows but has no connection row of its
+        // own, and the fallback that wrote its count into
+        // `findFirst({ active: true })` picked an arbitrary household -- a
+        // cross-household write, and now a double count as well: under R15's
+        // rule the reader already adds the unattributed rows itself, so a
+        // household holding them in `cachedNewCount` too would be counted
+        // twice. `localCount` below still reports the number in the run
+        // telemetry, which is where an operator reads it.
+        if (conn) {
           await this.prisma.householdConnection.update({
-            where: { id: target.id },
+            where: { id: conn.id },
             data: { cachedNewCount: localUnreadCount },
           });
           updatedCount = 1;

@@ -29,6 +29,11 @@ interface Overrides {
   behaviorFindMany?: jest.Mock;
   homeworkFindFirst?: jest.Mock;
   behaviorFindFirst?: jest.Mock;
+  mailFindMany?: jest.Mock;
+  mailCount?: jest.Mock;
+  mailUnattributedCount?: jest.Mock;
+  connectionFindFirst?: jest.Mock;
+  connectionAggregate?: jest.Mock;
   startYear?: string;
 }
 
@@ -37,18 +42,50 @@ function makeService(overrides: Overrides = {}) {
   const behaviorFindMany = overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]);
   const homeworkFindFirst = overrides.homeworkFindFirst ?? jest.fn().mockResolvedValue(null);
   const behaviorFindFirst = overrides.behaviorFindFirst ?? jest.fn().mockResolvedValue(null);
+  const mailFindMany = overrides.mailFindMany ?? jest.fn().mockResolvedValue([]);
+  // The badge's two counts both land on `mailConversation.count`: the
+  // caller's own scope, and the unattributed rows `unreadBadge` adds once
+  // (R15). Routed by predicate, so `mailCount` still records exactly the
+  // scoped calls the cases below assert on.
+  const scopedMailCount = overrides.mailCount ?? jest.fn().mockResolvedValue(0);
+  const unattributedMailCount =
+    overrides.mailUnattributedCount ?? jest.fn().mockResolvedValue(0);
+  const mailCount = jest.fn((args?: { where?: { householdConnectionId?: unknown } }) =>
+    args?.where?.householdConnectionId === null
+      ? unattributedMailCount(args)
+      : scopedMailCount(args),
+  );
+  const connectionFindFirst =
+    overrides.connectionFindFirst ??
+    jest.fn().mockResolvedValue({
+      schoolYear: 2027,
+      cachedNewCount: 0,
+      schoolName: 'School',
+    });
 
   const prisma = {
     householdConnection: {
-      findFirst: jest.fn().mockResolvedValue({
-        schoolYear: 2027,
-        cachedNewCount: 0,
-        schoolName: 'School',
-      }),
+      findFirst: connectionFindFirst,
+      findMany: jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
+      // The badge is summed over the CALLER's connections now, so the read is
+      // an aggregate rather than one row.
+      aggregate:
+        overrides.connectionAggregate ??
+        jest
+          .fn()
+          .mockResolvedValue({ _sum: { cachedNewCount: 0 }, _count: { _all: 1 } }),
     },
     student: {
-      findMany: jest.fn().mockResolvedValue([STUDENT]),
+      findMany: ownershipAwareStudentFindMany(
+        jest.fn().mockResolvedValue([STUDENT]),
+        [{ studentGuid: 'student-1', householdConnectionId: 'conn-1' }],
+      ),
       count: jest.fn().mockResolvedValue(1),
+    },
+    studentConnection: {
+      findMany: linkFindMany([
+        { studentGuid: 'student-1', householdConnectionId: 'conn-1' },
+      ]),
     },
     homeworkItem: {
       findMany: homeworkFindMany,
@@ -61,8 +98,8 @@ function makeService(overrides: Overrides = {}) {
       count: jest.fn().mockResolvedValue(0),
     },
     mailConversation: {
-      findMany: jest.fn().mockResolvedValue([]),
-      count: jest.fn().mockResolvedValue(0),
+      findMany: mailFindMany,
+      count: mailCount,
     },
   } as unknown as PrismaService;
 
@@ -87,18 +124,140 @@ function makeService(overrides: Overrides = {}) {
   } as unknown as ConfigService;
 
   const service = new DashboardService(prisma, freshness, session, itemState, config);
-  return { service, homeworkFindMany, behaviorFindMany, homeworkFindFirst, behaviorFindFirst };
+  return {
+    service,
+    homeworkFindMany,
+    behaviorFindMany,
+    homeworkFindFirst,
+    behaviorFindFirst,
+    mailFindMany,
+    mailCount: scopedMailCount,
+    connectionFindFirst,
+  };
+}
+
+/** The mail predicate a scoped dashboard read is expected to issue. */
+function mailScope(own = ['conn-1']) {
+  return {
+    OR: [
+      { householdConnectionId: { in: own } },
+      // NULL stays admitted: ownership unknown is not somebody else's.
+      { householdConnectionId: null },
+    ],
+  };
 }
 
 /** The window predicate a history-spanning read is expected to issue. */
-function windowWhere(start: number, current: number) {
-  return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
+/**
+ * The window predicate a cross-child read issues: each school's children at
+ * that school's window, rather than one window for the household.
+ */
+function windowWhere(start: number, current: number, guids = ['student-1']) {
+  return {
+    OR: [
+      // Scoped to the household's own children; see unscopedBranch.
+      { studentGuid: { in: guids }, schoolYear: { in: [0] } },
+      { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
+    ],
+  };
 }
 
-const CURRENT_YEAR_ONLY = { schoolYear: { in: [2027, 0] } };
+/** The same, for a cross-child current-year read. */
+function yearWhere(year: number, guids = ['student-1']) {
+  return {
+    OR: [
+      { studentGuid: { in: guids }, schoolYear: { in: [0] } },
+      { studentGuid: { in: guids }, schoolYear: { in: [year] } },
+    ],
+  };
+}
+/**
+ * A `student.findMany` that answers every caller.
+ *
+ * Three ask: the visibility filter (an OR over `links`), the year scope's
+ * "which children does nobody list" query (`links: { none: {} }`), and
+ * everything else, which wants the roster. Routing on the predicate keeps one
+ * mock honest for all of them instead of making every test aware of the
+ * ownership lookup.
+ */
+function ownershipAwareStudentFindMany(
+  roster: jest.Mock,
+  owned: Array<{ studentGuid: string; householdConnectionId: string }>,
+): jest.Mock {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    const where = (args?.where ?? {}) as Record<string, unknown>;
+
+    // "Children nobody lists": every fixture child is listed, so none.
+    const links = where.links as { none?: object } | undefined;
+    if (links?.none) return Promise.resolve([]);
+
+    const clauses = (where.OR as Array<Record<string, unknown>> | undefined) ?? null;
+    if (clauses) {
+      const ids = clauses.flatMap((clause) => {
+        const scoped = (clause.links as
+          | { some?: { householdConnectionId?: { in?: string[] } } }
+          | undefined)?.some?.householdConnectionId?.in;
+        return scoped ?? [];
+      });
+      const visible = owned
+        .filter((student) => ids.includes(student.householdConnectionId))
+        .map((student) => student.studentGuid);
+      return roster(args).then((students: Array<{ studentGuid: string }>) =>
+        students.filter((student) => visible.includes(student.studentGuid)),
+      );
+    }
+    return roster(args);
+  });
+}
+
+/** The visibility edge, built from the same `owned` fixture. */
+function linkFindMany(
+  owned: Array<{ studentGuid: string; householdConnectionId: string }>,
+): jest.Mock {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    const byConnection = (args?.where?.householdConnectionId as { in?: string[] } | undefined)
+      ?.in;
+    const byStudent = (args?.where?.studentGuid as { in?: string[] } | undefined)?.in;
+    return Promise.resolve(
+      owned.filter(
+        (link) =>
+          (!byConnection || byConnection.includes(link.householdConnectionId)) &&
+          (!byStudent || byStudent.includes(link.studentGuid)),
+      ),
+    );
+  });
+}
+
+
+// Cross-child, so the per-connection pair shape: this school's children at
+// this school's year. With one connection it selects exactly the rows the flat
+// `{ schoolYear: { in: [2027, 0] } }` used to.
+const CURRENT_YEAR_ONLY = yearWhere(2027);
 
 describe('DashboardService', () => {
   describe('getDashboard', () => {
+    it('carries no deprecated `school` field (T14)', async () => {
+      // It was the household's most recently used connection under a singular
+      // name, so it could not describe two schools -- and N1 was this exact
+      // read without a `userId`, putting another household's school name on a
+      // single-school parent's dashboard. Every per-item school label is
+      // `schoolId`/`schoolShortLabel` now, resolved per child.
+      //
+      // Asserted as an absent KEY: a falsy check would also pass against the
+      // field still being there and empty, which is what it answered for a
+      // parent with no connection.
+      const { service } = makeService({ startYear: '2026' });
+
+      const result = await service.getDashboard('user-1');
+
+      expect(Object.keys(result).sort()).toEqual([
+        'children',
+        'feed',
+        'freshness',
+        'summary',
+      ]);
+    });
+
     it('includes a prior-year item in the latest-20 lists once the window is open', async () => {
       const { service, homeworkFindMany } = makeService({
         startYear: '2026',
@@ -150,6 +309,103 @@ describe('DashboardService', () => {
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: windowWhere(2027, 2027) }),
       );
+    });
+  });
+
+  /**
+   * R3, R13 and N1 — three reads on one screen that never took the caller.
+   *
+   * The student and item reads were scoped in batch 1; these three were not,
+   * and each of them puts another household's data on the dashboard: the feed's
+   * mail list (R3), the fallback badge count (R13) and the school card (N1).
+   */
+  describe('scoping to the caller', () => {
+    it('scopes the feed mail read to the household (R3)', async () => {
+      const { service, mailFindMany } = makeService();
+
+      await service.getDashboard('user-1');
+
+      expect(mailFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: mailScope() }),
+      );
+    });
+
+    it('scopes the fallback badge count to the household (R13)', async () => {
+      const { service, mailCount } = makeService();
+
+      await service.getDashboard('user-1');
+
+      expect(mailCount).toHaveBeenCalledWith({
+        where: {
+          ...mailScope(),
+          isUnread: true,
+          NOT: { labels: { array_contains: ['archived'] } },
+        },
+      });
+    });
+
+    it('reads the fallback count, not the other household, when there are no connections (R13)', async () => {
+      // The whole trigger: `_count._all === 0` is a user between unlinking and
+      // re-linking, and the local count was every household's unread total.
+      // The scope now admits only the unstamped rows for them, so the mock's
+      // count is what the badge reports -- and the predicate it was counted
+      // under is the assertion above.
+      const { service, mailCount } = makeService({
+        connectionAggregate: jest
+          .fn()
+          .mockResolvedValue({ _sum: { cachedNewCount: null }, _count: { _all: 0 } }),
+        mailCount: jest.fn().mockResolvedValue(4),
+      });
+
+      const result = await service.getDashboard('user-1');
+
+      expect(result.summary.newConversations).toBe(4);
+      expect(mailCount).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining(mailScope()) }),
+      );
+    });
+
+    it('adds the unattributed unread rows to the badge, once (R15)', async () => {
+      // The dashboard shows the same badge as the inbox, and now by the same
+      // rule rather than its own copy of the arithmetic: a conversation no
+      // connection owns is listed by both and counted by both.
+      const { service } = makeService({
+        connectionAggregate: jest
+          .fn()
+          .mockResolvedValue({ _sum: { cachedNewCount: 5 }, _count: { _all: 2 } }),
+        mailUnattributedCount: jest.fn().mockResolvedValue(2),
+        mailCount: jest.fn().mockResolvedValue(999),
+      });
+
+      const result = await service.getDashboard('user-1');
+
+      expect(result.summary.newConversations).toBe(7);
+    });
+
+    it('reads no connection for a school card at all any more (N1)', async () => {
+      // N1 was the deprecated `school` field: a `findFirst` on
+      // `{ active: true }` with no `userId`, which showed a single-school
+      // parent another household's school name. Batch 3 scoped it to the
+      // caller; T14 deleted the field, so the read is gone rather than
+      // narrowed. That is the stronger assertion, and the one that survives:
+      // a `userId` predicate can be dropped again, an absent query cannot
+      // leak.
+      const { service, connectionFindFirst } = makeService();
+
+      await service.getDashboard('user-1');
+
+      expect(connectionFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('leaves the caller-less reads unscoped', async () => {
+      // The digest and the unauthenticated integration suite drive this path.
+      const { service, mailFindMany, connectionFindFirst } = makeService();
+
+      await service.getDashboard();
+
+      expect(mailFindMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
+      // Caller-less too: nothing on this response names a household's school.
+      expect(connectionFindFirst).not.toHaveBeenCalled();
     });
   });
 });

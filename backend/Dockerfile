@@ -37,4 +37,17 @@ EXPOSE 3000
 # this line a child who left the school is never retired. Idempotent, like the
 # file above. src/prisma/boot-migrations.spec.ts fails if a migration with data
 # statements is added without being executed here or explicitly exempted.
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss --skip-generate && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261117000000_school_year_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261119010000_roster_presence/migration.sql && node dist/src/main.js"]
+#
+# One file runs BEFORE `db push`, and only one: the duplicate-connection
+# collapse. `db push` creates @@unique([schoolCode, username]) from
+# schema.prisma, and 20261117000000 deactivated rather than deleted the
+# duplicate household_connection rows -- so they are still there, and push
+# would hit a unique violation and block startup with nothing to roll back to.
+# It is guarded with to_regclass, so on a first-ever deploy, where the table
+# does not exist until push creates it, it is a no-op rather than an error.
+#
+# The ownership backfill runs after push, because push is what adds the
+# householdConnectionId columns it fills. Until it has run, every row is
+# NULL-stamped -- which MailInboxTask treats as "do not sweep yet" rather than
+# as "unowned", so an unrun backfill costs a stale badge, never wrong data.
+CMD ["sh", "-c", "npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120000000_connection_duplicate_collapse/migration.sql && npx prisma db push --accept-data-loss --skip-generate && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261117000000_school_year_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261119010000_roster_presence/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120010000_connection_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120020000_connection_unique_keys/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261121000000_connection_collision_keys/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261122000000_student_connection_links/migration.sql && node dist/src/main.js"]

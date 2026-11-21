@@ -8,6 +8,7 @@ import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
+import { SchoolLinksService } from '../school-links/school-links.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -26,13 +27,19 @@ const mockPrisma = {
     upsert: jest.fn(),
   },
   householdConnection: {
+    // (schoolCode, username) is a unique key now, so the identity lookup is a
+    // findUnique. findFirst stays for the paths that still use it.
     findFirst: jest.fn(),
+    findUnique: jest.fn(),
     update: jest.fn(),
     create: jest.fn(),
   },
   student: {
     upsert: jest.fn(),
     updateMany: jest.fn(),
+  },
+  studentConnection: {
+    upsert: jest.fn(),
   },
 };
 
@@ -54,10 +61,18 @@ const mockConfig = {
   get: jest.fn().mockImplementation(() => undefined),
 };
 
+const mockSchoolLinksService = {
+  // One method feeds both GET /school-links and me.schools, so the two can
+  // never disagree about which schools a household has.
+  listLinks: jest.fn().mockResolvedValue([]),
+  listMeSchools: jest.fn().mockResolvedValue([]),
+};
+
 const mockSchoolYearService = {
   resolveForSchool: jest.fn(),
   reconcileFromLogin: jest.fn(),
   invalidate: jest.fn(),
+  schoolNameFor: jest.fn(),
 };
 
 const mockLoginResponse = {
@@ -76,10 +91,12 @@ describe('AuthService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
     mockSchoolYearService.resolveForSchool.mockResolvedValue({
       year: 2027,
       source: 'calendar',
     });
+    mockSchoolYearService.schoolNameFor.mockResolvedValue(null);
     mockSchoolYearService.reconcileFromLogin.mockImplementation((candidate: number) => ({
       year: candidate,
       changed: false,
@@ -94,6 +111,7 @@ describe('AuthService', () => {
         { provide: EncryptionService, useValue: mockEncryptionService },
         { provide: ConfigService, useValue: mockConfig },
         { provide: SchoolYearService, useValue: mockSchoolYearService },
+        { provide: SchoolLinksService, useValue: mockSchoolLinksService },
       ],
     }).compile();
 
@@ -131,7 +149,7 @@ describe('AuthService', () => {
       mockHttp.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
       mockPrisma.appUser.findUnique.mockResolvedValue(null);
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1', mashovUserId: 'mashov-uid-1', username: 'test', displayName: 'Test' });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockPrisma.householdConnection.create.mockResolvedValue({});
       mockRedis.incr.mockResolvedValue(1);
 
@@ -145,7 +163,7 @@ describe('AuthService', () => {
       mockHttp.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
       mockPrisma.appUser.findUnique.mockResolvedValue({ id: 'existing-user' });
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'existing-user', mashovUserId: 'mashov-uid-1', username: 'test', displayName: 'Test' });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({ id: 'conn-1' });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue({ id: 'conn-1' });
       mockPrisma.householdConnection.update.mockResolvedValue({});
       mockRedis.incr.mockResolvedValue(1);
 
@@ -233,7 +251,7 @@ describe('AuthService', () => {
       mockHttp.post = jest.fn().mockResolvedValue({ data: loginWithChildren });
       mockPrisma.appUser.findUnique.mockResolvedValue(null);
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockPrisma.householdConnection.create.mockResolvedValue({});
       mockPrisma.student.upsert.mockResolvedValue({});
       mockRedis.incr.mockResolvedValue(1);
@@ -246,6 +264,112 @@ describe('AuthService', () => {
         }),
       );
     });
+
+    it('stamps the children with the connection it just created', async () => {
+      // Sign-in writes the roster itself rather than going through
+      // persistRoster, so it needs its own stamp. Without it the first login
+      // of a household leaves every child unowned until a sync cron happens to
+      // re-stamp them -- and MailInboxTask refuses to reconcile unread while
+      // any row is unstamped.
+      const loginWithChildren = {
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          children: [
+            {
+              childGuid: 'child-1',
+              familyName: 'Cohen',
+              privateName: 'Avi',
+              classCode: '10A',
+              classNum: 10,
+              gender: 'M',
+              groups: [1, 2],
+            },
+          ],
+        },
+      };
+      mockHttp.post = jest.fn().mockResolvedValue({ data: loginWithChildren });
+      mockPrisma.appUser.findUnique.mockResolvedValue(null);
+      mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+      mockPrisma.householdConnection.create.mockResolvedValue({ id: 'conn-new' });
+      mockPrisma.student.upsert.mockResolvedValue({});
+      mockRedis.incr.mockResolvedValue(1);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      const [{ create, update }] = mockPrisma.student.upsert.mock.calls[0] as [
+        { create: Record<string, unknown>; update: Record<string, unknown> },
+      ];
+      expect(create.householdConnectionId).toBe('conn-new');
+      expect(update.householdConnectionId).toBe('conn-new');
+    });
+
+    it('stamps the children with the existing connection on a return login', async () => {
+      const loginWithChildren = {
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          children: [
+            {
+              childGuid: 'child-1',
+              familyName: 'Cohen',
+              privateName: 'Avi',
+              classCode: '10A',
+              classNum: 10,
+              gender: 'M',
+              groups: [1, 2],
+            },
+          ],
+          inactiveChildren: [{ childGuid: 'child-gone' }],
+        },
+      };
+      mockHttp.post = jest.fn().mockResolvedValue({ data: loginWithChildren });
+      mockPrisma.appUser.findUnique.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue({
+        id: 'conn-existing',
+        mashovUniqueId: 'uniq-0',
+      });
+      mockPrisma.householdConnection.update.mockResolvedValue({ id: 'conn-existing' });
+      mockPrisma.student.upsert.mockResolvedValue({});
+      mockPrisma.student.updateMany.mockResolvedValue({ count: 1 });
+      mockRedis.incr.mockResolvedValue(1);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      const [{ update }] = mockPrisma.student.upsert.mock.calls[0] as [
+        { update: Record<string, unknown> },
+      ];
+      expect(update.householdConnectionId).toBe('conn-existing');
+      // And the login grants that connection a VIEW of the child, which is
+      // the half the stamp cannot do: two parents at one school both list the
+      // same children, so visibility has to be a set (ADR-0031).
+      expect(mockPrisma.studentConnection.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            studentGuid_householdConnectionId: {
+              studentGuid: 'child-1',
+              householdConnectionId: 'conn-existing',
+            },
+          },
+        }),
+      );
+      // The deactivation sweep is scoped the same way persistRoster's is: one
+      // school must not be able to retire a child it does not list. Since
+      // ADR-0031 that is a link rather than the routing stamp, because a child
+      // two parents share is stamped to only one of them.
+      expect(mockPrisma.student.updateMany).toHaveBeenCalledWith({
+        where: {
+          studentGuid: { in: ['child-gone'] },
+          OR: [
+            { links: { some: { householdConnectionId: 'conn-existing' } } },
+            { links: { none: {} } },
+          ],
+        },
+        data: { isActive: false },
+      });
+    });
   });
 
   describe('school year resolution', () => {
@@ -253,15 +377,15 @@ describe('AuthService', () => {
       mockHttp.post = jest.fn().mockResolvedValue({ data });
       mockPrisma.appUser.findUnique.mockResolvedValue(null);
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
-      mockPrisma.householdConnection.create.mockResolvedValue({});
-      mockPrisma.householdConnection.update.mockResolvedValue({});
+      mockPrisma.householdConnection.create.mockResolvedValue({ id: 'conn-new' });
+      mockPrisma.householdConnection.update.mockResolvedValue({ id: 'conn-existing' });
       mockPrisma.student.upsert.mockResolvedValue({});
       mockRedis.incr.mockResolvedValue(1);
     }
 
     it('sends the resolved year in the login body', async () => {
       arrangeSuccessfulLogin();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
 
       await service.login(482273, 'user', 'pass', '127.0.0.1');
 
@@ -273,9 +397,77 @@ describe('AuthService', () => {
       );
     });
 
+    it("falls back to the public school list's name when the login omits one", async () => {
+      // T13 finding 1, and the path it was actually observed on: school B's
+      // sign-in. `schoolSettings.schoolName` is absent, so the column was
+      // stored NULL and the `?? String(schoolCode)` fallbacks downstream made
+      // the chip and the contact card read `484121`. The name is in the public
+      // list `GET /auth/schools` already serves to populate the sign-in picker.
+      arrangeSuccessfulLogin({
+        credential: { userId: 'mashov-uid-1', displayName: 'Test Parent' },
+        accessToken: {
+          schoolSettings: { schoolYear: 2027 },
+          children: [],
+          username: 'testuser',
+          userSettings: { detailsState: 1 },
+        },
+      });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+      mockSchoolYearService.schoolNameFor.mockResolvedValue(
+        'חטיבת נעורים בראשית - צור יצחק (חטב)',
+      );
+
+      await service.login(484121, 'user', 'pass', '127.0.0.1');
+
+      expect(mockSchoolYearService.schoolNameFor).toHaveBeenCalledWith(484121);
+      expect(mockPrisma.householdConnection.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            schoolName: 'חטיבת נעורים בראשית - צור יצחק (חטב)',
+          }),
+        }),
+      );
+    });
+
+    it('does not look up a name the login already carries', async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockSchoolYearService.schoolNameFor).not.toHaveBeenCalled();
+      expect(mockPrisma.householdConnection.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolName: 'Test School' }),
+        }),
+      );
+    });
+
+    it('stores undefined when neither source has a name, leaving a stored one alone', async () => {
+      // Prisma leaves a field alone on `undefined`, so the fallback can never
+      // downgrade a good name already stored.
+      arrangeSuccessfulLogin({
+        credential: { userId: 'mashov-uid-1', displayName: 'Test Parent' },
+        accessToken: {
+          schoolSettings: { schoolYear: 2027 },
+          children: [],
+          username: 'testuser',
+          userSettings: { detailsState: 1 },
+        },
+      });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue({ id: 'conn-1' });
+
+      await service.login(484121, 'user', 'pass', '127.0.0.1');
+
+      const call = mockPrisma.householdConnection.update.mock.calls.at(-1) as [
+        { data: Record<string, unknown> },
+      ];
+      expect(call[0].data.schoolName).toBeUndefined();
+    });
+
     it('finds the existing connection by school and username rather than by year', async () => {
       arrangeSuccessfulLogin();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({ id: 'conn-1' });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue({ id: 'conn-1' });
 
       await service.login(482273, 'user', 'pass', '127.0.0.1');
 
@@ -287,7 +479,7 @@ describe('AuthService', () => {
 
     it("advances an existing connection's schoolYear", async () => {
       arrangeSuccessfulLogin();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({
+      mockPrisma.householdConnection.findUnique.mockResolvedValue({
         id: 'conn-1',
         schoolYear: 2026,
       });
@@ -310,7 +502,7 @@ describe('AuthService', () => {
           schoolSettings: { schoolName: 'Test School', schoolYear: 2026 },
         },
       });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockSchoolYearService.reconcileFromLogin.mockReturnValue({ year: 2026, changed: true });
 
       await service.login(482273, 'user', 'pass', '127.0.0.1');
@@ -324,7 +516,7 @@ describe('AuthService', () => {
 
     it('invalidates the cached resolved year when Mashov vetoes it', async () => {
       arrangeSuccessfulLogin();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockSchoolYearService.reconcileFromLogin
         .mockReturnValueOnce({ year: 2026, changed: true })
         .mockReturnValue({ year: 2026, changed: false });
@@ -336,7 +528,7 @@ describe('AuthService', () => {
 
     it('re-logs in once when Mashov reports a different active year', async () => {
       arrangeSuccessfulLogin();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockSchoolYearService.reconcileFromLogin
         .mockReturnValueOnce({ year: 2026, changed: true })
         .mockReturnValue({ year: 2026, changed: false });
@@ -353,7 +545,7 @@ describe('AuthService', () => {
 
     it('does not re-login more than once even if the year still disagrees', async () => {
       arrangeSuccessfulLogin();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockSchoolYearService.reconcileFromLogin.mockReturnValue({ year: 2026, changed: true });
 
       await service.login(482273, 'user', 'pass', '127.0.0.1');
@@ -368,7 +560,7 @@ describe('AuthService', () => {
       // that was right, which is the lie this file exists to avoid.
       mockPrisma.appUser.findUnique.mockResolvedValue(null);
       mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-1' });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockPrisma.householdConnection.create.mockResolvedValue({});
       mockPrisma.student.upsert.mockResolvedValue({});
       mockRedis.incr.mockResolvedValue(1);
@@ -424,7 +616,7 @@ describe('AuthService', () => {
           ],
         },
       });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
 
       await service.login(482273, 'user', 'pass', '127.0.0.1');
 
@@ -445,13 +637,23 @@ describe('AuthService', () => {
           inactiveChildren: [{ childGuid: 'child-gone' }],
         },
       });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
       mockPrisma.student.updateMany.mockResolvedValue({ count: 1 });
 
       await service.login(482273, 'user', 'pass', '127.0.0.1');
 
       expect(mockPrisma.student.updateMany).toHaveBeenCalledWith({
-        where: { studentGuid: { in: ['child-gone'] } },
+        where: {
+          studentGuid: { in: ['child-gone'] },
+          // Scoped by the visibility edge: `inactiveChildren` is school-local,
+          // so a login must not retire a child its own school does not list.
+          // An unlinked child is included because that means "ownership
+          // unknown", not "somebody else's".
+          OR: [
+            { links: { some: { householdConnectionId: 'conn-new' } } },
+            { links: { none: {} } },
+          ],
+        },
         data: { isActive: false },
       });
     });
@@ -465,15 +667,88 @@ describe('AuthService', () => {
         username: 'test',
         displayName: 'Test Parent',
       });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({
-        schoolName: 'My School',
-        schoolYear: 2026,
-      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([
+        {
+          id: 'conn-1',
+          semel: 540175,
+          schoolName: 'My School',
+          shortLabel: 'My School',
+          schoolYear: 2026,
+        },
+      ]);
 
       const result = await service.getMe('user-1');
 
-      expect(result.connectedSchool).toEqual({ schoolName: 'My School', schoolYear: 2026 });
       expect(result.username).toBe('test');
+      expect(result.schools).toEqual([
+        {
+          id: 'conn-1',
+          semel: 540175,
+          schoolName: 'My School',
+          shortLabel: 'My School',
+          schoolYear: 2026,
+        },
+      ]);
+    });
+
+    it('returns every connected school, newest sign-in first', async () => {
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'Test Parent',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([
+        { id: 'conn-b', semel: 999999, schoolName: 'B', shortLabel: 'B', schoolYear: 2027 },
+        { id: 'conn-a', semel: 540175, schoolName: 'A', shortLabel: 'A', schoolYear: 2026 },
+      ]);
+
+      const result = await service.getMe('user-1');
+
+      expect(result.schools.map((school) => school.id)).toEqual(['conn-b', 'conn-a']);
+    });
+
+    it('carries no `connectedSchool`, in either shape (T14)', async () => {
+      // It was `schools[0]` under a singular name, and a household with two
+      // schools has no primary one -- so the honest fix is deletion, not a
+      // better query. Asserted as an absent KEY rather than a falsy value:
+      // `toBeUndefined()` would also pass against `connectedSchool: null`,
+      // which is the field still being there and empty.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'Test Parent',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([
+        { id: 'conn-b', semel: 999999, schoolName: 'B', shortLabel: 'B', schoolYear: 2027 },
+        { id: 'conn-a', semel: 540175, schoolName: 'A', shortLabel: 'A', schoolYear: 2026 },
+      ]);
+
+      const result = await service.getMe('user-1');
+
+      expect(Object.keys(result).sort()).toEqual([
+        'displayName',
+        'mashovUserId',
+        'schools',
+        'username',
+      ]);
+    });
+
+    it('returns an empty schools list rather than omitting it', async () => {
+      // `[]`, not undefined: every badge does `me.schools.length >= 2`, and an
+      // absent array would throw in the app shell before anything renders.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'Test Parent',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
+
+      const result = await service.getMe('user-1');
+
+      expect(result.schools).toEqual([]);
     });
 
     it('throws 401 when user not found', async () => {
@@ -481,13 +756,354 @@ describe('AuthService', () => {
       await expect(service.getMe('ghost')).rejects.toThrow(UnauthorizedException);
     });
 
-    it('returns null connectedSchool when no active connection', async () => {
-      mockPrisma.appUser.findUnique.mockResolvedValue({ id: 'u1', mashovUserId: 'm1', username: 'u', displayName: 'U' });
-      mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+    it('still answers for a user with no active connection', async () => {
+      // The empty household used to be interesting because it was the one
+      // state `connectedSchool` was null in. What has to stay true without it
+      // is that `getMe` answers at all rather than throwing -- it is the app
+      // shell's first read, and a parent between unlinking and re-linking
+      // reaches it.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'u1',
+        mashovUserId: 'm1',
+        username: 'u',
+        displayName: 'U',
+      });
+      mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
 
       const result = await service.getMe('u1');
-      expect(result.connectedSchool).toBeNull();
+
+      expect(result).toEqual({
+        mashovUserId: 'm1',
+        username: 'u',
+        displayName: 'U',
+        schools: [],
+      });
     });
   });
 
+});
+
+describe('AuthService login adoption', () => {
+  /**
+   * Mashov issues a separate account per school, with a different
+   * `credential.userId` for each. Without adoption, signing in with the second
+   * school's credentials creates a SECOND AppUser, a second session and a
+   * second household -- so a parent who linked school B from inside their
+   * session, signed out, and signed back in with B's password would land in an
+   * empty app with no route back to their own children.
+   *
+   * Reaching the adoption branch at all proves the caller holds that school's
+   * password: Mashov has already validated it. See ADR-0029.
+   */
+  let service: AuthService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
+    mockSchoolYearService.resolveForSchool.mockResolvedValue({
+      year: 2027,
+      source: 'calendar',
+    });
+    mockSchoolYearService.reconcileFromLogin.mockImplementation((candidate: number) => ({
+      year: candidate,
+      changed: false,
+    }));
+    mockRedis.incr.mockResolvedValue(1);
+    mockHttp.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
+    mockPrisma.student.upsert.mockResolvedValue({});
+    mockPrisma.student.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.householdConnection.update.mockResolvedValue({ id: 'conn-b' });
+    mockPrisma.householdConnection.create.mockResolvedValue({ id: 'conn-new' });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: AppSessionService, useValue: mockAppSessionService },
+        { provide: EncryptionService, useValue: mockEncryptionService },
+        { provide: ConfigService, useValue: mockConfig },
+        { provide: SchoolYearService, useValue: mockSchoolYearService },
+        { provide: SchoolLinksService, useValue: mockSchoolLinksService },
+      ],
+    }).compile();
+
+    service = module.get<AuthService>(AuthService);
+  });
+
+  it('attaches the session to the household that already owns the connection', async () => {
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-b',
+      mashovUniqueId: 'uniq',
+      userId: 'household-1',
+    });
+    // Explicit, and it has to be: `jest.clearAllMocks()` clears calls but not
+    // implementations, so an unmocked `findUnique` here answers whatever the
+    // previously-run test left on the shared mock. This is the
+    // production-common adoption shape -- no AppUser yet for the second
+    // school's credential -- and it should not depend on test order.
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+
+    const result = await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'household-1',
+      '127.0.0.1',
+    );
+    expect(result.isFirstLogin).toBe(false);
+  });
+
+  it('creates no second AppUser for the adopted school', async () => {
+    // The structural fix. `AppUser.mashovUserId` is unique and comes from the
+    // per-school credential, so an upsert here would fork the household.
+    //
+    // Genuinely cross-school: the AppUser for THIS credential is a different
+    // household from the one that owns the connection. That is the only shape
+    // adoption is for, and the gate has to let it through.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-b',
+      mashovUniqueId: 'uniq',
+      userId: 'household-1',
+    });
+    mockPrisma.appUser.findUnique.mockResolvedValue({
+      id: 'household-2',
+      mashovUserId: 'mashov-uid-1',
+      displayName: 'Test Parent',
+      mergedIntoUserId: null,
+    });
+
+    const result = await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockPrisma.appUser.upsert).not.toHaveBeenCalled();
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'household-1',
+      '127.0.0.1',
+    );
+    expect(result.isFirstLogin).toBe(false);
+  });
+
+  it('refreshes displayName when the connection already belongs to this household', async () => {
+    // A returning single-school sign-in is NOT an adoption: the connection
+    // belongs to the very AppUser this credential maps to. Taking the adoption
+    // branch here returns before the upsert, which is the only place
+    // `displayName` is refreshed from the credential -- so a name the school
+    // later corrects would never reach the app.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-a',
+      mashovUniqueId: 'uniq',
+      userId: 'household-1',
+    });
+    mockPrisma.appUser.findUnique.mockResolvedValue({
+      id: 'household-1',
+      mashovUserId: 'mashov-uid-1',
+      displayName: 'Stale Name',
+      mergedIntoUserId: null,
+    });
+    mockPrisma.appUser.upsert.mockResolvedValue({
+      id: 'household-1',
+      mergedIntoUserId: null,
+    });
+
+    const result = await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockPrisma.appUser.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: { username: 'parent-b', displayName: 'Test Parent' },
+      }),
+    );
+    expect(result.isFirstLogin).toBe(false);
+  });
+
+  it('still refreshes the connection and its roster on an adopted login', async () => {
+    // The password may have changed, and the roster is the only signal that a
+    // child joined or left.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-b',
+      mashovUniqueId: 'uniq',
+      userId: 'household-1',
+    });
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+    mockHttp.post = jest.fn().mockResolvedValue({
+      data: {
+        ...mockLoginResponse,
+        accessToken: {
+          ...mockLoginResponse.accessToken,
+          children: [
+            {
+              childGuid: 'guid-b1',
+              familyName: 'Kors',
+              privateName: 'Noa',
+              classCode: 'י',
+              classNum: 1,
+              gender: 'F',
+              groups: [1],
+            },
+          ],
+        },
+      },
+    });
+
+    await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'conn-b' } }),
+    );
+    expect(mockPrisma.student.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ householdConnectionId: 'conn-b' }),
+      }),
+    );
+  });
+
+  it('does not adopt a connection that belongs to nobody', async () => {
+    // A first-ever sign-in for an account nobody has linked gets its own
+    // household. The app cannot know two Mashov accounts are one parent --
+    // merging is always initiated from inside an authenticated session.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-orphan',
+      mashovUniqueId: null,
+      userId: null,
+    });
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.upsert.mockResolvedValue({ id: 'app-user-new', mergedIntoUserId: null });
+
+    const result = await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockPrisma.appUser.upsert).toHaveBeenCalled();
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'app-user-new',
+      '127.0.0.1',
+    );
+    expect(result.isFirstLogin).toBe(true);
+  });
+
+  it('follows a merge pointer exactly one hop', async () => {
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.findUnique.mockImplementation(({ where }) =>
+      Promise.resolve(
+        where.id === 'household-merged'
+          ? { id: 'household-merged', mergedIntoUserId: null }
+          : null,
+      ),
+    );
+    mockPrisma.appUser.upsert.mockResolvedValue({
+      id: 'app-user-orphan',
+      mergedIntoUserId: 'household-merged',
+    });
+
+    await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'household-merged',
+      '127.0.0.1',
+    );
+  });
+
+  it('bails to the original on a self-pointer rather than looping', async () => {
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.upsert.mockResolvedValue({
+      id: 'app-user-self',
+      mergedIntoUserId: 'app-user-self',
+    });
+
+    await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'app-user-self',
+      '127.0.0.1',
+    );
+  });
+
+  it('bails to the original on a cycle rather than looping', async () => {
+    // A -> B -> A. One hop stops here by construction; the warning is the
+    // only trace that the data is inconsistent.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.findUnique.mockResolvedValue({
+      id: 'household-b',
+      mergedIntoUserId: 'app-user-a',
+    });
+    mockPrisma.appUser.upsert.mockResolvedValue({
+      id: 'app-user-a',
+      mergedIntoUserId: 'household-b',
+    });
+
+    await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    // One hop lands on B and stops. It does not come back round to A.
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'household-b',
+      '127.0.0.1',
+    );
+  });
+
+  it('keeps its own household when the merge pointer names a user that is gone', async () => {
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.upsert.mockResolvedValue({
+      id: 'app-user-a',
+      mergedIntoUserId: 'household-deleted',
+    });
+
+    await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+      'app-user-a',
+      '127.0.0.1',
+    );
+  });
+
+  it('reproduces the old behaviour exactly when the kill switch is off', async () => {
+    const previous = process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
+    process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION = 'false';
+    try {
+      mockPrisma.householdConnection.findUnique.mockResolvedValue({
+        id: 'conn-b',
+        mashovUniqueId: 'uniq',
+        userId: 'household-1',
+      });
+      mockPrisma.appUser.findUnique.mockResolvedValue(null);
+      mockPrisma.appUser.upsert.mockResolvedValue({
+        id: 'app-user-forked',
+        mergedIntoUserId: null,
+      });
+
+      await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+      // The forking behaviour this feature exists to remove, available in one
+      // env var if adoption ever proves to be the wrong call.
+      expect(mockPrisma.appUser.upsert).toHaveBeenCalled();
+      expect(mockAppSessionService.createSession).toHaveBeenCalledWith(
+        'app-user-forked',
+        '127.0.0.1',
+      );
+    } finally {
+      if (previous === undefined) delete process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION;
+      else process.env.MASHOV_ENABLE_SCHOOL_LINK_ADOPTION = previous;
+    }
+  });
+
+  it('adopts only after Mashov has accepted the password', async () => {
+    // The authorisation. A wrong password must never reach the adoption
+    // branch, or holding a username would be enough to enter a household.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-b',
+      mashovUniqueId: 'uniq',
+      userId: 'household-1',
+    });
+    mockHttp.post = jest.fn().mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 401'), {
+        isAxiosError: true,
+        response: { status: 401 },
+      }),
+    );
+
+    await expect(
+      service.login(999999, 'parent-b', 'wrong-pw', '127.0.0.1'),
+    ).rejects.toThrow(UnauthorizedException);
+
+    expect(mockAppSessionService.createSession).not.toHaveBeenCalled();
+    expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
+  });
 });

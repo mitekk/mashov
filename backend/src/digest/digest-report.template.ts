@@ -149,5 +149,8 @@ function releaseSentence(fact: DigestReleaseFact): string {
 }
 
 function activitySentence(fact: DigestActivityFact): string {
+  // The deadline clause is dropped when there is no deadline, rather than
+  // printed as a formatted null.
+  if (!fact.endAnswerDate) return fact.title;
   return `${fact.title} (יש להשיב עד ${formatSchoolDate(fact.endAnswerDate)})`;
 }

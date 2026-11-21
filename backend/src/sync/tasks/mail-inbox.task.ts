@@ -8,6 +8,7 @@ type InputJsonValue = string | number | boolean | InputJsonValue[] | { [key: str
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
+import { reportNoConnectionTarget } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import { deriveIsUnread } from '../../mail/unread';
 
@@ -62,14 +63,27 @@ export class MailInboxTask {
   /**
    * Why each gate: a sweep that fires on an incomplete walk clears unread on rows the
    * walk simply never reached.
+   *
+   * The gate that used to refuse any run above one active connection is gone.
+   * It existed because `mail_conversation` had no owner column, so connection
+   * A's sweep would clear unread on B's rows every seven minutes and back
+   * again. The rows now carry `householdConnectionId` and the sweep is scoped
+   * to it, so the two row sets are disjoint and the sweep is safe per
+   * connection. Two narrower gates below replace it.
    */
   private sweepSkipReason(gates: {
     failedCount: number;
     pageCount: number;
     archivePageCount: number;
     maxPages: number;
-    activeConnectionCount: number;
+    sweepEnabled: boolean;
+    foreignStampedCount: number;
+    isSharedSession: boolean;
   }): string | null {
+    // The kill switch, so a wrong badge is one environment variable away from
+    // frozen rather than a rollback. Checked first: if it is off, nothing else
+    // about this run matters.
+    if (!gates.sweepEnabled) return 'MAIL_SWEEP_ENABLED is not true';
     if (gates.failedCount > 0) return `${gates.failedCount} item failure(s) in this run`;
     // An empty inbox response is indistinguishable from a soft failure: a 2xx with `[]`
     // is also what a referer-gated endpoint, an expired session, or a schoolYear with no
@@ -80,10 +94,41 @@ export class MailInboxTask {
     if (gates.pageCount === 0) return 'inbox walk returned no conversations';
     if (gates.pageCount >= gates.maxPages) return 'inbox walk hit the page cap';
     if (gates.archivePageCount >= gates.maxPages) return 'archive walk hit the page cap';
-    if (gates.activeConnectionCount > 1) {
-      return `${gates.activeConnectionCount} active connections share one unscoped mail table`;
+    // A shared env-session run owns the NULL-stamped rows only. If stamped rows
+    // exist, a per-connection walk is also running, and this run has no idea
+    // what that walk refreshed -- its own `lastFetchedAt < runStartedAt` test
+    // would be answering about somebody else's mailbox.
+    if (gates.isSharedSession && gates.foreignStampedCount > 0) {
+      return 'shared-session run on a connection-scoped mail table';
     }
+    // There is deliberately NO "unstamped rows present" gate.
+    //
+    // An earlier version had one, reasoning that it would clear itself within a
+    // cycle because both walk loops re-stamp in their `update` branch. That is
+    // only true for rows upstream still returns -- and the rows this sweep
+    // exists for are precisely the ones upstream has STOPPED returning, which
+    // no walk can ever re-stamp. One such orphan would have disabled
+    // reconciliation for every connection permanently, bringing back the
+    // inflated badge with nothing but a debug line to show for it.
+    //
+    // It was never needed anyway: the sweep's own `where` is
+    // `householdConnectionId: conn.id`, which an unattributed row cannot
+    // match. The scoping is the protection; the gate only added a way to get
+    // stuck.
     return null;
+  }
+
+  /**
+   * The sweep is on unless explicitly disabled.
+   *
+   * Default-true because reconciliation is the thing that keeps the badge
+   * honest; the switch exists so a bad badge can be frozen in place while it
+   * is diagnosed, not as an opt-in.
+   */
+  private sweepEnabled(): boolean {
+    const raw = process.env.MAIL_SWEEP_ENABLED;
+    if (raw === undefined || raw.trim().length === 0) return true;
+    return raw.trim().toLowerCase() !== 'false';
   }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
@@ -95,30 +140,23 @@ export class MailInboxTask {
       },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
+
+    // R11: a named connection with no usable target. `useSharedSession` is
+    // false here, so the loop below would not run at all -- no run, nothing
+    // fetched, `success` with every count zero.
+    if (context.connectionId && connections.length === 0) {
+      return reportNoConnectionTarget(
+        this.syncRunService,
+        this.logger,
+        MailInboxTask.SOURCE,
+        context.connectionId,
+      );
+    }
+
     const useSharedSession = !context.connectionId && connections.length === 0;
 
     // Determine which connections to sync: all user-owned ones, or fall back to shared session
     const connectionList = useSharedSession ? [null] : connections;
-    // MailConversation has no connectionId and conversationId is globally unique, so the
-    // table is the union of every mailbox. Under two active connections a sweep would be
-    // active corruption -- connection A's run would clear unread on B's rows every 7
-    // minutes and back again -- so it is gated on there being exactly one mailbox. The
-    // derivation itself is per-conversation and idempotent, and stays on regardless.
-    //
-    // Counted independently of context.connectionId rather than taken from `connections`
-    // above: that list is narrowed by the context, so a targeted run would read 1 however
-    // many mailboxes exist. This used to be handled by refusing to sweep on any targeted
-    // run at all, but `refreshAll({ connectionId })` (sync.controller.ts) means every
-    // user-triggered refresh is targeted -- so on a single-connection deployment pressing
-    // refresh never corrected the count, and only the 7-minute cron ever reconciled.
-    // A count of 0 is the shared-session case: no user-owned connection, one mailbox.
-    const activeConnectionCount = Math.max(
-      await this.prisma.householdConnection.count({
-        where: { userId: { not: null }, active: true },
-      }),
-      1,
-    );
-
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
     let totalFailedCount = 0;
@@ -212,6 +250,7 @@ export class MailInboxTask {
                 labels: (conv.labels ?? []) as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
+                householdConnectionId: conn ? conn.id : null,
               },
               update: {
                 subject: conv.subject,
@@ -224,6 +263,9 @@ export class MailInboxTask {
                 labels: (conv.labels ?? []) as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
+                // Only when there IS a connection: a shared-session walk must not
+                // blank a stamp a per-connection walk already set.
+                ...(conn ? { householdConnectionId: conn.id } : {}),
               },
             });
 
@@ -243,6 +285,7 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
+                  householdConnectionId: conn ? conn.id : null,
                 },
                 update: {
                   senderName: msg.senderName,
@@ -253,6 +296,9 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
+                  // Only when there IS a connection: a shared-session walk must not
+                  // blank a stamp a per-connection walk already set.
+                  ...(conn ? { householdConnectionId: conn.id } : {}),
                 },
               });
             }
@@ -313,6 +359,7 @@ export class MailInboxTask {
                 labels: ['archived'] as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
+                householdConnectionId: conn ? conn.id : null,
               },
               update: {
                 subject: conv.subject,
@@ -325,6 +372,9 @@ export class MailInboxTask {
                 labels: ['archived'] as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
+                // Only when there IS a connection: a shared-session walk must not
+                // blank a stamp a per-connection walk already set.
+                ...(conn ? { householdConnectionId: conn.id } : {}),
               },
             });
 
@@ -343,6 +393,7 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
+                  householdConnectionId: conn ? conn.id : null,
                 },
                 update: {
                   senderName: msg.senderName,
@@ -353,6 +404,9 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
+                  // Only when there IS a connection: a shared-session walk must not
+                  // blank a stamp a per-connection walk already set.
+                  ...(conn ? { householdConnectionId: conn.id } : {}),
                 },
               });
             }
@@ -376,17 +430,32 @@ export class MailInboxTask {
       // frozen with it. Anything not refreshed by this run is such an orphan by
       // definition. Clear isUnread, never delete the row: MailMessage.conversationId
       // has a foreign key to it, and clearing is enough for both the badge and the list.
+      // One indexed COUNT, and only on the shared-session path. See
+      // sweepSkipReason for why a connection-scoped run needs no such check.
+      const foreignStampedCount = conn
+        ? 0
+        : await this.prisma.mailConversation.count({
+            where: { householdConnectionId: { not: null } },
+          });
+
       const sweepSkipReason = this.sweepSkipReason({
         failedCount,
         pageCount,
         archivePageCount,
         maxPages,
-        activeConnectionCount,
+        sweepEnabled: this.sweepEnabled(),
+        foreignStampedCount,
+        isSharedSession: conn === null,
       });
       let sweptCount = 0;
       if (sweepSkipReason === null) {
         const swept = await this.prisma.mailConversation.updateMany({
           where: {
+            // The column that makes this safe. `lastFetchedAt < runStartedAt`
+            // is only a sound orphan test when every row it can match was
+            // refreshable by THIS walk -- which is true exactly because the
+            // row sets are now disjoint per connection.
+            householdConnectionId: conn ? conn.id : null,
             isUnread: true,
             lastFetchedAt: { lt: runStartedAt },
             // An orphan the user explicitly marked unread is their decision, not drift.
@@ -400,14 +469,22 @@ export class MailInboxTask {
       // MailCountsTask only writes cachedNewCount every 5 minutes, so without this the
       // badge would lag the rows this run just corrected. Same query and same target
       // selection as that task.
-      const refreshTarget = conn
-        ?? await this.prisma.householdConnection.findFirst({ where: { active: true } });
-      if (refreshTarget) {
+      //
+      // The count is this connection's own mailbox, written to its own row:
+      // the badge sums these rows, so an unscoped count written into each one
+      // reported the union once per school. A shared-session run writes
+      // nothing. It owns the NULL-stamped rows but has no row of its own, and
+      // the old `findFirst({ active: true })` fallback put its count into an
+      // arbitrary household -- a cross-household write, and under R15's rule
+      // a double count, since the reader now adds the unattributed rows once
+      // itself (`unreadBadge`).
+      if (conn) {
         await this.prisma.householdConnection.update({
-          where: { id: refreshTarget.id },
+          where: { id: conn.id },
           data: {
             cachedNewCount: await this.prisma.mailConversation.count({
               where: {
+                householdConnectionId: conn.id,
                 isUnread: true,
                 NOT: { labels: { array_contains: ['archived'] } },
               },

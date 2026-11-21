@@ -9,6 +9,8 @@ const NOW = new Date('2026-11-17T12:00:00Z');
 
 function makeMockPrisma(options: {
   connection?: { schoolCode: number; schoolYear: number } | null;
+  /** Several schools, for the worst-state cases. */
+  connections?: Array<{ id: string; schoolCode: number; schoolYear: number }>;
   newestHomeworkAt?: Date | null;
   newestBehaviorAt?: Date | null;
 } = {}) {
@@ -18,6 +20,16 @@ function makeMockPrisma(options: {
         options.connection === undefined
           ? { schoolCode: 1234, schoolYear: 2027 }
           : options.connection,
+      ),
+      // Content freshness is computed per connection and reported at its
+      // worst, so it lists them rather than resolving one.
+      findMany: jest.fn().mockResolvedValue(
+        options.connections ??
+          (options.connection === undefined
+            ? [{ id: 'conn-1', schoolCode: 1234, schoolYear: 2027 }]
+            : options.connection === null
+              ? []
+              : [{ id: 'conn-1', ...options.connection }]),
       ),
     },
     student: {
@@ -439,6 +451,96 @@ describe('FreshnessService', () => {
       expect(results.filter((r) => r.source.startsWith('students'))).toHaveLength(1);
     });
 
+    it('does not carry an unstamped failure’s error onto a row a scoped success made fresh', async () => {
+      // T13 finding 3. `sync_run` holds a NULL-connection `failed` row under the
+      // bare source name, from a cron tick that ran before any connection
+      // existed; the branch-wide NULL rule admits it into every connection's
+      // snapshot. `status` came from the success variants and `lastErrorMessage`
+      // from the bare key, so the row read `fresh` with the orphan's error text
+      // underneath it — on a shared deployment, to every household.
+      const orphanFailure = makeSyncRun('mail_inbox', 'failed', 60);
+      orphanFailure.errorMessage = 'Missing required Mashov credentials in environment variables';
+      const scopedSuccess = makeSyncRun('mail_inbox:conn-abc', 'success', 5);
+
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(
+        new Map<string, SyncRun>([
+          ['mail_inbox', orphanFailure],
+          ['mail_inbox:conn-abc', scopedSuccess],
+        ]),
+      );
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(
+        new Map<string, SyncRun>([['mail_inbox:conn-abc', scopedSuccess]]),
+      );
+
+      const health = (await service.getAllSourceHealth([])).find(
+        (r) => r.source === 'mail_inbox',
+      );
+
+      expect(health?.status).toBe('fresh');
+      expect(health?.lastErrorMessage).toBeNull();
+      // The attempt comes from the same variant set as the status, so it is the
+      // success's own start rather than the orphan's.
+      expect(health?.lastAttemptAt).toBe(scopedSuccess.startedAt.toISOString());
+    });
+
+    it('keeps the error when no success has superseded the failing attempt', async () => {
+      // The other half of finding 3's fix: suppressing the error whenever the
+      // status is not `failed` would silence a stale-but-failing source, which
+      // still has to explain itself.
+      const recentFailure = makeSyncRun('mail_inbox', 'failed', 5);
+      recentFailure.errorMessage = 'upstream 502';
+      const oldSuccess = makeSyncRun('mail_inbox:conn-abc', 'success', 60);
+
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(
+        new Map<string, SyncRun>([
+          ['mail_inbox', recentFailure],
+          ['mail_inbox:conn-abc', oldSuccess],
+        ]),
+      );
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(
+        new Map<string, SyncRun>([['mail_inbox:conn-abc', oldSuccess]]),
+      );
+
+      const health = (await service.getAllSourceHealth([])).find(
+        (r) => r.source === 'mail_inbox',
+      );
+
+      expect(health?.status).toBe('stale');
+      expect(health?.lastErrorMessage).toBe('upstream 502');
+      expect(health?.lastAttemptAt).toBe(recentFailure.startedAt.toISOString());
+    });
+
+    it('does not let a newer running attempt mask a failure or swallow its error', async () => {
+      // `latestAttempt` is the newest attempt of ANY status, so a `running` row
+      // under a variant key — an in-flight refresh, or more durably one whose
+      // process died before `closeRun` — sat in front of the bare key's
+      // `failed` row and took the status down to `never_synced` with a null
+      // error. The one page that answers "is syncing working" then goes silent
+      // about a failure, permanently if the running row is orphaned.
+      const failure = makeSyncRun('mail_inbox', 'failed', 60);
+      failure.errorMessage = 'upstream 502';
+      const stuck = makeSyncRun('mail_inbox:conn-abc', 'running', 5);
+      stuck.endedAt = null;
+
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(
+        new Map<string, SyncRun>([
+          ['mail_inbox', failure],
+          ['mail_inbox:conn-abc', stuck],
+        ]),
+      );
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
+
+      const health = (await service.getAllSourceHealth([])).find(
+        (r) => r.source === 'mail_inbox',
+      );
+
+      expect(health?.status).toBe('failed');
+      expect(health?.lastErrorMessage).toBe('upstream 502');
+      // `lastAttemptAt` is still the newest attempt of any status: something
+      // IS running, and the row should say when it started.
+      expect(health?.lastAttemptAt).toBe(stuck.startedAt.toISOString());
+    });
+
     it('includes per-student sources when studentGuids are provided', async () => {
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
@@ -686,5 +788,203 @@ describe('FreshnessService.computeContentFreshness', () => {
     await expect(service.computeContentFreshness()).resolves.toMatchObject({
       status: 'stale_year',
     });
+  });
+});
+
+describe('FreshnessService.computeContentFreshness across two schools', () => {
+  /**
+   * Content freshness has to be per school and reported at its worst.
+   *
+   * Reading one connection -- whichever `findFirst` returned -- hides a
+   * genuinely stale school behind a healthy one. Measuring both schools'
+   * children against one school's expected year does the opposite: a school
+   * just linked, with nothing synced yet, drags the whole household to
+   * `stale_year` and degrades a dashboard that is fine.
+   */
+  function makePrisma(
+    connections: Array<{ id: string; schoolCode: number; schoolYear: number }>,
+    contentByConnection: Record<string, Date | null>,
+  ) {
+    return {
+      householdConnection: {
+        findFirst: jest.fn().mockResolvedValue(connections[0] ?? null),
+        findMany: jest.fn().mockResolvedValue(connections),
+      },
+      student: {
+        // Keyed off the VISIBILITY predicate, not the routing stamp. The
+        // stamp is gone from this query: it answers whose credentials fetched
+        // a child, and for a child two parents share that is whichever of
+        // them synced last (ADR-0031).
+        findMany: jest.fn(({ where }) => {
+          const connectionId = connectionIdIn(where);
+          return Promise.resolve(
+            connectionId ? [{ studentGuid: `stu-${connectionId}` }] : [],
+          );
+        }),
+      },
+      homeworkItem: {
+        aggregate: jest.fn(({ where }) => {
+          const guid: string | undefined = where?.studentGuid?.in?.[0];
+          const connectionId = guid?.replace(/^stu-/, '') ?? '';
+          return Promise.resolve({
+            _max: { lessonDate: contentByConnection[connectionId] ?? null },
+          });
+        }),
+      },
+      behaviorItem: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { eventAt: null } }),
+      },
+    } as unknown as PrismaService;
+  }
+
+  /**
+   * The connection id inside `connectionStudentWhere`'s predicate.
+   *
+   * `{ OR: [{ links: { some: { householdConnectionId } } }, { links: { none: {} } }] }`
+   * — the second branch is the unlinked child, admitted deliberately, and
+   * carries no id.
+   */
+  function connectionIdIn(where: unknown): string | undefined {
+    const predicate = where as {
+      OR?: Array<{ links?: { some?: { householdConnectionId?: string } } }>;
+    };
+    return predicate?.OR?.find((branch) => branch.links?.some)?.links?.some
+      ?.householdConnectionId;
+  }
+
+  const FRESH = new Date(Date.UTC(2026, 10, 10));
+  const CONN_CURRENT = { id: 'conn-a', schoolCode: 540175, schoolYear: 2027 };
+  const CONN_FROZEN = { id: 'conn-b', schoolCode: 999999, schoolYear: 2025 };
+
+  beforeAll(() => {
+    jest.useFakeTimers().setSystemTime(new Date(Date.UTC(2026, 10, 18)));
+  });
+  afterAll(() => jest.useRealTimers());
+
+  it('reports stale_year when one school is on a dead year', async () => {
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, CONN_FROZEN], { 'conn-a': FRESH, 'conn-b': FRESH }),
+      makeMockSchoolYear(2027),
+    );
+
+    const result = await service.computeContentFreshness();
+
+    expect(result.status).toBe('stale_year');
+  });
+
+  it('stays current when both schools are on the live year', async () => {
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, { ...CONN_FROZEN, schoolYear: 2027 }], {
+        'conn-a': FRESH,
+        'conn-b': FRESH,
+      }),
+      makeMockSchoolYear(2027),
+    );
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'current',
+    });
+  });
+
+  it('does not let a school with no data yet report as a frozen year', async () => {
+    // A school linked this morning has no content. That is "quiet", not
+    // "asking for a dead year", and it must not degrade the dashboard for the
+    // school that is working.
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, { ...CONN_FROZEN, schoolYear: 2027 }], {
+        'conn-a': FRESH,
+        'conn-b': null,
+      }),
+      makeMockSchoolYear(2027),
+    );
+
+    const result = await service.computeContentFreshness();
+
+    expect(result.status).toBe('no_content');
+    // And the household's newest content is still reported, from the school
+    // that has some.
+    expect(result.newestContentAt).toBe(FRESH.toISOString());
+  });
+
+  it('does not hide a stale school behind a healthy one', async () => {
+    // The order matters: conn-a is what findFirst would have returned, and it
+    // is fine. Reading only it would report `current`.
+    const service = new FreshnessService(
+      {} as never,
+      makePrisma([CONN_CURRENT, CONN_FROZEN], { 'conn-a': FRESH, 'conn-b': FRESH }),
+      makeMockSchoolYear(2027),
+    );
+
+    await expect(service.computeContentFreshness()).resolves.toMatchObject({
+      status: 'stale_year',
+    });
+  });
+
+  it("lists only the caller's connections, and the whole table without one", async () => {
+    // R4's second half. Unscoped, the worst verdict was taken across every
+    // active connection in the database, so an unrelated household linking a
+    // school this morning -- nothing synced yet -- degraded everyone's card.
+    const prisma = makePrisma([CONN_CURRENT], { 'conn-a': FRESH });
+    const findMany = prisma.householdConnection.findMany as jest.Mock;
+    const service = new FreshnessService({} as never, prisma, makeMockSchoolYear(2027));
+
+    await service.computeContentFreshness('user-a');
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { active: true, userId: 'user-a' } }),
+    );
+
+    // The caller-less path is the crons and the digest, and stays global.
+    await service.computeContentFreshness();
+    expect(findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: { active: true } }),
+    );
+  });
+
+  it('counts a child stamped to the other connection but linked to this one', async () => {
+    // The shared-child case, and the thing the stamp got wrong. Two parents at
+    // one school list the same child; the child is stamped to whichever synced
+    // last, so for the other one `householdConnectionId: conn.id` matched
+    // nothing and the verdict was `no_content` -- which outranks `current` and
+    // degraded the whole card.
+    const prisma = {
+      householdConnection: {
+        findFirst: jest.fn().mockResolvedValue(CONN_CURRENT),
+        findMany: jest.fn().mockResolvedValue([CONN_CURRENT]),
+      },
+      student: {
+        // One row: stamped to conn-b, linked to conn-a. It is returned for
+        // the caller's own connection because the LINK says so.
+        findMany: jest.fn(({ where }) =>
+          Promise.resolve(
+            connectionIdIn(where) === 'conn-a' ? [{ studentGuid: 'stu-shared' }] : [],
+          ),
+        ),
+      },
+      homeworkItem: {
+        aggregate: jest.fn(({ where }) =>
+          Promise.resolve({
+            _max: {
+              lessonDate: where?.studentGuid?.in?.includes('stu-shared') ? FRESH : null,
+            },
+          }),
+        ),
+      },
+      behaviorItem: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { eventAt: null } }),
+      },
+    } as unknown as PrismaService;
+    const service = new FreshnessService({} as never, prisma, makeMockSchoolYear(2027));
+
+    await expect(service.computeContentFreshness('user-a')).resolves.toMatchObject({
+      status: 'current',
+      newestContentAt: FRESH.toISOString(),
+    });
+    // And the stamp is not consulted at all: no top-level predicate on it.
+    for (const call of (prisma.student.findMany as jest.Mock).mock.calls) {
+      expect(call[0].where.householdConnectionId).toBeUndefined();
+    }
   });
 });

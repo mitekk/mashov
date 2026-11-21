@@ -123,7 +123,19 @@ export class DigestCollectorService {
    */
   private async readActivities(userId: string, activityIds: number[]): Promise<DigestActivityFact[]> {
     const rows = await this.prisma.schoolActivity.findMany({
-      where: { userId, activityId: { in: activityIds } },
+      // `endAnswerDate: { not: null }` keeps this read agreeing with
+      // `DigestCheckerService`, whose `{ gte, lt }` filter excludes NULL by
+      // construction (no SQL comparison is true against NULL). Since the column
+      // became nullable an undated activity became reachable through this
+      // re-read, and the parent would be reminded about a form with no deadline
+      // — printed by `activitySentence` as a bare title. A deadline is what
+      // makes an activity reportable, so the two reads must agree on it.
+      //
+      // Known residual, pre-existing and not this filter's business:
+      // `activityId` is a per-school counter, so in a two-school household id
+      // `1` matches both schools' rows. Closing that needs the connection and
+      // year in the key here, which is its own change.
+      where: { userId, activityId: { in: activityIds }, endAnswerDate: { not: null } },
       select: { activityId: true, title: true, activityStartDate: true, endAnswerDate: true },
       orderBy: { endAnswerDate: 'asc' },
     });

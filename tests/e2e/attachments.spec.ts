@@ -75,7 +75,6 @@ const MOCK_ME = {
   mashovUserId: 'e2e-parent-1',
   username: 'e2e-parent',
   displayName: 'E2E Parent',
-  connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
 };
 
 /** Serve one attachment according to its file id. */
@@ -285,7 +284,6 @@ async function stubShell(page: Page): Promise<void> {
       },
       feed: [],
       children: [],
-      school: { schoolName: 'Test School', schoolYear: 2026 },
     }),
   );
   await page.route('**/api/v1/children', (route) => json(route, { data: [] }));

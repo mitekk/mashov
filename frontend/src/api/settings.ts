@@ -45,6 +45,7 @@ export async function fetchSourceHealth(): Promise<SourceHealthResponse> {
   };
 }
 
-export function fetchProfile(): Promise<ParentProfile> {
-  return apiFetch<ParentProfile>('/settings/profile');
+export async function fetchProfile(): Promise<ParentProfile[]> {
+  const response = await apiFetch<ParentProfile[] | null>('/settings/profile');
+  return Array.isArray(response) ? response : [];
 }

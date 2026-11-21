@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { getSchools, login } from '@/api/auth';
+import { SchoolAutocomplete } from '@/components/auth/SchoolAutocomplete';
 import { ApiError } from '@/api/client';
 import type { School } from '@/types/api';
 
@@ -13,29 +14,18 @@ function SignInForm() {
   const nextPath = searchParams.get('next') ?? '/';
 
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
-  const [schoolSearch, setSchoolSearch] = useState('');
-  const [showDropdown, setShowDropdown] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Still fetched here, for the last-used-school restore below. The
+  // autocomplete runs the same query under the same key, so this is one
+  // request shared through the cache, not two.
   const { data: schools = [] } = useQuery({
     queryKey: ['schools'],
     queryFn: getSchools,
     staleTime: 10 * 60_000,
   });
-
-  const filteredSchools = useMemo(() => {
-    if (!schoolSearch.trim()) return schools.slice(0, 50);
-    const q = schoolSearch.toLowerCase();
-    return schools
-      .filter(
-        (s) =>
-          s.name.toLowerCase().includes(q) ||
-          String(s.semel).includes(q),
-      )
-      .slice(0, 50);
-  }, [schools, schoolSearch]);
 
   useEffect(() => {
     if (schools.length === 0 || selectedSchool) return;
@@ -44,7 +34,7 @@ function SignInForm() {
       if (!saved) return;
       const semel = Number(saved);
       const match = schools.find((s) => s.semel === semel);
-      if (match) handleSelectSchool(match);
+      if (match) setSelectedSchool(match);
     } catch {
       // localStorage unavailable - ignore
     }
@@ -75,20 +65,6 @@ function SignInForm() {
       }
     },
   });
-
-  function handleSelectSchool(school: School) {
-    setSelectedSchool(school);
-    setSchoolSearch(school.name);
-    setShowDropdown(false);
-  }
-
-  function handleSchoolSearchChange(e: React.ChangeEvent<HTMLInputElement>) {
-    setSchoolSearch(e.target.value);
-    setShowDropdown(true);
-    if (selectedSchool && e.target.value !== selectedSchool.name) {
-      setSelectedSchool(null);
-    }
-  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -126,46 +102,13 @@ function SignInForm() {
           onSubmit={handleSubmit}
           className="rounded-2xl border border-border/60 bg-card p-6 shadow-sm space-y-5"
         >
-          {/* School selector */}
-          <div className="relative space-y-1.5">
-            <label
-              htmlFor="school-search"
-              className="block text-sm font-medium text-foreground"
-            >
-              בית ספר
-            </label>
-            <input
-              id="school-search"
-              type="text"
-              data-testid="sign-in-school-selector"
-              autoComplete="off"
-              placeholder="חפש בית ספר..."
-              value={schoolSearch}
-              onChange={handleSchoolSearchChange}
-              onFocus={() => setShowDropdown(true)}
-              onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
-              className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
-            />
-            {showDropdown && filteredSchools.length > 0 && (
-              <ul
-                className="absolute z-50 mt-1 w-full max-h-56 overflow-y-auto rounded-xl border border-border bg-popover shadow-lg"
-                role="listbox"
-              >
-                {filteredSchools.map((school) => (
-                  <li
-                    key={school.semel}
-                    role="option"
-                    aria-selected={selectedSchool?.semel === school.semel}
-                    onMouseDown={() => handleSelectSchool(school)}
-                    className="cursor-pointer px-3 py-2.5 text-sm text-popover-foreground hover:bg-accent transition-colors"
-                  >
-                    <span className="font-medium">{school.name}</span>
-                    <span className="mr-2 text-xs text-muted-foreground">{school.semel}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <SchoolAutocomplete
+            value={selectedSchool}
+            onSelect={setSelectedSchool}
+            onClear={() => setSelectedSchool(null)}
+            inputTestId="sign-in-school-selector"
+            optionTestIdPrefix="school-option"
+          />
 
           {/* Username */}
           <div className="space-y-1.5">

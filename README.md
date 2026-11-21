@@ -82,7 +82,7 @@ docker compose up --build   # db, redis, backend, frontend (hot reload via the o
 |---|---|---|
 | Frontend (Next.js) | <http://localhost:3000> | the app |
 | Backend (NestJS) | <http://localhost:3001> | health check at `/health` |
-| PostgreSQL | `localhost:5432` | |
+| PostgreSQL | `localhost:5432` | host port overridable with `DB_PORT` |
 | Redis | `localhost:6379` | cache + sessions |
 
 > **Requirements:** Docker + Docker Compose v2. Node 22+ is only needed for host-side tooling;
@@ -167,6 +167,7 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 
 | Variable | What | Default |
 |---|---|---|
+| `DB_PORT` | host port the Postgres container publishes on. Containers always reach the database as `db:5432`, so this moves the host side only — set it when something else already holds 5432. | `5432` |
 | `MASHOV_BASE_URL` | upstream Mashov origin | `https://web.mashov.info` |
 | `HTTPS_PROXY` | egress proxy for Mashov calls — **required in production** | unset |
 | `MASHOV_TIMEOUT_MS` | wall-clock bound per Mashov request | `10000` |
@@ -174,6 +175,8 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 | `PROXY_SLOW_TIMEOUT_MS` | bound for long synchronous paths (`/api/v1/sync/*`) | `90000` |
 | `PROXY_ATTACHMENT_TIMEOUT_MS` | bound for attachment downloads (`/api/v1/{mail,children}/**/files/*`) | `45000` |
 | `ENABLE_E2E_AUTH_BYPASS` | **tests only** — `1` lets the e2e browser skip the auth guard. Must stay unset or `0` in production. | `0` |
+| `MAIL_SWEEP_ENABLED` | kill switch for the mail unread reconciliation sweep. Set to `false` to freeze the inbox badge in place while a wrong count is diagnosed — the walk and the per-conversation derivation keep running, only the orphan sweep stops. Anything else, including unset, leaves it on. | `true` |
+| `MASHOV_ENABLE_SCHOOL_LINK_ADOPTION` | whether signing in with a school's credentials attaches to the household that already linked it. Off (`false`) restores the pre-merge behaviour, where each school's Mashov account gets its own separate household — which makes linking a second school a dead end, since signing back in with it shows an empty app. See ADR-0029. | `true` |
 
 ### Daily digest to Telegram
 

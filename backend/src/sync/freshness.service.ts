@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { SyncRun } from '@prisma/client';
+import { Prisma, SyncRun } from '@prisma/client';
 import { SyncRunService } from './sync-run.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  connectionStudentWhere,
+  visibleStudentWhere,
+} from '../common/student-links';
 import {
   calendarSchoolYear,
   SchoolYearService,
@@ -128,13 +132,96 @@ export class FreshnessService {
    * answered "fresh" while every GET returned data from a school year that had
    * ended — the crons were succeeding at fetching the wrong year.
    */
-  async computeContentFreshness(): Promise<ContentFreshness> {
-    const connection = await this.prisma.householdConnection.findFirst({
-      where: { active: true },
+  async computeContentFreshness(userId?: string): Promise<ContentFreshness> {
+    // Computed per connection and reported at its WORST. A second school with
+    // no data yet would otherwise read as a frozen year for the whole
+    // household -- and conversely, reading only the most recent connection
+    // would hide a genuinely stale school behind a healthy one.
+    //
+    // Scoped to the CALLER's connections (R4). Unscoped, the worst verdict
+    // was taken across every household in the table, so an unrelated family
+    // linking a school this morning -- nothing synced yet, so `no_content` --
+    // degraded every other household's freshness card. A caller-less read
+    // keeps the global view the crons and the digest want, the N1 precedent.
+    const connections = await this.prisma.householdConnection.findMany({
+      where: { active: true, ...(userId ? { userId } : {}) },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
-      select: { schoolCode: true, schoolYear: true },
+      select: { id: true, schoolCode: true, schoolYear: true },
     });
 
+    if (connections.length === 0) {
+      // No connection to measure a school year against, so the verdict comes
+      // from the calendar. A signed-in caller still gets their own children:
+      // without the predicate this branch aggregated the whole table too.
+      return this.contentFreshnessForConnection(
+        null,
+        userId ? await visibleStudentWhere(this.prisma, userId) : {},
+      );
+    }
+
+    const perConnection = await Promise.all(
+      connections.map((connection) =>
+        this.contentFreshnessForConnection(
+          connection,
+          connectionStudentWhere(connection.id),
+        ),
+      ),
+    );
+    return this.worstContentFreshness(perConnection);
+  }
+
+  /**
+   * The worst of several per-school verdicts.
+   *
+   * `stale_year` beats `no_content` beats `current`: a school asking for a
+   * dead year is a fault, while a school with nothing yet is merely quiet, and
+   * one healthy school must not mask either. `newestContentAt` is the newest
+   * across the household, because that is what "when did anything last happen"
+   * means to a parent.
+   */
+  private worstContentFreshness(results: ContentFreshness[]): ContentFreshness {
+    const rank: Record<ContentFreshnessStatus, number> = {
+      current: 0,
+      no_content: 1,
+      stale_year: 2,
+    };
+    const worst = results.reduce((a, b) => (rank[b.status] > rank[a.status] ? b : a));
+
+    const newest = results
+      .map((result) => result.newestContentAt)
+      .filter((value): value is string => value !== null)
+      .sort()
+      .reverse()[0] ?? null;
+
+    const ages = results
+      .map((result) => result.contentAgeDays)
+      .filter((value): value is number => value !== null);
+
+    return {
+      ...worst,
+      newestContentAt: newest,
+      contentAgeDays: ages.length > 0 ? Math.min(...ages) : null,
+    };
+  }
+
+  /**
+   * One school's verdict, over the children a caller may see through it.
+   *
+   * The student predicate is an ARGUMENT rather than something built here
+   * from `connection.id`. `Student.householdConnectionId` is the routing
+   * stamp: it says whose credentials fetched the child, and per ADR-0031 that
+   * is whichever of two parents at one school synced last, by design. It
+   * cannot answer who may see the child, and when it was used for that the
+   * other parent's query matched nothing -- no value equals NULL and no value
+   * equals somebody else's id -- so their verdict was `no_content`, which
+   * `worstContentFreshness` ranks above `current` and which therefore
+   * degraded the whole card. The visibility edge is the answer, and the
+   * callers pass it.
+   */
+  private async contentFreshnessForConnection(
+    connection: { id: string; schoolCode: number; schoolYear: number } | null,
+    studentWhere: Prisma.StudentWhereInput,
+  ): Promise<ContentFreshness> {
     const observedSchoolYear = connection?.schoolYear ?? 0;
     const expectedSchoolYear = connection
       ? (await this.schoolYearService.resolveForSchool(connection.schoolCode)).year
@@ -142,7 +229,11 @@ export class FreshnessService {
 
     const studentGuids = (
       await this.prisma.student.findMany({
-        where: { isActive: true },
+        // Scoped to the children this connection lists, so one school's
+        // silence is not measured against the other school's content -- by
+        // the visibility edge, which admits a child both parents list and a
+        // child nobody lists yet, as everywhere else on this branch.
+        where: { isActive: true, ...studentWhere },
         select: { studentGuid: true },
       })
     ).map((student) => student.studentGuid);
@@ -202,14 +293,22 @@ export class FreshnessService {
     };
   }
 
-  async computeFreshness(snapshot?: SyncRunSnapshot): Promise<{
+  /**
+   * `userId` comes FIRST, deliberately: every caller-less spec call stays
+   * `computeFreshness()`, and the snapshot stays an optional second argument
+   * for the one caller that has already loaded it.
+   */
+  async computeFreshness(
+    userId?: string,
+    snapshot?: SyncRunSnapshot,
+  ): Promise<{
     state: FreshnessState;
     lastSyncAt: string | null;
     staleSources: string[];
     contentFreshness: ContentFreshness;
   }> {
     const { successRuns, allRuns } = snapshot ?? (await this.loadSyncRuns());
-    const contentFreshness = await this.computeContentFreshness();
+    const contentFreshness = await this.computeContentFreshness(userId);
     const now = new Date();
 
     const staleSources: string[] = [];
@@ -316,8 +415,6 @@ export class FreshnessService {
         }
 
         for (const source of sources) {
-          const latestRun = allRuns.get(source);
-
           // Look for the most recent success across the exact key AND any variant keys
           // (e.g. mail_counts:{conn.id}) so per-connection entries are not missed.
           const variantSuccessKeys = Array.from(successRuns.keys()).filter(
@@ -331,22 +428,66 @@ export class FreshnessService {
             }
           }
 
+          // The attempt comes from the SAME variant key set as the status, not
+          // from `allRuns.get(source)` — the bare key.
+          //
+          // T13 finding 3: the branch-wide NULL rule admits a cron run with no
+          // connection into every connection's snapshot, deliberately. When
+          // such a run sits under the bare source name and has `failed`, the
+          // bare key carried its error onto a row whose status the scoped
+          // success variant had already made `fresh` — a green row with
+          // "Missing required Mashov credentials…" beneath it, shown on a
+          // shared deployment to every household. Reading both from one set is
+          // what keeps the two halves of the row talking about the same runs.
+          // Two picks, because they answer different questions. `lastAttemptAt`
+          // is the newest attempt of ANY status — if something is running, the
+          // row should say when it started. `status` and `lastErrorMessage`
+          // come from the newest *failed* attempt, because a newer `running`
+          // row is not evidence the failure went away: an in-flight refresh,
+          // or a run whose process died before `closeRun`, would otherwise sit
+          // in front of a `failed` row and take the status down to
+          // `never_synced` with a null error — silencing the one page that
+          // answers "is syncing working", permanently if the row is orphaned.
+          let latestAttempt: SyncRun | undefined;
+          let latestFailure: SyncRun | undefined;
+          for (const k of allRuns.keys()) {
+            if (k !== source && !k.startsWith(`${source}:`)) continue;
+            const r = allRuns.get(k);
+            if (!r) continue;
+            if (!latestAttempt || r.startedAt > latestAttempt.startedAt) latestAttempt = r;
+            if (
+              r.status === 'failed' &&
+              (!latestFailure || r.startedAt > latestFailure.startedAt)
+            ) {
+              latestFailure = r;
+            }
+          }
+
           let status: SourceHealth['status'] = 'never_synced';
 
           if (latestSuccess?.endedAt) {
             const ageMinutes =
               (now.getTime() - new Date(latestSuccess.endedAt).getTime()) / 60000;
             status = ageMinutes <= threshold.staleThresholdMinutes ? 'fresh' : 'stale';
-          } else if (latestRun?.status === 'failed') {
+          } else if (latestFailure) {
             status = 'failed';
           }
+
+          // An error a later success has superseded is spent, and does not
+          // travel. One that nothing has answered yet still explains itself —
+          // suppressing on `status !== 'failed'` instead would silence a
+          // stale-but-failing source, which is the row most worth reading.
+          const errorIsSpent =
+            !!latestSuccess?.endedAt &&
+            !!latestFailure &&
+            latestSuccess.endedAt > latestFailure.startedAt;
 
           results.push({
             source,
             status,
             lastSuccessAt: latestSuccess?.endedAt?.toISOString() ?? null,
-            lastAttemptAt: latestRun?.startedAt?.toISOString() ?? null,
-            lastErrorMessage: latestRun?.errorMessage ?? null,
+            lastAttemptAt: latestAttempt?.startedAt?.toISOString() ?? null,
+            lastErrorMessage: errorIsSpent ? null : latestFailure?.errorMessage ?? null,
             fetchedCount: latestSuccess?.fetchedCount ?? null,
             staleThresholdMinutes: threshold.staleThresholdMinutes,
           });

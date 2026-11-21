@@ -9,6 +9,7 @@ describe('BehaviorClassifierService', () => {
     mockPrisma = {
       behaviorTypeReference: {
         findUnique: jest.fn(),
+      findFirst: jest.fn().mockResolvedValue(null),
       } as unknown as jest.Mocked<PrismaService['behaviorTypeReference']>,
     };
     service = new BehaviorClassifierService(mockPrisma as unknown as PrismaService);
@@ -134,7 +135,7 @@ describe('BehaviorClassifierService', () => {
         code: 11,
         justifiable: true,
       });
-      const result = await service.isJustifiable(11);
+      const result = await service.isJustifiable(540175, 11);
       expect(result).toBe(true);
     });
 
@@ -143,13 +144,13 @@ describe('BehaviorClassifierService', () => {
         code: 2,
         justifiable: false,
       });
-      const result = await service.isJustifiable(2);
+      const result = await service.isJustifiable(540175, 2);
       expect(result).toBe(false);
     });
 
     it('returns false when the behavior type reference is not found', async () => {
       (mockPrisma.behaviorTypeReference.findUnique as jest.Mock).mockResolvedValue(null);
-      const result = await service.isJustifiable(9999);
+      const result = await service.isJustifiable(540175, 9999);
       expect(result).toBe(false);
     });
 
@@ -157,8 +158,61 @@ describe('BehaviorClassifierService', () => {
       (mockPrisma.behaviorTypeReference.findUnique as jest.Mock).mockRejectedValue(
         new Error('DB connection error'),
       );
-      const result = await service.isJustifiable(1);
+      const result = await service.isJustifiable(540175, 1);
       expect(result).toBe(false);
+    });
+
+    it('asks for the row belonging to that school', async () => {
+      // The decisive case for two schools: the same code means different
+      // things at each, and `justifiable` is each school's own policy.
+      (mockPrisma.behaviorTypeReference.findUnique as jest.Mock).mockResolvedValue({
+        code: 11,
+        justifiable: true,
+      });
+
+      await service.isJustifiable(999999, 11);
+
+      expect(mockPrisma.behaviorTypeReference.findUnique).toHaveBeenCalledWith({
+        where: { schoolCode_code: { schoolCode: 999999, code: 11 } },
+      });
+    });
+
+    it('answers differently for two schools sharing a code', async () => {
+      (mockPrisma.behaviorTypeReference.findUnique as jest.Mock).mockImplementation(
+        ({ where }: { where: { schoolCode_code: { schoolCode: number } } }) =>
+          Promise.resolve({
+            code: 11,
+            justifiable: where.schoolCode_code.schoolCode === 540175,
+          }),
+      );
+
+      await expect(service.isJustifiable(540175, 11)).resolves.toBe(true);
+      await expect(service.isJustifiable(999999, 11)).resolves.toBe(false);
+    });
+
+    it('falls back to an unscoped row when the school has none yet', async () => {
+      // A deployment whose achvas sync has not run for that school, or a row
+      // the ownership migration left at schoolCode 0. Better than reporting
+      // every absence as unexcused on the first day a school is linked.
+      (mockPrisma.behaviorTypeReference.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.behaviorTypeReference.findFirst as jest.Mock).mockResolvedValue({
+        code: 11,
+        justifiable: true,
+      });
+
+      await expect(service.isJustifiable(999999, 11)).resolves.toBe(true);
+      expect(mockPrisma.behaviorTypeReference.findFirst).toHaveBeenCalledWith({
+        where: { schoolCode: 0, code: 11 },
+      });
+    });
+
+    it('defaults to false when neither row exists', async () => {
+      // False reports an absence as needing attention. True would silently
+      // excuse it, which is the failure that actually misleads a parent.
+      (mockPrisma.behaviorTypeReference.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.behaviorTypeReference.findFirst as jest.Mock).mockResolvedValue(null);
+
+      await expect(service.isJustifiable(999999, 11)).resolves.toBe(false);
     });
   });
 });

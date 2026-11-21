@@ -108,7 +108,15 @@ const MOCK_ME = {
   mashovUserId: 'e2e-parent-1',
   username: 'e2e-parent',
   displayName: 'E2E Parent',
-  connectedSchool: { schoolName: 'Test School', schoolYear: 2026 },
+  schools: [
+    {
+      id: 'conn-mock-1',
+      semel: 540175,
+      schoolName: 'Test School',
+      shortLabel: 'Test School',
+      schoolYear: 2026,
+    },
+  ],
 };
 
 test.beforeEach(async ({ page }) => {
@@ -129,7 +137,6 @@ test.beforeEach(async ({ page }) => {
         },
         feed: [],
         children: [],
-        school: { schoolName: 'Test School', schoolYear: 2026 },
       }),
     });
   });

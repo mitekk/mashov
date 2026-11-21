@@ -24,18 +24,57 @@ model HouseholdConnection {
   lastLoginAt       DateTime?
   active            Boolean   @default(true)
   userId            String?
+  /// Who asserted "this Mashov account is mine" by linking it, and when.
+  /// Audit only -- never read for scoping. Adoption at sign-in means whoever
+  /// holds either school's password reaches the merged household, so the one
+  /// thing that must survive is a record of who opened that door. See ADR-0029.
+  linkedByUserId    String?
+  linkedAt          DateTime?
+  /// A parent-chosen short name for this school. `null` means derive one from
+  /// `schoolName`; see src/common/school-label.ts.
+  displayLabel      String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   user AppUser? @relation(fields: [userId], references: [id])
 
+  students         Student[]
+  studentLinks     StudentConnection[]
+  conversations    MailConversation[]
+  messages         MailMessage[]
+  notifications    NotificationEvent[]
+  schoolActivities SchoolActivity[]
+  parentProfiles   ParentProfile[]
+
+  /// The identity of a Mashov account, and what makes adoption safe to race.
+  /// `auth.service.ts` already treats (school, username) as the identity key
+  /// and looked it up with `findFirst`; without the constraint two concurrent
+  /// sign-ins can both decide they are creating the connection.
+  ///
+  /// Full, not partial (`WHERE active`): Prisma cannot express a partial index,
+  /// so `prisma db push` would drop it on the next boot and the constraint
+  /// would vanish silently. The duplicates `20261117000000` deactivated rather
+  /// than deleted are collapsed by
+  /// prisma/migrations/20261120000000_connection_duplicate_collapse, which the
+  /// Dockerfile runs BEFORE `db push` for exactly this reason.
+  @@unique([schoolCode, username])
   @@map("household_connection")
 }
 
 model AppUser {
   id               String                @id @default(uuid())
   mashovUserId     String                @unique
+  /// The school of the credential that CREATED this row -- an origin marker,
+  /// not a scope. A household can hold connections to several schools, so this
+  /// answers "which account opened the account", nothing more. Read nowhere in
+  /// src/ outside the upstream school list; never use it to decide what a user
+  /// may see. Ownership lives on HouseholdConnection.userId.
   semel            Int
+  /// Set when this AppUser's only connection was absorbed into another
+  /// household, pointing at the household that now owns it. Sign-in follows it
+  /// exactly one hop; the row is kept because AppSession and UserItemState
+  /// reference it and the pointer is the audit trail. See ADR-0029.
+  mergedIntoUserId String?
   username         String
   displayName      String
   createdAt        DateTime              @default(now())
@@ -84,6 +123,13 @@ model ParentProfile {
   rawPayload     Json?
   updatedAt      DateTime @updatedAt
 
+  /// Which connection fetched this profile. `upstreamUserId` is a per-school
+  /// user id, so a two-school household has two rows -- both correct, and
+  /// `settings.service.ts` used to pick between them with `findFirst`.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([householdConnectionId])
   @@map("parent_profile")
 }
 
@@ -107,13 +153,68 @@ model Student {
   // stayed active forever while every per-student cron 403'd on them.
   lastSeenInRosterAt DateTime?
 
+  /// Which connection to ask upstream for this child -- ROUTING ONLY.
+  ///
+  /// It is deliberately NOT the answer to "who may see this child": that is
+  /// `links`, because a child can legitimately belong to more than one user
+  /// (two parents, their own Mashov accounts, the same children). Carrying
+  /// both jobs on this one column is what made the second parent to sync evict
+  /// the first. See ADR-0031.
+  ///
+  /// Nullable permanently, not transitionally: the shared env-credential
+  /// session legitimately writes unowned rows, and NULL means "ownership
+  /// unknown, re-stamp on the next roster refresh" rather than "no owner". A
+  /// required column would also make `prisma db push` impossible against the
+  /// populated production tables.
+  ///
+  /// `onDelete: SetNull`, so a raw connection delete can never cascade away a
+  /// child's history by accident -- `ConnectionService.deleteConnection` does
+  /// that work explicitly and scoped.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  /// Every connection whose login roster lists this child -- the VISIBILITY
+  /// edge. A user sees a child when any of their own connections links them.
+  /// No links at all means "ownership unknown", which stays readable by any
+  /// caller for the same reason the NULL stamp did. See ADR-0031.
+  links StudentConnection[]
+
   @@index([isActive, lastSeenInRosterAt])
+  @@index([householdConnectionId, isActive])
   @@map("student")
+}
+
+/// Which connections list a child, and therefore which users may see them.
+///
+/// `Student.studentGuid` is globally unique and every per-child table is keyed
+/// by it alone, so a child's data is ONE shared copy. What was missing was the
+/// visibility edge: two parents with their own Mashov accounts at one school
+/// both legitimately list the same children (ADR-0016, PRD open question 2),
+/// and a single `householdConnectionId` made whichever synced second evict the
+/// other. See ADR-0031.
+model StudentConnection {
+  studentGuid           String
+  householdConnectionId String
+  /// When this connection first listed the child. Audit, and the field that
+  /// distinguishes this from a prunable roster cache: a row here is a granted
+  /// view, not an observation to be tidied away on a sync hiccup.
+  firstSeenAt           DateTime @default(now())
+  lastSeenInRosterAt    DateTime @default(now())
+
+  student    Student             @relation(fields: [studentGuid], references: [studentGuid], onDelete: Cascade)
+  connection HouseholdConnection @relation(fields: [householdConnectionId], references: [id], onDelete: Cascade)
+
+  @@id([studentGuid, householdConnectionId])
+  @@index([householdConnectionId])
+  @@map("student_connection")
 }
 
 model NotificationEvent {
   id                     String    @id @default(cuid())
-  upstreamNotificationId Int?      @unique
+  /// A per-school counter, so two schools collide on it. Keyed with the
+  /// owning connection below; on its own it meant the second school's
+  /// notification silently replaced the first's.
+  upstreamNotificationId Int?
   fingerprint            String?   @unique
   eventType              Int
   eventText              String
@@ -127,22 +228,31 @@ model NotificationEvent {
   rawPayload             Json
   updatedAt              DateTime  @updatedAt
 
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  /// Named explicitly: the generated name is 67 characters, over Postgres's
+  /// 63-byte identifier limit, so it would be silently truncated and drift
+  /// `db push` from the committed migration -- the same trap
+  /// digest_reported_item_dedup_key already documents.
+  @@unique([householdConnectionId, upstreamNotificationId], map: "notification_event_connection_upstream_id_key")
+  @@index([householdConnectionId])
   @@map("notification_event")
 }
 
 model MailConversation {
-  id                String   @id @default(cuid())
-  conversationId    String   @unique
-  subject           String
-  senderNamePreview String?
-  sendTime          DateTime
-  isUnread          Boolean  @default(false)
-  hasDrafts         Boolean  @default(false)
-  hasAttachments    Boolean  @default(false)
-  preventReply      Boolean  @default(false)
-  labels            Json     @default("[]")
-  rawPayload        Json?
-  lastFetchedAt     DateTime @default(now())
+  id                    String    @id @default(cuid())
+  conversationId        String    @unique
+  subject               String
+  senderNamePreview     String?
+  sendTime              DateTime
+  isUnread              Boolean   @default(false)
+  hasDrafts             Boolean   @default(false)
+  hasAttachments        Boolean   @default(false)
+  preventReply          Boolean   @default(false)
+  labels                Json      @default("[]")
+  rawPayload            Json?
+  lastFetchedAt         DateTime  @default(now())
   // The sendTime of the newest message the user had when they marked this
   // conversation read locally, or null if they never did. Mashov documents no
   // markAsRead endpoint, so upstream keeps reporting the message unread and the
@@ -151,7 +261,7 @@ model MailConversation {
   // Mashov timestamps are naive and parsed in the container's zone, so a UTC now()
   // would sit 2-3h behind the instants it is compared against and clear the
   // override for any mail read soon after it arrived.
-  locallyReadThroughAt DateTime?
+  locallyReadThroughAt  DateTime?
   // Set when the user explicitly marks the conversation unread, cleared when they mark
   // it read or archive it. MailInboxTask's reconciliation sweep skips these rows: for a
   // conversation upstream has stopped returning, the local row is the only record of
@@ -162,6 +272,15 @@ model MailConversation {
 
   messages MailMessage[]
 
+  /// The mailbox this conversation came from. `conversationId` is a global
+  /// UUID, so the table is the union of every household's mail and nothing
+  /// could tell the rows apart -- which is why MailInboxTask refused to run its
+  /// reconciliation sweep above one active connection at all.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([householdConnectionId, isUnread])
+  @@index([householdConnectionId, sendTime])
   @@map("mail_conversation")
 }
 
@@ -185,6 +304,24 @@ model MailMessage {
 
   conversation MailConversation @relation(fields: [conversationId], references: [conversationId])
 
+  /// Denormalised from the conversation rather than reached through the
+  /// relation. The column buys a direct connection resolve from a bare
+  /// `messageId` for an attachment download, and symmetry with the conversation
+  /// row the same upsert loop already writes. Cost: one TEXT per message,
+  /// written by code already in that loop.
+  ///
+  /// It is NOT what the unlink deletes by: a message written by the
+  /// conversation-detail fetch carried no stamp at all before R2, so the unlink
+  /// reaches messages through `conversation` and keeps this column only as a
+  /// second arm. See ConnectionService.prepareConnectionDeletion.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([householdConnectionId])
+  /// Postgres does not index a foreign key's referencing column. Without this,
+  /// both the unlink's relation-filtered delete and the FK check on
+  /// `mail_conversation`'s delete sequential-scan this table under lock.
+  @@index([conversationId])
   @@map("mail_message")
 }
 
@@ -268,9 +405,18 @@ model SubjectEnrollment {
   @@map("subject_enrollment")
 }
 
+/// A school's own behaviour taxonomy, NOT global reference data.
+///
+/// `apis/get-api-achvas.md` carries `teacherId` and `commonBehaveId`: the codes
+/// are school-local, and `justifiable` is the school's own policy on whether an
+/// absence excuses itself. Keyed by `schoolCode` rather than by connection
+/// because it is school-level -- two parents at one school must not duplicate
+/// it -- and because `BehaviorClassifierService` answers "is this absence
+/// justifiable" from it and was answering from whichever school wrote last.
 model BehaviorTypeReference {
   id               String   @id @default(cuid())
-  code             Int      @unique
+  schoolCode       Int      @default(0)
+  code             Int
   name             String
   displayOrder     Int      @default(0)
   justifiable      Boolean  @default(false)
@@ -280,6 +426,7 @@ model BehaviorTypeReference {
   rawPayload       Json?
   updatedAt        DateTime @updatedAt
 
+  @@unique([schoolCode, code])
   @@map("behavior_type_reference")
 }
 
@@ -425,15 +572,33 @@ model SchoolActivity {
   descriptionText   String?
   activityStartDate DateTime
   activityEndDate   DateTime
-  // The deadline for answering. This is what makes an activity reportable.
-  endAnswerDate     DateTime
+  /// The deadline for answering, and what makes an activity reportable.
+  ///
+  /// Nullable because a school may publish an activity with no response
+  /// deadline, and the capture (`apis/get-api-schoolActivities-permitted.md`)
+  /// marks the field required while the live payload omits it. Throwing on the
+  /// absence failed the whole sync task on every refresh at both schools, which
+  /// pinned the refresh envelope at `partial` permanently (T13 finding 5). An
+  /// undated activity is not reportable -- the digest's `gte`/`lt` filter never
+  /// matches NULL -- but it is storable, and the UI shows it as `לא זמין`.
+  endAnswerDate     DateTime?
   isAnswered        Boolean   @default(false)
   createTime        DateTime?
   rawPayload        Json?
   updatedAt         DateTime  @updatedAt
 
-  @@unique([userId, schoolYear, activityId])
+  /// `activityId` is a per-school counter -- it is literally `1` in the
+  /// captured payload -- and `userId` is now the merged household, so without
+  /// the connection in the key one school's consent request overwrites the
+  /// other's.
+  householdConnectionId String?
+  connection            HouseholdConnection? @relation(fields: [householdConnectionId], references: [id], onDelete: SetNull)
+
+  /// Named explicitly, for the same reason as above: the generated name is 70
+  /// characters.
+  @@unique([userId, householdConnectionId, schoolYear, activityId], map: "school_activity_user_connection_year_activity_key")
   @@index([userId, endAnswerDate])
+  @@index([householdConnectionId])
   @@map("school_activity")
 }
 

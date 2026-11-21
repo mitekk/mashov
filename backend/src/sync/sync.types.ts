@@ -1,5 +1,10 @@
 export type SyncTaskStatus = 'success' | 'failed';
-export type ManualSyncStatus = 'success' | 'partial';
+/**
+ * `failed` is the school that threw: `POST /sync/refresh` aggregates one
+ * `refreshAll` per connection, and a connection whose refresh never returned
+ * has no `partial` to report.
+ */
+export type ManualSyncStatus = 'success' | 'partial' | 'failed';
 
 export interface SyncExecutionContext {
   connectionId?: string;
@@ -44,5 +49,19 @@ export interface ManualSyncRefreshResponse {
   startedAt: string;
   endedAt: string;
   durationMs: number;
+  /**
+   * One entry per task **per school**, concatenated.
+   *
+   * `task` is therefore NOT unique in the aggregated `POST /sync/refresh`
+   * response: a two-school household carries two `homework` entries. It is
+   * unique in what one `SyncService.refreshAll` returns, which is where this
+   * type is also used. A reader that wants one row per task must group by
+   * school, not `find` by name -- `tasks.find((t) => t.task === 'homework')`
+   * and `key={task.task}` both silently keep one school and drop the other.
+   *
+   * Kept as a flat list rather than gaining a `schoolId`: the single-school
+   * response is byte-identical to the pre-aggregation one, which is what lets
+   * the six e2e MOCK constants and old clients keep working.
+   */
   tasks: ManualSyncTaskResult[];
 }

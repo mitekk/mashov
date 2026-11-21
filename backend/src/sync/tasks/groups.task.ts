@@ -2,6 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  orderConnectionsForStudent,
+  stampOwnershipIfChanged,
+  studentScopeForContext,
+} from '../connection-fanout';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
@@ -61,7 +66,9 @@ export class GroupsTask {
       };
     }
 
-    const students = await this.prisma.student.findMany({ where: { isActive: true } });
+    const students = await this.prisma.student.findMany({
+      where: studentScopeForContext(context),
+    });
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
     let failedCount = 0;
@@ -75,7 +82,13 @@ export class GroupsTask {
     const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
 
     for (const student of students) {
-      let schoolYear = requestedYear ?? connections[0]?.schoolYear ?? fallbackSchoolYear;
+      // Owner first. With one school this is the same single connection it
+      // always was; with two it saves a guaranteed 403 per student per run.
+      const ordered = orderConnectionsForStudent(student, connections);
+      // Seeded from the OWNER's year, not the table's first row: this value
+      // survives if every call fails, and labelling a child's rows with
+      // another school's year is how reads and writes drift apart.
+      let schoolYear = requestedYear ?? ordered[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${sourcePrefix}${GroupsTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -96,7 +109,7 @@ export class GroupsTask {
         } else {
           groups = [];
           let answered = false;
-          for (const conn of connections) {
+          for (const conn of ordered) {
             try {
               const password = this.encryptionService.decrypt(conn.encryptedPassword);
               const connYear = requestedYear ?? conn.schoolYear;
@@ -115,6 +128,16 @@ export class GroupsTask {
               );
               schoolYear = connYear;
               answered = true;
+              // A success on a non-owner re-stamps, so a child who moved
+              // school stops costing a failed call on every later run.
+              await stampOwnershipIfChanged(
+                this.prisma,
+                student,
+                conn,
+                this.logger,
+                // An empty 200 is not proof the child is in this account.
+                Array.isArray(groups) && groups.length > 0,
+              );
               break;
             } catch (connErr) {
               const connMsg = connErr instanceof Error ? connErr.message : String(connErr);

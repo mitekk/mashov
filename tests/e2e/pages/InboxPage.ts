@@ -57,4 +57,28 @@ export class InboxPage {
   async toggleConversationSelection(conversationId: string): Promise<void> {
     await this.page.getByTestId(`conversation-select-${conversationId}`).click();
   }
+
+  /** The chip row. Absent entirely below two connected schools. */
+  get schoolFilterChips() {
+    return this.page.getByTestId('school-filter-chips');
+  }
+
+  schoolFilterChip(semel: number | 'all') {
+    return this.page.getByTestId(`school-filter-chip-${semel}`);
+  }
+
+  /** Press a school's chip and wait for the URL to carry it. */
+  async filterBySchool(semel: number | 'all'): Promise<void> {
+    await this.schoolFilterChip(semel).click();
+    await this.page.waitForURL(
+      semel === 'all' ? (url) => !url.search.includes('school=') : `**?*school=${semel}*`,
+    );
+  }
+
+  /** A row's school badge; absent below two connected schools. */
+  schoolBadge(id: string) {
+    return this.page.getByTestId(
+      `conversation-school-${id}`,
+    );
+  }
 }

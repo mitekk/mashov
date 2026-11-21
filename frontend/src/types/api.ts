@@ -59,6 +59,9 @@ export interface FeedItem {
   sourceId: string;
   studentGuid: string | null;
   studentName: string | null;
+  /** `null` for mail (household-wide) and for an unstamped child. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
   title: string;
   summary: string;
   category: string;
@@ -84,11 +87,9 @@ export interface DashboardChildCard {
   positiveBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
-}
-
-export interface SchoolInfo {
-  schoolName: string;
-  schoolYear: number;
+  /** `null` for a child with no ownership stamp: the UI shows no badge. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
 }
 
 export interface DashboardResponse {
@@ -96,7 +97,6 @@ export interface DashboardResponse {
   summary: DashboardSummary;
   feed: FeedItem[];
   children: DashboardChildCard[];
-  school: SchoolInfo;
 }
 
 // ─── Feed ──────────────────────────────────────────────────────────────────
@@ -119,6 +119,11 @@ export interface ChildListItem {
   positiveBehaviorCount: number;
   subjectCount: number;
   latestUpdateAt: string | null;
+  /** `null` for a child with no ownership stamp: the UI shows no badge. */
+  schoolId: string | null;
+  schoolName: string | null;
+  schoolShortLabel: string | null;
+  semel: number | null;
 }
 
 export interface ChildrenResponse {
@@ -317,6 +322,9 @@ export interface ConversationListItem {
   preventReply: boolean;
   labels: string[];
   lastFetchedAt: string;
+  /** `null` on an unstamped conversation: the UI shows no badge. */
+  schoolId: string | null;
+  schoolShortLabel: string | null;
 }
 
 export type ConversationsResponse = PaginatedResponse<ConversationListItem>;
@@ -399,6 +407,10 @@ export interface SourceHealthResponse {
 }
 
 export interface ParentProfile {
+  /// Which linked school these details were read from. `upstreamUserId` is a
+  /// per-school id, so a two-school household has one entry per school and
+  /// the caption must say which one.
+  householdConnectionId: string;
   upstreamUserId: string;
   displayName: string;
   email: string;
@@ -444,7 +456,12 @@ export interface BehaviorBulkArchiveRequest {
 // ─── Sync ──────────────────────────────────────────────────────────────────
 
 export type SyncTaskStatus = 'success' | 'failed';
-export type SyncRefreshStatus = 'success' | 'partial';
+/**
+ * `failed` is a school whose refresh threw: `POST /sync/refresh` runs one per
+ * connection and aggregates worst-wins, so a school that never returned has no
+ * `partial` to report.
+ */
+export type SyncRefreshStatus = 'success' | 'partial' | 'failed';
 
 export interface SyncTaskSummary {
   fetchedCount: number;
@@ -463,12 +480,34 @@ export interface SyncTaskResult {
   durationMs: number;
 }
 
-export interface SyncRefreshResponse {
+/** One school's own outcome, so a two-school household is not one number. */
+export interface SyncRefreshSchool {
+  schoolId: string;
+  semel: number;
+  schoolName: string | null;
   status: SyncRefreshStatus;
+}
+
+export interface SyncRefreshResponse {
+  /**
+   * Worst-wins across every school in the household, and `tasks` is the
+   * concatenation of theirs. Both described the first connection alone until
+   * the envelope was aggregated.
+   */
+  status: SyncRefreshStatus;
+  /** Earliest start and latest end across the schools: the span the parent waited. */
   startedAt: string;
   endedAt: string;
   durationMs: number;
+  /**
+   * One entry per task **per school**, concatenated — so `task` is not unique.
+   * A two-school household carries two `homework` entries, and both
+   * `tasks.find((t) => t.task === …)` and `key={task.task}` would silently keep
+   * one school and drop the other. Group by school instead.
+   */
   tasks: SyncTaskResult[];
+  /** One entry per refreshed connection. Additive; no caller reads it yet. */
+  schools: SyncRefreshSchool[];
 }
 
 // ─── Timetable ─────────────────────────────────────────────────────────────
@@ -536,8 +575,13 @@ export interface MailBulkActionResponse {
 
 // ─── Auth / User ───────────────────────────────────────────────────────────
 
-export interface ConnectedSchool {
+/** The slice of a school link every page's badge needs. */
+export interface MeSchool {
+  id: string;
+  semel: number;
   schoolName: string;
+  /** Short enough for a chip on a 360px row; resolved server-side. */
+  shortLabel: string;
   schoolYear: number;
 }
 
@@ -545,8 +589,33 @@ export interface AppUser {
   mashovUserId: string;
   username: string;
   displayName: string;
-  connectedSchool: ConnectedSchool | null;
+  /**
+   * Every connected school, newest sign-in first; `[]` when none.
+   *
+   * Every new school-aware surface gates on `schools.length >= 2`, so with one
+   * school the DOM is byte-identical to before this field existed.
+   */
+  schools: MeSchool[];
 }
+
+/** One connected Mashov account, as the management screen needs it. */
+export interface SchoolLink {
+  id: string;
+  semel: number;
+  schoolName: string;
+  shortLabel: string;
+  schoolYear: number;
+  /** Shown so a parent with two accounts can tell them apart. Never a password. */
+  username: string;
+  childrenCount: number;
+  isPrimary: boolean;
+  lastLoginAt: string | null;
+  /** `null` means the first sync has not finished yet. */
+  lastSyncAt: string | null;
+  active: boolean;
+}
+
+export type SchoolLinksResponse = PaginatedResponse<SchoolLink>;
 
 export interface School {
   semel: number;

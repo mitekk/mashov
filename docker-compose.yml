@@ -6,7 +6,12 @@ services:
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     ports:
-      - "5432:5432"
+      # Parameterised, default unchanged: the host's 5432 is often already
+      # taken by another project's database, and a hardcoded publish made the
+      # whole stack unliftable rather than just that one mapping. Containers
+      # reach the db as `db:5432` on the compose network, so DB_PORT moves the
+      # host side only.
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     shm_size: '256mb'
@@ -62,6 +67,17 @@ services:
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       # Wall-clock bound per Mashov request (default 10000 in code).
       MASHOV_TIMEOUT_MS: ${MASHOV_TIMEOUT_MS:-}
+      # Kill switch for the mail unread reconciliation sweep. `false` freezes
+      # the inbox badge in place while a wrong count is diagnosed; the inbox
+      # walk and the per-conversation derivation keep running either way. Any
+      # other value, including unset, leaves the sweep on -- it is what keeps
+      # the badge matching Mashov's own unreadConversations.
+      MAIL_SWEEP_ENABLED: ${MAIL_SWEEP_ENABLED:-}
+      # Whether signing in with a school's credentials attaches to the
+      # household that already linked it. `false` restores the pre-merge
+      # behaviour, where each school's Mashov account gets its own household --
+      # which makes linking a second school a dead end. See ADR-0029.
+      MASHOV_ENABLE_SCHOOL_LINK_ADOPTION: ${MASHOV_ENABLE_SCHOOL_LINK_ADOPTION:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       # Per-child daily digest -> Telegram. Off by default, and silent even
       # when on: DIGEST_DRY_RUN renders and logs without sending. See ADR-0026.
@@ -183,7 +199,7 @@ services:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@db-test:5432/mashov
       REDIS_URL: redis://redis:6379
-      ENCRYPTION_KEY: test-encryption-key-32-chars-long!
+      ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
       SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
       MASHOV_USERNAME: test
@@ -210,7 +226,7 @@ services:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@db-test:5432/mashov
       REDIS_URL: redis://redis:6379
-      ENCRYPTION_KEY: test-encryption-key-32-chars-long!
+      ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
       SESSION_LIFETIME_DAYS: "30"
       MASHOV_SEMEL: "0"
       MASHOV_USERNAME: test
@@ -221,7 +237,7 @@ services:
       [
         "sh",
         "-c",
-        "apk add --no-cache openssl >/dev/null && cd backend && npm ci && npx prisma db push --force-reset --skip-generate && cd .. && npm ci && npx jest tests/integration --runInBand --testEnvironment=node --forceExit --testTimeout=30000",
+        "apk add --no-cache openssl >/dev/null && cd backend && npm ci && npx prisma db push --force-reset --skip-generate && cd .. && npm ci && npx jest tests/integration --runInBand --testEnvironment=node --forceExit --testTimeout=30000 --testPathIgnorePatterns=/node_modules/ --testPathIgnorePatterns=worktrees/",
       ]
     logging:
       driver: "json-file"

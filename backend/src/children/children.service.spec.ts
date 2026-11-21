@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ChildrenService } from './children.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { UserItemStateService } from '../common/user-item-state.service';
 import { calendarSchoolYear } from '../common/school-year/school-year.service';
 
@@ -20,6 +21,7 @@ function makeStudent() {
     classNum: 10,
     gender: 'F',
     isActive: true,
+    householdConnectionId: 'conn-1',
     updatedAt: new Date('2026-03-12T10:00:00Z'),
   };
 }
@@ -77,7 +79,13 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
   const student = makeStudent();
   return {
     student: {
-      findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([student]),
+      // `links: { none: {} }` asks "which children does nobody list" -- none
+      // here, since the fixture child is linked to conn-1 below.
+      findMany:
+        overrides.studentFindMany ??
+        jest.fn((args?: { where?: { links?: { none?: object } } }) =>
+          Promise.resolve(args?.where?.links?.none ? [] : [student]),
+        ),
       findUnique: overrides.studentFindUnique ?? jest.fn().mockResolvedValue(student),
     },
     homeworkItem: {
@@ -112,10 +120,27 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     syncRun: {
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
     },
+    // Visibility is the link set, not the routing stamp (ADR-0031). These
+    // suites exercise one household's own child, so it is linked to conn-1.
+    studentConnection: {
+      findMany:
+        overrides.studentLinkFindMany ??
+        jest.fn().mockResolvedValue([
+          { studentGuid: student.studentGuid, householdConnectionId: 'conn-1' },
+        ]),
+    },
     householdConnection: {
       findFirst:
         overrides.connectionFindFirst ??
         jest.fn().mockResolvedValue({ schoolYear: 2027 }),
+      // The cross-child reads pair each school's children with that school's
+      // year, so they list the connections rather than resolving one year.
+      findMany:
+        overrides.connectionFindMany ??
+        jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
+      findUnique:
+        overrides.connectionFindUnique ??
+        jest.fn().mockResolvedValue({ id: 'conn-1', schoolYear: 2027 }),
     },
   } as unknown as jest.Mocked<PrismaService>;
 }
@@ -129,11 +154,58 @@ function makeMockSession(overrides: Partial<Record<string, jest.Mock>> = {}) {
 
 function makeMockMashovClient(overrides: Partial<Record<string, jest.Mock>> = {}) {
   return {
+    // The env-session surface. Kept so a spec can still assert it is unused;
+    // src/session/env-session-fence.spec.ts is what enforces that.
     get: overrides.get ?? jest.fn(),
     put: overrides.put ?? jest.fn(),
     delete: overrides.delete ?? jest.fn(),
     getResponse: overrides.getResponse ?? jest.fn(),
+    // The per-connection surface the reads actually use.
+    getForTarget: overrides.getForTarget ?? overrides.get ?? jest.fn(),
+    putForTarget: overrides.putForTarget ?? overrides.put ?? jest.fn(),
+    deleteForTarget: overrides.deleteForTarget ?? overrides.delete ?? jest.fn(),
+    getResponseForTarget:
+      overrides.getResponseForTarget ?? overrides.getResponse ?? jest.fn(),
   } as unknown as jest.Mocked<MashovHttpClient>;
+}
+
+/** The single target makeMockScope resolves everything to. */
+const SCOPE_TARGET = {
+  id: 'conn-1',
+  schoolCode: 1234,
+  schoolYear: 2027,
+  username: 'parent',
+  password: 'pw',
+  schoolName: 'School',
+};
+
+/**
+ * ConnectionScopeService stand-in. The reads under test resolve the owning
+ * school through it; one connection means every lookup answers the same way,
+ * which is what keeps these assertions identical to the pre-ownership ones.
+ */
+function makeMockScope(overrides: Partial<Record<string, jest.Mock>> = {}) {
+  const target = {
+    id: 'conn-1',
+    schoolCode: 1234,
+    schoolYear: 2027,
+    username: 'parent',
+    password: 'pw',
+    schoolName: 'School',
+  };
+  return {
+    targetFor: overrides.targetFor ?? jest.fn().mockResolvedValue(target),
+    targetForStudent: overrides.targetForStudent ?? jest.fn().mockResolvedValue(target),
+    targetForConversation:
+      overrides.targetForConversation ?? jest.fn().mockResolvedValue(target),
+    targetForMessage: overrides.targetForMessage ?? jest.fn().mockResolvedValue(target),
+    listTargets: overrides.listTargets ?? jest.fn().mockResolvedValue([target]),
+    groupConversationsByConnection:
+      overrides.groupConversationsByConnection ??
+      jest.fn((ids: string[]) => Promise.resolve(new Map([['conn-1', ids]]))),
+    studentGuidsForUser: overrides.studentGuidsForUser ?? jest.fn().mockResolvedValue([]),
+    stampStudent: overrides.stampStudent ?? jest.fn().mockResolvedValue(undefined),
+  } as unknown as ConnectionScopeService;
 }
 
 function makeMockConfig(startYear?: string): ConfigService {
@@ -142,10 +214,29 @@ function makeMockConfig(startYear?: string): ConfigService {
   } as unknown as ConfigService;
 }
 
-/** The window predicate a history-spanning read is expected to issue. */
+/** The window predicate a per-CHILD history-spanning read is expected to issue. */
 function windowWhere(start: number, current: number) {
   return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
 }
+
+/**
+ * The current-year predicate a CROSS-CHILD read issues.
+ *
+ * Each school's children paired with that school's year, rather than one year
+ * for the household. With a single connection that is this one clause, which
+ * selects exactly the rows `{ schoolYear: { in: [year, 0] } }` used to.
+ */
+function crossChildYearWhere(year: number, guids: string[] = [TEST_GUID]) {
+  return {
+    OR: [
+      // Scoped to the household's own children: unscoped, one household's
+      // pre-migration rows reached every other household's reads.
+      { studentGuid: { in: guids }, schoolYear: { in: [0] } },
+      { studentGuid: { in: guids }, schoolYear: { in: [year] } },
+    ],
+  };
+}
+
 
 describe('ChildrenService', () => {
   describe('getChildren', () => {
@@ -172,6 +263,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getChildren();
@@ -220,6 +312,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         mockUserItemState,
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getChildren('user-1');
@@ -255,6 +348,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -279,6 +373,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getChildWorkspace('missing-guid')).rejects.toThrow(
@@ -299,6 +394,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -324,6 +420,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       // No userId → defaults to isNew=true, isArchived=false → 'archived' filter returns 0
@@ -342,6 +439,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20, 'all');
@@ -363,6 +461,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -380,6 +479,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -401,6 +501,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -416,6 +517,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'missing-hw')).rejects.toThrow(
@@ -434,6 +536,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'hw-1')).rejects.toThrow(
@@ -454,6 +557,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', false);
@@ -473,6 +577,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.setHomeworkIsNew(TEST_GUID, 'hw-1', false)).rejects.toThrow(
@@ -497,6 +602,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         mockUserItemState,
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', true, 'user-1');
@@ -515,6 +621,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, ['hw-1', 'hw-2'], false);
@@ -532,6 +639,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, [], false);
@@ -549,6 +657,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(
@@ -569,6 +678,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', true);
@@ -589,6 +699,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', false);
@@ -608,6 +719,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.setHomeworkArchived(TEST_GUID, 'hw-1', true)).rejects.toThrow(
@@ -625,6 +737,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1', 'hw-2', 'hw-3'], true);
@@ -641,6 +754,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1'], false);
@@ -661,6 +775,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'new');
@@ -689,6 +804,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'all');
@@ -706,6 +822,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'all');
@@ -731,6 +848,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -754,6 +872,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -769,6 +888,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'missing-beh')).rejects.toThrow(
@@ -787,6 +907,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'beh-1')).rejects.toThrow(
@@ -807,6 +928,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', false);
@@ -825,6 +947,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.setBehaviorIsNew(TEST_GUID, 'beh-1', false)).rejects.toThrow(
@@ -849,6 +972,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         mockUserItemState,
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', true, 'user-1');
@@ -867,6 +991,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, ['beh-1', 'beh-2'], false);
@@ -883,6 +1008,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, [], true);
@@ -904,6 +1030,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', true);
@@ -923,6 +1050,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', false);
@@ -942,6 +1070,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.setBehaviorArchived(TEST_GUID, 'beh-1', true)).rejects.toThrow(
@@ -959,6 +1088,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1', 'beh-2'], true);
@@ -975,6 +1105,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1'], false);
@@ -1017,6 +1148,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const subjects = await service.getSubjects(TEST_GUID);
@@ -1054,6 +1186,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getTimetable(TEST_GUID);
@@ -1089,6 +1222,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getTimetable(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -1121,17 +1255,17 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
       expect(get).toHaveBeenCalledWith(
-        `/api/students/${TEST_GUID}/lessons/history`,
+        `/api/students/${TEST_GUID}/lessons/history`, SCOPE_TARGET,
         {
           headers: {
             Referer: `https://web.mashov.info/students/main/students/${TEST_GUID}/weeklyPlan`,
           },
-        },
-      );
+        });
       expect(result).toEqual({
         data: [
           {
@@ -1162,6 +1296,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1176,6 +1311,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1204,17 +1340,17 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getStudentReleases(TEST_GUID);
       expect(get).toHaveBeenCalledWith(
-        `/api/students/${TEST_GUID}/studentReleases`,
+        `/api/students/${TEST_GUID}/studentReleases`, SCOPE_TARGET,
         {
           headers: {
             Referer: 'https://web.mashov.info/students/main/studentsReleaseRequests',
           },
-        },
-      );
+        });
       expect(result).toEqual([
         {
           id: 64,
@@ -1244,18 +1380,18 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ put }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.createStudentRelease(TEST_GUID, body);
       expect(put).toHaveBeenCalledWith(
         `/api/students/${TEST_GUID}/studentRelease/request`,
-        body,
+        body, SCOPE_TARGET,
         {
           headers: {
             Referer: 'https://web.mashov.info/students/main/studentsReleaseRequests',
           },
-        },
-      );
+        });
     });
 
     it('updateStudentRelease proxies upstream body and path', async () => {
@@ -1280,12 +1416,14 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ put }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.updateStudentRelease(TEST_GUID, 84, body);
       expect(put).toHaveBeenCalledWith(
         `/api/students/${TEST_GUID}/studentRelease/84/request`,
         body,
+        SCOPE_TARGET,
       );
     });
 
@@ -1297,11 +1435,13 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ delete: remove }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.deleteStudentRelease(TEST_GUID, 84);
       expect(remove).toHaveBeenCalledWith(
         `/api/students/${TEST_GUID}/studentRelease/84`,
+        SCOPE_TARGET,
       );
     });
   });
@@ -1322,10 +1462,11 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ get }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getSchoolActivities(TEST_GUID);
-      expect(get).toHaveBeenCalledWith('/api/schoolActivities/permitted', {
+      expect(get).toHaveBeenCalledWith('/api/schoolActivities/permitted', SCOPE_TARGET, {
         headers: {
           Referer: 'https://web.mashov.info/students/main/schoolActivities',
         },
@@ -1349,6 +1490,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getChildren('user-1');
@@ -1370,6 +1512,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getChildren('user-1');
@@ -1387,13 +1530,14 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.getChildren('user-1');
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+          where: expect.objectContaining(crossChildYearWhere(2027)),
         }),
       );
     });
@@ -1406,13 +1550,14 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.getChildren('user-1');
 
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+          where: expect.objectContaining(crossChildYearWhere(2027)),
         }),
       );
     });
@@ -1425,12 +1570,13 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.getChildren('user-1');
 
       expect(subjectCount).toHaveBeenCalledWith({
-        where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        where: expect.objectContaining(crossChildYearWhere(2027)),
       });
     });
 
@@ -1442,6 +1588,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
@@ -1471,6 +1618,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
+        makeMockScope(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
@@ -1492,6 +1640,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
+        makeMockScope(),
       );
 
       await service.getBehavior(TEST_GUID, 1, 20, 'all', 'all', 'user-1');
@@ -1524,6 +1673,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
+        makeMockScope(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 20, 'all', 'all', 'user-1');
@@ -1543,6 +1693,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
+        makeMockScope(),
       );
 
       await service.getTimetable(TEST_GUID, 'user-1');
@@ -1563,12 +1714,13 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
+        makeMockScope(),
       );
 
       await service.getChildren('user-1');
 
       expect(subjectCount).toHaveBeenCalledWith({
-        where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        where: expect.objectContaining(crossChildYearWhere(2027)),
       });
     });
 
@@ -1582,6 +1734,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
+        makeMockScope(),
       );
 
       await service.getChildWorkspace(TEST_GUID, 'user-1');
@@ -1604,6 +1757,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
+        makeMockScope(),
       );
 
       const result = await service.getChildren('user-1');
@@ -1611,7 +1765,7 @@ describe('ChildrenService', () => {
       for (const mock of [homeworkFindFirst, behaviorFindFirst]) {
         expect(mock).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+            where: expect.objectContaining(crossChildYearWhere(2027)),
           }),
         );
       }
@@ -1629,6 +1783,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.getSubjects(TEST_GUID);
@@ -1653,6 +1808,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -1670,6 +1826,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getSubjects(TEST_GUID)).rejects.toMatchObject({
@@ -1696,6 +1853,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.getChildWorkspace(TEST_GUID, 'user-9');
@@ -1711,6 +1869,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await service.getChildren('user-9');
@@ -1728,6 +1887,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(service.getSubjects(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -1760,17 +1920,16 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ getResponse }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.downloadHomeworkAttachment(TEST_GUID, 'hw-1', 'hw-file-1');
       expect(getResponse).toHaveBeenCalledWith(
-        `/api/students/${TEST_GUID}/studyFiles/hw-file-1/homework%20file.pdf`,
-        expect.any(Object),
-      );
+        `/api/students/${TEST_GUID}/studyFiles/hw-file-1/homework%20file.pdf`, SCOPE_TARGET,
+        expect.any(Object));
       expect(getResponse).toHaveBeenCalledWith(
-        `/api/students/${TEST_GUID}/files/hw-file-1/homework%20file.pdf`,
-        expect.any(Object),
-      );
+        `/api/students/${TEST_GUID}/files/hw-file-1/homework%20file.pdf`, SCOPE_TARGET,
+        expect.any(Object));
       expect(result.contentType).toBe('application/pdf');
       expect(result.fileName).toBe('homework file.pdf');
       expect(result.buffer.equals(Buffer.from([1, 2, 3]))).toBe(true);
@@ -1789,6 +1948,7 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(
@@ -1832,13 +1992,13 @@ describe('ChildrenService', () => {
         makeMockMashovClient({ getResponse }),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       const result = await service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1');
       expect(getResponse).toHaveBeenCalledWith(
-        '/api/lessons/7/files/beh-file-1/behavior.pdf',
-        expect.any(Object),
-      );
+        '/api/lessons/7/files/beh-file-1/behavior.pdf', SCOPE_TARGET,
+        expect.any(Object));
       expect(result.fileName).toBe('behavior.pdf');
       expect(result.buffer.equals(Buffer.from([7, 8]))).toBe(true);
     });
@@ -1858,11 +2018,670 @@ describe('ChildrenService', () => {
         makeMockMashovClient(),
         makeMockUserItemStateService(),
         makeMockConfig(),
+        makeMockScope(),
       );
 
       await expect(
         service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1'),
       ).rejects.toThrow(NotFoundException);
     });
+  });
+});
+
+describe('ChildrenService household isolation', () => {
+  /**
+   * The claim `docs/prd/PRD-current.md` has made since Phase 2 -- "a secure,
+   * multi-tenant system where multiple parents ... view only their own
+   * children's data" -- was not true. `Student` had no owner column, so
+   * `getChildren()` returned every active student row in the database and
+   * `getStudentOrThrow` only checked that the row existed. Any signed-in
+   * parent could list, and read, every child in the system.
+   */
+  interface OwnedStudent {
+    id: string;
+    studentGuid: string;
+    privateName: string;
+    familyName: string;
+    fullName: string;
+    classCode: string;
+    classNum: number;
+    gender: string;
+    isActive: boolean;
+    householdConnectionId: string | null;
+    /**
+     * The connections that LIST this child -- visibility, which has to be a
+     * set (ADR-0031). `householdConnectionId` beside it is routing only.
+     */
+    links: string[];
+    updatedAt: Date;
+  }
+
+  const MINE: OwnedStudent = {
+    id: 'row-mine',
+    studentGuid: 'guid-mine',
+    privateName: 'Mika',
+    familyName: 'Kors',
+    fullName: 'Mika Kors',
+    classCode: 'ז',
+    classNum: 3,
+    gender: 'F',
+    isActive: true,
+    householdConnectionId: 'conn-mine',
+    links: ['conn-mine'],
+    updatedAt: new Date('2026-11-01T00:00:00Z'),
+  };
+  const THEIRS = {
+    ...MINE,
+    id: 'row-theirs',
+    studentGuid: 'guid-theirs',
+    fullName: 'Someone Else',
+    householdConnectionId: 'conn-theirs',
+    links: ['conn-theirs'],
+  };
+  const UNSTAMPED = {
+    ...MINE,
+    id: 'row-unstamped',
+    studentGuid: 'guid-unstamped',
+    fullName: 'Not Yet Attributed',
+    householdConnectionId: null,
+    links: [],
+  };
+  /**
+   * The child both parents list, and the whole reason for ADR-0031.
+   *
+   * Two parents, their own Mashov accounts at one school, the same children --
+   * the shape ADR-0016 requires and PRD open question 2 describes. The routing
+   * stamp names the OTHER parent's connection here on purpose: that is exactly
+   * the state the second parent's sync leaves behind, and under the old
+   * stamp-as-visibility rule it emptied the first parent's `/children`.
+   */
+  const SHARED = {
+    ...MINE,
+    id: 'row-shared',
+    studentGuid: 'guid-shared',
+    fullName: 'Shared Child',
+    householdConnectionId: 'conn-theirs',
+    links: ['conn-mine', 'conn-theirs'],
+  };
+
+  /**
+   * The connection rows behind the school fields, for both parents.
+   *
+   * One school, two parents, their own `displayLabel` each -- so a response
+   * carrying the other parent's label is visible rather than indistinguishable.
+   */
+  const CONNECTION_ROWS: Record<
+    string,
+    { id: string; schoolCode: number; schoolName: string; displayLabel: string | null }
+  > = {
+    'conn-mine': {
+      id: 'conn-mine',
+      schoolCode: 111,
+      schoolName: 'בית ספר אחד',
+      displayLabel: 'שלי',
+    },
+    'conn-theirs': {
+      id: 'conn-theirs',
+      schoolCode: 111,
+      schoolName: 'בית ספר אחד',
+      displayLabel: 'שלהם',
+    },
+  };
+
+  /** Prisma that honours ownership on both the list and the single read. */
+  function makePrisma(students: OwnedStudent[], myConnections: string[]) {
+    // Interprets the real predicate shape: an OR of "some link names one of my
+    // connections" and "no links at all".
+    const matchesHousehold = (student: OwnedStudent, where: Record<string, unknown>) => {
+      const or = where.OR as Array<Record<string, unknown>> | undefined;
+      if (!or) return true;
+      return or.some((clause) => {
+        const links = clause.links as
+          | { some?: { householdConnectionId?: { in?: string[] } }; none?: object }
+          | undefined;
+        if (links?.none) return student.links.length === 0;
+        const wanted = links?.some?.householdConnectionId?.in;
+        if (wanted) return student.links.some((id) => wanted.includes(id));
+        return false;
+      });
+    };
+
+    return {
+      studentConnection: {
+        // Two shapes: one guid for the per-child guard, and `{ in: [...] }`
+        // for `linksForStudents`, which answers a whole list in one query.
+        findMany: jest.fn(({ where }) => {
+          const guids = (where.studentGuid as { in?: string[] } | string | undefined);
+          const wanted =
+            typeof guids === 'string'
+              ? [guids]
+              : guids?.in ?? students.map((student) => student.studentGuid);
+          return Promise.resolve(
+            students
+              .filter((student) => wanted.includes(student.studentGuid))
+              .flatMap((student) =>
+                student.links.map((id) => ({
+                  studentGuid: student.studentGuid,
+                  householdConnectionId: id,
+                })),
+              ),
+          );
+        }),
+      },
+      student: {
+        findMany: jest.fn(({ where } = {}) =>
+          Promise.resolve(students.filter((student) => matchesHousehold(student, where ?? {}))),
+        ),
+        findUnique: jest.fn(({ where }) =>
+          Promise.resolve(
+            students.find((student) => student.studentGuid === where.studentGuid) ?? null,
+          ),
+        ),
+      },
+      householdConnection: {
+        findFirst: jest.fn(({ where }) =>
+          Promise.resolve(
+            where?.id && where?.userId
+              ? myConnections.includes(where.id as string)
+                ? { id: where.id }
+                : null
+              : { schoolYear: 2027 },
+          ),
+        ),
+        // Two callers: `activeConnectionIdsFor`, which asks for one user's
+        // active connections, and the school map's detail read, which asks for
+        // rows by id and needs the labelling columns.
+        findMany: jest.fn((args?: { where?: Record<string, unknown> }) => {
+          const ids = (args?.where?.id as { in?: string[] } | undefined)?.in;
+          if (ids) {
+            return Promise.resolve(
+              ids
+                .map((id) => CONNECTION_ROWS[id])
+                .filter((row): row is (typeof CONNECTION_ROWS)[string] => Boolean(row)),
+            );
+          }
+          return Promise.resolve(myConnections.map((id) => ({ id, schoolYear: 2027 })));
+        }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+      },
+      homeworkItem: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      behaviorItem: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      subjectEnrollment: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
+      },
+      messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
+      timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
+      studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
+      schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
+      mailConversation: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      syncRun: { findFirst: jest.fn().mockResolvedValue(null) },
+    } as unknown as jest.Mocked<PrismaService>;
+  }
+
+  function makeService(students: OwnedStudent[], myConnections: string[]) {
+    return new ChildrenService(
+      makePrisma(students, myConnections),
+      makeMockSession(),
+      makeMockMashovClient(),
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope(),
+    );
+  }
+
+  it("lists only the caller's own children", async () => {
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data.map((child) => child.studentGuid)).toEqual(['guid-mine']);
+  });
+
+  it("returns 404, not 403, for another household's child", async () => {
+    // 404 because a 403 confirms the guid names a real child -- and the guids
+    // appear in URLs, so that is exactly the fact a stranger must not probe
+    // for. The message matches the genuine not-found one for the same reason.
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    await expect(service.getChildWorkspace('guid-theirs', 'user-mine')).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('uses the same message for a foreign child as for a missing one', async () => {
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const foreign = await service
+      .getChildWorkspace('guid-theirs', 'user-mine')
+      .catch((error: { response: { error: { message: string } } }) => error.response.error.message);
+    const missing = await service
+      .getChildWorkspace('guid-nonexistent', 'user-mine')
+      .catch((error: { response: { error: { message: string } } }) => error.response.error.message);
+
+    expect(foreign).toBe('Student not found: guid-theirs');
+    expect(missing).toBe('Student not found: guid-nonexistent');
+  });
+
+  it("lets the caller read their own child", async () => {
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    await expect(service.getChildWorkspace('guid-mine', 'user-mine')).resolves.toMatchObject({
+      student: expect.objectContaining({ studentGuid: 'guid-mine' }),
+    });
+  });
+
+  it('shows a shared child to BOTH parents, whichever one holds the stamp', async () => {
+    // B1. Before the visibility edge, the second parent to sync re-stamped the
+    // shared rows and the first parent's children vanished until their own
+    // next sync flipped it back -- children oscillating one cycle at a time,
+    // with each parent's read/unread flags unreachable while the other held
+    // the stamp.
+    const mine = makeService([SHARED], ['conn-mine']);
+    const theirs = makeService([SHARED], ['conn-theirs']);
+
+    const forMine = await mine.getChildren('user-mine');
+    const forTheirs = await theirs.getChildren('user-theirs');
+
+    expect(forMine.data.map((child) => child.studentGuid)).toEqual(['guid-shared']);
+    expect(forTheirs.data.map((child) => child.studentGuid)).toEqual(['guid-shared']);
+  });
+
+  /**
+   * R6 — `/children` derived its school fields from the routing stamp while
+   * `/dashboard` and `/feed` went through the visibility edge.
+   *
+   * For a child stamped to the other parent's connection, `/children` emitted
+   * a `schoolId` the caller does not own with `schoolName`, `schoolShortLabel`
+   * and `semel` all `null`: the badge vanished on `/children` while `/home`
+   * showed one, and `MorePageClient`'s unlink flow (`child.schoolId ===
+   * link.id`) could not clear the child it was about to delete.
+   */
+  it("reports the caller's own connection as the shared child's school", async () => {
+    const mine = makeService([SHARED], ['conn-mine']);
+
+    const result = await mine.getChildren('user-mine');
+
+    expect(result.data[0]).toMatchObject({
+      // Was 'conn-theirs', the stamp -- an id the caller does not own.
+      schoolId: 'conn-mine',
+      // All three were null, because the stamp was not in the caller's label
+      // map at all.
+      semel: 111,
+      schoolName: 'בית ספר אחד',
+      schoolShortLabel: 'שלי',
+    });
+  });
+
+  it('gives the other parent their own connection for the same child', async () => {
+    const theirs = makeService([SHARED], ['conn-theirs']);
+
+    const result = await theirs.getChildren('user-theirs');
+
+    expect(result.data[0]).toMatchObject({
+      schoolId: 'conn-theirs',
+      schoolShortLabel: 'שלהם',
+    });
+  });
+
+  it('reports no school for an unstamped, unlinked child rather than a foreign one', async () => {
+    // `null` across all four is the contract's "no badge", and the right
+    // answer while ownership is genuinely unknown.
+    const service = makeService([UNSTAMPED], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data[0]).toMatchObject({
+      schoolId: null,
+      schoolName: null,
+      schoolShortLabel: null,
+      semel: null,
+    });
+  });
+
+  it('lets both parents open a shared child, not just the stamped one', async () => {
+    const mine = makeService([SHARED], ['conn-mine']);
+
+    await expect(mine.getChildWorkspace('guid-shared', 'user-mine')).resolves.toMatchObject({
+      student: expect.objectContaining({ studentGuid: 'guid-shared' }),
+    });
+  });
+
+  it('still refuses a child whose only link is another household\'s', async () => {
+    // The edge must widen visibility for a shared child without widening it
+    // for an unrelated one: one link to a foreign connection is still foreign.
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data.map((child) => child.studentGuid)).toEqual(['guid-mine']);
+    await expect(service.getChildWorkspace('guid-theirs', 'user-mine')).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it('returns an empty list for a user with no connection, not every child', async () => {
+    // The failure mode that matters: falling back to "everything" when the
+    // household resolves to nothing is how an unscoped read hides.
+    const service = makeService([MINE, THEIRS], []);
+
+    const result = await service.getChildren('user-with-no-school');
+
+    expect(result.data).toEqual([]);
+  });
+
+  it('still admits an unstamped child, in both the list and the single read', async () => {
+    // NULL means "ownership unknown, re-stamp on the next roster refresh", not
+    // "nobody's". Refusing these would empty the app on a single-school
+    // deployment that has not re-synced since the ownership migration.
+    const service = makeService([MINE, UNSTAMPED, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren('user-mine');
+
+    expect(result.data.map((child) => child.studentGuid).sort()).toEqual([
+      'guid-mine',
+      'guid-unstamped',
+    ]);
+    await expect(
+      service.getChildWorkspace('guid-unstamped', 'user-mine'),
+    ).resolves.toBeTruthy();
+  });
+
+  it('applies no household filter when there is no caller', async () => {
+    // The digest and the cron paths pass no userId. They are server-side and
+    // deliberately global; tightening them here would silently stop the
+    // digest.
+    const service = makeService([MINE, THEIRS], ['conn-mine']);
+
+    const result = await service.getChildren();
+
+    expect(result.data.map((child) => child.studentGuid).sort()).toEqual([
+      'guid-mine',
+      'guid-theirs',
+    ]);
+  });
+});
+
+describe('ChildrenService ownership guard coverage', () => {
+  /**
+   * Every route that takes a studentGuid must enforce ownership.
+   *
+   * Nine of them did not: they called `requireStudent(studentGuid)` without a
+   * userId, so the guard inside `getStudentOrThrow` was skipped entirely. Two
+   * of those nine are writes and one is a delete, and all of them resolve the
+   * upstream target from the row's OWN stamp -- i.e. from the victim's
+   * connection, using the victim's decrypted Mashov password. Household B
+   * could create and cancel early-release requests inside household A's
+   * Mashov account, and stream A's children's homework attachments.
+   *
+   * Guids are not a secret: they appear in URLs and in every /children
+   * response.
+   */
+  const THEIRS = {
+    id: 'row-theirs',
+    studentGuid: 'guid-theirs',
+    privateName: 'Someone',
+    familyName: 'Else',
+    fullName: 'Someone Else',
+    classCode: 'ז',
+    classNum: 3,
+    gender: 'F',
+    isActive: true,
+    householdConnectionId: 'conn-theirs',
+    updatedAt: new Date('2026-11-01T00:00:00Z'),
+  };
+
+  function makeService() {
+    const prisma = {
+      student: {
+        findUnique: jest.fn().mockResolvedValue(THEIRS),
+        findMany: jest.fn().mockResolvedValue([THEIRS]),
+      },
+      // The foreign child is listed by the other household's connection and
+      // by nobody else, so the caller has no link to it.
+      studentConnection: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { studentGuid: 'guid-theirs', householdConnectionId: 'conn-theirs' },
+          ]),
+      },
+      // The caller owns conn-mine only, never conn-theirs.
+      householdConnection: {
+        findFirst: jest.fn(({ where }) =>
+          Promise.resolve(
+            where?.id && where?.userId
+              ? where.id === 'conn-mine'
+                ? { id: 'conn-mine' }
+                : null
+              : { schoolYear: 2027 },
+          ),
+        ),
+        findMany: jest.fn().mockResolvedValue([{ id: 'conn-mine', schoolYear: 2027 }]),
+        findUnique: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+      },
+      homeworkItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'hw-1',
+          studentGuid: 'guid-theirs',
+          files: [{ fileId: 'f1', fileName: 'note.pdf' }],
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      behaviorItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'beh-1',
+          studentGuid: 'guid-theirs',
+          rawPayload: { files: [{ fileId: 'f1', fileName: 'note.pdf' }] },
+          lessonId: 5,
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      subjectEnrollment: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
+      },
+      messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
+      timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
+      studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
+      schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as jest.Mocked<PrismaService>;
+
+    const client = makeMockMashovClient();
+    const service = new ChildrenService(
+      prisma,
+      makeMockSession(),
+      client,
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope(),
+    );
+    return { service, client };
+  }
+
+  /** Every call below targets a child the caller does not own. */
+  const FOREIGN = 'guid-theirs';
+  const CALLER = 'user-mine';
+
+  const ROUTES: Array<{
+    name: string;
+    call: (service: ChildrenService) => Promise<unknown>;
+  }> = [
+    { name: 'getLessonPlans', call: (s) => s.getLessonPlans(FOREIGN, CALLER) },
+    { name: 'getLessonHistory', call: (s) => s.getLessonHistory(FOREIGN, CALLER) },
+    { name: 'getStudentReleases', call: (s) => s.getStudentReleases(FOREIGN, CALLER) },
+    { name: 'getSchoolActivities', call: (s) => s.getSchoolActivities(FOREIGN, CALLER) },
+    {
+      name: 'createStudentRelease',
+      call: (s) => s.createStudentRelease(FOREIGN, { date: '2026-11-20' }, CALLER),
+    },
+    {
+      name: 'updateStudentRelease',
+      call: (s) => s.updateStudentRelease(FOREIGN, 7, { date: '2026-11-21' }, CALLER),
+    },
+    { name: 'deleteStudentRelease', call: (s) => s.deleteStudentRelease(FOREIGN, 7, CALLER) },
+    {
+      name: 'downloadHomeworkAttachment',
+      call: (s) => s.downloadHomeworkAttachment(FOREIGN, 'hw-1', 'f1', CALLER),
+    },
+    {
+      name: 'downloadBehaviorAttachment',
+      call: (s) => s.downloadBehaviorAttachment(FOREIGN, 'beh-1', 'f1', CALLER),
+    },
+  ];
+
+  it.each(ROUTES)('$name refuses a child the caller does not own', async ({ call }) => {
+    const { service } = makeService();
+
+    await expect(call(service)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it.each(ROUTES)('$name reaches no upstream call for a foreign child', async ({ call }) => {
+    // The guard has to run BEFORE the target is resolved. Refusing after the
+    // request has already been sent with the victim's credentials would be no
+    // protection at all -- the release would already be created or cancelled.
+    const { service, client } = makeService();
+
+    await call(service).catch(() => undefined);
+
+    expect(client.getForTarget).not.toHaveBeenCalled();
+    expect(client.putForTarget).not.toHaveBeenCalled();
+    expect(client.deleteForTarget).not.toHaveBeenCalled();
+    expect(client.getResponseForTarget).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChildrenService per-child reads and the connection router', () => {
+  /**
+   * The router scopes its unstamped-row fallback to the caller. A per-child
+   * read that resolves a target without saying who is asking is how one
+   * household's request ended up sent upstream under another household's
+   * decrypted Mashov password.
+   */
+  const OWNED_GUID = 'guid-mine';
+  const CALLER = 'user-mine';
+
+  const OWNED = {
+    id: 'row-mine',
+    studentGuid: OWNED_GUID,
+    privateName: 'Child',
+    familyName: 'Mine',
+    fullName: 'Child Mine',
+    classCode: 'ז',
+    classNum: 1,
+    gender: 'M',
+    isActive: true,
+    householdConnectionId: 'conn-mine',
+    updatedAt: new Date('2026-11-01T00:00:00Z'),
+  };
+
+  function makeService(targetForStudent: jest.Mock) {
+    const prisma = {
+      student: {
+        findUnique: jest.fn().mockResolvedValue(OWNED),
+        findMany: jest.fn().mockResolvedValue([OWNED]),
+      },
+      studentConnection: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { studentGuid: OWNED_GUID, householdConnectionId: 'conn-mine' },
+          ]),
+      },
+      householdConnection: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+        findMany: jest.fn().mockResolvedValue([{ id: 'conn-mine', schoolYear: 2027 }]),
+        findUnique: jest.fn().mockResolvedValue({ id: 'conn-mine', schoolYear: 2027 }),
+      },
+      homeworkItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'hw-1',
+          studentGuid: OWNED_GUID,
+          files: [{ fileId: 'f1', fileName: 'note.pdf' }],
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      behaviorItem: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'beh-1',
+          studentGuid: OWNED_GUID,
+          rawPayload: { files: [{ fileId: 'f1', fileName: 'note.pdf' }] },
+          lessonId: 5,
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
+      schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as jest.Mocked<PrismaService>;
+
+    return new ChildrenService(
+      prisma,
+      makeMockSession(),
+      makeMockMashovClient(),
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope({ targetForStudent }),
+    );
+  }
+
+  const ROUTES: Array<{ name: string; call: (service: ChildrenService) => Promise<unknown> }> = [
+    { name: 'getLessonPlans', call: (s) => s.getLessonPlans(OWNED_GUID, CALLER) },
+    { name: 'getLessonHistory', call: (s) => s.getLessonHistory(OWNED_GUID, CALLER) },
+    { name: 'getStudentReleases', call: (s) => s.getStudentReleases(OWNED_GUID, CALLER) },
+    { name: 'getSchoolActivities', call: (s) => s.getSchoolActivities(OWNED_GUID, CALLER) },
+    {
+      name: 'createStudentRelease',
+      call: (s) => s.createStudentRelease(OWNED_GUID, { date: '2026-11-20' }, CALLER),
+    },
+    {
+      name: 'updateStudentRelease',
+      call: (s) => s.updateStudentRelease(OWNED_GUID, 7, { date: '2026-11-21' }, CALLER),
+    },
+    { name: 'deleteStudentRelease', call: (s) => s.deleteStudentRelease(OWNED_GUID, 7, CALLER) },
+    {
+      name: 'downloadHomeworkAttachment',
+      call: (s) => s.downloadHomeworkAttachment(OWNED_GUID, 'hw-1', 'f1', CALLER),
+    },
+    {
+      name: 'downloadBehaviorAttachment',
+      call: (s) => s.downloadBehaviorAttachment(OWNED_GUID, 'beh-1', 'f1', CALLER),
+    },
+  ];
+
+  it.each(ROUTES)('$name tells the router who is asking', async ({ call }) => {
+    const targetForStudent = jest.fn().mockResolvedValue({
+      id: 'conn-mine',
+      schoolCode: 1234,
+      schoolYear: 2027,
+      username: 'parent',
+      password: 'pw',
+      schoolName: 'School',
+    });
+    const service = makeService(targetForStudent);
+
+    await call(service).catch(() => undefined);
+
+    expect(targetForStudent).toHaveBeenCalledWith(OWNED_GUID, CALLER);
   });
 });

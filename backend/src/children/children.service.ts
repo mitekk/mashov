@@ -2,14 +2,20 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
+import type { ConnectionTarget } from '../session/connection-target';
+import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
 import {
-  currentSchoolYearFor,
+  schoolYearForConnection,
   currentYearScope,
   historyScope,
-  schoolYearWindowFor,
+  schoolYearWindowForStudent,
+  yearScopeForStudents,
+  type YearScope,
 } from '../common/school-year/school-year.scope';
+import { canSeeStudent, visibleStudentWhere } from '../common/student-links';
+import { buildStudentSchoolMap } from '../common/student-school-map';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -45,20 +51,49 @@ export class ChildrenService {
     private readonly mashovClient: MashovHttpClient,
     private readonly userItemStateService: UserItemStateService,
     private readonly configService: ConfigService,
+    private readonly scope: ConnectionScopeService,
   ) {}
 
   async getChildren(userId?: string) {
     await this.sessionService.ensureStudentsAvailable(userId);
 
+    // Scoped to the caller's household. This used to return every active
+    // student row in the database with no ownership check at all, which is
+    // what made the PRD's multi-tenancy claim untrue.
+    //
+    // Children with no link are included for the reason `visibleStudentWhere`
+    // documents: no link means "ownership unknown", and excluding them would
+    // empty the app on a deployment that has not re-synced since the
+    // migration.
     const students = await this.prisma.student.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        ...(userId ? await this.householdStudentWhere(userId) : {}),
+      },
       orderBy: { fullName: 'asc' },
     });
+
+    // Which school each child belongs to. Resolved once for the list rather
+    // than per child, and labelled as a set so two schools can never present
+    // the same chip.
+    //
+    // R6: this used to key the four school fields off the routing stamp
+    // against the caller's own label map, while `/dashboard` and `/feed` went
+    // through `buildStudentSchoolMap` and the visibility edge. For a child
+    // stamped to the other parent's connection the two endpoints therefore
+    // disagreed about the same child -- `/children` emitting an id the caller
+    // does not own with all three labels `null`. One helper, one answer.
+    const schoolByStudent = await buildStudentSchoolMap(this.prisma, students, userId);
 
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // Current year only: these are activity counts and staleness signals, and
     // the subject count would double for a groupId that recurs yearly.
-    const yearScope = currentYearScope(await currentSchoolYearFor(this.prisma, userId));
+    //
+    // Cross-child, so each school contributes its own children at its own
+    // year. A single household-wide year hides the other school's children
+    // outright every September, when one school has rolled over and the other
+    // has not.
+    const yearScope = await yearScopeForStudents(this.prisma, userId);
 
     const data = await Promise.all(
       students.map(async (student) => {
@@ -108,6 +143,13 @@ export class ChildrenService {
           classNum: student.classNum,
           gender: student.gender,
           isActive: student.isActive,
+          // All four `null` for a child whose school is not knowable from the
+          // caller's own connections, which the UI reads as "no badge" rather
+          // than as a school called "null".
+          schoolId: schoolByStudent.get(student.studentGuid)?.schoolId ?? null,
+          schoolName: schoolByStudent.get(student.studentGuid)?.schoolName ?? null,
+          schoolShortLabel: schoolByStudent.get(student.studentGuid)?.shortLabel ?? null,
+          semel: schoolByStudent.get(student.studentGuid)?.semel ?? null,
           recentHomeworkCount: activityCounts.recentHomeworkCount,
           recentBehaviorCount: activityCounts.recentBehaviorCount,
           positiveBehaviorCount: activityCounts.positiveBehaviorCount,
@@ -124,7 +166,10 @@ export class ChildrenService {
     const student = await this.getStudentOrThrow(studentGuid, userId);
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // Current year only: counts, the subject total and the weekly-hours sum.
-    const yearScope = currentYearScope(await currentSchoolYearFor(this.prisma, userId));
+    // One child, so one year -- that child's own school's.
+    const yearScope = currentYearScope(
+      await schoolYearForConnection(this.prisma, student.householdConnectionId),
+    );
 
     const [
       activityCounts,
@@ -188,7 +233,7 @@ export class ChildrenService {
     status: ItemStatusFilter = 'new',
     userId?: string,
   ) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     // Fetch all non-filtered items for state-based filtering
     // A list, so it spans the configured history window; `pagination.total`
@@ -197,7 +242,11 @@ export class ChildrenService {
       where: {
         studentGuid,
         ...historyScope(
-          await schoolYearWindowFor(this.prisma, this.configService, userId),
+          await schoolYearWindowForStudent(
+            this.prisma,
+            this.configService,
+            student.householdConnectionId,
+          ),
         ),
       },
       orderBy: { lessonDate: 'desc' },
@@ -259,14 +308,18 @@ export class ChildrenService {
     status: ItemStatusFilter = 'new',
     userId?: string,
   ) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const allItems = await this.prisma.behaviorItem.findMany({
       where: {
         studentGuid,
         ...(bucket !== 'all' ? { classification: bucket } : {}),
         ...historyScope(
-          await schoolYearWindowFor(this.prisma, this.configService, userId),
+          await schoolYearWindowForStudent(
+            this.prisma,
+            this.configService,
+            student.householdConnectionId,
+          ),
         ),
       },
       orderBy: { eventAt: 'desc' },
@@ -324,8 +377,9 @@ export class ChildrenService {
     studentGuid: string,
     homeworkId: string,
     fileId: string,
+    userId?: string,
   ): Promise<DownloadedFile> {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const homework = await this.prisma.homeworkItem.findUnique({
       where: { id: homeworkId },
@@ -352,6 +406,7 @@ export class ChildrenService {
       candidates,
       `https://web.mashov.info/students/main/students/${studentGuid}/homework`,
       file.fileName,
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 
@@ -359,8 +414,9 @@ export class ChildrenService {
     studentGuid: string,
     behaviorId: string,
     fileId: string,
+    userId?: string,
   ): Promise<DownloadedFile> {
-    await this.requireStudent(studentGuid);
+    await this.requireStudent(studentGuid, userId);
 
     const behavior = await this.prisma.behaviorItem.findUnique({
       where: { id: behaviorId },
@@ -387,6 +443,7 @@ export class ChildrenService {
       candidates,
       `https://web.mashov.info/students/main/students/${studentGuid}/behave`,
       file.fileName,
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 
@@ -528,12 +585,14 @@ export class ChildrenService {
   }
 
   async getTimetable(studentGuid: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const entries = await this.prisma.timetableEntry.findMany({
       where: {
         studentGuid,
-        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
       },
       orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
     });
@@ -556,12 +615,14 @@ export class ChildrenService {
   }
 
   async getSubjects(studentGuid: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const items = await this.prisma.subjectEnrollment.findMany({
       where: {
         studentGuid,
-        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
       },
       orderBy: { subjectName: 'asc' },
     });
@@ -582,13 +643,14 @@ export class ChildrenService {
     };
   }
 
-  async getLessonPlans(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getLessonPlans(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
     try {
-      const plans = await this.mashovClient.get<unknown[]>(
+      const plans = await this.mashovClient.getForTarget<unknown[]>(
         `/api/students/${studentGuid}/lessons/plans`,
+        await this.scope.targetForStudent(studentGuid, userId),
         { headers: { Referer: referer } },
       );
       const data = Array.isArray(plans) ? plans : [];
@@ -598,13 +660,14 @@ export class ChildrenService {
     }
   }
 
-  async getLessonHistory(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getLessonHistory(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = `https://web.mashov.info/students/main/students/${studentGuid}/weeklyPlan`;
     try {
-      const history = await this.mashovClient.get<unknown[]>(
+      const history = await this.mashovClient.getForTarget<unknown[]>(
         `/api/students/${studentGuid}/lessons/history`,
+        await this.scope.targetForStudent(studentGuid, userId),
         { headers: { Referer: referer } },
       );
       const data = Array.isArray(history) ? history : [];
@@ -614,63 +677,79 @@ export class ChildrenService {
     }
   }
 
-  async getStudentReleases(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getStudentReleases(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
-    return this.mashovClient.get<unknown[]>(
+    return this.mashovClient.getForTarget<unknown[]>(
       `/api/students/${studentGuid}/studentReleases`,
+      await this.scope.targetForStudent(studentGuid, userId),
       { headers: { Referer: referer } },
     );
   }
 
-  async getSchoolActivities(studentGuid: string) {
-    await this.requireStudent(studentGuid);
+  async getSchoolActivities(studentGuid: string, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = 'https://web.mashov.info/students/main/schoolActivities';
-    return this.mashovClient.get<unknown[]>(
+    // The endpoint takes no studentGuid and is household-scoped upstream, so
+    // it answers for whichever account asked. Routing it through this child's
+    // own school is exactly right: it is that school's activities the caller
+    // is looking at.
+    return this.mashovClient.getForTarget<unknown[]>(
       '/api/schoolActivities/permitted',
+      await this.scope.targetForStudent(studentGuid, userId),
       { headers: { Referer: referer } },
     );
   }
 
-  async createStudentRelease(studentGuid: string, body: unknown) {
-    await this.requireStudent(studentGuid);
+  async createStudentRelease(studentGuid: string, body: unknown, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
     const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
-    return this.mashovClient.put<void>(
+    return this.mashovClient.putForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/request`,
       body,
+      await this.scope.targetForStudent(studentGuid, userId),
       { headers: { Referer: referer } },
     );
   }
 
-  async updateStudentRelease(studentGuid: string, releaseId: number, body: unknown) {
-    await this.requireStudent(studentGuid);
+  async updateStudentRelease(
+    studentGuid: string,
+    releaseId: number,
+    body: unknown,
+    userId?: string,
+  ) {
+    await this.requireStudent(studentGuid, userId);
 
-    return this.mashovClient.put<void>(
+    return this.mashovClient.putForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}/request`,
       body,
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 
-  async deleteStudentRelease(studentGuid: string, releaseId: number) {
-    await this.requireStudent(studentGuid);
+  async deleteStudentRelease(studentGuid: string, releaseId: number, userId?: string) {
+    await this.requireStudent(studentGuid, userId);
 
-    return this.mashovClient.delete<void>(
+    return this.mashovClient.deleteForTarget<void>(
       `/api/students/${studentGuid}/studentRelease/${releaseId}`,
+      await this.scope.targetForStudent(studentGuid, userId),
     );
   }
 
   async getNotices(studentGuid: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const now = new Date();
     const items = await this.prisma.messageBoardItem.findMany({
       where: {
         studentGuid,
         expirationDate: { gt: now },
-        ...currentYearScope(await currentSchoolYearFor(this.prisma, userId)),
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
       },
       orderBy: { expirationDate: 'asc' },
     });
@@ -779,14 +858,22 @@ export class ChildrenService {
     };
   }
 
-  private async requireStudent(studentGuid: string, userId?: string): Promise<void> {
-    await this.getStudentOrThrow(studentGuid, userId);
+  /**
+   * Authorise the request and hand the row back.
+   *
+   * It returns the student because every caller needs
+   * `householdConnectionId` immediately afterwards to resolve the year its
+   * rows were written at -- and re-reading the row for one column it is
+   * already holding is a query per per-child endpoint for nothing.
+   */
+  private async requireStudent(studentGuid: string, userId?: string) {
+    return this.getStudentOrThrow(studentGuid, userId);
   }
 
   private async getUnreadChildActivityCounts(
     studentGuid: string,
     since: Date,
-    yearScope: { schoolYear: { in: number[] } },
+    yearScope: YearScope,
     userId?: string,
   ): Promise<{
     recentHomeworkCount: number;
@@ -875,13 +962,47 @@ export class ChildrenService {
         },
       });
     }
+
+    // The ownership guard. Until now any signed-in user could read any child
+    // by guid: `Student` had no owner column and this method only checked that
+    // the row existed. The PRD has claimed since Phase 2 that a parent sees
+    // "only their own children's data"; this is where that becomes true.
+    //
+    // 404, not 403. A 403 confirms the guid names a real child, which is
+    // exactly the fact a stranger must not be able to probe for -- and the
+    // guids appear in URLs. The message is identical to the not-found one for
+    // the same reason.
+    if (userId && !(await canSeeStudent(this.prisma, userId, studentGuid))) {
+      throw new NotFoundException({
+        error: {
+          code: 'NOT_FOUND',
+          message: `Student not found: ${studentGuid}`,
+          details: [],
+        },
+      });
+    }
+
     return student;
+  }
+
+  /**
+   * The `where` fragment that restricts a student list to one household.
+   *
+   * Reads the visibility edge, not the routing stamp: a child two parents
+   * share is stamped to whichever of them synced last, so a stamp predicate
+   * took the child away from the other one (ADR-0031). A child with no links
+   * is admitted, which is the rule the NULL stamp already had -- see
+   * `visibleStudentWhere`.
+   */
+  private async householdStudentWhere(userId: string) {
+    return visibleStudentWhere(this.prisma, userId);
   }
 
   private async tryDownloadCandidates(
     candidates: Array<string | undefined | null>,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
     const uniqueCandidates = Array.from(new Set(
       candidates
@@ -891,7 +1012,12 @@ export class ChildrenService {
 
     for (const candidate of uniqueCandidates) {
       try {
-        return await this.downloadBinaryFromUpstream(candidate, referer, fallbackFileName);
+        return await this.downloadBinaryFromUpstream(
+          candidate,
+          referer,
+          fallbackFileName,
+          target,
+        );
       } catch {
         // Try next candidate URL.
       }
@@ -904,13 +1030,18 @@ export class ChildrenService {
     pathOrUrl: string,
     referer: string,
     fallbackFileName: string,
+    target: ConnectionTarget,
   ): Promise<DownloadedFile> {
-    const response = await this.mashovClient.getResponse<ArrayBuffer>(pathOrUrl, {
-      responseType: 'arraybuffer',
-      headers: {
-        Referer: referer,
+    const response = await this.mashovClient.getResponseForTarget<ArrayBuffer>(
+      pathOrUrl,
+      target,
+      {
+        responseType: 'arraybuffer',
+        headers: {
+          Referer: referer,
+        },
       },
-    });
+    );
 
     const headers = (response.headers ?? {}) as Record<string, string | string[] | undefined>;
     const contentType = this.readHeader(headers, 'content-type');

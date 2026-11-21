@@ -23,6 +23,7 @@ import {
   type ChildBehaviorFilter,
 } from '@/lib/child-routes';
 import { cn } from '@/lib/utils';
+import Link from 'next/link';
 
 interface ChildWorkspacePageProps {
   studentGuid: string;
@@ -98,14 +99,22 @@ export function ChildWorkspacePage({
         studentGuid: child.studentGuid,
         fullName: child.fullName,
         isActive: child.isActive,
+        schoolId: child.schoolId,
+        schoolShortLabel: child.schoolShortLabel,
       });
     }
 
     if (data?.student.studentGuid) {
+      // The workspace response carries no school, so the list's entry is kept
+      // when there is one: overwriting it would drop the label and un-group
+      // the selector for the child currently open.
+      const existing = optionsByGuid.get(data.student.studentGuid);
       optionsByGuid.set(data.student.studentGuid, {
         studentGuid: data.student.studentGuid,
         fullName: data.student.fullName,
         isActive: data.student.isActive,
+        schoolId: existing?.schoolId ?? null,
+        schoolShortLabel: existing?.schoolShortLabel ?? null,
       });
     }
 
@@ -122,7 +131,25 @@ export function ChildWorkspacePage({
   };
 
   if (isLoading) return <AppShell><LoadingState message="טוען נתוני ילד..." /></AppShell>;
-  if (isError || !data) return <AppShell><ErrorState onRetry={() => void refetch()} /></AppShell>;
+  // A route out, not just a retry. The common way to land here is a child
+  // whose school was just unlinked: the guid in the URL now 404s, and retrying
+  // will never succeed, so a retry button alone is a dead end.
+  if (isError || !data) {
+    return (
+      <AppShell>
+        <div className="space-y-3">
+          <ErrorState onRetry={() => void refetch()} />
+          <Link
+            href="/children"
+            data-testid="child-workspace-back-to-children"
+            className="mx-auto block text-center text-sm font-medium text-primary underline underline-offset-4 hover:text-primary/80 transition-colors"
+          >
+            חזרה לילדים
+          </Link>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>

@@ -36,3 +36,7 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0026](0026-outbound-digest-delivery-and-llm-egress.md) | Outbound Digest Delivery — Pluggable Sender, Telegram First, and the Project's First Runtime LLM Call | Accepted | Backend agent, Planner | 2026-11-17 |
 | [ADR-0027](0027-derived-homework-deadlines.md) | Derived Homework Deadlines — Label the Estimate, Never Promise a Due Date | Accepted | Backend agent, Planner | 2026-11-17 |
 | [ADR-0028](0028-refresh-completion-envelope.md) | Refresh Completion Is an Envelope, Not a Source Threshold | Accepted | Backend agent, Frontend agent, Planner | 2026-11-18 |
+| [ADR-0029](0029-household-merge-and-login-adoption.md) | One Household, N Schools, and Adoption at Sign-In | Accepted | Planner, Backend agent, Frontend agent | 2026-11-18 |
+| [ADR-0030](0030-per-connection-data-scoping.md) | Every Per-School Read and Write Is Scoped to Its Connection | Accepted | Backend agent, Planner | 2026-11-18 |
+| [ADR-0031](0031-child-visibility-is-a-set-of-connections.md) | A Child's Visibility Is a Set of Connections, Not the One That Answered | Accepted | User, Backend agent | 2026-11-18 |
+| [ADR-0032](0032-household-merge-trust-model.md) | A Household Merge Is a Confirmed, Password-Proven Move of One Connection | Accepted | User, Backend agent, Frontend agent | 2026-11-20 |

@@ -24,6 +24,15 @@ export interface SchoolYearLoginView {
 
 interface SchoolsApiEntry {
   semel?: number;
+  /**
+   * The school's display name, per `apis/get-api-schools.md`.
+   *
+   * Read here because some schools' login response omits
+   * `schoolSettings.schoolName` entirely (T13 finding 1), and this list is the
+   * only other place the name exists — the sign-in form already loads it to
+   * populate the school picker.
+   */
+  name?: string | null;
   years?: number[];
 }
 
@@ -58,6 +67,17 @@ export class SchoolYearService {
   private readonly logger = new Logger(SchoolYearService.name);
   private readonly http: AxiosInstance;
   private readonly cache = new Map<number, { resolved: ResolvedSchoolYear; at: number }>();
+  /**
+   * The school's display name per semel, cached separately from the year.
+   *
+   * Separate because the two are reached independently: `resolveForSchool`
+   * warms both, but `schoolNameFor` is also called on semels it has never
+   * touched, and a failed `/api/schools` call must leave the name *unknown*
+   * rather than cached as "there isn't one" — a single upstream blip would
+   * otherwise disable finding 1's fallback for the whole TTL and leave the
+   * chip showing a bare semel, which is the symptom being fixed.
+   */
+  private readonly nameCache = new Map<number, { name: string | null; at: number }>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -79,7 +99,15 @@ export class SchoolYearService {
     }
 
     const calendarYear = calendarSchoolYear(new Date());
-    const apiYear = await this.maxYearFromSchoolsApi(semel);
+    // One lookup serves both halves of the entry: the year resolved below and
+    // the display name cached on the way past, rather than fetching the list
+    // twice. The result is RETURNED rather than stashed on the instance — a
+    // household's connections are resolved inside one `Promise.all`
+    // (`FreshnessService.computeContentFreshness`), so two semels resolve
+    // concurrently in a single request and a shared field gets the name of
+    // whichever response lands second.
+    const entry = await this.schoolsApiEntry(semel);
+    const apiYear = entry.maxYear;
 
     // max(), not the API alone: the published `years[]` appears to lag the
     // in-progress year, and the calendar never lags. An over-shoot is caught
@@ -113,6 +141,7 @@ export class SchoolYearService {
 
     const resolved: ResolvedSchoolYear = { year, source };
     this.cache.set(semel, { resolved, at: Date.now() });
+    if (entry.reached) this.nameCache.set(semel, { name: entry.name, at: Date.now() });
     this.logger.log(`resolved year=${year} source=${source} semel=${semel}`);
     return resolved;
   }
@@ -151,21 +180,68 @@ export class SchoolYearService {
   invalidate(semel?: number): void {
     if (semel === undefined) {
       this.cache.clear();
+      this.nameCache.clear();
     } else {
       this.cache.delete(semel);
+      this.nameCache.delete(semel);
     }
   }
 
-  private async maxYearFromSchoolsApi(semel: number): Promise<number | null> {
+  /**
+   * The school's display name from the public `/api/schools` list, or null.
+   *
+   * T13 finding 1: some schools' `POST /api/login` omits
+   * `schoolSettings.schoolName`, so every writer stored null and the
+   * `?? String(schoolCode)` fallbacks downstream made the school chip and the
+   * contact card read a bare semel. The name was available the whole time — the
+   * sign-in form loads this very list to populate its picker.
+   *
+   * It lives here because `resolveForSchool` already fetches `/api/schools` on
+   * every login and caches per semel for six hours, and the name sits on the
+   * same entry as `years`. So the fallback costs no new upstream call on the
+   * common path: a cache hit answers it, and only a cold semel fetches.
+   */
+  async schoolNameFor(semel: number): Promise<string | null> {
+    const cached = this.nameCache.get(semel);
+    if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+      return cached.name;
+    }
+
+    const entry = await this.schoolsApiEntry(semel);
+    // Cached only when the list actually answered. A semel genuinely absent
+    // from it caches `null` and is served from cache; an unreachable list
+    // caches nothing, so the next caller retries instead of inheriting a
+    // six-hour "no name" from one blip.
+    if (entry.reached) this.nameCache.set(semel, { name: entry.name, at: Date.now() });
+    return entry.name;
+  }
+
+  /**
+   * One `/api/schools` lookup, returning both halves of the matched entry.
+   *
+   * `reached` distinguishes "the list says this school has no name" from "the
+   * list did not answer" — the two must cache differently.
+   */
+  private async schoolsApiEntry(
+    semel: number,
+  ): Promise<{ reached: boolean; name: string | null; maxYear: number | null }> {
     try {
       const response = await this.http.get<SchoolsApiEntry[]>('/api/schools');
       const entry = (response.data ?? []).find((school) => Number(school?.semel) === Number(semel));
+      // Trimmed and emptiness-checked: a blank name is worse than the semel,
+      // because `?? String(schoolCode)` does not fire on an empty string and
+      // the chip would render nothing at all.
+      const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
       const years = (entry?.years ?? []).filter((year) => Number.isInteger(year));
-      return years.length > 0 ? Math.max(...years) : null;
+      return {
+        reached: true,
+        name: name.length > 0 ? name : null,
+        maxYear: years.length > 0 ? Math.max(...years) : null,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`/api/schools unavailable for semel=${semel}: ${message}`);
-      return null;
+      return { reached: false, name: null, maxYear: null };
     }
   }
 

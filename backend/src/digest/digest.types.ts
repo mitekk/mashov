@@ -73,7 +73,8 @@ export interface DigestActivityFact {
   id: string;
   title: string;
   activityStartDate: Date;
-  endAnswerDate: Date;
+  /** Null when the school published no response deadline. */
+  endAnswerDate: Date | null;
 }
 
 /** A behavior event as the parent will see it. */

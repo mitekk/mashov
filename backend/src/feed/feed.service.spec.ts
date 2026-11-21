@@ -8,14 +8,25 @@ function makeMockPrisma(overrides: Partial<{
   behaviorFindMany: jest.Mock;
   mailFindMany: jest.Mock;
   connectionFindFirst: jest.Mock;
+  connectionFindMany: jest.Mock;
 }>): jest.Mocked<PrismaService> {
   return {
     householdConnection: {
       findFirst:
         overrides.connectionFindFirst ??
         jest.fn().mockResolvedValue({ schoolYear: 2027 }),
+      findMany:
+        overrides.connectionFindMany ??
+        jest.fn().mockResolvedValue([{ id: 'conn-1', schoolYear: 2027 }]),
     },
-    student: { findMany: overrides.studentFindMany ?? jest.fn().mockResolvedValue([]) },
+    studentConnection: {
+      findMany: linkFindMany([{ studentGuid: 'student-1', householdConnectionId: 'conn-1' }]),
+    },
+    student: {
+      findMany: ownershipAwareStudentFindMany(
+        overrides.studentFindMany ?? jest.fn().mockResolvedValue([]),
+      ),
+    },
     homeworkItem: { findMany: overrides.homeworkFindMany ?? jest.fn().mockResolvedValue([]) },
     behaviorItem: { findMany: overrides.behaviorFindMany ?? jest.fn().mockResolvedValue([]) },
     mailConversation: { findMany: overrides.mailFindMany ?? jest.fn().mockResolvedValue([]) },
@@ -33,9 +44,71 @@ function makeFeedService(prisma: PrismaService, startYear?: string): FeedService
 }
 
 /** The window predicate the feed is expected to issue. */
-function windowWhere(start: number, current: number) {
-  return { OR: [{ schoolYear: 0 }, { schoolYear: { gte: start, lte: current } }] };
+/**
+ * The window predicate a cross-child read issues: each school's children at
+ * that school's window, rather than one window for the household. With a
+ * single connection it selects exactly the rows the flat form used to.
+ */
+function windowWhere(
+  start: number,
+  current: number,
+  guids = ['student-1'],
+  /**
+   * Whether a caller is known. Without one -- the digest and cron paths -- the
+   * pre-migration branch stays unrestricted, which is the behaviour those
+   * paths have always had. With one it is scoped to that household's children,
+   * because otherwise one household's `schoolYear = 0` rows reach every
+   * other household's feed.
+   */
+  scoped = true,
+) {
+  return {
+    OR: [
+      scoped
+        ? { studentGuid: { in: guids }, schoolYear: { in: [0] } }
+        : { schoolYear: 0 },
+      { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
+    ],
+  };
 }
+/**
+ * A `student.findMany` that answers both callers.
+ *
+ * The cross-child year scope asks "which children does each connection own",
+ * and everything else asks for the roster. Routing on the predicate keeps one
+ * mock honest for both instead of making every test aware of the ownership
+ * lookup.
+ */
+function ownershipAwareStudentFindMany(roster: jest.Mock): jest.Mock {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    // "Which children does nobody list" -- none, since every fixture child is
+    // linked below. Before ADR-0031 this was the `householdConnectionId: null`
+    // half of the same question.
+    if ((args?.where?.links as { none?: object } | undefined)?.none) {
+      return Promise.resolve([]);
+    }
+    return roster(args);
+  });
+}
+
+/** The visibility edge, from the same fixture the ownership mock uses. */
+function linkFindMany(
+  owned: Array<{ studentGuid: string; householdConnectionId: string }>,
+): jest.Mock {
+  return jest.fn((args?: { where?: Record<string, unknown> }) => {
+    const byConnection = (args?.where?.householdConnectionId as { in?: string[] } | undefined)
+      ?.in;
+    const byStudent = (args?.where?.studentGuid as { in?: string[] } | undefined)?.in;
+    return Promise.resolve(
+      owned.filter(
+        (link) =>
+          (!byConnection || byConnection.includes(link.householdConnectionId)) &&
+          (!byStudent || byStudent.includes(link.studentGuid)),
+      ),
+    );
+  });
+}
+
 
 describe('FeedService', () => {
   describe('getFeed', () => {
@@ -106,7 +179,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: windowWhere(2027, 2027),
+          where: windowWhere(2027, 2027, ['student-1'], false),
           orderBy: { lessonDate: 'desc' },
         }),
       );
@@ -121,7 +194,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: windowWhere(2027, 2027),
+          where: windowWhere(2027, 2027, ['student-1'], false),
           orderBy: { eventAt: 'desc' },
         }),
       );
@@ -237,11 +310,90 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(mailFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: {
-            NOT: { labels: { array_contains: ['archived'] } },
-          },
+          // An `AND` array even with no caller: the household scope is an
+          // `OR`, so merging the two predicates would let one overwrite the
+          // other. With no caller the scope half is `{}`, which selects
+          // everything, so the caller-less read is unchanged.
+          where: { AND: [{}, { NOT: { labels: { array_contains: ['archived'] } } }] },
         }),
       );
+    });
+
+    /**
+     * R3 — the feed read another household's mail, and its children.
+     *
+     * The mail leak put another household's subjects and sender-name previews
+     * on `/home` with `schoolId: null`, so the school chip could not even hide
+     * them. The student read is the quieter half: every feed *item* is already
+     * year-scoped by child, so the only thing the unscoped roster changes is
+     * the school map built from it — which is exactly how R5's foreign
+     * connection id reached the response. A `where` assertion is therefore the
+     * honest place to pin it.
+     */
+    describe('scoping to the caller', () => {
+      /** The caller's connections, as the shared helpers resolve them. */
+      const OWN = ['conn-1'];
+
+      it('scopes the mail read to the household', async () => {
+        const mailFindMany = jest.fn().mockResolvedValue([]);
+        const service = makeFeedService(makeMockPrisma({ mailFindMany }));
+
+        await service.getFeed(1, 20, 'user-1');
+
+        expect(mailFindMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: {
+              AND: [
+                {
+                  OR: [
+                    { householdConnectionId: { in: OWN } },
+                    // NULL stays admitted: ownership unknown is not somebody
+                    // else's, and excluding it would empty the feed on a
+                    // deployment that has not re-synced.
+                    { householdConnectionId: null },
+                  ],
+                },
+                { NOT: { labels: { array_contains: ['archived'] } } },
+              ],
+            },
+          }),
+        );
+      });
+
+      it('scopes the roster to what the caller may see', async () => {
+        const studentFindMany = jest.fn().mockResolvedValue([]);
+        const prisma = makeMockPrisma({ studentFindMany });
+        const service = makeFeedService(prisma);
+
+        await service.getFeed(1, 20, 'user-1');
+
+        expect(studentFindMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: {
+              isActive: true,
+              // The visibility edge, not the routing stamp: a child two
+              // parents share carries one stamp (ADR-0031).
+              OR: [
+                { links: { some: { householdConnectionId: { in: OWN } } } },
+                { links: { none: {} } },
+              ],
+            },
+          }),
+        );
+      });
+
+      it('leaves the caller-less read unscoped', async () => {
+        // The digest and the unauthenticated integration suite drive this
+        // path, and nothing about it should change.
+        const studentFindMany = jest.fn().mockResolvedValue([]);
+        const service = makeFeedService(makeMockPrisma({ studentFindMany }));
+
+        await service.getFeed(1, 20);
+
+        expect(studentFindMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { isActive: true } }),
+        );
+      });
     });
 
     it('resolves studentName from student map when studentGuid is provided', async () => {
@@ -357,7 +509,7 @@ describe('FeedService', () => {
       const result = await service.getFeed(1, 20);
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2026, 2027) }),
+        expect.objectContaining({ where: windowWhere(2026, 2027, ['student-1'], false) }),
       );
       expect(result.data[0].id).toBe('hw-last-year');
     });
@@ -382,7 +534,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2027, 2027) }),
+        expect.objectContaining({ where: windowWhere(2027, 2027, ['student-1'], false) }),
       );
     });
 

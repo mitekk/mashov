@@ -2,6 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  orderConnectionsForStudent,
+  stampOwnershipIfChanged,
+  studentScopeForContext,
+} from '../connection-fanout';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
@@ -57,7 +62,9 @@ export class ReleasesTask {
         ...(context.connectionId ? { id: context.connectionId } : {}),
       },
     });
-    const students = await this.prisma.student.findMany({ where: { isActive: true } });
+    const students = await this.prisma.student.findMany({
+      where: studentScopeForContext(context),
+    });
 
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -66,7 +73,8 @@ export class ReleasesTask {
     const fallbackSchoolYear = calendarSchoolYear(new Date());
 
     for (const student of students) {
-      let schoolYear = connections[0]?.schoolYear ?? fallbackSchoolYear;
+      const ordered = orderConnectionsForStudent(student, connections);
+      let schoolYear = ordered[0]?.schoolYear ?? fallbackSchoolYear;
       const source = `${ReleasesTask.SOURCE}:${student.studentGuid}`;
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
@@ -75,8 +83,9 @@ export class ReleasesTask {
       try {
         const referer = 'https://web.mashov.info/students/main/studentsReleaseRequests';
         let items: MashovStudentRelease[] = [];
+        let answered = false;
 
-        for (const conn of connections) {
+        for (const conn of ordered) {
           try {
             const password = this.encryptionService.decrypt(conn.encryptedPassword);
             items = await this.mashovClient.getForConnection<MashovStudentRelease[]>(
@@ -88,11 +97,35 @@ export class ReleasesTask {
               password,
               { headers: { Referer: referer } },
             );
+            answered = true;
             schoolYear = conn.schoolYear;
+            await stampOwnershipIfChanged(
+                this.prisma,
+                student,
+                conn,
+                this.logger,
+                // An empty 200 is not proof the child is in this account.
+                Array.isArray(items) && items.length > 0,
+              );
             break;
           } catch {
             /* try the next connection */
           }
+        }
+
+        // Every connection failed -- or, on a connection-scoped refresh of a
+        // connection that is no longer usable, there was none to try. The
+        // other eight per-student tasks have had this guard all along; this
+        // one closed the run `success` with `fetchedCount: 0` instead, which
+        // is the silent success R11 is about and worse than the six
+        // connection-loop tasks it names: those left no row at all, whereas a
+        // green `releases:<guid>` is what `FreshnessService` reads as a FRESH
+        // `releases` source. An empty 200 does not reach here -- the child who
+        // simply filed nothing is a success, because the account answered.
+        if (!answered) {
+          throw new Error(
+            `every connection failed for ${student.studentGuid} (tried ${ordered.length})`,
+          );
         }
 
         const rows = Array.isArray(items) ? items : [];

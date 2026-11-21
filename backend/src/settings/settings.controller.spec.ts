@@ -30,7 +30,9 @@ describe('SettingsController', () => {
           where: { userId: 'user-1', active: true },
         }),
       );
-      expect(settingsService.getSourceHealth).toHaveBeenCalledWith('conn-1');
+      // The caller goes through too: the content freshness underneath is the
+      // household's, and without a caller it was every household's (R4).
+      expect(settingsService.getSourceHealth).toHaveBeenCalledWith('conn-1', 'user-1');
     });
 
     it('passes no connection when the caller has none', async () => {
@@ -38,7 +40,7 @@ describe('SettingsController', () => {
 
       await controller.getSourceHealth(REQUEST);
 
-      expect(settingsService.getSourceHealth).toHaveBeenCalledWith(null);
+      expect(settingsService.getSourceHealth).toHaveBeenCalledWith(null, 'user-1');
     });
 
     it('rejects an unauthenticated caller rather than reading anything', async () => {

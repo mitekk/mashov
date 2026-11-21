@@ -89,6 +89,75 @@ describe('MailCountsTask', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
+  describe('per-connection local count', () => {
+    const CONN_A = {
+      id: 'conn-a',
+      schoolCode: 540175,
+      schoolYear: 2026,
+      username: 'parent-a',
+      encryptedPassword: 'enc',
+    };
+    const CONN_B = {
+      id: 'conn-b',
+      schoolCode: 999999,
+      schoolYear: 2027,
+      username: 'parent-b',
+      encryptedPassword: 'enc',
+    };
+
+    it("counts only the connection's own mailbox", async () => {
+      // Unscoped, every connection wrote the UNION of both mailboxes into its
+      // own cachedNewCount -- and the badge sums those rows, so two schools
+      // reported the union twice. This is the double-count at its source.
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
+      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue({
+        unreadConversations: 39,
+      });
+
+      await task.execute();
+
+      const localCountCall = conversationCount.mock.calls.find(
+        (call) => (call[0] as CountArgs)?.where?.isUnread === true,
+      );
+      expect(localCountCall?.[0]?.where).toMatchObject({
+        householdConnectionId: 'conn-a',
+        isUnread: true,
+      });
+    });
+
+    it('counts each connection separately so the two drift independently', async () => {
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+        CONN_A,
+        CONN_B,
+      ]);
+      (mockMashovClient.getForConnection as jest.Mock).mockResolvedValue({
+        unreadConversations: 39,
+      });
+
+      await task.execute();
+
+      const scopes = conversationCount.mock.calls
+        .map((call) => (call[0] as CountArgs)?.where)
+        .filter((where) => where?.isUnread === true)
+        .map((where) => (where as Record<string, unknown>).householdConnectionId);
+      expect(scopes).toEqual(['conn-a', 'conn-b']);
+    });
+
+    it('scopes to NULL on the shared env session', async () => {
+      // The shared session's rows are the unowned ones, and NULL is the scope
+      // that selects exactly those -- not "everything".
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([]);
+      (mockMashovClient.get as jest.Mock).mockResolvedValue({ unreadConversations: 39 });
+
+      await task.execute();
+
+      const localCountCall = conversationCount.mock.calls.find(
+        (call) => (call[0] as CountArgs)?.where?.isUnread === true,
+      );
+      expect(localCountCall?.[0]?.where).toMatchObject({ householdConnectionId: null });
+    });
+  });
+
   it('persists both counts on the sync run so drift is queryable without container logs', async () => {
     (mockMashovClient.get as jest.Mock).mockResolvedValue({ unreadConversations: 16 });
 
@@ -160,14 +229,64 @@ describe('MailCountsTask', () => {
     expect(String(warnSpy.mock.calls[0][0])).toContain('orphans=unknown');
   });
 
-  it('still writes cachedNewCount from the local count', async () => {
+  it('writes no cachedNewCount for the shared session, and reports the count in telemetry', async () => {
+    // R15. The shared session owns the NULL-stamped rows but has no
+    // connection row of its own, so its count used to be written into
+    // `findFirst({ active: true })` -- an arbitrary household. That was a
+    // cross-household write, and under the one badge rule it is also a double
+    // count: `unreadBadge` adds the unattributed rows itself, so a household
+    // holding them in `cachedNewCount` too would be counted twice.
     (mockMashovClient.get as jest.Mock).mockResolvedValue({ unreadConversations: 16 });
 
     await task.execute();
 
-    expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith({
-      where: { id: 'household-1' },
-      data: { cachedNewCount: 39 },
+    expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
+    // The number is not lost: it is where an operator reads it from.
+    expect(mockSyncRunService.closeRun).toHaveBeenCalledWith(
+      'run-1',
+      'success',
+      expect.objectContaining({ localCount: 39, upstreamCount: 16 }),
+    );
+  });
+  describe('a targeted refresh of a connection that is not usable', () => {
+  /**
+   * R11: a targeted refresh of a connection that cannot be used.
+   *
+   * `useSharedSession` is false once `context.connectionId` is set, but the
+   * target list is then `[]` if that connection is inactive or has
+   * `userId: null`. The loop body never ran, so the task returned
+   * `status: 'success'` with every count zero and left no `sync_run` -- a
+   * silent success that made a real failure undiagnosable.
+   */
+  beforeEach(() => {
+      (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([]);
+    });
+
+    it('reports the run as failed rather than a clean sync', async () => {
+      const result = await task.execute({ connectionId: 'conn-gone' });
+
+      expect(result.status).toBe('failed');
+      expect(result.summary.failedCount).toBe(1);
+    });
+
+    it('opens exactly one run and closes it failed, with the reason', async () => {
+      await task.execute({ connectionId: 'conn-gone' });
+
+      expect(mockSyncRunService.openRun).toHaveBeenCalledTimes(1);
+      expect(mockSyncRunService.openRun).toHaveBeenCalledWith(expect.any(String), 'conn-gone');
+      expect(mockSyncRunService.closeRun).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ errorMessage: expect.stringContaining('conn-gone') }),
+      );
+    });
+
+    it('never reaches upstream', async () => {
+      await task.execute({ connectionId: 'conn-gone' });
+
+      expect(mockMashovClient.get).not.toHaveBeenCalled();
+      expect(mockMashovClient.getForConnection).not.toHaveBeenCalled();
     });
   });
+
 });

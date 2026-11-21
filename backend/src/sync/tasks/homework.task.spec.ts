@@ -55,7 +55,7 @@ describe('HomeworkTask', () => {
   let task: HomeworkTask;
   let mashovClient: { get: jest.Mock; getForConnection: jest.Mock };
   let prisma: {
-    student: { findMany: jest.Mock };
+    student: { findMany: jest.Mock; update: jest.Mock };
     householdConnection: { findMany: jest.Mock; findFirst: jest.Mock };
     homeworkItem: { upsert: jest.Mock };
   };
@@ -67,7 +67,10 @@ describe('HomeworkTask', () => {
       getForConnection: jest.fn().mockResolvedValue([makeHomework()]),
     };
     prisma = {
-      student: { findMany: jest.fn().mockResolvedValue([STUDENT]) },
+      student: {
+        findMany: jest.fn().mockResolvedValue([STUDENT]),
+        update: jest.fn().mockResolvedValue({}),
+      },
       householdConnection: {
         findMany: jest.fn().mockResolvedValue([CONNECTION]),
         findFirst: jest.fn().mockResolvedValue({ schoolYear: 2027 }),
@@ -158,6 +161,104 @@ describe('HomeworkTask', () => {
     expect(prisma.householdConnection.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ orderBy: expect.anything() }),
     );
+  });
+
+  describe('owner-first fan-out', () => {
+    const CONN_A = { ...CONNECTION, id: 'conn-a', schoolCode: 540175, schoolYear: 2026 };
+    const CONN_B = { ...CONNECTION, id: 'conn-b', schoolCode: 999999, schoolYear: 2027 };
+
+    beforeEach(() => {
+      prisma.householdConnection.findMany.mockResolvedValue([CONN_A, CONN_B]);
+    });
+
+    it('makes exactly one upstream call for a stamped student', async () => {
+      // Two schools mean the unstamped path burns one guaranteed 403 per
+      // student per run, across ten tasks every twelve minutes. This is the
+      // whole reason owner-first is a prerequisite rather than a tidy-up.
+      prisma.student.findMany.mockResolvedValue([
+        { ...STUDENT, householdConnectionId: 'conn-b' },
+      ]);
+
+      await task.execute();
+
+      expect(mashovClient.getForConnection).toHaveBeenCalledTimes(1);
+      const [, connectionId] = mashovClient.getForConnection.mock.calls[0] as [string, string];
+      expect(connectionId).toBe('conn-b');
+    });
+
+    it("stamps the row with the owner's year, not the first connection's", async () => {
+      // conn-a is 2026 and conn-b is 2027. Labelling conn-b's child with 2026
+      // is how a year-scoped read stops finding rows a write just made.
+      prisma.student.findMany.mockResolvedValue([
+        { ...STUDENT, householdConnectionId: 'conn-b' },
+      ]);
+
+      await task.execute();
+
+      expect(prisma.homeworkItem.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ schoolYear: 2027 }),
+        }),
+      );
+    });
+
+    it('falls back across every connection for an unstamped student', async () => {
+      prisma.student.findMany.mockResolvedValue([
+        { ...STUDENT, householdConnectionId: null },
+      ]);
+      mashovClient.getForConnection
+        .mockRejectedValueOnce(new Error('403'))
+        .mockResolvedValueOnce([makeHomework()]);
+
+      const result = await task.execute();
+
+      expect(result.status).toBe('success');
+      expect(mashovClient.getForConnection).toHaveBeenCalledTimes(2);
+    });
+
+    it('stamps an unstamped student with whichever connection answered', async () => {
+      prisma.student.findMany.mockResolvedValue([
+        { ...STUDENT, householdConnectionId: null },
+      ]);
+      mashovClient.getForConnection
+        .mockRejectedValueOnce(new Error('403'))
+        .mockResolvedValueOnce([makeHomework()]);
+
+      await task.execute();
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { studentGuid: 'stu-1' },
+        data: { householdConnectionId: 'conn-b' },
+      });
+    });
+
+    it('re-stamps when the owner no longer answers and another connection does', async () => {
+      // A child who moved school. Without the re-stamp they cost a failed
+      // call on every run forever.
+      prisma.student.findMany.mockResolvedValue([
+        { ...STUDENT, householdConnectionId: 'conn-a' },
+      ]);
+      mashovClient.getForConnection
+        .mockRejectedValueOnce(new Error('403'))
+        .mockResolvedValueOnce([makeHomework()]);
+
+      await task.execute();
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { studentGuid: 'stu-1' },
+        data: { householdConnectionId: 'conn-b' },
+      });
+    });
+
+    it('writes no stamp when the owner answers', async () => {
+      prisma.student.findMany.mockResolvedValue([
+        { ...STUDENT, householdConnectionId: 'conn-a' },
+      ]);
+
+      await task.execute();
+
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
   });
   describe('upstream failure reporting', () => {
     it('reports failure when every connection fails for a student', async () => {

@@ -11,6 +11,9 @@ const mockPrisma = {
     count: jest.fn(),
     findMany: jest.fn(),
   },
+  // No link rows: `buildStudentSchoolMap` then falls back to the routing
+  // stamp, so these suites read exactly the schools they always did.
+  studentConnection: { findMany: jest.fn().mockResolvedValue([]) },
   student: {
     count: jest.fn(),
     findMany: jest.fn(),
@@ -27,6 +30,11 @@ const mockPrisma = {
   },
   householdConnection: {
     findFirst: jest.fn(),
+    // The cross-child year scope lists the connections rather than resolving
+    // one household-wide year.
+    findMany: jest.fn(),
+    // The badge is summed over the caller's own connections.
+    aggregate: jest.fn(),
   },
 };
 
@@ -76,6 +84,11 @@ describe('DashboardService', () => {
     mockPrisma.homeworkItem.findFirst.mockResolvedValue(null);
     mockPrisma.behaviorItem.findFirst.mockResolvedValue(null);
     mockPrisma.householdConnection.findFirst.mockResolvedValue(null);
+    mockPrisma.householdConnection.findMany.mockResolvedValue([]);
+    mockPrisma.householdConnection.aggregate.mockResolvedValue({
+      _sum: { cachedNewCount: null },
+      _count: { _all: 0 },
+    });
     mockFreshness.computeFreshness.mockResolvedValue({
       state: 'fresh',
       lastSyncAt: null,
@@ -99,14 +112,13 @@ describe('DashboardService', () => {
       expect(result).toHaveProperty('feed');
       expect(result).toHaveProperty('children');
       expect(result).toHaveProperty('freshness');
-      expect(result).toHaveProperty('school');
+      // `school` was the household's most recently used connection under a
+      // singular name; T14 removed it, and every school label on this
+      // response is per-item now.
+      expect(result).not.toHaveProperty('school');
 
       expect(result.freshness).toHaveProperty('state');
       expect(result.freshness).toHaveProperty('lastSyncAt');
-      expect(result.school).toEqual({
-        schoolName: 'Test School',
-        schoolYear: 2026,
-      });
     });
 
     it('summary uses newConversations key (not unreadConversations)', async () => {
@@ -120,14 +132,25 @@ describe('DashboardService', () => {
       expect(result.summary.newConversations).toBe(7);
     });
 
-    it('summary newConversations prefers cachedNewCount from active household connection', async () => {
+    it('summary newConversations sums the caller\'s connections plus the unowned rows', async () => {
+      // Summed, not read from one row: with two schools the badge is the
+      // household's total, and the most recent connection's row alone would
+      // show one school's mail and hide the other's. On top of that sum go the
+      // conversations no connection owns, added ONCE by the reader (R15) --
+      // two connections here, so counting them in each writer would have
+      // counted them twice.
       seedEmptyState();
-      mockPrisma.householdConnection.findFirst.mockResolvedValue({ cachedNewCount: 23 });
-      mockPrisma.mailConversation.count.mockResolvedValue(7);
+      mockPrisma.householdConnection.aggregate.mockResolvedValue({
+        _sum: { cachedNewCount: 16 + 7 },
+        _count: { _all: 2 },
+      });
+      mockPrisma.mailConversation.count.mockImplementation(({ where }) =>
+        Promise.resolve(where?.householdConnectionId === null ? 2 : 7),
+      );
 
       const result = await service.getDashboard();
 
-      expect(result.summary.newConversations).toBe(23);
+      expect(result.summary.newConversations).toBe(25);
     });
 
     it('summary newConversations falls back to DB count when cachedNewCount is null', async () => {

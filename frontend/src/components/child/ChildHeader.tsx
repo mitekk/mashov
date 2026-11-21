@@ -1,13 +1,15 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { BookOpen, AlertTriangle, ThumbsUp, Clock, DoorOpen, ClipboardList } from 'lucide-react';
 import type { ChildStudent, ChildSummary } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
 } from '@/components/ui/Select';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
@@ -20,6 +22,9 @@ export interface ChildHeaderOption {
   studentGuid: string;
   fullName: string;
   isActive: boolean;
+  /** Used to group the list once a household has more than one school. */
+  schoolId?: string | null;
+  schoolShortLabel?: string | null;
 }
 
 interface ChildHeaderProps {
@@ -42,6 +47,28 @@ export function ChildHeader({
   studentGuid,
 }: ChildHeaderProps) {
   const [isReleasesDialogOpen, setIsReleasesDialogOpen] = useState(false);
+  // One group per distinct school, in the order the options arrive, so the
+  // grouping is stable between renders.
+  const schoolGroups = useMemo(() => {
+    const groups: Array<{ key: string; label: string; children: ChildHeaderOption[] }> = [];
+    for (const child of childOptions) {
+      const key = child.schoolId ?? '__unowned__';
+      const existing = groups.find((group) => group.key === key);
+      if (existing) existing.children.push(child);
+      else
+        groups.push({
+          key,
+          label: child.schoolShortLabel ?? 'בית ספר',
+          children: [child],
+        });
+    }
+    return groups;
+  }, [childOptions]);
+
+  const selectedSchoolLabel =
+    childOptions.find((child) => child.studentGuid === selectedChildGuid)?.schoolShortLabel ??
+    null;
+
   const [isActivitiesDialogOpen, setIsActivitiesDialogOpen] = useState(false);
   const { data: activitiesData } = useSchoolActivities(studentGuid);
   const pendingCount = activitiesData?.filter((activity) => !activity.isAnswered).length ?? 0;
@@ -67,22 +94,50 @@ export function ChildHeader({
               </SelectTrigger>
               <SelectContent align="start" className="max-h-72">
                 <div className="space-y-1">
-                  {childOptions.map((child) => (
-                    <SelectItem
-                      key={child.studentGuid}
-                      value={child.studentGuid}
-                      className="text-base"
-                    >
-                      {child.fullName}
-                      {child.isActive ? '' : ' (לא פעיל)'}
-                    </SelectItem>
-                  ))}
+                  {/* Grouped only above one distinct school. With one, this is
+                      byte-for-byte the flat list it has always been, which is
+                      why children.spec.ts needs no change. */}
+                  {schoolGroups.length > 1
+                    ? schoolGroups.map((group) => (
+                        <SelectGroup key={group.key}>
+                          <SelectLabel>{group.label}</SelectLabel>
+                          {group.children.map((child) => (
+                            <SelectItem
+                              key={child.studentGuid}
+                              value={child.studentGuid}
+                              className="text-base"
+                            >
+                              {child.fullName}
+                              {child.isActive ? '' : ' (לא פעיל)'}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))
+                    : childOptions.map((child) => (
+                        <SelectItem
+                          key={child.studentGuid}
+                          value={child.studentGuid}
+                          className="text-base"
+                        >
+                          {child.fullName}
+                          {child.isActive ? '' : ' (לא פעיל)'}
+                        </SelectItem>
+                      ))}
                 </div>
               </SelectContent>
             </Select>
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             כיתה {student.classCode}{student.classNum}
+            {/* The school in the subtitle, so a parent moving between children
+                always knows whose school they are looking at. Only rendered
+                when there is more than one. */}
+            {schoolGroups.length > 1 && selectedSchoolLabel && (
+              <>
+                {' · '}
+                <span data-testid="child-header-school-label">{selectedSchoolLabel}</span>
+              </>
+            )}
           </p>
         </div>
         <div className="flex items-start gap-2">

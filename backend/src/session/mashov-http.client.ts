@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { MashovSessionService } from './mashov-session.service';
+import type { ConnectionTarget } from './connection-target';
 import {
   createMashovAxios,
   resolveMashovBaseUrl,
@@ -41,6 +42,10 @@ export class MashovHttpClient {
   /**
    * Make a GET request scoped to a specific household connection's credentials.
    * Authenticates using stored encrypted credentials for that connection.
+   *
+   * Kept at its original positional signature: roughly sixteen sync tasks call
+   * it this way, and collapsing them onto `ConnectionTarget` is a separate
+   * change from making PUT, DELETE and raw responses reachable at all.
    */
   async getForConnection<T>(
     url: string,
@@ -52,18 +57,98 @@ export class MashovHttpClient {
     config?: AxiosRequestConfig,
     isRetry = false,
   ): Promise<T> {
+    const response = await this.requestForConnection<T>(
+      'GET',
+      url,
+      undefined,
+      {
+        id: connectionId,
+        schoolCode: semel,
+        schoolYear: year,
+        username,
+        password,
+        schoolName: null,
+      },
+      config,
+      isRetry,
+    );
+    return response.data;
+  }
+
+  /** GET as one connection, returning the payload. */
+  async getForTarget<T>(
+    url: string,
+    target: ConnectionTarget,
+    config?: AxiosRequestConfig,
+  ): Promise<T> {
+    const response = await this.requestForConnection<T>('GET', url, undefined, target, config);
+    return response.data;
+  }
+
+  /**
+   * GET as one connection, returning the whole response.
+   *
+   * Attachment downloads need `content-type` and `content-disposition` to name
+   * and serve the file, and `.data` alone cannot carry them.
+   */
+  async getResponseForTarget<T>(
+    url: string,
+    target: ConnectionTarget,
+    config?: AxiosRequestConfig,
+  ): Promise<AxiosResponse<T>> {
+    return this.requestForConnection<T>('GET', url, undefined, target, config);
+  }
+
+  /** PUT as one connection. */
+  async putForTarget<T>(
+    url: string,
+    data: unknown,
+    target: ConnectionTarget,
+    config?: AxiosRequestConfig,
+  ): Promise<T> {
+    const response = await this.requestForConnection<T>('PUT', url, data, target, config);
+    return response.data;
+  }
+
+  /** DELETE as one connection. */
+  async deleteForTarget<T>(
+    url: string,
+    target: ConnectionTarget,
+    config?: AxiosRequestConfig,
+  ): Promise<T> {
+    const response = await this.requestForConnection<T>('DELETE', url, undefined, target, config);
+    return response.data;
+  }
+
+  /**
+   * One request as one connection, with the single session-refresh retry.
+   *
+   * The retry is why every per-connection call has to come through here: a
+   * Mashov session expires on its own schedule, so a mutation that does not
+   * refresh and retry surfaces an expired cookie to the user as a failed
+   * archive or a failed consent reply.
+   */
+  private async requestForConnection<T>(
+    method: 'GET' | 'PUT' | 'DELETE',
+    url: string,
+    data: unknown,
+    target: ConnectionTarget,
+    config?: AxiosRequestConfig,
+    isRetry = false,
+  ): Promise<AxiosResponse<T>> {
+    const { id: connectionId, schoolCode, schoolYear, username, password } = target;
+
     const authHeaders = await this.sessionService.getAuthHeadersForConnection(
       connectionId,
-      semel,
-      year,
+      schoolCode,
+      schoolYear,
       username,
       password,
     );
     const headers = { ...authHeaders, ...(config?.headers ?? {}) };
 
     try {
-      const response = await this.httpClient.get<T>(url, { ...config, headers });
-      return response.data;
+      return await this.send<T>(method, url, data, { ...config, headers });
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const status = error.response?.status;
@@ -80,21 +165,53 @@ export class MashovHttpClient {
           );
           const refreshedHeaders = await this.sessionService.getAuthHeadersForConnection(
             connectionId,
-            semel,
-            year,
+            schoolCode,
+            schoolYear,
             username,
             password,
             true,
           );
           const retryHeaders = { ...refreshedHeaders, ...(config?.headers ?? {}) };
-          const retryResponse = await this.httpClient.get<T>(url, { ...config, headers: retryHeaders });
-          return retryResponse.data;
+          try {
+            return await this.send<T>(method, url, data, { ...config, headers: retryHeaders });
+          } catch (retryError) {
+            // The original let a failed retry escape as the raw axios error,
+            // so the same upstream failure reached callers in two different
+            // shapes depending on whether it happened before or after the
+            // session refresh. No caller inspects the error type, and every one
+            // of them logs `error.message`, so the tidy message is strictly
+            // better than an AxiosError's own.
+            throw new Error(this.describeFailure(method, url, connectionId, retryError));
+          }
         }
-        const msg = `Upstream GET ${url} (connection ${connectionId}) failed with status ${status ?? 'unknown'}: ${error.message}`;
-        throw new Error(msg);
+        throw new Error(this.describeFailure(method, url, connectionId, error));
       }
       throw error;
     }
+  }
+
+  private describeFailure(
+    method: string,
+    url: string,
+    connectionId: string,
+    error: unknown,
+  ): string {
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    const detail = error instanceof Error ? error.message : String(error);
+    return `Upstream ${method} ${url} (connection ${connectionId}) failed with status ${status ?? 'unknown'}: ${detail}`;
+  }
+
+  private async send<T>(
+    method: 'GET' | 'PUT' | 'DELETE',
+    url: string,
+    data: unknown,
+    config: AxiosRequestConfig,
+  ): Promise<AxiosResponse<T>> {
+    if (method === 'GET') return this.httpClient.get<T>(url, config);
+    if (method === 'PUT') return this.httpClient.put<T>(url, data, config);
+    // axios.delete takes (url, config): passing a body here would be read as
+    // the config and silently drop the auth headers.
+    return this.httpClient.delete<T>(url, config);
   }
 
   private async requestWithRetryResponse<T>(
