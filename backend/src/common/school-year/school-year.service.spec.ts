@@ -308,6 +308,68 @@ describe('SchoolYearService', () => {
       expect(mockHttp.get).toHaveBeenCalledTimes(callsAfterResolve);
     });
 
+    it('does not cross two semels resolved concurrently', async () => {
+      // `FreshnessService.computeContentFreshness` resolves every one of a
+      // household's connections inside a single `Promise.all`
+      // (`freshness.service.ts:162`), so a two-school parent opening /more
+      // issues two `resolveForSchool` calls for DIFFERENT semels in one
+      // request. A name stashed on a shared field between the await and its
+      // reader is overwritten by whichever response lands second — and the
+      // wrong name is then cached for six hours and written to
+      // `household_connection.schoolName` by the next login at that school.
+      // That is B4 (one school's details captioned with the other's name)
+      // reintroduced by the fix for finding 1.
+      mockHttp.get.mockResolvedValue({
+        data: [
+          { semel: 482273, name: 'יצחק נבון - צור יצחק (יסודי)', years: [2027] },
+          { semel: 484121, name: 'חטיבת נעורים בראשית - צור יצחק (חטב)', years: [2027] },
+        ],
+      });
+      const service = makeService({});
+
+      await Promise.all([
+        service.resolveForSchool(482273),
+        service.resolveForSchool(484121),
+      ]);
+
+      await expect(service.schoolNameFor(482273)).resolves.toBe(
+        'יצחק נבון - צור יצחק (יסודי)',
+      );
+      await expect(service.schoolNameFor(484121)).resolves.toBe(
+        'חטיבת נעורים בראשית - צור יצחק (חטב)',
+      );
+    });
+
+    it('caches its own lookup, so a cold semel is fetched once and not per call', async () => {
+      // `resolveForSchool` is not the only way in: the digest and the crons
+      // reach `schoolNameFor` on semels it has never warmed.
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 484121, name: 'בית ספר ב', years: [2027] }],
+      });
+      const service = makeService({});
+
+      await service.schoolNameFor(484121);
+      const afterFirst = mockHttp.get.mock.calls.length;
+      await expect(service.schoolNameFor(484121)).resolves.toBe('בית ספר ב');
+
+      expect(mockHttp.get).toHaveBeenCalledTimes(afterFirst);
+    });
+
+    it('retries after an unavailable list instead of caching the absence for six hours', async () => {
+      // One transient blip at the moment of the first resolve would otherwise
+      // make finding 1's fallback silently do nothing for six hours, and the
+      // chip would show the bare semel — the exact symptom being fixed.
+      mockHttp.get.mockRejectedValueOnce(new Error('upstream down'));
+      const service = makeService({});
+
+      await service.resolveForSchool(484121);
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 484121, name: 'בית ספר ב', years: [2027] }],
+      });
+
+      await expect(service.schoolNameFor(484121)).resolves.toBe('בית ספר ב');
+    });
+
     it('returns null when the list is unavailable', async () => {
       mockHttp.get.mockRejectedValue(new Error('upstream down'));
       const service = makeService({});

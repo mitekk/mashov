@@ -510,6 +510,37 @@ describe('FreshnessService', () => {
       expect(health?.lastAttemptAt).toBe(recentFailure.startedAt.toISOString());
     });
 
+    it('does not let a newer running attempt mask a failure or swallow its error', async () => {
+      // `latestAttempt` is the newest attempt of ANY status, so a `running` row
+      // under a variant key — an in-flight refresh, or more durably one whose
+      // process died before `closeRun` — sat in front of the bare key's
+      // `failed` row and took the status down to `never_synced` with a null
+      // error. The one page that answers "is syncing working" then goes silent
+      // about a failure, permanently if the running row is orphaned.
+      const failure = makeSyncRun('mail_inbox', 'failed', 60);
+      failure.errorMessage = 'upstream 502';
+      const stuck = makeSyncRun('mail_inbox:conn-abc', 'running', 5);
+      stuck.endedAt = null;
+
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(
+        new Map<string, SyncRun>([
+          ['mail_inbox', failure],
+          ['mail_inbox:conn-abc', stuck],
+        ]),
+      );
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
+
+      const health = (await service.getAllSourceHealth([])).find(
+        (r) => r.source === 'mail_inbox',
+      );
+
+      expect(health?.status).toBe('failed');
+      expect(health?.lastErrorMessage).toBe('upstream 502');
+      // `lastAttemptAt` is still the newest attempt of any status: something
+      // IS running, and the row should say when it started.
+      expect(health?.lastAttemptAt).toBe(stuck.startedAt.toISOString());
+    });
+
     it('includes per-student sources when studentGuids are provided', async () => {
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());

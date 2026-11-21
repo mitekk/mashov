@@ -16,6 +16,7 @@ export class MorePage {
   readonly signOutButton: Locator;
   readonly unlinkModal: Locator;
   readonly unlinkError: Locator;
+  readonly disconnectError: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -26,6 +27,7 @@ export class MorePage {
     this.signOutButton = page.getByTestId('settings-signout-btn');
     this.unlinkModal = page.getByTestId('settings-unlink-modal');
     this.unlinkError = page.getByTestId('settings-unlink-error');
+    this.disconnectError = page.getByTestId('settings-disconnect-error');
   }
 
   async navigate(): Promise<void> {

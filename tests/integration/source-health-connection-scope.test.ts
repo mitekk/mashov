@@ -31,7 +31,9 @@ import type { SchoolYearService } from '../../backend/src/common/school-year/sch
 
 const SEMEL_A = 662201;
 const SEMEL_B = 662202;
-const SEMELS = [SEMEL_A, SEMEL_B];
+/** The third school, for USER_A's second connection. */
+const SEMEL_A2 = 662203;
+const SEMELS = [SEMEL_A, SEMEL_B, SEMEL_A2];
 const YEAR = 2027;
 
 const USER_A = 'sh-user-a';
@@ -40,10 +42,19 @@ const ALL_USERS = [USER_A, USER_B];
 
 const CONN_A = 'sh-conn-a';
 const CONN_B = 'sh-conn-b';
+/** USER_A's SECOND connection, at a third school — T13's own shape: one parent, two schools. */
+const CONN_A2 = 'sh-conn-a2';
 
 const GUID_A = 'sh-guid-a';
 const GUID_B = 'sh-guid-b';
-const ALL_GUIDS = [GUID_A, GUID_B];
+/**
+ * USER_A's other child, at their other school.
+ *
+ * Deliberately NOT `sh-guid-a2`: the assertions below use `.includes(guid)`,
+ * and a guid that is a prefix of another makes them match the wrong key.
+ */
+const GUID_A2 = 'sh-guid-second';
+const ALL_GUIDS = [GUID_A, GUID_B, GUID_A2];
 
 /** Every run key this file writes, so cleanup keys on a list rather than a prefix match. */
 const RUN_SOURCES = [
@@ -54,6 +65,9 @@ const RUN_SOURCES = [
   `behavior:${GUID_A}`,
   `behavior:${GUID_B}`,
   `groups:${GUID_A}`,
+  `homework:${GUID_A2}`,
+  `behavior:${GUID_A2}`,
+  `groups:${GUID_A2}`,
 ];
 
 const MINUTE = 60 * 1000;
@@ -121,6 +135,9 @@ describe('Source health for one connection, with two schools in the table', () =
     for (const [id, userId, schoolCode] of [
       [CONN_A, USER_A, SEMEL_A],
       [CONN_B, USER_B, SEMEL_B],
+      // Same `userId` as CONN_A: a merged household with two schools, which is
+      // exactly the configuration T13 observed finding 4 in.
+      [CONN_A2, USER_A, SEMEL_A2],
     ] as Array<[string, string, number]>) {
       await prisma.householdConnection.create({
         data: {
@@ -150,7 +167,7 @@ describe('Source health for one connection, with two schools in the table', () =
     });
 
     await prisma.student.createMany({
-      data: [child(GUID_A, CONN_A), child(GUID_B, CONN_B)],
+      data: [child(GUID_A, CONN_A), child(GUID_B, CONN_B), child(GUID_A2, CONN_A2)],
     });
 
     // One child each, by the visibility edge — the authority per ADR-0031.
@@ -158,6 +175,7 @@ describe('Source health for one connection, with two schools in the table', () =
       data: [
         { studentGuid: GUID_A, householdConnectionId: CONN_A, lastSeenInRosterAt: new Date() },
         { studentGuid: GUID_B, householdConnectionId: CONN_B, lastSeenInRosterAt: new Date() },
+        { studentGuid: GUID_A2, householdConnectionId: CONN_A2, lastSeenInRosterAt: new Date() },
       ],
     });
 
@@ -178,6 +196,7 @@ describe('Source health for one connection, with two schools in the table', () =
     // `groups` only ever runs inside a connection-scoped refresh, so it has no
     // NULL-stamped row at all. A's ran and succeeded; B's guid has nothing.
     await run(`groups:${GUID_A}`, 'success', 30, CONN_A);
+    await run(`groups:${GUID_A2}`, 'success', 30, CONN_A2);
   }
 
   function makeSettings(): SettingsService {
@@ -217,6 +236,35 @@ describe('Source health for one connection, with two schools in the table', () =
       // goes red minutes after A's own `groups` succeeded.
       expect(groups.map((s) => s.status)).not.toContain('never_synced');
       expect(sources.find((s) => s.source === `groups:${GUID_A}`)?.status).toBe('fresh');
+    });
+
+    it('keeps the card per-connection in a merged two-school household', async () => {
+      // T13's own shape, and the one the first version of this file missed: ONE
+      // `appUser` with TWO connections, one child at each school. The unstamped
+      // cron put both children's guids in both snapshots, which is finding 4.
+      //
+      // The card is per connection by design — source health is a property of
+      // the connection that runs the syncs, and `SettingsController` picks one
+      // by `lastLoginAt`. So conn-A's card speaks for conn-A's child only.
+      // Dropping the parent's OTHER child here is the fix, not a regression:
+      // conn-A never syncs that child, so `groups:<guidA2>` on conn-A's card
+      // could only ever read `never_synced` — which is the red row the parent
+      // saw minutes after `groups` had succeeded at both schools.
+      const a = await makeSettings().getSourceHealth(CONN_A, USER_A);
+      const a2 = await makeSettings().getSourceHealth(CONN_A2, USER_A);
+
+      expect(a.sources.some((s) => s.source.includes(GUID_A2))).toBe(false);
+      expect(a2.sources.some((s) => s.source.includes(GUID_A))).toBe(false);
+
+      // And each card is accurate about its own connection's child, rather
+      // than red about the other's.
+      expect(a.sources.find((s) => s.source === `groups:${GUID_A}`)?.status).toBe('fresh');
+      expect(a2.sources.find((s) => s.source === `groups:${GUID_A2}`)?.status).toBe('fresh');
+      for (const { sources } of [a, a2]) {
+        expect(
+          sources.filter((s) => s.source.startsWith('groups')).map((s) => s.status),
+        ).not.toContain('never_synced');
+      }
     });
 
     it('never mentions the other household’s guid', async () => {

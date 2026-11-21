@@ -439,12 +439,27 @@ export class FreshnessService {
           // "Missing required Mashov credentials…" beneath it, shown on a
           // shared deployment to every household. Reading both from one set is
           // what keeps the two halves of the row talking about the same runs.
+          // Two picks, because they answer different questions. `lastAttemptAt`
+          // is the newest attempt of ANY status — if something is running, the
+          // row should say when it started. `status` and `lastErrorMessage`
+          // come from the newest *failed* attempt, because a newer `running`
+          // row is not evidence the failure went away: an in-flight refresh,
+          // or a run whose process died before `closeRun`, would otherwise sit
+          // in front of a `failed` row and take the status down to
+          // `never_synced` with a null error — silencing the one page that
+          // answers "is syncing working", permanently if the row is orphaned.
           let latestAttempt: SyncRun | undefined;
+          let latestFailure: SyncRun | undefined;
           for (const k of allRuns.keys()) {
             if (k !== source && !k.startsWith(`${source}:`)) continue;
             const r = allRuns.get(k);
-            if (r && (!latestAttempt || r.startedAt > latestAttempt.startedAt)) {
-              latestAttempt = r;
+            if (!r) continue;
+            if (!latestAttempt || r.startedAt > latestAttempt.startedAt) latestAttempt = r;
+            if (
+              r.status === 'failed' &&
+              (!latestFailure || r.startedAt > latestFailure.startedAt)
+            ) {
+              latestFailure = r;
             }
           }
 
@@ -454,7 +469,7 @@ export class FreshnessService {
             const ageMinutes =
               (now.getTime() - new Date(latestSuccess.endedAt).getTime()) / 60000;
             status = ageMinutes <= threshold.staleThresholdMinutes ? 'fresh' : 'stale';
-          } else if (latestAttempt?.status === 'failed') {
+          } else if (latestFailure) {
             status = 'failed';
           }
 
@@ -464,15 +479,15 @@ export class FreshnessService {
           // stale-but-failing source, which is the row most worth reading.
           const errorIsSpent =
             !!latestSuccess?.endedAt &&
-            !!latestAttempt &&
-            latestSuccess.endedAt > latestAttempt.startedAt;
+            !!latestFailure &&
+            latestSuccess.endedAt > latestFailure.startedAt;
 
           results.push({
             source,
             status,
             lastSuccessAt: latestSuccess?.endedAt?.toISOString() ?? null,
             lastAttemptAt: latestAttempt?.startedAt?.toISOString() ?? null,
-            lastErrorMessage: errorIsSpent ? null : latestAttempt?.errorMessage ?? null,
+            lastErrorMessage: errorIsSpent ? null : latestFailure?.errorMessage ?? null,
             fetchedCount: latestSuccess?.fetchedCount ?? null,
             staleThresholdMinutes: threshold.staleThresholdMinutes,
           });

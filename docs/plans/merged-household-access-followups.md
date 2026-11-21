@@ -1367,6 +1367,19 @@ with an unscoped one in one row; what was fixed is the mixing.
    serve with no second HTTP call, an unavailable list, a missing entry, a blank name, and
    invalidation) and three on each writer — the fallback firing, the login's own name
    preferred with no lookup at all, and `undefined` when neither source has one.
+   **A whole-branch review found the first cut of this wrong, and it is fixed.** The name
+   was stashed on a private field between the `await` and its reader. That is not safe
+   here: `FreshnessService.computeContentFreshness` resolves a household's connections
+   inside one `Promise.all` (`freshness.service.ts:162`), so a two-school parent opening
+   `/more` issues two `resolveForSchool` calls for **different** semels in one request, and
+   whichever response landed second overwrote the field. The wrong name was then cached for
+   six hours and written to `household_connection.schoolName` by the next login at that
+   school — **B4 reintroduced by the fix for finding 1**, one school's row captioned with
+   the other's name. The lookup now **returns** the matched entry instead, and the name has
+   its own cache keyed by semel. That cache also distinguishes "the list says this school
+   has no name" from "the list did not answer": only a reached list is cached, so one
+   transient blip no longer disables the fallback for the whole TTL. Three more cases,
+   all watched red, including the race.
 
 2. **`/inbox?school=X` filters the list but not the header badge.** `/mail/summary`
    takes no school parameter (`getSummary(userId?)`). A UX gap, not a correctness bug:
@@ -1411,6 +1424,13 @@ with an unscoped one in one row; what was fixed is the mixing.
    "Missing required Mashov credentials…" under it, exactly as the parent saw. Two unit
    cases in `freshness.service.spec.ts` carry both halves. The existing per-connection
    variant cases needed no change — neither was asserting the old `lastAttemptAt`.
+   The review found one thing the first cut got wrong: `latestAttempt` was the newest
+   attempt of **any** status, so a newer `running` row under a variant key — an in-flight
+   refresh, or one whose process died before `closeRun` — sat in front of a `failed` row and
+   took the status down to `never_synced` with a null error, silencing the page that answers
+   "is syncing working". Status and error now come from the newest **failed** attempt, while
+   `lastAttemptAt` stays the newest attempt of any status: if something is running, the row
+   should still say when it started. Watched red.
 
 4. **Three sources report `לא סונכרן` minutes after succeeding — two-school only.**
    `studentGuidsIn` derives the guid list from a snapshot that admits NULL-stamped runs.
@@ -1443,6 +1463,18 @@ with an unscoped one in one row; what was fixed is the mixing.
    A third case asserts an unlinked child's sources are still listed, and
    `household-isolation.test.ts` stays green — the guard that nothing a household
    legitimately sees was narrowed.
+   The review flagged, correctly, that the first integration fixture used two **separate**
+   households while T13's was **one** `appUser` with two connections — so finding 4's
+   actual configuration was neither proven nor disproven. A case for it now exists, and the
+   behaviour holds symmetrically: each connection's card speaks for its own child and drops
+   the parent's other one. That is the fix rather than a regression. The card is
+   per-connection by design — source health is a property of the connection that runs the
+   syncs, and `SettingsController` picks one by `lastLoginAt` — so conn-A never syncs the
+   child at school B, and `groups:<guidB>` on conn-A's card could only ever read
+   `never_synced`, which is the red row the parent saw minutes after `groups` had succeeded
+   at both schools. Intersecting against the caller's whole connection set instead would
+   keep the foreign guid and leave the finding open. That the one-connection pick means no
+   single card covers the whole household is the pre-existing design, unchanged here.
 
 5. **The refresh is permanently `partial`.** `school-activities.task.ts:103-108` does
    `new Date(item.endAnswerDate)` and throws on `NaN`. It fails on activity 3 at school A
@@ -1507,6 +1539,14 @@ with an unscoped one in one row; what was fixed is the mixing.
    closes the modal goes through one `showUnlink` helper, which clears the message with it:
    a stale error must not greet the next attempt as a failure that has not happened yet.
    Three new e2e cases in `tests/e2e/school-links.spec.ts`, all watched red.
+   The review found the same terminal state still open on the **bulk** path, which is the
+   one a one-school household takes: `SchoolLinksCard`'s per-row "ניתוק" routes to
+   `disconnectMutation` whenever only one school is linked — the very button the finding was
+   raised against — and that mutation had no `onError` **and** closed its modal before
+   firing, so a failure left nothing at all on screen and a parent believing they had
+   disconnected while still signed in with every school linked. It now keeps the modal open
+   (the success path navigates to sign-in and unmounts it anyway) and reports the failure
+   inline, through the same `showDisconnect` helper that clears a stale message. Watched red.
 
    **The other half did not reproduce, and stays open.** The e2e route the brief asked for
    first is `school-links.spec.ts:243` — a two-school `seed()` with `DELETE` → **204** —

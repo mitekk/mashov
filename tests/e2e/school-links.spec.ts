@@ -398,6 +398,38 @@ test.describe('School links — unlinking', () => {
     await expect(page.getByText('יימחקו כל הנתונים של כל בתי הספר')).toBeVisible();
   });
 
+  test('says so when the bulk disconnect fails, instead of pretending it worked', async ({
+    page,
+  }) => {
+    // The other half of T13 finding 6's terminal state, on the path a
+    // one-school household actually takes: `SchoolLinksCard`'s per-row "ניתוק"
+    // routes to the BULK mutation whenever only one school is linked, and that
+    // mutation closed its modal BEFORE firing. So a failure left nothing at
+    // all on screen and a parent believing they had disconnected while still
+    // signed in with every school linked.
+    await seed(page, { schools: [SCHOOL_A], links: [link(SCHOOL_A)] });
+    await page.route('**/api/v1/school-links', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        await route.fulfill({
+          status: 500,
+          json: { error: { code: 'UPSTREAM_ERROR', message: 'boom' } },
+        });
+        return;
+      }
+      await route.fulfill({ json: { data: [link(SCHOOL_A)] } });
+    });
+    const more = new MorePage(page);
+    await more.navigate();
+
+    await more.bulkDisconnectButton.click();
+    await page.getByTestId('settings-disconnect-confirm-btn').click();
+
+    await expect(page.getByTestId('settings-disconnect-error')).toBeVisible();
+    // Still here, and still able to retry or cancel.
+    await expect(more.morePageContainer).toBeVisible();
+    expect(page.url()).toContain('/more');
+  });
+
   test('unlinking every school returns to sign-in', async ({ page }) => {
     await seed(page, { schools: [SCHOOL_A], links: [link(SCHOOL_A)] });
     const more = new MorePage(page);

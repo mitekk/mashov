@@ -40,6 +40,14 @@ export default function MorePage() {
 
   // Disconnect confirm modal
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  // What went wrong with the last bulk disconnect, shown inside its modal.
+  const [disconnectError, setDisconnectError] = useState<string | null>(null);
+
+  /** Open or close the bulk modal, always clearing the last error with it. */
+  const showDisconnect = (open: boolean) => {
+    setDisconnectError(null);
+    setShowDisconnectConfirm(open);
+  };
   // The single school a per-row "ניתוק" is asking about, or null.
   const [pendingUnlink, setPendingUnlink] = useState<SchoolLink | null>(null);
   // What went wrong with the last unlink, shown inside the modal.
@@ -79,6 +87,21 @@ export default function MorePage() {
       // data that no longer exists. `clear()` is right here and nowhere else.
       queryClient.clear();
       router.push('/auth/sign-in');
+    },
+    // The other half of T13 finding 6's terminal state. This mutation had no
+    // `onError` either, and its confirm button closed the modal BEFORE firing
+    // — so a failure left nothing at all on screen and a parent believing they
+    // had disconnected while still signed in with every school linked. It is
+    // the path a one-school household takes: `SchoolLinksCard`'s per-row
+    // "ניתוק" routes here whenever only one school is linked, which is the very
+    // button the finding was raised against.
+    onError: (err) => {
+      if (err instanceof ApiError) {
+        const code = (err.body as { error?: { code?: string } })?.error?.code;
+        setDisconnectError(schoolLinkErrorMessage(code));
+        return;
+      }
+      setDisconnectError(SCHOOL_LINK_FALLBACK_MESSAGE);
     },
   });
 
@@ -157,7 +180,7 @@ export default function MorePage() {
               onUnlink={(link) =>
                 // The last school is the sign-out-and-wipe case, so it routes
                 // to the bulk confirm, which says so.
-                schoolLinks.length <= 1 ? setShowDisconnectConfirm(true) : showUnlink(link)
+                schoolLinks.length <= 1 ? showDisconnect(true) : showUnlink(link)
               }
             />
           </section>
@@ -210,7 +233,7 @@ export default function MorePage() {
           </button>
           <button
             data-testid="settings-disconnect-btn"
-            onClick={() => setShowDisconnectConfirm(true)}
+            onClick={() => showDisconnect(true)}
             className="w-full rounded-xl border border-destructive/40 px-4 py-3 text-sm font-medium text-destructive hover:bg-destructive/5 transition-colors"
           >
             {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
@@ -289,17 +312,29 @@ export default function MorePage() {
                 ? 'זה בית הספר היחיד המחובר. ניתוק שלו ימחק את כל המידע ויוציא אותך מהחשבון.'
                 : 'יימחקו כל הנתונים של כל בתי הספר, ותצאו מהחשבון.'}
             </p>
+            {disconnectError && (
+              <p
+                role="alert"
+                data-testid="settings-disconnect-error"
+                className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+              >
+                {disconnectError}
+              </p>
+            )}
             <div className="flex gap-3 pt-1">
               <button
-                onClick={() => setShowDisconnectConfirm(false)}
+                onClick={() => showDisconnect(false)}
                 className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
               >
                 ביטול
               </button>
               <button
                 data-testid="settings-disconnect-confirm-btn"
+                // Deliberately does NOT close the modal first. The success
+                // path navigates to sign-in and unmounts it anyway, and
+                // closing pre-emptively is what made a failure silent.
                 onClick={() => {
-                  setShowDisconnectConfirm(false);
+                  setDisconnectError(null);
                   disconnectMutation.mutate();
                 }}
                 disabled={disconnectMutation.isPending}
