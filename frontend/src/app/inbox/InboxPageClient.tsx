@@ -251,6 +251,22 @@ function InboxPageContent() {
 
       <SchoolFilterChips value={schoolFilter} onChange={setSchoolFilter} />
 
+      {/* T13 finding 2. The nav badge is household-global and must stay that
+          way: a parent filtered to one school still needs to know the other
+          has mail. So the badge and this list legitimately disagree while a
+          filter is on, and nothing said so — a number that contradicts the
+          screen beneath it reads as a bug rather than as a scope. Precedent
+          for explaining the filter in words is the filtered empty state
+          below. */}
+      {hasSchoolFilter && (
+        <p
+          data-testid="inbox-badge-scope-note"
+          className="px-1 text-xs text-muted-foreground"
+        >
+          הסימון שליד &quot;דואר&quot; מונה את כל בתי הספר
+        </p>
+      )}
+
       {hasSelection && (
         <section
           data-testid="inbox-bulk-actions"

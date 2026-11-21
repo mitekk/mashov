@@ -1354,6 +1354,22 @@ suites pass over both.
    the nav badge must stay household-global, so the two numbers legitimately differ —
    but nothing on screen says so.
 
+   **Closed** (`feat(inbox): say that the mail badge counts every school while filtered`).
+   The badge is **unchanged** and `getSummary` is untouched — scoping it would be the
+   regression, not the fix. `/inbox` now renders a muted caption under the chip row
+   whenever a school filter is on: `הסימון שליד "דואר" מונה את כל בתי הספר`. Precedent for
+   explaining the filter in words is the filtered empty state on the same screen.
+
+   One correction to this entry while proving it: the nav badge's number is
+   `DashboardService.getSummary`'s `newConversations`, i.e.
+   `unreadBadge(prisma, userId, mailScope)` — not `MailService.getSummary`, which is what
+   `/mail/summary` serves. Both are household-global by `userId` with no school parameter,
+   so the finding's substance is unchanged, but a test that routes `/mail/summary` does not
+   touch the badge. Two e2e cases in `tests/e2e/school-filter.spec.ts`, the caption one
+   watched red; the second asserts the caption is absent with no filter, and the first also
+   pins the badge at the household-global count, which is what stops a later "fix" scoping
+   it.
+
 3. **A green source-health row with a red error under it.** `sync_run` holds
    `source='mail_inbox'`, connection `NULL`, `failed`, from the 16:07 cron tick that ran
    before any connection existed. The branch-wide NULL rule

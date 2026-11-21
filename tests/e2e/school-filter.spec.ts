@@ -385,6 +385,57 @@ test.describe('School filter — inbox', () => {
     await expect(page.getByText('אין דואר מבית הספר הזה')).toBeVisible();
   });
 
+  test('says the mail badge counts every school while a filter is on', async ({ page }) => {
+    // T13 finding 2. The nav badge's number is `DashboardService.getSummary`'s
+    // `newConversations`, which is `unreadBadge(prisma, userId, mailScope)` —
+    // household-global by `userId`, with no school parameter. (The finding named
+    // `MailService.getSummary`; both are household-global the same way, and the
+    // badge reads the dashboard's.) That is deliberate: a parent filtered to one
+    // school still needs to know the other has mail. So the badge and the list
+    // beneath it legitimately differ, and nothing on screen said so.
+    await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
+    // Registered after the seed's, so it wins: a non-zero household-global
+    // count is the whole point of the caption.
+    await page.route('**/api/v1/dashboard', (route) =>
+      route.fulfill({
+        json: {
+          freshness: { state: 'fresh', lastSyncAt: null, staleSources: [] },
+          summary: {
+            newConversations: 64,
+            recentHomeworkCount: 0,
+            recentBehaviorCount: 0,
+            childrenCount: 2,
+          },
+          feed: [],
+          children: [],
+        },
+      }),
+    );
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1, [B_CONVERSATION]],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1, [SCHOOL_B.id]: [B_CONVERSATION] },
+    });
+
+    await page.goto(`/inbox?school=${SCHOOL_B.semel}`);
+
+    await expect(page.getByTestId('inbox-badge-scope-note')).toBeVisible();
+    // The badge itself does NOT scope. That is the behaviour the caption
+    // explains, so asserting it here is what stops a later "fix" scoping it.
+    await expect(page.getByTestId('nav-inbox')).toContainText('64');
+  });
+
+  test('says nothing about the badge when no filter is on', async ({ page }) => {
+    await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1, [B_CONVERSATION]],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1, [SCHOOL_B.id]: [B_CONVERSATION] },
+    });
+
+    await page.goto('/inbox');
+
+    await expect(page.getByTestId('inbox-badge-scope-note')).toHaveCount(0);
+  });
+
   test('the filtered empty state clears the filter', async ({ page }) => {
     await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
     await routeConversations(page, {
