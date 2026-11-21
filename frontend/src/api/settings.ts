@@ -47,5 +47,13 @@ export async function fetchSourceHealth(): Promise<SourceHealthResponse> {
 
 export async function fetchProfile(): Promise<ParentProfile[]> {
   const response = await apiFetch<ParentProfile[] | null>('/settings/profile');
-  return Array.isArray(response) ? response : [];
+  if (!Array.isArray(response)) return [];
+
+  // `children` defaulted here rather than guarded at every render site: a
+  // backend older than this field is a live rollout state, and the card maps
+  // over the array.
+  return response.map((entry) => ({
+    ...entry,
+    children: Array.isArray(entry.children) ? entry.children : [],
+  }));
 }

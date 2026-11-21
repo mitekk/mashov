@@ -406,6 +406,14 @@ export interface SourceHealthResponse {
   contentFreshness: ContentFreshness | null;
 }
 
+/** One child of one school, as the parent-details card lists them. */
+export interface ProfileChild {
+  studentGuid: string;
+  fullName: string;
+  classCode: string;
+  classNum: number;
+}
+
 export interface ParentProfile {
   /// Which linked school these details were read from. `upstreamUserId` is a
   /// per-school id, so a two-school household has one entry per school and
@@ -419,6 +427,15 @@ export interface ParentProfile {
   schoolYear: number;
   schoolCode: number;
   detailsState: number;
+  /**
+   * The children THIS school lists, from the visibility edge rather than from
+   * the name string.
+   *
+   * `displayName` used to carry one of them in brackets -- the creating
+   * credential's -- which is how both of a two-school parent's cards came to
+   * name the same child. `[]` while a school's first roster sync is pending.
+   */
+  children: ProfileChild[];
   updatedAt: string;
 }
 
@@ -588,7 +605,13 @@ export interface MeSchool {
 export interface AppUser {
   mashovUserId: string;
   username: string;
+  /** The parent's own name; the credential's `[child class]` tag is stripped. */
   displayName: string;
+  /**
+   * How many children the household has, over the same predicate
+   * `GET /children` uses -- so the header and that page cannot disagree.
+   */
+  childrenCount: number;
   /**
    * Every connected school, newest sign-in first; `[]` when none.
    *

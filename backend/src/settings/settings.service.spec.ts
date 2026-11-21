@@ -129,6 +129,7 @@ describe('SettingsService', () => {
           schoolYear: 2026,
           schoolCode: 1234,
           detailsState: 2,
+          children: [],
           updatedAt: '2026-03-12T09:00:00.000Z',
         },
       ]);
@@ -171,6 +172,26 @@ describe('SettingsService', () => {
             { id: 'conn-b', schoolName: 'School B', schoolYear: 2026, schoolCode: 2222 },
             { id: 'conn-a', schoolName: 'School A', schoolYear: 2026, schoolCode: 1111 },
           ]),
+          studentConnectionFindMany: jest.fn().mockResolvedValue([
+            {
+              householdConnectionId: 'conn-a',
+              student: {
+                studentGuid: 'guid-nelly',
+                fullName: 'נלי',
+                classCode: 'ד',
+                classNum: 3,
+              },
+            },
+            {
+              householdConnectionId: 'conn-b',
+              student: {
+                studentGuid: 'guid-mika',
+                fullName: 'מיקה',
+                classCode: 'ז',
+                classNum: 8,
+              },
+            },
+          ]),
         }),
         makeMockFreshnessService({}),
       );
@@ -191,6 +212,131 @@ describe('SettingsService', () => {
       expect(
         result.find((entry) => entry.schoolName === 'School B')?.email,
       ).toBe('parent@school-b.example');
+    });
+
+    // R8's residual, and the reason both cards read
+    // "קורס דמיטרי [מיקה ז8]": `ParentProfile.displayName` is never written,
+    // so every card falls through to the one global `AppUser.displayName`,
+    // which carries the CREATING credential's child in brackets. Stripped
+    // name on both cards; the children come from the roster instead, per
+    // school.
+    it("strips the credential child tag and lists each school's own children", async () => {
+      const service = new SettingsService(
+        makeMockPrisma({
+          appUserFindUnique: jest.fn().mockResolvedValue({
+            mashovUserId: 'mashov-a',
+            displayName: 'קורס דמיטרי [מיקה ז8]',
+          }),
+          profileFindMany: jest.fn().mockResolvedValue([
+            {
+              upstreamUserId: 'mashov-a',
+              displayName: null,
+              email: 'parent@school-a.example',
+              cellphone: '050-1111111',
+              detailsState: 2,
+              updatedAt: new Date('2026-03-12T09:00:00Z'),
+              householdConnectionId: 'conn-a',
+            },
+            {
+              upstreamUserId: 'mashov-b',
+              displayName: null,
+              email: 'parent@school-b.example',
+              cellphone: '050-2222222',
+              detailsState: 2,
+              updatedAt: new Date('2026-03-13T09:00:00Z'),
+              householdConnectionId: 'conn-b',
+            },
+          ]),
+          householdFindMany: jest.fn().mockResolvedValue([
+            { id: 'conn-b', schoolName: 'חטיבת נעורים בראשית', schoolYear: 2027, schoolCode: 2222 },
+            { id: 'conn-a', schoolName: 'יצחק נבון', schoolYear: 2027, schoolCode: 1111 },
+          ]),
+          studentConnectionFindMany: jest.fn().mockResolvedValue([
+            {
+              householdConnectionId: 'conn-b',
+              student: {
+                studentGuid: 'guid-mika',
+                fullName: 'מיקה',
+                classCode: 'ז',
+                classNum: 8,
+              },
+            },
+            {
+              householdConnectionId: 'conn-a',
+              student: {
+                studentGuid: 'guid-nelly',
+                fullName: 'נלי',
+                classCode: 'ד',
+                classNum: 3,
+              },
+            },
+          ]),
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      const result = await service.getProfile('app-user-1');
+
+      expect(result.map((entry) => entry.displayName)).toEqual([
+        'קורס דמיטרי',
+        'קורס דמיטרי',
+      ]);
+      // Each card carries ONLY its own school's children -- the whole point.
+      expect(
+        result.map((entry) => [
+          entry.schoolName,
+          entry.children.map((child) => child.fullName),
+        ]),
+      ).toEqual([
+        ['חטיבת נעורים בראשית', ['מיקה']],
+        ['יצחק נבון', ['נלי']],
+      ]);
+      expect(result[0].children[0]).toEqual({
+        studentGuid: 'guid-mika',
+        fullName: 'מיקה',
+        classCode: 'ז',
+        classNum: 8,
+      });
+    });
+
+    it('counts children over the visibility edge, for active students only', async () => {
+      const studentConnectionFindMany = jest.fn().mockResolvedValue([]);
+      const service = new SettingsService(
+        makeMockPrisma({
+          profileFindMany: jest.fn().mockResolvedValue([
+            {
+              upstreamUserId: 'mashov-1',
+              displayName: null,
+              email: 'parent@example.com',
+              cellphone: '050-1234567',
+              detailsState: 2,
+              updatedAt: new Date('2026-03-12T09:00:00Z'),
+              householdConnectionId: 'conn-1',
+            },
+          ]),
+          householdFindMany: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 'conn-1', schoolName: 'Test School', schoolYear: 2026, schoolCode: 1234 },
+            ]),
+          studentConnectionFindMany,
+        }),
+        makeMockFreshnessService({}),
+      );
+
+      const result = await service.getProfile('app-user-1');
+
+      // `[]`, not undefined: a school whose first roster sync has not landed
+      // renders no children line, and the card must not throw on it.
+      expect(result[0].children).toEqual([]);
+      expect(studentConnectionFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            householdConnectionId: { in: ['conn-1'] },
+            student: { isActive: true },
+          },
+        }),
+      );
     });
 
     it('returns an empty list when no profile exists for any school', async () => {

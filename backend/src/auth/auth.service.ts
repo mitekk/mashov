@@ -22,7 +22,9 @@ import {
 import {
   connectionStudentWhere,
   linkStudentsToConnection,
+  visibleStudentWhere,
 } from '../common/student-links';
+import { parentDisplayName } from '../common/parent-name';
 
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SECONDS = 900; // 15 minutes
@@ -561,6 +563,7 @@ export class AuthService {
     mashovUserId: string;
     username: string;
     displayName: string;
+    childrenCount: number;
     schools: MeSchool[];
   }> {
     const appUser = await this.prisma.appUser.findUnique({
@@ -578,13 +581,27 @@ export class AuthService {
     // GET /school-links carries only the management-only fields on top.
     const schools = await this.schoolLinksService.listMeSchools(userId);
 
+    // Counted with the predicate GET /children uses, not over
+    // `StudentConnection` directly: `visibleStudentWhere` deliberately admits
+    // a child no connection links yet (ADR-0031), and a header that says "2
+    // children" over a page listing 3 is a bug the parent can see. One
+    // predicate, so the two cannot disagree.
+    const childrenCount = await this.prisma.student.count({
+      where: { ...(await visibleStudentWhere(this.prisma, userId)), isActive: true },
+    });
+
     // `connectedSchool` used to ride along here as `schools[0]` under a
     // singular name. Deleted in T14: a household with two schools has no
     // primary one, so there was no query that could have made it honest.
     return {
       mashovUserId: appUser.mashovUserId,
       username: appUser.username,
-      displayName: appUser.displayName,
+      // `credential.displayName` carries ONE of the creating school's children
+      // in brackets, and this is the single global copy of it -- so without
+      // the strip the header names that child above every school's content.
+      // `childrenCount` is the honest version of what the tag was implying.
+      displayName: parentDisplayName(appUser.displayName),
+      childrenCount,
       schools,
     };
   }
