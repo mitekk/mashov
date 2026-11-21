@@ -25,7 +25,9 @@ const HOMEWORK_ROW = {
   lessonDate: REPORT_FOR,
 };
 
-function makeHarness(options: { behavior?: unknown[]; homework?: unknown[] } = {}) {
+function makeHarness(
+  options: { behavior?: unknown[]; homework?: unknown[]; activities?: unknown[] } = {},
+) {
   const prisma = {
     student: {
       findUnique: jest.fn().mockResolvedValue({
@@ -38,6 +40,12 @@ function makeHarness(options: { behavior?: unknown[]; homework?: unknown[] } = {
     },
     homeworkItem: {
       findMany: jest.fn().mockResolvedValue(options.homework ?? []),
+    },
+    schoolActivity: {
+      findMany: jest.fn().mockResolvedValue(options.activities ?? []),
+    },
+    releaseRequest: {
+      findMany: jest.fn().mockResolvedValue([]),
     },
   } as unknown as PrismaService;
 
@@ -178,5 +186,36 @@ describe('normalizeGender', () => {
     expect(normalizeGender(null)).toBeNull();
     expect(normalizeGender(undefined)).toBeNull();
     expect(normalizeGender('other')).toBeNull();
+  });
+
+  it('never re-reads an activity with no response deadline', async () => {
+    // `DigestCheckerService` excludes NULL deadlines by construction — its
+    // `endAnswerDate: { gte, lt }` filter is never true against NULL — so an
+    // undated activity is correctly not reportable. This re-read had no such
+    // filter, and since `endAnswerDate` became nullable an undated row became
+    // reachable through it: the parent would be reminded about a form with no
+    // deadline, printed as a bare title. The two reads must agree.
+    const harness = makeHarness({
+      activities: [
+        {
+          activityId: 7,
+          title: 'טיול שנתי',
+          activityStartDate: REPORT_FOR,
+          endAnswerDate: TOMORROW,
+        },
+      ],
+    });
+
+    await harness.service.collect({
+      studentGuid: 'stu-1',
+      userId: 'user-1',
+      candidates: [candidate({ itemType: 'activity', itemId: '7' })],
+      reportFor: REPORT_FOR,
+    });
+
+    const [args] = (
+      harness.prisma as unknown as { schoolActivity: { findMany: jest.Mock } }
+    ).schoolActivity.findMany.mock.calls[0] as [{ where: Record<string, unknown> }];
+    expect(args.where.endAnswerDate).toEqual({ not: null });
   });
 });

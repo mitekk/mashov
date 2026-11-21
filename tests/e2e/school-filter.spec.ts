@@ -424,6 +424,27 @@ test.describe('School filter — inbox', () => {
     await expect(page.getByTestId('nav-inbox')).toContainText('64');
   });
 
+  test('says nothing about the badge when there is no chip row to explain', async ({
+    page,
+  }) => {
+    // `SchoolFilterChips` renders null below two schools, but the filter lives
+    // in the URL — so a parent who unlinks school B and returns to a bookmarked
+    // `/inbox?school=<A>` got a sentence about "every school" above one school,
+    // no chip row, and nothing to clear. The caption explains the chips, so it
+    // is gated on the same condition they are.
+    await seed(page, { schools: [SCHOOL_A], children: [CHILD_A] });
+    await routeConversations(page, {
+      unfiltered: [A_PAGE_1],
+      bySchool: { [SCHOOL_A.id]: A_PAGE_1 },
+    });
+
+    await page.goto(`/inbox?school=${SCHOOL_A.semel}`);
+    await expect(page.getByTestId('conversation-list')).toBeVisible();
+
+    await expect(page.getByTestId('school-filter-chips')).toHaveCount(0);
+    await expect(page.getByTestId('inbox-badge-scope-note')).toHaveCount(0);
+  });
+
   test('says nothing about the badge when no filter is on', async ({ page }) => {
     await seed(page, { schools: [SCHOOL_A, SCHOOL_B], children: [CHILD_A, CHILD_B] });
     await routeConversations(page, {

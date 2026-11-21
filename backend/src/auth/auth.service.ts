@@ -113,6 +113,7 @@ export class AuthService {
     // connections on the year they were created with, which is what froze
     // production on 2025/26. School + username is the stable identity, and it
     // is now a unique key, so this is a findUnique rather than a findFirst.
+
     const existingConnBeforeLogin = await this.prisma.householdConnection.findUnique({
       where: { schoolCode_username: { schoolCode: Number(semel), username } },
       select: { id: true, mashovUniqueId: true, userId: true },
@@ -207,6 +208,16 @@ export class AuthService {
     const displayName = loginData.credential?.displayName ?? username;
     const schoolSettings = loginData.accessToken?.schoolSettings;
 
+    if (!mashovUserId) {
+      throw new UnauthorizedException({
+        error: {
+          code: 'INVALID_CREDENTIALS',
+          message: 'Invalid credentials, please try again',
+          details: [],
+        },
+      });
+    }
+
     // T13 finding 1: some schools' login omits `schoolSettings.schoolName`
     // entirely, and passing that through stored NULL — which the
     // `?? String(schoolCode)` fallbacks downstream then turned into a bare
@@ -222,16 +233,6 @@ export class AuthService {
       schoolSettings?.schoolName ??
       (await this.schoolYearService.schoolNameFor(Number(semel))) ??
       undefined;
-
-    if (!mashovUserId) {
-      throw new UnauthorizedException({
-        error: {
-          code: 'INVALID_CREDENTIALS',
-          message: 'Invalid credentials, please try again',
-          details: [],
-        },
-      });
-    }
 
     const encryptedPassword = this.encryptionService.encrypt(password);
 

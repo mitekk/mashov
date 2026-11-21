@@ -1402,6 +1402,14 @@ with an unscoped one in one row; what was fixed is the mixing.
    pins the badge at the household-global count, which is what stops a later "fix" scoping
    it.
 
+   One minor folded in afterwards: the caption is gated on the chip row existing, not only
+   on the filter. `SchoolFilterChips` renders null below two schools while the filter lives
+   in the URL, so a parent who unlinked their second school and returned to a bookmarked
+   `?school=` got a sentence about "every school" above one school, with no chip row and
+   nothing to clear. It is still shown when the badge happens to be `0`, where there is no
+   discrepancy to explain — coupling this page to the dashboard query to suppress that is
+   more than the sentence is worth.
+
 3. **A green source-health row with a red error under it.** `sync_run` holds
    `source='mail_inbox'`, connection `NULL`, `failed`, from the 16:07 cron tick that ran
    before any connection existed. The branch-wide NULL rule
@@ -1431,6 +1439,10 @@ with an unscoped one in one row; what was fixed is the mixing.
    "is syncing working". Status and error now come from the newest **failed** attempt, while
    `lastAttemptAt` stays the newest attempt of any status: if something is running, the row
    should still say when it started. Watched red.
+
+   One minor folded in afterwards: `lastErrorMessage` now only ever comes from a failed
+   run, so a `success` or `running` row's stale `errorMessage` can no longer reach the row
+   at all.
 
 4. **Three sources report `לא סונכרן` minutes after succeeding — two-school only.**
    `studentGuidsIn` derives the guid list from a snapshot that admits NULL-stamped runs.
@@ -1511,6 +1523,19 @@ with an unscoped one in one row; what was fixed is the mixing.
    three watched red: a batch with one undated activity upserts all three and reports
    `success` with `failedCount: 0`, and a malformed non-empty date and a bad
    `activityStartDate` both still count as failed items.
+
+   Two minors folded in afterwards. **A non-string date is now a failure rather than
+   1970:** `0` and `false` are present and not `''`, so they reached `new Date()` and
+   produced a *valid* Date at the epoch, storing a silent 1970 deadline. Mashov documents
+   both fields as ISO strings, so anything else is an unexpected shape and gets named in
+   the log. Both now go through one `parseActivityDate` helper. And **the digest
+   collector's re-read excludes NULL deadlines too** (`endAnswerDate: { not: null }`), so
+   it agrees with the checker: the checker's `{ gte, lt }` filter excludes NULL by
+   construction, but the collector's re-read had no filter, and the nullable column made an
+   undated activity reachable through it — the parent would have been reminded about a form
+   with no deadline, printed as a bare title. Still open there, pre-existing and recorded in
+   a comment: `activityId` is a per-school counter, so in a two-school household id `1`
+   matches both schools' rows.
 
 6. **The unlink modal does not close, and a failed unlink is silent.** Observed by the
    parent during item 7. The backend log shows two `DELETE

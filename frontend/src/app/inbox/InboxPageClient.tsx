@@ -52,6 +52,9 @@ function InboxPageContent() {
   // each row of chips owns its own key.
   const schoolFilter = parseSchoolFilter(searchParams.get('school'), me?.schools ?? []);
   const hasSchoolFilter = schoolFilter !== ALL_SCHOOLS;
+  // The same condition `SchoolFilterChips` renders on. The caption explains the
+  // chips, so it must not outlive them.
+  const hasChipRow = (me?.schools.length ?? 0) > 1;
   // The chip and the URL are keyed by semel, while `?schoolId=` wants a
   // `HouseholdConnection.id`. `me.schools` carries both, so the mapping lives
   // here rather than in the query param.
@@ -257,8 +260,14 @@ function InboxPageContent() {
           filter is on, and nothing said so — a number that contradicts the
           screen beneath it reads as a bug rather than as a scope. Precedent
           for explaining the filter in words is the filtered empty state
-          below. */}
-      {hasSchoolFilter && (
+          below.
+
+          Gated on `hasChipRow` as well as on the filter: `SchoolFilterChips`
+          renders null below two schools while the filter lives in the URL, so a
+          parent who unlinks their second school and returns to a bookmarked
+          `?school=` would otherwise get a sentence about "every school" above
+          one school, with no chip row and nothing to clear. */}
+      {hasSchoolFilter && hasChipRow && (
         <p
           data-testid="inbox-badge-scope-note"
           className="px-1 text-xs text-muted-foreground"

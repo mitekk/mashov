@@ -162,6 +162,38 @@ describe('SchoolActivitiesTask', () => {
       expect(result.summary.failedCount).toBe(1);
     });
 
+    it('fails a non-string deadline rather than storing 1970', async () => {
+      // `0` and `false` are present and not `''`, so they reached `new Date()`
+      // and produced a VALID Date at the epoch — a 1970 response deadline
+      // stored silently. Mashov documents this field as a string; anything
+      // else is an unexpected shape, and naming it in the log beats inventing
+      // a deadline the school never set.
+      mashovClient.getForConnection.mockResolvedValue([
+        makeActivity({ id: 1, endAnswerDate: 0 }),
+        makeActivity({ id: 2, endAnswerDate: false }),
+        makeActivity({ id: 3, endAnswerDate: { when: 'soon' } }),
+      ]);
+
+      const result = await task.execute();
+
+      expect(prisma.schoolActivity.upsert).not.toHaveBeenCalled();
+      expect(result.summary.failedCount).toBe(3);
+      expect(result.errorMessages.join(' ')).toContain('endAnswerDate');
+    });
+
+    it('fails a non-string start date rather than storing 1970', async () => {
+      // Same class on the field that was already required.
+      mashovClient.getForConnection.mockResolvedValue([
+        makeActivity({ id: 1, activityStartDate: 0 }),
+      ]);
+
+      const result = await task.execute();
+
+      expect(prisma.schoolActivity.upsert).not.toHaveBeenCalled();
+      expect(result.summary.failedCount).toBe(1);
+      expect(result.errorMessages.join(' ')).toContain('activityStartDate');
+    });
+
     it('fails an activity whose start date is absent', async () => {
       mashovClient.getForConnection.mockResolvedValue([
         makeActivity({ id: 2, activityStartDate: undefined }),

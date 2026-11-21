@@ -12,7 +12,7 @@ import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 interface MashovSchoolActivity {
   id: number;
   createTime?: string | null;
-  activityStartDate: string;
+  activityStartDate?: string | null;
   activityEndDate?: string | null;
   activityType?: number;
   title?: string | null;
@@ -24,6 +24,30 @@ interface MashovSchoolActivity {
    */
   endAnswerDate?: string | null;
   isAnswered?: boolean;
+}
+
+/**
+ * One upstream date field, as a `Date` or `null`.
+ *
+ * `null` means the field was absent, null, or a blank string — a legitimate
+ * "not set" for `endAnswerDate`, and caught separately by the caller for
+ * `activityStartDate`, which has nothing to show without one. Throws on
+ * anything that is present but not a parseable ISO string, including a
+ * non-string: Mashov documents these as strings, and `0`/`false` are not `''`
+ * so they would otherwise parse to a valid epoch Date and store as 1970.
+ */
+function parseActivityDate(value: unknown, field: string, activityId: number): Date | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw new Error(`non-string ${field} on activity ${activityId}: ${JSON.stringify(value)}`);
+  }
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`unparseable ${field} on activity ${activityId}: ${JSON.stringify(value)}`);
+  }
+  return parsed;
 }
 
 /**
@@ -107,12 +131,19 @@ export class SchoolActivitiesTask {
 
         for (const item of rows) {
           try {
-            const activityStartDate = new Date(item.activityStartDate);
-            if (Number.isNaN(activityStartDate.getTime())) {
-              throw new Error(
-                `unparseable activityStartDate on activity ${item.id}: ` +
-                  `${JSON.stringify(item.activityStartDate)}`,
-              );
+            // Mashov sends both dates as ISO strings. Anything else — `0`,
+            // `false`, an object — is an unexpected shape, and the two falsy
+            // ones are the dangerous kind: they are not `''`, so they used to
+            // reach `new Date()` and produce a *valid* Date at the epoch, which
+            // stored silently as a 1970 deadline. Naming the shape in one log
+            // line beats inventing a date the school never set.
+            const activityStartDate = parseActivityDate(
+              item.activityStartDate,
+              'activityStartDate',
+              item.id,
+            );
+            if (!activityStartDate) {
+              throw new Error(`missing activityStartDate on activity ${item.id}`);
             }
 
             // Absent, null or blank means "no response deadline", and stores as
@@ -125,18 +156,11 @@ export class SchoolActivitiesTask {
             // blanket `catch` here: a real failure stays a failure, and the raw
             // value rides along in the message so the next live run names the
             // shape in one log line rather than another attended session.
-            const rawEndAnswerDate =
-              typeof item.endAnswerDate === 'string' ? item.endAnswerDate.trim() : item.endAnswerDate;
-            let endAnswerDate: Date | null = null;
-            if (rawEndAnswerDate !== null && rawEndAnswerDate !== undefined && rawEndAnswerDate !== '') {
-              endAnswerDate = new Date(rawEndAnswerDate);
-              if (Number.isNaN(endAnswerDate.getTime())) {
-                throw new Error(
-                  `unparseable endAnswerDate on activity ${item.id}: ` +
-                    `${JSON.stringify(item.endAnswerDate)}`,
-                );
-              }
-            }
+            const endAnswerDate = parseActivityDate(
+              item.endAnswerDate,
+              'endAnswerDate',
+              item.id,
+            );
             const activityEndDate = item.activityEndDate
               ? new Date(item.activityEndDate)
               : activityStartDate;
