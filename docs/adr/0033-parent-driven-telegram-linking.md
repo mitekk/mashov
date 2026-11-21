@@ -41,6 +41,15 @@ to `https://t.me/<bot>?start=<code>`, and presses START. A long poller reads
 `message.chat.id` out of that update, matches the code, writes one `digest_recipient` row per
 chosen child, and sends a confirmation message immediately. The parent types nothing.
 
+### Only a private chat may be bound
+
+`message.chat.type` must be `private`. The deep link is a URL, and a URL gets forwarded — into
+a class group or a family group the bot happens to belong to, by a parent who means well.
+Binding there would point every future digest at that group: a named child's conduct remarks,
+to everyone in it, with nothing in `/more` to distinguish a group chat id from a private one.
+The wizard's button always opens a private chat, so refusing costs nothing. The code is left
+unspent so the parent can still complete the link properly.
+
 ### Why the parent links their own account, rather than an operator doing it
 
 Making them *also* find `@userinfobot` and retype a number buys nothing and verifies nothing:
@@ -124,14 +133,34 @@ there is a parent on the other end who can be told. At consume time there is not
 that is no longer visible is **skipped** — one child having left must not cost the parent their
 other child's updates.
 
-### Recipient creation is scoped to the caller's own children
+### Recipient creation is scoped to the caller's own children — strictly
 
 ADR-0026 accepted that `DigestRecipientService.create` validated `studentGuid` only against
 the global active roster, because `Student` has no `userId` FK. ADR-0031 supplied the missing
-edge: `StudentConnection` *is* the set of connections that may see a child, and `canSeeStudent`
-is that answer. `create` now calls it and answers `403` otherwise. **This supersedes ADR-0026's
-limitation paragraphs**, which have been corrected rather than left contradicting the code,
-along with `docs/api-contract.md` note 9.
+edge: `StudentConnection` *is* the set of connections that may see a child. **This supersedes
+ADR-0026's limitation paragraphs**, which have been corrected rather than left contradicting
+the code, along with `docs/api-contract.md` note 9.
+
+The check is deliberately **not** `canSeeStudent`, and that distinction is the whole of it.
+`canSeeStudent` returns `true` for a child no connection lists, and it must: on the read side
+"ownership unknown" means "link on the next roster refresh", the shared env-credential session
+legitimately writes children it cannot attribute, and excluding them would empty the app on a
+deployment that has not re-synced. Reused here, that default would have left the hole this ADR
+claims to close wide open for exactly those children — any authenticated parent could mint a
+link for an unattributed child and receive another family's conduct reports every afternoon
+until somebody noticed. The read-side default is the right answer to the read-side question and
+the wrong answer to this one.
+
+So both write paths — `POST /digest/recipients` and the link flow — use
+`ownsStudentForDelivery`, which requires a positive link the caller owns, and both also require
+the child to be on the **active** roster. Two routes writing the same table under different
+rules is how a contract stops being true, so the link path repeats the roster check rather than
+relying on the visibility one.
+
+**The cost, stated plainly:** on a deployment whose roster has never been attributed, a parent
+sees their children in the app and cannot subscribe them until the next successful roster sync
+writes the links. That is the right way round to fail — a parent waiting for a sync, rather
+than a stranger receiving a child's behaviour record.
 
 ### The confirmation is sent by the link path, not by the digest cron
 
@@ -145,6 +174,13 @@ extra "send me a test" route.
 
 A confirmation that fails is recorded on the row (`confirmationError`) and shown to the parent.
 It does not unwind a link that otherwise worked: the rows are written and the code is spent.
+
+Because `consumedAt` is written *before* the send is attempted — the claim and the single-use
+check have to be one statement — there is a real window in which a link is bound and the
+confirmation has neither landed nor failed. `statusFor` reports that as a third state,
+`confirmationPending`, rather than leaving the client to resolve an ambiguous
+not-sent-and-no-error pair; the wizard waits there instead of reporting a failure on a link
+that is working.
 
 ## Consequences
 

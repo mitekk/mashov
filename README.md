@@ -243,7 +243,14 @@ only one backend replica may poll. See
 
 > **The link code is a credential.** A guessed code would bind the guesser's own chat to another
 > family's account and start streaming that family's children's behaviour reports to them.
-> Hence 16 random bytes, single-use, a 15-minute TTL, and a rate-limited mint route.
+> Hence 16 random bytes, single-use, a 15-minute TTL, and a rate-limited mint route. Only a
+> private Telegram chat can be bound — a forwarded deep link tapped in a group is refused.
+
+Subscribing a child requires that one of the parent's own connections lists them, which is
+stricter than being able to *see* them: a child no connection lists yet is visible in the app
+but cannot be subscribed until the next successful roster sync attributes them. That is
+deliberate — the cost of guessing wrong here is another family's conduct reports on a
+stranger's phone.
 
 To try it on your own machine — including the Telegram RTL check, which no test can make —
 follow [docs/ops/digest-local-test.md](docs/ops/digest-local-test.md). It seeds a synthetic

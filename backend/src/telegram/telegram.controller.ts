@@ -45,10 +45,12 @@ export class TelegramController {
   constructor(private readonly links: TelegramLinkService) {}
 
   /**
-   * Tighter than the global 50/min. The code it returns is a credential: a
-   * guessed one would bind the guesser's chat to a victim's account, so the
-   * rate at which they can be produced is worth bounding. Follows the 5/min
-   * precedent on POST /sync/refresh and POST /digest/runs.
+   * 10/min, tighter than the global 50/min. The code it returns is a
+   * credential: a guessed one would bind the guesser's chat to a victim's
+   * account, so the rate at which they can be produced is worth bounding.
+   * Looser than the 5/min on POST /sync/refresh and POST /digest/runs, which
+   * spend model tokens and send real messages -- minting is cheap, and a parent
+   * legitimately re-mints when a code expires or they restart the wizard.
    */
   @Post('telegram-links')
   @HttpCode(HttpStatus.CREATED)

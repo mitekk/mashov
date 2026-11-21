@@ -29,7 +29,15 @@ export function telegramLinkQueryKey(code: string) {
 export function telegramLinkPollInterval(
   state: TelegramLinkState | undefined,
 ): number | false {
-  if (state?.status === 'linked' || state?.status === 'expired') return false;
+  // A linked code whose confirmation has not settled is not done yet. The
+  // backend marks the code consumed, then runs the visibility checks, the
+  // upserts and a round trip to Telegram before recording the outcome -- so
+  // stopping on the first `linked` froze the screen mid-send and the UI read
+  // the ambiguous not-sent-no-error pair as a failure.
+  if (state?.status === 'linked') {
+    return state.confirmationPending ? TELEGRAM_LINK_POLL_MS : false;
+  }
+  if (state?.status === 'expired') return false;
   return TELEGRAM_LINK_POLL_MS;
 }
 

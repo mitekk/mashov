@@ -723,7 +723,19 @@ export interface TelegramLinkState {
   recipientCount: number;
   /** The confirmation message the backend sends the instant the chat is bound. */
   confirmationSent: boolean;
+  /**
+   * Bound, but the confirmation has neither landed nor failed yet. The backend
+   * marks the code consumed before it has tried to send, so this is the state
+   * to wait in rather than resolve pessimistically.
+   */
+  confirmationPending: boolean;
   confirmationError: string | null;
+  /**
+   * The children the server actually subscribed, which is not always what the
+   * parent ticked: one whose roster links moved between minting and START is
+   * skipped. The last step names these.
+   */
+  subscribedGuids: string[];
   /**
    * Whether this server will actually send briefings from here on --
    * DIGEST_ENABLED and not DIGEST_DRY_RUN. The last step says so plainly rather

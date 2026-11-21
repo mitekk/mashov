@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, BellRing, CheckCircle2, Loader2, Send, TriangleAlert } from 'lucide-react';
 import { useChildren } from '@/hooks/useChildren';
+import { useDigestRecipients } from '@/hooks/useDigestRecipients';
 import { useCreateTelegramLink, useTelegramLinkState } from '@/hooks/useTelegramLink';
 import { ApiError } from '@/api/client';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -51,6 +52,9 @@ export default function TelegramSetupPageClient() {
   const { data: childrenResponse, isLoading, isError } = useChildren();
   // useChildren resolves the envelope, not the array.
   const children = childrenResponse?.data;
+  // What the parent is already subscribed to, so the pre-tick below does not
+  // quietly undo a child they switched off.
+  const { data: recipients, isLoading: recipientsLoading } = useDigestRecipients();
 
   const [step, setStep] = useState<Step>('intro');
   const [chosen, setChosen] = useState<string[] | null>(null);
@@ -65,14 +69,30 @@ export default function TelegramSetupPageClient() {
     step === 'start' || step === 'done' ? (link?.code ?? null) : null,
   );
 
-  // Pre-ticked, once, as soon as the roster is known. Seeded from a null
-  // sentinel rather than an empty array so that a parent who unticks everyone
-  // is not immediately re-ticked by this effect.
+  // Pre-ticked, once, as soon as the roster AND the existing subscriptions are
+  // known. Seeded from a null sentinel rather than an empty array so that a
+  // parent who unticks everyone is not immediately re-ticked by this effect.
+  //
+  // A child with a switched-off subscription starts unticked. Otherwise
+  // "הוספת ילד" -- whose only route is this wizard -- would re-tick them, and
+  // one START would resubscribe a child the parent had deliberately turned off
+  // in /more, since the backend's upsert sets enabled: true for whatever it is
+  // given. Unticked is a default, not a lock: ticking it again is a deliberate
+  // choice and does re-enable them.
   useEffect(() => {
-    if (chosen === null && children) {
-      setChosen(children.map((item) => item.studentGuid));
-    }
-  }, [chosen, children]);
+    if (chosen !== null || !children || recipientsLoading) return;
+
+    const switchedOff = new Set(
+      (recipients ?? [])
+        .filter((row) => row.channel === 'telegram' && !row.enabled)
+        .map((row) => row.studentGuid),
+    );
+    setChosen(
+      children
+        .map((item) => item.studentGuid)
+        .filter((studentGuid) => !switchedOff.has(studentGuid)),
+    );
+  }, [chosen, children, recipients, recipientsLoading]);
 
   // The step-3 wait resolves itself: no "I pressed it" button to get wrong.
   useEffect(() => {
@@ -83,10 +103,18 @@ export default function TelegramSetupPageClient() {
   // array identity every render and so defeat the useMemo below it.
   const ticked = chosen ?? NO_CHILDREN;
   const schoolCount = useMemo(() => countSchools(children), [children]);
-  const chosenChildren = useMemo(
-    () => (children ?? []).filter((item) => ticked.includes(item.studentGuid)),
-    [children, ticked],
-  );
+  /**
+   * The children the SERVER subscribed, not the ones the client ticked.
+   *
+   * A child whose roster links moved between minting and START is skipped by
+   * `consume()`, and the Telegram confirmation correctly names only the rest --
+   * so naming the ticks here would have the screen and the message disagree
+   * about the same link.
+   */
+  const subscribedChildren = useMemo(() => {
+    const guids = linkState?.subscribedGuids ?? [];
+    return (children ?? []).filter((item) => guids.includes(item.studentGuid));
+  }, [children, linkState?.subscribedGuids]);
 
   function toggle(studentGuid: string): void {
     setChosen((current) => {
@@ -141,7 +169,7 @@ export default function TelegramSetupPageClient() {
           />
         )}
 
-        {step === 'start' && link && (
+        {!isError && step === 'start' && link && (
           <StartStep
             link={link}
             expired={linkState?.status === 'expired'}
@@ -151,17 +179,30 @@ export default function TelegramSetupPageClient() {
           />
         )}
 
-        {step === 'done' && (
+        {!isError && step === 'done' && (
           <DoneStep
-            items={chosenChildren}
+            items={subscribedChildren}
             deliveryEnabled={linkState?.deliveryEnabled ?? false}
             confirmationSent={linkState?.confirmationSent ?? false}
+            confirmationPending={linkState?.confirmationPending ?? false}
             confirmationError={linkState?.confirmationError ?? null}
           />
         )}
       </div>
     </div>
   );
+}
+
+/**
+ * `א, ב וג` rather than `א וב וג`.
+ *
+ * Hebrew joins a list with commas and a single ו before the last item. Two
+ * names take just the ו, which is why the naive join read correctly until a
+ * third child existed.
+ */
+function hebrewList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} ו${names[names.length - 1]}`;
 }
 
 /** How many distinct schools the roster spans. Drives the per-row labels. */
@@ -369,6 +410,7 @@ interface DoneStepProps {
   items: ChildListItem[];
   deliveryEnabled: boolean;
   confirmationSent: boolean;
+  confirmationPending: boolean;
   confirmationError: string | null;
 }
 
@@ -376,6 +418,7 @@ function DoneStep({
   items,
   deliveryEnabled,
   confirmationSent,
+  confirmationPending,
   confirmationError,
 }: DoneStepProps) {
   return (
@@ -388,22 +431,39 @@ function DoneStep({
       </div>
 
       <div className="card-base space-y-4 p-5 text-sm leading-relaxed text-foreground">
-        {confirmationSent ? (
-          <p>שלחנו לכם עכשיו הודעה בטלגרם — כדאי לבדוק שהיא הגיעה.</p>
-        ) : (
+        {confirmationSent && <p>שלחנו לכם עכשיו הודעה בטלגרם — כדאי לבדוק שהיא הגיעה.</p>}
+
+        {/* Neither sent nor failed: the server has bound the chat and is still
+            sending. Saying nothing arrived here would be a red error on a link
+            that is working. */}
+        {!confirmationSent && confirmationPending && (
           <p
-            data-testid="telegram-done-confirmation-failed"
-            className="text-destructive"
+            data-testid="telegram-done-confirmation-pending"
+            className="flex items-center gap-2 text-muted-foreground"
           >
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            שולחים לכם הודעה בטלגרם...
+          </p>
+        )}
+
+        {!confirmationSent && !confirmationPending && (
+          <p data-testid="telegram-done-confirmation-failed" className="text-destructive">
             החיבור נשמר, אבל הודעת האישור לא הגיעה
             {confirmationError ? ` (${confirmationError})` : ''}. אם חסמתם את השיחה בטלגרם,
             פתחו אותה שוב ולחצו START.
           </p>
         )}
 
-        {items.length > 0 && (
+        {items.length > 0 ? (
           <p data-testid="telegram-done-children" className="text-muted-foreground">
-            מעכשיו תקבלו עדכונים על {items.map((item) => item.privateName).join(' ו')}.
+            מעכשיו תקבלו עדכונים על {hebrewList(items.map((item) => item.privateName))}.
+          </p>
+        ) : (
+          // The server subscribed nobody -- every chosen child's roster links
+          // moved in the meantime. The Telegram message says so too; the screen
+          // must not list the ticks as though they had taken.
+          <p data-testid="telegram-done-nobody" className="text-muted-foreground">
+            לא נרשם אף ילד לעדכונים. פתחו את מסך &quot;עוד&quot; ובחרו שוב על מי תרצו לשמוע.
           </p>
         )}
 

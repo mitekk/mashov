@@ -8,6 +8,18 @@ const DEFAULT_POLL_TIMEOUT_SECONDS = 30;
 const RETRY_DELAY_MS = 5_000;
 /** After a 409 from a second replica: a misconfiguration, not a blip. */
 const CONFLICT_DELAY_MS = 60_000;
+/**
+ * How many times one update may fail processing before it is abandoned.
+ *
+ * Both failure modes are real and they pull opposite ways. A transient one -- a
+ * Postgres restart, a pool timeout -- must not cost the parent their START,
+ * because confirming the update is what makes Telegram drop it and the
+ * 24-hour retention is the only safety net there is. A genuinely malformed one
+ * must not be re-delivered for a day with every later update stuck behind it.
+ * The code cannot tell them apart, so it retries a few times and then gives up
+ * loudly.
+ */
+const MAX_UPDATE_ATTEMPTS = 3;
 
 /**
  * The long-polling loop, and nothing else.
@@ -43,6 +55,9 @@ export class TelegramPollerService implements OnModuleInit, OnModuleDestroy {
 
   private stopped = false;
   private timer: NodeJS.Timeout | undefined;
+
+  /** update_id -> consecutive processing failures. Cleared on success. */
+  private readonly failures = new Map<number, number>();
 
   constructor(
     private readonly client: TelegramClient,
@@ -115,33 +130,79 @@ export class TelegramPollerService implements OnModuleInit, OnModuleDestroy {
       return RETRY_DELAY_MS;
     }
 
+    // Telegram should always answer with an array, but `result` is whatever
+    // came over the wire. A non-array here used to throw out of the loop below,
+    // and because scheduleNext lives in a `.then()` the loop simply stopped --
+    // process healthy, HTTP served, every parent's START ignored, and
+    // `stopped` still false so nothing said so.
+    if (!Array.isArray(updates)) {
+      this.logger.warn('Telegram getUpdates returned no update list; skipping this batch.');
+      return RETRY_DELAY_MS;
+    }
+
+    // The lowest update this batch must NOT confirm, because processing it
+    // failed and it should come back. `offset` is "the first id I have not
+    // accounted for", so leaving it at that id is what asks for a redelivery.
+    let blocked: number | undefined;
+    let highest = this.offset === undefined ? undefined : this.offset - 1;
+
     for (const update of updates) {
       const parsed = update as TelegramUpdate;
-      // Advanced before consuming, not after: a single malformed update must
-      // not be re-delivered forever with every later one stuck behind it.
-      if (typeof parsed?.update_id === 'number') {
-        this.offset = Math.max(this.offset ?? 0, parsed.update_id + 1);
-      }
+      const id = parsed?.update_id;
+      if (typeof id !== 'number') continue;
+      highest = highest === undefined ? id : Math.max(highest, id);
+
       try {
         await this.links.consume(parsed);
+        // Consecutive, not cumulative: an update that recovers starts over.
+        this.failures.delete(id);
       } catch (error) {
-        this.logger.error(
-          `Telegram update ${parsed?.update_id} could not be processed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        const attempts = (this.failures.get(id) ?? 0) + 1;
+        const message = error instanceof Error ? error.message : String(error);
+
+        if (attempts >= MAX_UPDATE_ATTEMPTS) {
+          this.failures.delete(id);
+          this.logger.error(
+            `Telegram update ${id} failed ${attempts} times and is being abandoned so later ` +
+              `updates are not blocked behind it: ${message}`,
+          );
+          continue;
+        }
+
+        this.failures.set(id, attempts);
+        blocked = blocked === undefined ? id : Math.min(blocked, id);
+        this.logger.warn(
+          `Telegram update ${id} could not be processed (attempt ${attempts}/` +
+            `${MAX_UPDATE_ATTEMPTS}), leaving it unconfirmed to be retried: ${message}`,
         );
       }
     }
 
-    // Straight back into the next long poll: getUpdates itself is the wait.
-    return 0;
+    if (blocked !== undefined) this.offset = blocked;
+    else if (highest !== undefined) this.offset = highest + 1;
+
+    // A failed update means a moment's pause before asking for it again;
+    // otherwise straight back in, since getUpdates itself is the wait.
+    return blocked === undefined ? 0 : RETRY_DELAY_MS;
   }
 
   /** The self-rescheduling half: one poll, then book the next one. */
   private scheduleNext(delayMs: number): void {
     if (this.stopped) return;
     this.timer = setTimeout(() => {
-      void this.pollOnce().then((nextDelayMs) => this.scheduleNext(nextDelayMs));
+      // The catch is load-bearing, not defensive dressing: without it a
+      // rejection from pollOnce would skip scheduleNext entirely and the loop
+      // would end, silently and permanently.
+      void this.pollOnce()
+        .catch((error) => {
+          this.logger.error(
+            `Telegram poll threw unexpectedly: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return RETRY_DELAY_MS;
+        })
+        .then((nextDelayMs) => this.scheduleNext(nextDelayMs));
     }, delayMs);
     // Never hold the process open on account of a poll that is merely waiting.
     this.timer.unref?.();

@@ -8,7 +8,9 @@ function state(overrides: Partial<TelegramLinkState>): TelegramLinkState {
     linkedAt: null,
     recipientCount: 0,
     confirmationSent: false,
+    confirmationPending: false,
     confirmationError: null,
+    subscribedGuids: [],
     deliveryEnabled: false,
     ...overrides,
   };
@@ -23,10 +25,29 @@ describe('telegramLinkPollInterval', () => {
     expect(telegramLinkPollInterval(undefined)).toBe(TELEGRAM_LINK_POLL_MS);
   });
 
-  it('stops the moment the chat is linked', () => {
+  it('stops once the chat is linked and the confirmation has settled', () => {
     // The wizard advances to its last step off this; leaving the interval on
     // would be a request every two seconds for as long as the tab is open.
-    expect(telegramLinkPollInterval(state({ status: 'linked' }))).toBe(false);
+    expect(
+      telegramLinkPollInterval(state({ status: 'linked', confirmationSent: true })),
+    ).toBe(false);
+  });
+
+  it('keeps polling a linked code whose confirmation is still in flight', () => {
+    // The backend marks the code consumed before it has tried to send, so
+    // stopping here would freeze the screen on an ambiguous
+    // not-sent-and-no-error pair -- which the UI then read as a failure.
+    expect(
+      telegramLinkPollInterval(state({ status: 'linked', confirmationPending: true })),
+    ).toBe(TELEGRAM_LINK_POLL_MS);
+  });
+
+  it('stops on a linked code whose confirmation failed, since nothing will change', () => {
+    expect(
+      telegramLinkPollInterval(
+        state({ status: 'linked', confirmationError: 'bot was blocked by the user' }),
+      ),
+    ).toBe(false);
   });
 
   it('stops once the code has expired, since nothing more can happen to it', () => {

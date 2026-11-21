@@ -5,6 +5,7 @@ import { TelegramClient } from './telegram.client';
 import { TelegramLinkService } from './telegram-link.service';
 import { TelegramPollerService } from './telegram-poller.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { MashovHttpClient } from '../session/mashov-http.client';
 
 /**
  * Nest resolves providers at runtime, so a missing or circular dependency
@@ -34,8 +35,16 @@ describe('TelegramModule', () => {
     // HTTPS_PROXY is process-wide and ADR-0023's hop is a residential tinyproxy
     // meant only for Mashov. A parent's chat id travels through this module, so
     // nothing here may reach that client.
+    //
+    // Asserted against the CLASS, not the string 'MashovHttpClient'. Nest keys
+    // its container by the provider token, which for a class provider is the
+    // constructor -- so a string lookup throws whether or not the provider is in
+    // the graph, and the obvious version of this test cannot fail. Proven: the
+    // string form still passed when pointed at TelegramClient, which this
+    // module definitely does provide.
     const moduleRef = await compile();
 
-    expect(() => moduleRef.get('MashovHttpClient', { strict: false })).toThrow();
+    expect(() => moduleRef.get(TelegramClient, { strict: false })).not.toThrow();
+    expect(() => moduleRef.get(MashovHttpClient, { strict: false })).toThrow();
   });
 });

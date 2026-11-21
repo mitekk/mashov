@@ -23,6 +23,7 @@
  */
 
 import {
+  BadRequestException,
   ForbiddenException,
   NotFoundException,
 } from '../../backend/node_modules/@nestjs/common';
@@ -335,6 +336,117 @@ describe('Parent-driven Telegram linking', () => {
       const rows = await prisma.digestRecipient.findMany({ where: { userId: PARENT_A } });
       expect(rows.map((row) => row.studentGuid)).toEqual([CHILD_A1]);
       expect(sender.sent).toHaveLength(1);
+    });
+  });
+
+
+  describe('an unattributed child belongs to nobody (review finding 1)', () => {
+    it('refuses to mint for a child no connection lists', async () => {
+      // The exact repro from the whole-branch review: canSeeStudent admits an
+      // unlinked child, so before ownsStudentForDelivery existed, PARENT_A
+      // could mint for PARENT_B's child simply by catching it between roster
+      // syncs -- and would then receive that child's conduct digests daily.
+      await prisma.studentConnection.deleteMany({ where: { studentGuid: CHILD_B1 } });
+
+      await expect(links.mint(PARENT_A, [CHILD_B1])).rejects.toThrow(ForbiddenException);
+      expect(await prisma.telegramLinkCode.count({ where: { userId: PARENT_A } })).toBe(0);
+    });
+
+    it("refuses to create a recipient row for a child no connection lists", async () => {
+      await prisma.studentConnection.deleteMany({ where: { studentGuid: CHILD_B1 } });
+
+      await expect(
+        recipients.create(PARENT_A, {
+          studentGuid: CHILD_B1,
+          channel: 'telegram',
+          address: CHAT_ID,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('skips a child whose links vanish between minting and START', async () => {
+      const minted = await links.mint(PARENT_A, [CHILD_A1, CHILD_A2]);
+      await prisma.studentConnection.deleteMany({ where: { studentGuid: CHILD_A2 } });
+
+      await links.consume(startUpdate(minted.code));
+
+      const rows = await prisma.digestRecipient.findMany({ where: { userId: PARENT_A } });
+      expect(rows.map((row) => row.studentGuid)).toEqual([CHILD_A1]);
+    });
+  });
+
+  describe('the roster is checked on this path too (review finding 2)', () => {
+    it('refuses a guid that names no student at all', async () => {
+      // digest_recipient has no FK on studentGuid, so nothing in the database
+      // would have caught this.
+      await expect(links.mint(PARENT_A, ['no-such-child'])).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('refuses a child who has been retired from the roster', async () => {
+      await prisma.student.update({
+        where: { studentGuid: CHILD_A1 },
+        data: { isActive: false },
+      });
+
+      await expect(links.mint(PARENT_A, [CHILD_A1])).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('only a private chat is bound (review finding 3)', () => {
+    it('refuses a group chat, which a forwarded deep link would reach', async () => {
+      const minted = await links.mint(PARENT_A, [CHILD_A1]);
+
+      await links.consume({
+        update_id: 1,
+        message: {
+          chat: { id: -1001234567890, type: 'supergroup' },
+          text: `/start@mashov_test_bot ${minted.code}`,
+        },
+      });
+
+      expect(await prisma.digestRecipient.count({ where: { userId: PARENT_A } })).toBe(0);
+      const row = await prisma.telegramLinkCode.findUnique({ where: { code: minted.code } });
+      expect(row?.consumedAt).toBeNull();
+    });
+
+    it('leaves the code usable afterwards, so the parent can still link', async () => {
+      const minted = await links.mint(PARENT_A, [CHILD_A1]);
+      await links.consume({
+        update_id: 1,
+        message: { chat: { id: -100123, type: 'group' }, text: `/start ${minted.code}` },
+      });
+
+      await links.consume(startUpdate(minted.code));
+
+      expect(await prisma.digestRecipient.count({ where: { userId: PARENT_A } })).toBe(1);
+    });
+  });
+
+  describe('the expiry is enforced by the database, not only by a mock', () => {
+    it('refuses a code whose expiresAt has passed', async () => {
+      const minted = await links.mint(PARENT_A, [CHILD_A1]);
+      await prisma.telegramLinkCode.update({
+        where: { code: minted.code },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+
+      await links.consume(startUpdate(minted.code));
+
+      expect(await prisma.digestRecipient.count({ where: { userId: PARENT_A } })).toBe(0);
+      const row = await prisma.telegramLinkCode.findUnique({ where: { code: minted.code } });
+      expect(row?.consumedAt).toBeNull();
+    });
+
+    it('reports that code as expired to the wizard', async () => {
+      const minted = await links.mint(PARENT_A, [CHILD_A1]);
+      await prisma.telegramLinkCode.update({
+        where: { code: minted.code },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+
+      expect((await links.statusFor(PARENT_A, minted.code)).status).toBe('expired');
     });
   });
 

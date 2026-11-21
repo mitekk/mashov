@@ -116,9 +116,14 @@ describe('DigestRecipientService', () => {
     expect(harness.prisma.digestRecipient.create).not.toHaveBeenCalled();
   });
 
-  it('accepts a child no connection lists yet', async () => {
-    // Unlinked means "ownership unknown, link on the next roster refresh", not
-    // "nobody's" -- the same reading canSeeStudent and visibleStudentWhere use.
+  it('refuses a child no connection lists yet', async () => {
+    // The read side admits an unattributed child, and must: "ownership
+    // unknown" means "link on the next roster refresh", and excluding them
+    // would empty the app on a roster that has not been attributed. This is a
+    // write that starts pushing that child's conduct record to a messaging
+    // app, so it fails the other way round -- otherwise any authenticated
+    // parent could point an unattributed child's digests at their own phone.
+    // Hence ownsStudentForDelivery rather than canSeeStudent.
     const harness = makeHarness({ links: [] });
 
     await expect(
@@ -127,7 +132,8 @@ describe('DigestRecipientService', () => {
         channel: 'telegram',
         address: '12345',
       }),
-    ).resolves.toMatchObject({ studentGuid: 'stu-1' });
+    ).rejects.toThrow(ForbiddenException);
+    expect(harness.prisma.digestRecipient.create).not.toHaveBeenCalled();
   });
 
   it('refuses a channel it has no sender for', async () => {

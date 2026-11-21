@@ -13,6 +13,8 @@ import type { TelegramSender } from '../digest/senders/telegram.sender';
 const NOW = new Date('2026-11-21T10:00:00Z');
 
 interface HarnessOptions {
+  /** The guids on the active roster. */
+  roster?: string[];
   /** studentGuid -> the connections that list the child. */
   links?: { studentGuid: string; householdConnectionId: string }[];
   /** The caller's own active connections. */
@@ -22,6 +24,8 @@ interface HarnessOptions {
   /** What `telegramLinkCode.findFirst` answers with. */
   codeRow?: unknown;
   recipientCount?: number;
+  /** The guids `digestRecipient.findMany` reports as subscribed. */
+  subscribed?: string[];
   /** How many rows the conditional consume-update claimed. */
   claimed?: number;
   /** The children the roster knows about, by guid. */
@@ -55,6 +59,11 @@ function makeHarness(options: HarnessOptions = {}) {
     );
   const recipientDeleteMany = jest.fn().mockResolvedValue({ count: 3 });
   const recipientCount = jest.fn().mockResolvedValue(options.recipientCount ?? 2);
+  const recipientFindMany = jest
+    .fn()
+    .mockResolvedValue(
+      (options.subscribed ?? ['stu-1', 'stu-2']).map((studentGuid) => ({ studentGuid })),
+    );
   const recipientUpsert = jest.fn().mockResolvedValue({ id: 'rec-1' });
 
   const prisma = {
@@ -68,7 +77,16 @@ function makeHarness(options: HarnessOptions = {}) {
     householdConnection: {
       findMany: jest.fn().mockResolvedValue(connections.map((id) => ({ id }))),
     },
-    student: { findMany: studentFindMany },
+    student: {
+      findMany: studentFindMany,
+      findFirst: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { studentGuid: string } }) =>
+          (options.roster ?? ['stu-1', 'stu-2']).includes(where.studentGuid)
+            ? { studentGuid: where.studentGuid }
+            : null,
+        ),
+    },
     telegramLinkCode: {
       create: codeCreate,
       findFirst: codeFindFirst,
@@ -79,6 +97,7 @@ function makeHarness(options: HarnessOptions = {}) {
     digestRecipient: {
       upsert: recipientUpsert,
       count: recipientCount,
+      findMany: recipientFindMany,
       deleteMany: recipientDeleteMany,
     },
   } as unknown as PrismaService;
@@ -111,6 +130,7 @@ function makeHarness(options: HarnessOptions = {}) {
     studentFindMany,
     recipientUpsert,
     recipientCount,
+    recipientFindMany,
     recipientDeleteMany,
     service: new TelegramLinkService(prisma, config, client, sender),
   };
@@ -313,13 +333,13 @@ describe('TelegramLinkService.statusFor', () => {
   it('counts the children now subscribed on that chat', async () => {
     const harness = makeHarness({
       codeRow: { ...PENDING, consumedAt: NOW, chatId: '98765' },
-      recipientCount: 2,
+      subscribed: ['stu-1'],
     });
 
     const state = await harness.service.statusFor('user-1', 'abc', NOW);
 
-    expect(state.recipientCount).toBe(2);
-    expect(harness.recipientCount.mock.calls[0][0].where).toMatchObject({
+    expect(state.recipientCount).toBe(1);
+    expect(harness.recipientFindMany.mock.calls[0][0].where).toMatchObject({
       userId: 'user-1',
       channel: 'telegram',
       address: '98765',
@@ -666,5 +686,229 @@ describe('TelegramLinkService.consume', () => {
 
     expect(harness.codeFindFirst).not.toHaveBeenCalled();
     expect(harness.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('TelegramLinkService — review findings', () => {
+  const LIVE = {
+    id: 'code-row-1',
+    code: 'abc',
+    userId: 'user-1',
+    studentGuids: ['stu-1', 'stu-2'],
+    expiresAt: new Date('2026-11-21T10:15:00Z'),
+    consumedAt: null,
+    chatId: null,
+    confirmationSentAt: null,
+    confirmationError: null,
+  };
+
+  describe('an unattributed child is not mintable (finding 1)', () => {
+    it('refuses a child no connection lists at all', async () => {
+      // canSeeStudent admits an unlinked child, and must, so that a roster
+      // that has not been attributed does not empty the app. Here the cost of
+      // being wrong is another family's conduct reports on a stranger's phone,
+      // so this path needs the stricter question.
+      const harness = makeHarness({ links: [] });
+
+      await expect(harness.service.mint('user-1', ['stu-1'], NOW)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(harness.codeCreate).not.toHaveBeenCalled();
+    });
+
+    it('skips an unattributed child at consume time rather than subscribing them', async () => {
+      const harness = makeHarness({ codeRow: LIVE, links: [] });
+
+      await harness.service.consume(
+        { update_id: 1, message: { chat: { id: 98765, type: 'private' }, text: '/start abc' } },
+        NOW,
+      );
+
+      expect(harness.recipientUpsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the roster is checked, as POST /digest/recipients checks it (finding 2)', () => {
+    it('refuses a guid that names no student at all', async () => {
+      // digest_recipient has no FK on studentGuid, so without this the link
+      // route creates rows the documented route would answer 400 for.
+      const harness = makeHarness({ roster: [] });
+
+      await expect(harness.service.mint('user-1', ['not-a-student'], NOW)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(harness.codeCreate).not.toHaveBeenCalled();
+    });
+
+    it('refuses a child who has left the school', async () => {
+      const harness = makeHarness({ roster: ['stu-2'] });
+
+      await expect(harness.service.mint('user-1', ['stu-1'], NOW)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('skips a child retired from the roster between minting and START', async () => {
+      const harness = makeHarness({ codeRow: LIVE, roster: ['stu-1'] });
+
+      await harness.service.consume(
+        { update_id: 1, message: { chat: { id: 98765, type: 'private' }, text: '/start abc' } },
+        NOW,
+      );
+
+      expect(harness.recipientUpsert).toHaveBeenCalledTimes(1);
+      expect(harness.recipientUpsert.mock.calls[0][0].create.studentGuid).toBe('stu-1');
+    });
+  });
+
+  describe('only a private chat may be bound (finding 3)', () => {
+    it('refuses to bind a group chat', async () => {
+      // The deep link can be forwarded into a class group the bot is in. Every
+      // future digest -- a named child's conduct remarks -- would go to the
+      // whole group, and nothing in /more would show it had happened.
+      const harness = makeHarness({ codeRow: LIVE });
+
+      await harness.service.consume(
+        {
+          update_id: 1,
+          message: {
+            chat: { id: -1001234567890, type: 'supergroup' },
+            text: '/start@mashov_bot abc',
+          },
+        },
+        NOW,
+      );
+
+      expect(harness.codeUpdateMany).not.toHaveBeenCalled();
+      expect(harness.recipientUpsert).not.toHaveBeenCalled();
+    });
+
+    it('tells the group it is the wrong place rather than going silent', async () => {
+      const harness = makeHarness({ codeRow: LIVE });
+
+      await harness.service.consume(
+        {
+          update_id: 1,
+          message: { chat: { id: -1001234567890, type: 'group' }, text: '/start abc' },
+        },
+        NOW,
+      );
+
+      expect(harness.send).toHaveBeenCalledTimes(1);
+      expect(harness.send.mock.calls[0][0]).toBe('-1001234567890');
+    });
+
+    it('still binds a private chat that sent the @botname form', async () => {
+      const harness = makeHarness({ codeRow: LIVE });
+
+      await harness.service.consume(
+        {
+          update_id: 1,
+          message: { chat: { id: 98765, type: 'private' }, text: '/start@mashov_bot abc' },
+        },
+        NOW,
+      );
+
+      expect(harness.codeUpdateMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('binds a chat whose type Telegram did not state', async () => {
+      // Defensive, not permissive: every real private START carries
+      // type: 'private'. An update with no type at all is only ever a
+      // hand-built one, and the specs above depend on it staying bindable.
+      const harness = makeHarness({ codeRow: LIVE });
+
+      await harness.service.consume(
+        { update_id: 1, message: { chat: { id: 98765 }, text: '/start abc' } },
+        NOW,
+      );
+
+      expect(harness.codeUpdateMany).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('the wizard can tell "not yet sent" from "failed" (finding 4)', () => {
+    it('reports the confirmation as still pending in the window before it is sent', async () => {
+      // consume() writes consumedAt first, then runs visibility checks, N
+      // upserts and a round trip to api.telegram.org before recording the
+      // confirmation. A poll landing inside that window used to read as a
+      // failure, and the wizard stopped polling and said so in red, forever.
+      const harness = makeHarness({
+        codeRow: { ...LIVE, consumedAt: NOW, chatId: '98765' },
+      });
+
+      const state = await harness.service.statusFor('user-1', 'abc', NOW);
+
+      expect(state.status).toBe('linked');
+      expect(state.confirmationSent).toBe(false);
+      expect(state.confirmationPending).toBe(true);
+    });
+
+    it('is no longer pending once the send has succeeded', async () => {
+      const harness = makeHarness({
+        codeRow: { ...LIVE, consumedAt: NOW, chatId: '98765', confirmationSentAt: NOW },
+      });
+
+      const state = await harness.service.statusFor('user-1', 'abc', NOW);
+
+      expect(state.confirmationPending).toBe(false);
+    });
+
+    it('is no longer pending once the send has failed', async () => {
+      const harness = makeHarness({
+        codeRow: {
+          ...LIVE,
+          consumedAt: NOW,
+          chatId: '98765',
+          confirmationError: 'bot was blocked by the user',
+        },
+      });
+
+      const state = await harness.service.statusFor('user-1', 'abc', NOW);
+
+      expect(state.confirmationPending).toBe(false);
+    });
+  });
+
+  describe('the wizard names the children the server actually subscribed (finding 5)', () => {
+    it('reports the guids now receiving updates on that chat', async () => {
+      const harness = makeHarness({
+        codeRow: { ...LIVE, consumedAt: NOW, chatId: '98765' },
+      });
+      (harness.prisma.digestRecipient.findMany as jest.Mock).mockResolvedValue([
+        { studentGuid: 'stu-1' },
+      ]);
+
+      const state = await harness.service.statusFor('user-1', 'abc', NOW);
+
+      expect(state.subscribedGuids).toEqual(['stu-1']);
+      expect(state.recipientCount).toBe(1);
+    });
+
+    it('counts only the children still switched on', async () => {
+      const harness = makeHarness({
+        codeRow: { ...LIVE, consumedAt: NOW, chatId: '98765' },
+      });
+
+      await harness.service.statusFor('user-1', 'abc', NOW);
+
+      expect(
+        (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,
+      ).toMatchObject({
+        userId: 'user-1',
+        channel: 'telegram',
+        address: '98765',
+        enabled: true,
+        studentGuid: { in: LIVE.studentGuids },
+      });
+    });
+
+    it('reports nothing subscribed while the code is still unused', async () => {
+      const harness = makeHarness({ codeRow: LIVE });
+
+      const state = await harness.service.statusFor('user-1', 'abc', NOW);
+
+      expect(state.subscribedGuids).toEqual([]);
+    });
   });
 });

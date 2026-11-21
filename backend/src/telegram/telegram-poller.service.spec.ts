@@ -128,9 +128,10 @@ describe('TelegramPollerService.pollOnce', () => {
     expect(harness.getUpdates.mock.calls[2][0]).toBe(10);
   });
 
-  it('still confirms a batch when one update threw on the way through', async () => {
-    // A single malformed update must not be re-delivered forever, blocking
-    // every later one behind it.
+  it('processes the rest of a batch when one update threw, without confirming it', async () => {
+    // Later updates are still handed over -- one bad update must not block the
+    // batch behind it -- but the offset stops at the failed one so Telegram
+    // hands it back. Abandoning it takes repeated failures, not one.
     const harness = makeHarness();
     harness.getUpdates.mockResolvedValueOnce([{ update_id: 7 }, { update_id: 8 }]);
     harness.consume.mockRejectedValueOnce(new Error('bad update'));
@@ -138,8 +139,9 @@ describe('TelegramPollerService.pollOnce', () => {
     await harness.service.pollOnce();
     await harness.service.pollOnce();
 
+    // Both updates in the batch were handed over, 8 included.
     expect(harness.consume).toHaveBeenCalledTimes(2);
-    expect(harness.getUpdates.mock.calls[1][0]).toBe(9);
+    expect(harness.getUpdates.mock.calls[1][0]).toBe(7);
   });
 
   it('ignores an update with no numeric id rather than confirming it away', async () => {
@@ -183,5 +185,119 @@ describe('TelegramPollerService error handling', () => {
     await harness.service.pollOnce();
 
     expect(harness.getUpdates).not.toHaveBeenCalled();
+  });
+});
+
+describe('TelegramPollerService — review findings', () => {
+  describe('the loop cannot die silently (finding 7)', () => {
+    it('survives a result that is not an array at all', async () => {
+      // `{ ok: true, result: {} }` used to make the for...of throw, pollOnce
+      // reject, and scheduleNext -- which lives in a .then() -- never run. The
+      // process kept serving HTTP while every parent's START was ignored, with
+      // `stopped` still false so isStopped() lied about it.
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValue({} as never);
+
+      await expect(harness.service.pollOnce()).resolves.toEqual(expect.any(Number));
+      expect(harness.service.isStopped()).toBe(false);
+    });
+
+    it('books the next poll even when one blows up outside the guarded blocks', async () => {
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValue(null as never);
+
+      const delay = await harness.service.pollOnce();
+
+      expect(typeof delay).toBe('number');
+    });
+
+    it('keeps polling after an update throws, rather than stopping', async () => {
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValue([{ update_id: 7 }]);
+      harness.consume.mockRejectedValue(new Error('boom'));
+
+      await harness.service.pollOnce();
+
+      expect(harness.service.isStopped()).toBe(false);
+    });
+  });
+
+  describe('a transient failure does not lose the START (finding 8)', () => {
+    it('does not confirm an update whose processing failed', async () => {
+      // Postgres restarting as the START arrives: consume throws, and
+      // pre-advancing the offset would tell Telegram to drop the update. The
+      // 24-hour retention the in-memory offset relies on would never apply,
+      // and the parent would sit on step 3 until the code expired.
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValue([{ update_id: 7 }]);
+      harness.consume.mockRejectedValueOnce(new Error('connection pool timeout'));
+
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+
+      // Offset left AT 7, not past it: everything before 7 is confirmed, 7
+      // itself is not, so Telegram hands it back.
+      expect(harness.getUpdates.mock.calls[1][0]).toBe(7);
+      expect(harness.consume).toHaveBeenCalledTimes(2);
+    });
+
+    it('confirms the update once a retry succeeds', async () => {
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValue([{ update_id: 7 }]);
+      harness.consume.mockRejectedValueOnce(new Error('connection pool timeout'));
+
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+
+      expect(harness.getUpdates.mock.calls[2][0]).toBe(8);
+    });
+
+    it('gives up on an update that fails repeatedly rather than stalling forever', async () => {
+      // The other half: a genuinely malformed update must not be re-delivered
+      // for 24 hours with every later one stuck behind it.
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValue([{ update_id: 7 }]);
+      harness.consume.mockRejectedValue(new Error('always broken'));
+
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+
+      expect(harness.getUpdates.mock.calls[3][0]).toBe(8);
+    });
+
+    it('gives a recovered update a fresh retry budget', async () => {
+      // The attempt counter is cleared on success. Without that, the two
+      // failures below would land on a count that had never been reset and the
+      // update would be abandoned on its third-ever failure rather than its
+      // third consecutive one.
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValue([{ update_id: 7 }]);
+
+      harness.consume.mockRejectedValueOnce(new Error('transient'));
+      await harness.service.pollOnce();
+      await harness.service.pollOnce(); // succeeds, clearing the count
+      harness.consume
+        .mockRejectedValueOnce(new Error('transient'))
+        .mockRejectedValueOnce(new Error('transient'));
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+
+      // Two consecutive failures after the reset, so still being retried
+      // rather than abandoned on a third cumulative one.
+      expect(harness.getUpdates.mock.calls[3][0]).toBe(7);
+    });
+
+    it('still confirms a batch of updates that all succeeded', async () => {
+      const harness = makeHarness();
+      harness.getUpdates.mockResolvedValueOnce([{ update_id: 7 }, { update_id: 9 }]);
+
+      await harness.service.pollOnce();
+      await harness.service.pollOnce();
+
+      expect(harness.getUpdates.mock.calls[1][0]).toBe(10);
+    });
   });
 });

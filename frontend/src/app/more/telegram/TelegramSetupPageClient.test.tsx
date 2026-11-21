@@ -15,6 +15,12 @@ vi.mock('@/api/children', () => ({
   fetchChildren: (...args: unknown[]) => fetchChildren(...args),
 }));
 
+const fetchDigestRecipients = vi.fn();
+vi.mock('@/api/digest', () => ({
+  fetchDigestRecipients: (...args: unknown[]) => fetchDigestRecipients(...args),
+  updateDigestRecipient: vi.fn(),
+}));
+
 const createTelegramLink = vi.fn();
 const fetchTelegramLinkState = vi.fn();
 vi.mock('@/api/telegram', () => ({
@@ -58,7 +64,9 @@ function linkState(overrides: Partial<TelegramLinkState> = {}): TelegramLinkStat
     linkedAt: null,
     recipientCount: 0,
     confirmationSent: false,
+    confirmationPending: false,
     confirmationError: null,
+    subscribedGuids: ['stu-1', 'stu-2'],
     deliveryEnabled: true,
     ...overrides,
   };
@@ -95,6 +103,7 @@ describe('TelegramSetupPageClient', () => {
     vi.clearAllMocks();
     back.mockReset();
     fetchChildren.mockResolvedValue({ data: [child({ studentGuid: 'stu-1' })] });
+    fetchDigestRecipients.mockResolvedValue([]);
     createTelegramLink.mockResolvedValue(LINK);
     fetchTelegramLinkState.mockResolvedValue(linkState());
   });
@@ -347,6 +356,214 @@ describe('TelegramSetupPageClient', () => {
       const done = await screen.findByTestId('telegram-done-back-btn');
 
       expect(done.getAttribute('href')).toBe('/more');
+    });
+  });
+});
+
+describe('TelegramSetupPageClient — review findings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    back.mockReset();
+    fetchChildren.mockResolvedValue({ data: [child({ studentGuid: 'stu-1' })] });
+    fetchDigestRecipients.mockResolvedValue([]);
+    createTelegramLink.mockResolvedValue(LINK);
+    fetchTelegramLinkState.mockResolvedValue(linkState());
+  });
+
+  describe('a confirmation still in flight is not reported as a failure (finding 4)', () => {
+    it('waits rather than claiming the message did not arrive', async () => {
+      // consume() writes consumedAt before it has tried to send, so a poll can
+      // land on linked + not-sent + no-error. Treating that as a failure put a
+      // permanent red "the message did not arrive" on a link that was working.
+      fetchTelegramLinkState.mockResolvedValue(
+        linkState({ status: 'linked', confirmationSent: false, confirmationPending: true }),
+      );
+
+      await reachChildStep();
+      fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
+      await screen.findByTestId('telegram-step-done');
+
+      expect(screen.queryByTestId('telegram-done-confirmation-failed')).toBeNull();
+      expect(screen.getByTestId('telegram-done-confirmation-pending')).toBeTruthy();
+    });
+
+    it('keeps polling until the confirmation settles, then says it arrived', async () => {
+      fetchTelegramLinkState
+        .mockResolvedValueOnce(
+          linkState({ status: 'linked', confirmationSent: false, confirmationPending: true }),
+        )
+        .mockResolvedValue(
+          linkState({ status: 'linked', confirmationSent: true, confirmationPending: false }),
+        );
+
+      await reachChildStep();
+      fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
+      await screen.findByTestId('telegram-step-done');
+
+      // Longer than TELEGRAM_LINK_POLL_MS: the point of the test is that a
+      // second poll happens at all, so it has to be allowed to.
+      await waitFor(
+        () => expect(screen.queryByTestId('telegram-done-confirmation-pending')).toBeNull(),
+        { timeout: 5_000 },
+      );
+      expect(screen.queryByTestId('telegram-done-confirmation-failed')).toBeNull();
+    });
+
+    it('still reports a confirmation that genuinely failed', async () => {
+      fetchTelegramLinkState.mockResolvedValue(
+        linkState({
+          status: 'linked',
+          confirmationSent: false,
+          confirmationPending: false,
+          confirmationError: 'bot was blocked by the user',
+        }),
+      );
+
+      await reachChildStep();
+      fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
+
+      expect(await screen.findByTestId('telegram-done-confirmation-failed')).toBeTruthy();
+    });
+  });
+
+  describe('step 4 names the children the server subscribed (finding 5)', () => {
+    it('names only the children the link actually registered', async () => {
+      // The parent ticks two; one child's roster links move households between
+      // minting and START, so the server subscribes one and the Telegram
+      // message correctly names one. The screen must not name two.
+      fetchChildren.mockResolvedValue({
+        data: [
+          child({ studentGuid: 'stu-1', privateName: 'מיקה' }),
+          child({ studentGuid: 'stu-2', privateName: 'יואב' }),
+        ],
+      });
+      fetchTelegramLinkState.mockResolvedValue(
+        linkState({
+          status: 'linked',
+          confirmationSent: true,
+          recipientCount: 1,
+          subscribedGuids: ['stu-1'],
+        }),
+      );
+
+      await reachChildStep();
+      fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
+
+      const names = await screen.findByTestId('telegram-done-children');
+      expect(names.textContent).toContain('מיקה');
+      expect(names.textContent).not.toContain('יואב');
+    });
+
+    it('says plainly that nobody was registered rather than listing the ticks', async () => {
+      fetchTelegramLinkState.mockResolvedValue(
+        linkState({
+          status: 'linked',
+          confirmationSent: true,
+          recipientCount: 0,
+          subscribedGuids: [],
+        }),
+      );
+
+      await reachChildStep();
+      fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
+
+      await screen.findByTestId('telegram-step-done');
+      expect(screen.queryByTestId('telegram-done-children')).toBeNull();
+      expect(screen.getByTestId('telegram-done-nobody')).toBeTruthy();
+    });
+  });
+
+  describe('adding a child does not re-enable one switched off (finding 6)', () => {
+    it('leaves a child the parent had switched off unticked', async () => {
+      // The only way to add a child is this wizard, and it pre-ticks. With the
+      // upsert setting enabled: true, one START silently resubscribed a child
+      // the parent had deliberately turned off in /more.
+      fetchChildren.mockResolvedValue({
+        data: [
+          child({ studentGuid: 'stu-1' }),
+          child({ studentGuid: 'stu-2' }),
+          child({ studentGuid: 'stu-3' }),
+        ],
+      });
+      fetchDigestRecipients.mockResolvedValue([
+        {
+          id: 'rec-2',
+          userId: 'user-1',
+          studentGuid: 'stu-2',
+          channel: 'telegram',
+          address: '98765',
+          displayName: null,
+          enabled: false,
+          activeFrom: '2026-11-21T10:00:00Z',
+          createdAt: '2026-11-21T10:00:00Z',
+          updatedAt: '2026-11-21T10:00:00Z',
+        },
+      ]);
+
+      await reachChildStep();
+
+      expect(
+        (screen.getByTestId('telegram-child-toggle-stu-2') as HTMLInputElement).checked,
+      ).toBe(false);
+      expect(
+        (screen.getByTestId('telegram-child-toggle-stu-1') as HTMLInputElement).checked,
+      ).toBe(true);
+      expect(
+        (screen.getByTestId('telegram-child-toggle-stu-3') as HTMLInputElement).checked,
+      ).toBe(true);
+    });
+
+    it('still mints for a switched-off child the parent ticks again', async () => {
+      // Unticked is a default, not a lock: ticking it is a deliberate choice,
+      // and the upsert then re-enables it.
+      fetchChildren.mockResolvedValue({
+        data: [child({ studentGuid: 'stu-1' }), child({ studentGuid: 'stu-2' })],
+      });
+      fetchDigestRecipients.mockResolvedValue([
+        {
+          id: 'rec-2',
+          userId: 'user-1',
+          studentGuid: 'stu-2',
+          channel: 'telegram',
+          address: '98765',
+          displayName: null,
+          enabled: false,
+          activeFrom: '2026-11-21T10:00:00Z',
+          createdAt: '2026-11-21T10:00:00Z',
+          updatedAt: '2026-11-21T10:00:00Z',
+        },
+      ]);
+
+      await reachChildStep();
+      fireEvent.click(screen.getByTestId('telegram-child-toggle-stu-2'));
+      fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
+
+      await waitFor(() =>
+        expect(createTelegramLink).toHaveBeenCalledWith(['stu-1', 'stu-2']),
+      );
+    });
+
+    it('keeps an already-enabled child ticked', async () => {
+      fetchDigestRecipients.mockResolvedValue([
+        {
+          id: 'rec-1',
+          userId: 'user-1',
+          studentGuid: 'stu-1',
+          channel: 'telegram',
+          address: '98765',
+          displayName: null,
+          enabled: true,
+          activeFrom: '2026-11-21T10:00:00Z',
+          createdAt: '2026-11-21T10:00:00Z',
+          updatedAt: '2026-11-21T10:00:00Z',
+        },
+      ]);
+
+      await reachChildStep();
+
+      expect(
+        (screen.getByTestId('telegram-child-toggle-stu-1') as HTMLInputElement).checked,
+      ).toBe(true);
     });
   });
 });

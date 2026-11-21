@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { canSeeStudent } from '../common/student-links';
+import { ownsStudentForDelivery } from '../common/student-links';
 import { TelegramSender } from '../digest/senders/telegram.sender';
 import { TelegramClient } from './telegram.client';
 
@@ -30,7 +30,11 @@ export type TelegramLinkStatus = 'pending' | 'linked' | 'expired';
 export interface TelegramUpdate {
   update_id: number;
   message?: {
-    chat?: { id?: number | string };
+    chat?: {
+      id?: number | string;
+      /** 'private' | 'group' | 'supergroup' | 'channel'. Only the first binds. */
+      type?: string;
+    };
     text?: string;
   };
 }
@@ -45,6 +49,8 @@ const REPLY_ALREADY_CONNECTED =
   'הטלגרם הזה כבר מחובר לחשבון שלכם ✅ אין צורך לעשות שוב — העדכונים ימשיכו להגיע לכאן.';
 const REPLY_LINK_DEAD =
   'הקישור הזה כבר לא בתוקף. פתחו שוב את האפליקציה, היכנסו ל"עוד" → "עדכונים בטלגרם" וקבלו קישור חדש.';
+const REPLY_PRIVATE_ONLY =
+  'אפשר לחבר עדכונים רק בשיחה פרטית עם הבוט, לא בקבוצה. פתחו את האפליקציה, היכנסו ל"עוד" → "עדכונים בטלגרם" ולחצו על הקישור משם.';
 const REPLY_NEEDS_APP =
   'שלום! כדי לקבל עדכונים על הילדים, פתחו את האפליקציה, היכנסו ל"עוד" → "עדכונים בטלגרם" ולחצו על הקישור משם.';
 
@@ -53,7 +59,22 @@ export interface TelegramLinkState {
   linkedAt: Date | null;
   recipientCount: number;
   confirmationSent: boolean;
+  /**
+   * The link is bound but the confirmation has neither landed nor failed yet.
+   *
+   * `consume()` writes `consumedAt` first, then runs the visibility checks, the
+   * upserts and a round trip to api.telegram.org before recording the outcome.
+   * A poll inside that window must not be read as a failure, so the wizard has
+   * a third state to wait in rather than resolving it pessimistically.
+   */
+  confirmationPending: boolean;
   confirmationError: string | null;
+  /**
+   * The children actually receiving updates on this chat, which is not always
+   * what the parent ticked: a child whose roster links moved between minting
+   * and START is skipped. Step 4 names these rather than the client's choice.
+   */
+  subscribedGuids: string[];
   /**
    * Whether the server will actually send briefings from here on. The wizard's
    * last step must not promise a parent messages that `DIGEST_ENABLED=false`
@@ -122,7 +143,30 @@ export class TelegramLinkService {
     }
 
     for (const studentGuid of guids) {
-      if (!(await canSeeStudent(this.prisma, userId, studentGuid))) {
+      // The same roster check POST /digest/recipients performs. There is no FK
+      // on digest_recipient.studentGuid, so without it this route would create
+      // rows for a guid that names no child -- which the documented route
+      // answers 400 for, and two routes writing the same table under different
+      // rules is how a contract stops being true.
+      const onRoster = await this.prisma.student.findFirst({
+        where: { studentGuid, isActive: true },
+        select: { studentGuid: true },
+      });
+      if (!onRoster) {
+        throw new BadRequestException({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'That child is not on the active roster.',
+            details: [{ field: 'studentGuids', message: studentGuid }],
+          },
+        });
+      }
+
+      // ownsStudentForDelivery, not canSeeStudent: the read-side helper admits
+      // a child no connection lists, and on this path that would let any
+      // authenticated parent point an unattributed child's conduct reports at
+      // their own phone. See the comment on the helper.
+      if (!(await ownsStudentForDelivery(this.prisma, userId, studentGuid))) {
         throw new ForbiddenException({
           error: {
             code: 'FORBIDDEN',
@@ -195,12 +239,33 @@ export class TelegramLinkService {
       // A consumed code stays 'linked' forever. The wizard polls after the
       // START landed, and a link that worked must not start reading as expired
       // a quarter of an hour later.
-      const recipientCount = row.chatId
-        ? await this.prisma.digestRecipient.count({
-            where: { userId, channel: 'telegram', address: row.chatId },
+      //
+      // Scoped to this code's own guids and to enabled rows: step 4 says
+      // "from now on you will hear about X", so it must not name a child who
+      // was skipped, nor one the parent switched off on an earlier link.
+      const subscribed = row.chatId
+        ? await this.prisma.digestRecipient.findMany({
+            where: {
+              userId,
+              channel: 'telegram',
+              address: row.chatId,
+              enabled: true,
+              studentGuid: { in: row.studentGuids },
+            },
+            select: { studentGuid: true },
           })
-        : 0;
-      return { ...base, status: 'linked', linkedAt: row.consumedAt, recipientCount };
+        : [];
+      const subscribedGuids = subscribed.map((recipient) => recipient.studentGuid);
+
+      return {
+        ...base,
+        status: 'linked',
+        linkedAt: row.consumedAt,
+        recipientCount: subscribedGuids.length,
+        subscribedGuids,
+        confirmationPending:
+          row.confirmationSentAt === null && row.confirmationError === null,
+      };
     }
 
     return {
@@ -208,6 +273,8 @@ export class TelegramLinkService {
       status: row.expiresAt.getTime() <= now.getTime() ? 'expired' : 'pending',
       linkedAt: null,
       recipientCount: 0,
+      subscribedGuids: [],
+      confirmationPending: false,
     };
   }
 
@@ -246,6 +313,19 @@ export class TelegramLinkService {
     if (!match) return;
 
     const chatId = String(rawChatId);
+
+    // Only a private chat may be bound. The deep link can be forwarded into a
+    // class or family group the bot belongs to, and binding there would send
+    // every future digest -- a named child's conduct remarks, by name -- to
+    // everyone in it, with nothing in /more to show it had happened. The
+    // wizard's button always opens a private chat, so there is nothing to lose
+    // by refusing. An update that states no type at all is only ever a
+    // hand-built one and stays bindable.
+    const chatType = update.message?.chat?.type;
+    if (chatType !== undefined && chatType !== 'private') {
+      await this.reply(chatId, REPLY_PRIVATE_ONLY);
+      return;
+    }
     const code = match[1];
     if (!code) {
       // A bare START: somebody found the bot by name. There is no account to
@@ -275,10 +355,20 @@ export class TelegramLinkService {
 
     // Re-validated here as well as at mint time: the roster can change in
     // between, and a child who has left must not cost the parent their other
-    // children's updates, so a guid that is no longer visible is skipped.
+    // children's updates, so a guid that no longer passes is skipped rather
+    // than failing the whole link. Both halves of the mint-time check are
+    // repeated, including the roster one -- a child retired in the minutes
+    // between must not be subscribed on the strength of an older decision.
     const visible: string[] = [];
     for (const studentGuid of row.studentGuids) {
-      if (await canSeeStudent(this.prisma, row.userId, studentGuid)) visible.push(studentGuid);
+      const onRoster = await this.prisma.student.findFirst({
+        where: { studentGuid, isActive: true },
+        select: { studentGuid: true },
+      });
+      if (!onRoster) continue;
+      if (await ownsStudentForDelivery(this.prisma, row.userId, studentGuid)) {
+        visible.push(studentGuid);
+      }
     }
 
     for (const studentGuid of visible) {

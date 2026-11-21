@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { DigestDelivery, DigestRecipient } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { canSeeStudent } from '../common/student-links';
+import { ownsStudentForDelivery } from '../common/student-links';
 
 /** Channels a sender exists for. A row for anything else could never deliver. */
 const SUPPORTED_CHANNELS = ['telegram', 'log'];
@@ -54,9 +54,12 @@ export interface DigestDeliveryTarget {
  *
  * Creation is scoped to the caller's own children. `Student` still has no
  * userId FK, but ADR-0031's `StudentConnection` link set answers "who may see
- * this child", and `canSeeStudent` is that answer -- so user A can no longer
- * create a row pointing user B's child at their own Telegram chat. This
- * supersedes ADR-0026's accepted recipient-ownership limitation; see ADR-0033.
+ * this child", and `ownsStudentForDelivery` is the strict form of that answer
+ * -- strict because it also refuses a child no connection lists, which the
+ * read-side `canSeeStudent` deliberately admits. So user A can no longer
+ * create a row pointing user B's child, or an unattributed child, at their own
+ * Telegram chat. This supersedes ADR-0026's accepted recipient-ownership
+ * limitation; see ADR-0033.
  */
 @Injectable()
 export class DigestRecipientService {
@@ -88,7 +91,12 @@ export class DigestRecipientService {
     // could point another family's child at their own Telegram chat and start
     // receiving that child's behavior reports -- ADR-0026's accepted hole,
     // which stopped being acceptable the moment a UI creates these rows.
-    if (!(await canSeeStudent(this.prisma, userId, studentGuid))) {
+    //
+    // ownsStudentForDelivery, not canSeeStudent: the read-side helper admits a
+    // child no connection lists, because on the read side "ownership unknown"
+    // must not empty the app. A write that starts pushing that child's conduct
+    // record outward has to fail the other way round. See ADR-0033.
+    if (!(await ownsStudentForDelivery(this.prisma, userId, studentGuid))) {
       throw new ForbiddenException('This child belongs to another household.');
     }
 
