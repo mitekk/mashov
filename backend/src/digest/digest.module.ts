@@ -43,6 +43,10 @@ import { DigestController } from './digest.controller';
     LogSender,
     DigestTask,
   ],
-  exports: [DigestService, DigestRecipientService],
+  // TelegramSender is exported for TelegramModule, which sends the link
+  // confirmation at the moment a parent's chat is proven reachable. The edge
+  // runs one way only -- nothing here depends on TelegramModule -- so there is
+  // no circular dependency to forwardRef around.
+  exports: [DigestService, DigestRecipientService, TelegramSender],
 })
 export class DigestModule {}

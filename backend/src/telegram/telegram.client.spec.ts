@@ -98,3 +98,69 @@ describe('TelegramClient', () => {
     });
   });
 });
+
+describe('TelegramClient.getUpdates', () => {
+  let get: jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    get = jest.fn().mockResolvedValue({ data: { ok: true, result: [{ update_id: 42 }] } });
+    mockedAxios.create.mockReturnValue({ get } as unknown as AxiosInstance);
+    (mockedAxios.isAxiosError as unknown as jest.Mock).mockReturnValue(false);
+  });
+
+  it('long-polls Telegram and returns the updates it was handed', async () => {
+    const updates = await makeClient().getUpdates(undefined, 30);
+
+    expect(get.mock.calls[0][0]).toContain('getUpdates');
+    expect(updates).toEqual([{ update_id: 42 }]);
+  });
+
+  it('sends no offset on the first poll, so nothing is confirmed by accident', async () => {
+    await makeClient().getUpdates(undefined, 30);
+
+    expect(get.mock.calls[0][1].params.offset).toBeUndefined();
+  });
+
+  it('passes the offset that confirms everything before it', async () => {
+    // Passing offset = lastUpdateId + 1 is what tells Telegram to drop those
+    // updates; unconfirmed ones it keeps for 24 hours.
+    await makeClient().getUpdates(43, 30);
+
+    expect(get.mock.calls[0][1].params.offset).toBe(43);
+  });
+
+  it('asks Telegram to hold the connection open for the poll timeout', async () => {
+    await makeClient().getUpdates(undefined, 30);
+
+    expect(get.mock.calls[0][1].params.timeout).toBe(30);
+  });
+
+  it('allows the HTTP read to outlast the long poll it is carrying', async () => {
+    // A 15s transport timeout would abort every 30s long poll before Telegram
+    // ever answered, turning the poller into a hot reconnect loop.
+    await makeClient().getUpdates(undefined, 30);
+
+    expect(get.mock.calls[0][1].timeout).toBeGreaterThan(30_000);
+  });
+
+  it('returns an empty list when Telegram had nothing to hand over', async () => {
+    get.mockResolvedValue({ data: { ok: true, result: [] } });
+
+    expect(await makeClient().getUpdates(1, 30)).toEqual([]);
+  });
+
+  it('returns an empty list rather than undefined when the result is missing', async () => {
+    get.mockResolvedValue({ data: { ok: true } });
+
+    expect(await makeClient().getUpdates(1, 30)).toEqual([]);
+  });
+
+  it('never puts the bot token in the error it throws', async () => {
+    get.mockRejectedValue(
+      new Error(`Request failed: https://api.telegram.org/bot${TOKEN}/getUpdates`),
+    );
+
+    await expect(makeClient().getUpdates(1, 30)).rejects.not.toThrow(/AAHsecret/);
+  });
+});

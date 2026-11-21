@@ -13,6 +13,9 @@ interface TelegramBot {
   username?: string;
 }
 
+/** How much longer than the long poll the HTTP read is allowed to take. */
+const READ_SLACK_SECONDS = 15;
+
 /**
  * The inbound half of the Bot API: who we are, and what people have said to us.
  *
@@ -60,6 +63,28 @@ export class TelegramClient {
     // outage into a permanently broken wizard until the next redeploy.
     this.botUsername = username;
     return username;
+  }
+
+  /**
+   * One long poll. `offset` is `lastUpdateId + 1`, and passing it is what
+   * confirms the updates before it: Telegram then drops them, and keeps
+   * anything unconfirmed for 24 hours. That retention is why the poller can
+   * hold its offset in memory -- a restart is handed back whatever it had not
+   * confirmed, and reprocessing is safe by construction in the link service.
+   */
+  async getUpdates(offset: number | undefined, timeoutSeconds: number): Promise<unknown[]> {
+    const updates = await this.call<unknown[]>(
+      'getUpdates',
+      {
+        ...(offset === undefined ? {} : { offset }),
+        timeout: timeoutSeconds,
+      },
+      // The transport must outlast the long poll it is carrying: a 15s read
+      // timeout would abort every 30s poll before Telegram answered, turning
+      // this into a hot reconnect loop.
+      (timeoutSeconds + READ_SLACK_SECONDS) * 1000,
+    );
+    return updates ?? [];
   }
 
   /** One Bot API GET, with the token on the path and off every error. */
