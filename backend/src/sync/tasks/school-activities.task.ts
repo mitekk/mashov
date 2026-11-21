@@ -17,7 +17,12 @@ interface MashovSchoolActivity {
   activityType?: number;
   title?: string | null;
   description?: string | null;
-  endAnswerDate: string;
+  /**
+   * The capture marks this required, but the live payload omits it on some
+   * activities — T13 finding 5, at both schools, every refresh. A school may
+   * legitimately publish an activity with no response deadline.
+   */
+  endAnswerDate?: string | null;
   isAnswered?: boolean;
 }
 
@@ -103,9 +108,34 @@ export class SchoolActivitiesTask {
         for (const item of rows) {
           try {
             const activityStartDate = new Date(item.activityStartDate);
-            const endAnswerDate = new Date(item.endAnswerDate);
-            if (Number.isNaN(activityStartDate.getTime()) || Number.isNaN(endAnswerDate.getTime())) {
-              throw new Error(`unparseable activity dates on activity ${item.id}`);
+            if (Number.isNaN(activityStartDate.getTime())) {
+              throw new Error(
+                `unparseable activityStartDate on activity ${item.id}: ` +
+                  `${JSON.stringify(item.activityStartDate)}`,
+              );
+            }
+
+            // Absent, null or blank means "no response deadline", and stores as
+            // one. Throwing on it failed the whole task on every refresh at
+            // both schools, so `failedCount` was never zero and R12's honest
+            // `partial` envelope was permanently on — which trains the parent
+            // to ignore it.
+            //
+            // A value that is PRESENT and unparseable still throws. There is no
+            // blanket `catch` here: a real failure stays a failure, and the raw
+            // value rides along in the message so the next live run names the
+            // shape in one log line rather than another attended session.
+            const rawEndAnswerDate =
+              typeof item.endAnswerDate === 'string' ? item.endAnswerDate.trim() : item.endAnswerDate;
+            let endAnswerDate: Date | null = null;
+            if (rawEndAnswerDate !== null && rawEndAnswerDate !== undefined && rawEndAnswerDate !== '') {
+              endAnswerDate = new Date(rawEndAnswerDate);
+              if (Number.isNaN(endAnswerDate.getTime())) {
+                throw new Error(
+                  `unparseable endAnswerDate on activity ${item.id}: ` +
+                    `${JSON.stringify(item.endAnswerDate)}`,
+                );
+              }
             }
             const activityEndDate = item.activityEndDate
               ? new Date(item.activityEndDate)

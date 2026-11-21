@@ -1,0 +1,14 @@
+-- `school_activity.endAnswerDate` becomes nullable.
+--
+-- A school may publish an activity with no response deadline. The sync task
+-- threw `unparseable activity dates` on `new Date(undefined)` for one activity
+-- at each of two schools, on every refresh, so `failedCount` was never zero and
+-- R12's honest `partial` refresh envelope was permanently on (T13 finding 5).
+--
+-- Unlike the other files here, this one is NOT in backend/Dockerfile's CMD
+-- chain, deliberately. Every file in that chain exists because `prisma db push`
+-- -- which is what production actually runs -- cannot do it. Dropping a NOT
+-- NULL constraint is something `db push --accept-data-loss` does for free, so
+-- this file is the record of the change rather than its mechanism. It is
+-- idempotent regardless, so running it by hand is safe.
+ALTER TABLE "school_activity" ALTER COLUMN "endAnswerDate" DROP NOT NULL;

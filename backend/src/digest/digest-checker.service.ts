@@ -95,7 +95,7 @@ interface ActivityCandidateRow {
   activityId: number;
   title: string;
   activityStartDate: Date;
-  endAnswerDate: Date;
+  endAnswerDate: Date | null;
 }
 
 interface HomeworkCandidateRow {
@@ -330,6 +330,10 @@ export class DigestCheckerService {
         isAnswered: false,
         // A deadline that has already passed is not actionable, and nagging
         // about it would be the only thing in the message every single day.
+        //
+        // This also excludes an activity with NO deadline, and correctly: a
+        // comparison against NULL is never true in SQL, and there is nothing to
+        // remind the parent about by. The guard below says so in the types.
         endAnswerDate: { gte: todayStart, lt: horizon },
       },
       select: {
@@ -340,19 +344,24 @@ export class DigestCheckerService {
       },
     })) as ActivityCandidateRow[];
 
-    return rows.map((row) => ({
-      itemType: 'activity' as DigestItemType,
-      itemId: String(row.activityId),
-      contentHash: hashFields('activity', [
-        userId,
-        String(row.activityId),
-        row.title,
-        row.endAnswerDate.toISOString(),
-      ]),
-      // Future-dated by definition, so the activeFrom cutoff never excludes a
-      // form -- which is right: a deadline is a deadline whenever you signed up.
-      itemDate: row.endAnswerDate,
-    }));
+    return rows
+      .filter(
+        (row): row is ActivityCandidateRow & { endAnswerDate: Date } =>
+          row.endAnswerDate !== null,
+      )
+      .map((row) => ({
+        itemType: 'activity' as DigestItemType,
+        itemId: String(row.activityId),
+        contentHash: hashFields('activity', [
+          userId,
+          String(row.activityId),
+          row.title,
+          row.endAnswerDate.toISOString(),
+        ]),
+        // Future-dated by definition, so the activeFrom cutoff never excludes a
+        // form -- which is right: a deadline is a deadline whenever you signed up.
+        itemDate: row.endAnswerDate,
+      }));
   }
 
   private async homeworkDueTomorrow(

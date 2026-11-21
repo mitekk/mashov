@@ -1397,6 +1397,34 @@ suites pass over both.
    is the epoch while `new Date(undefined)` is `NaN`. One optional upstream field fails
    the whole task.
 
+   **Fixed** (`fix(sync): let an activity with no response deadline be stored`).
+   `SchoolActivity.endAnswerDate` is nullable now
+   (`20261123000000_activity_optional_deadline`, which is deliberately **not** in the
+   Dockerfile CMD chain: every file there exists because `prisma db push` cannot do it, and
+   dropping a NOT NULL is something `db push --accept-data-loss` does for free). An
+   absent, null or blank `endAnswerDate` stores as `null`; a value that is **present and
+   unparseable** still throws, and `activityStartDate` still throws either way — a dateless
+   activity has nothing to show. Both throw messages now carry the offending raw value, so
+   the next live run names the shape in one log line rather than another attended session.
+   The shape itself is still **not established**: the capture
+   (`apis/get-api-schoolActivities-permitted.md`) marks the field required, so it does not
+   contain the failing payload either, and confirming it needs a live run. Absent is the
+   likely shape and the fix is correct for every other one too.
+
+   Ripple: the four digest readers widened to `Date | null`. `digest-checker`'s
+   `endAnswerDate: { gte, lt }` filter **already** excludes NULLs — a SQL comparison
+   against NULL is never true — so an undated activity is correctly not reportable; a type
+   guard now says so. `digest-summarizer` and `digest-report.template` omit the deadline
+   clause rather than format a null. The frontend needed no change: `children.ts` already
+   does `String(item.endAnswerDate ?? '')`, the dialog falls back to `לא זמין`, and it
+   sorts missing deadlines last with `POSITIVE_INFINITY`.
+
+   `backend/src/sync/tasks/school-activities.task.spec.ts` is new — there was none, which
+   is why `backend/package.json` excludes `src/sync/tasks/**` from coverage. Six cases,
+   three watched red: a batch with one undated activity upserts all three and reports
+   `success` with `failedCount: 0`, and a malformed non-empty date and a bad
+   `activityStartDate` both still count as failed items.
+
 6. **The unlink modal does not close, and a failed unlink is silent.** Observed by the
    parent during item 7. The backend log shows two `DELETE
    /api/v1/school-links/<B>`: the first answered **204** ("Unlinked 1 school(s); 1

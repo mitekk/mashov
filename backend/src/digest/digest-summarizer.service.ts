@@ -198,11 +198,15 @@ function releaseForPrompt(fact: DigestReleaseFact): string {
  * HTML, and it names staff and other families' children.
  */
 function activityForPrompt(fact: DigestActivityFact): string {
-  return [
+  const fields = [
     `- נושא: ${fact.title}`,
     `מועד האירוע: ${formatSchoolDate(fact.activityStartDate)}`,
-    `יש להשיב עד: ${formatSchoolDate(fact.endAnswerDate)}`,
-  ].join(' | ');
+  ];
+  // Omitted rather than formatted as a null: an activity with no response
+  // deadline has nothing to say here, and inventing a date for the model would
+  // put it in the parent's message.
+  if (fact.endAnswerDate) fields.push(`יש להשיב עד: ${formatSchoolDate(fact.endAnswerDate)}`);
+  return fields.join(' | ');
 }
 
 function homeworkForPrompt(fact: DigestHomeworkFact): string {

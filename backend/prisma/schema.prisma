@@ -572,8 +572,16 @@ model SchoolActivity {
   descriptionText   String?
   activityStartDate DateTime
   activityEndDate   DateTime
-  // The deadline for answering. This is what makes an activity reportable.
-  endAnswerDate     DateTime
+  /// The deadline for answering, and what makes an activity reportable.
+  ///
+  /// Nullable because a school may publish an activity with no response
+  /// deadline, and the capture (`apis/get-api-schoolActivities-permitted.md`)
+  /// marks the field required while the live payload omits it. Throwing on the
+  /// absence failed the whole sync task on every refresh at both schools, which
+  /// pinned the refresh envelope at `partial` permanently (T13 finding 5). An
+  /// undated activity is not reportable -- the digest's `gte`/`lt` filter never
+  /// matches NULL -- but it is storable, and the UI shows it as `לא זמין`.
+  endAnswerDate     DateTime?
   isAnswered        Boolean   @default(false)
   createTime        DateTime?
   rawPayload        Json?
