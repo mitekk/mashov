@@ -16,6 +16,11 @@ import { useSourceHealth, useProfile } from '@/hooks/useSettings';
 import { useSchoolLinks } from '@/hooks/useSchoolLinks';
 import { useMe } from '@/hooks/useAuth';
 import { deleteAllSchoolLinks, deleteSchoolLink } from '@/api/schoolLinks';
+import { ApiError } from '@/api/client';
+import {
+  SCHOOL_LINK_FALLBACK_MESSAGE,
+  schoolLinkErrorMessage,
+} from '@/lib/school-link-errors';
 import { invalidateHouseholdScopedQueries } from '@/lib/query-invalidation';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import type { ChildrenResponse, SchoolLink } from '@/types/api';
@@ -37,6 +42,19 @@ export default function MorePage() {
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   // The single school a per-row "ניתוק" is asking about, or null.
   const [pendingUnlink, setPendingUnlink] = useState<SchoolLink | null>(null);
+  // What went wrong with the last unlink, shown inside the modal.
+  const [unlinkError, setUnlinkError] = useState<string | null>(null);
+
+  /**
+   * Open or close the per-row modal, always clearing the last error with it.
+   *
+   * Every path in and out goes through here. A message left behind would greet
+   * the next attempt as a failure that has not happened yet.
+   */
+  const showUnlink = (link: SchoolLink | null) => {
+    setUnlinkError(null);
+    setPendingUnlink(link);
+  };
 
   // `undefined` -- ['school-links'] not resolved yet -- takes the PLURAL
   // branch. Being told "all schools will be deleted" with one school linked is
@@ -82,7 +100,26 @@ export default function MorePage() {
       // Invalidated, never cleared: the parent still has a household and the
       // shell renders from ['me'], so clearing would flash it through null.
       invalidateHouseholdScopedQueries(queryClient);
-      setPendingUnlink(null);
+      showUnlink(null);
+    },
+    // T13 finding 6, the settled half: there was no `onError` at all, so a
+    // failed unlink left the modal open, the confirm button re-enabled and
+    // nothing on screen — the terminal state the parent was left in after
+    // their retry 404'd.
+    onError: (err) => {
+      // A 404 means the school is already gone, which is the outcome the
+      // parent asked for. Not a failure to report at them.
+      if (err instanceof ApiError && err.status === 404) {
+        invalidateHouseholdScopedQueries(queryClient);
+        showUnlink(null);
+        return;
+      }
+      if (err instanceof ApiError) {
+        const code = (err.body as { error?: { code?: string } })?.error?.code;
+        setUnlinkError(schoolLinkErrorMessage(code));
+        return;
+      }
+      setUnlinkError(SCHOOL_LINK_FALLBACK_MESSAGE);
     },
   });
 
@@ -120,7 +157,7 @@ export default function MorePage() {
               onUnlink={(link) =>
                 // The last school is the sign-out-and-wipe case, so it routes
                 // to the bulk confirm, which says so.
-                schoolLinks.length <= 1 ? setShowDisconnectConfirm(true) : setPendingUnlink(link)
+                schoolLinks.length <= 1 ? setShowDisconnectConfirm(true) : showUnlink(link)
               }
             />
           </section>
@@ -207,9 +244,18 @@ export default function MorePage() {
               {`יימחקו כל הנתונים של ${childrenPhrase(pendingUnlink.childrenCount)} בבית הספר הזה — שיעורי בית, התנהגות, הודעות ודואר.`}
               {remainingSchoolsPhrase(schoolLinks ?? [], pendingUnlink)}
             </p>
+            {unlinkError && (
+              <p
+                role="alert"
+                data-testid="settings-unlink-error"
+                className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+              >
+                {unlinkError}
+              </p>
+            )}
             <div className="flex gap-3 pt-1">
               <button
-                onClick={() => setPendingUnlink(null)}
+                onClick={() => showUnlink(null)}
                 className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
               >
                 ביטול

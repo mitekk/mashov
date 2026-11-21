@@ -1443,6 +1443,25 @@ suites pass over both.
    settling it needs school B re-linked to reproduce, which the completed unlink has
    undone.
 
+   **Half fixed** (`fix(more): tell the parent when an unlink fails`). The settled half is
+   closed: `unlinkOneMutation` has an `onError` now. A **404** is treated as success — the
+   school is already gone, which is the outcome the parent asked for — so it invalidates
+   and closes. Anything else renders an inline `role="alert"` message inside the modal,
+   wording from `schoolLinkErrorMessage` with `SCHOOL_LINK_FALLBACK_MESSAGE` as the floor,
+   and the modal stays open so the parent can retry or cancel. Every path that opens or
+   closes the modal goes through one `showUnlink` helper, which clears the message with it:
+   a stale error must not greet the next attempt as a failure that has not happened yet.
+   Three new e2e cases in `tests/e2e/school-links.spec.ts`, all watched red.
+
+   **The other half did not reproduce, and stays open.** The e2e route the brief asked for
+   first is `school-links.spec.ts:243` — a two-school `seed()` with `DELETE` → **204** —
+   and it is **green**: the modal closes, `pendingUnlink` is cleared, the parent stays
+   signed in. Re-run deliberately against this question, with the new cases beside it: 30
+   of 30 pass. So the code does the right thing on a 204 and **why the live run's modal
+   stayed open is still unexplained**. No cause is being invented for it. Reproducing it
+   needs school B re-linked with real credentials, which the completed unlink has undone,
+   and that is the parent's call.
+
 ### T14 — Cleanup and the PRD
 
 Step 14. The ADRs (0029, 0030) and `docs/api-contract.md` are **done**. What remains:

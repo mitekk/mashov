@@ -15,6 +15,7 @@ export class MorePage {
   readonly bulkDisconnectButton: Locator;
   readonly signOutButton: Locator;
   readonly unlinkModal: Locator;
+  readonly unlinkError: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -24,6 +25,7 @@ export class MorePage {
     this.bulkDisconnectButton = page.getByTestId('settings-disconnect-btn');
     this.signOutButton = page.getByTestId('settings-signout-btn');
     this.unlinkModal = page.getByTestId('settings-unlink-modal');
+    this.unlinkError = page.getByTestId('settings-unlink-error');
   }
 
   async navigate(): Promise<void> {

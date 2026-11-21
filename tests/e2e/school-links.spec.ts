@@ -264,6 +264,86 @@ test.describe('School links — unlinking', () => {
     expect(page.url()).toContain('/more');
   });
 
+  test('says so when the unlink fails, and keeps the modal open to retry', async ({ page }) => {
+    // T13 finding 6, the settled half. `unlinkOneMutation` had no `onError` at
+    // all, so a failed delete left the modal open, the confirm button
+    // re-enabled and nothing on screen — the terminal state the parent was
+    // left in after their retry 404'd.
+    await seed(page, {
+      schools: [SCHOOL_A, SCHOOL_B],
+      links: [link(SCHOOL_A), link(SCHOOL_B)],
+      onDelete: async (route) => {
+        await route.fulfill({
+          status: 500,
+          json: { error: { code: 'UPSTREAM_ERROR', message: 'boom' } },
+        });
+      },
+    });
+    const more = new MorePage(page);
+    await more.navigate();
+
+    await more.unlinkSchool(SCHOOL_A.semel);
+
+    await expect(more.unlinkModal).toBeVisible();
+    await expect(more.unlinkError).toBeVisible();
+    // The parent can act on it: retry, or cancel.
+    await expect(more.confirmUnlinkButton(SCHOOL_A.semel)).toBeEnabled();
+  });
+
+  test('closes the modal when the school is already gone', async ({ page }) => {
+    // A 404 means the delete the parent is asking for has already happened.
+    // That is the outcome they wanted, not a failure to report at them.
+    await seed(page, {
+      schools: [SCHOOL_A, SCHOOL_B],
+      links: [link(SCHOOL_A), link(SCHOOL_B)],
+      onDelete: async (route) => {
+        await route.fulfill({
+          status: 404,
+          json: { error: { code: 'NOT_FOUND', message: 'gone' } },
+        });
+      },
+    });
+    const more = new MorePage(page);
+    await more.navigate();
+
+    await more.unlinkSchool(SCHOOL_A.semel);
+
+    await expect(more.unlinkModal).toHaveCount(0);
+    await expect(more.unlinkError).toHaveCount(0);
+  });
+
+  test('does not greet the next attempt with the last one\u2019s error', async ({ page }) => {
+    let fail = true;
+    await seed(page, {
+      schools: [SCHOOL_A, SCHOOL_B],
+      links: [link(SCHOOL_A), link(SCHOOL_B)],
+      onDelete: async (route) => {
+        if (fail) {
+          await route.fulfill({
+            status: 500,
+            json: { error: { code: 'UPSTREAM_ERROR', message: 'boom' } },
+          });
+          return;
+        }
+        await route.fulfill({ status: 204, body: '' });
+      },
+    });
+    const more = new MorePage(page);
+    await more.navigate();
+
+    await more.unlinkSchool(SCHOOL_A.semel);
+    await expect(more.unlinkError).toBeVisible();
+
+    // Cancel, and open the modal again. A stale message here would read as a
+    // failure that has not happened yet.
+    await more.unlinkModal.getByRole('button', { name: 'ביטול' }).click();
+    fail = false;
+    await more.unlinkButton(SCHOOL_A.semel).click();
+
+    await expect(more.unlinkModal).toBeVisible();
+    await expect(more.unlinkError).toHaveCount(0);
+  });
+
   test('unlinking the only school warns that it signs you out', async ({ page }) => {
     await seed(page, { schools: [SCHOOL_A], links: [link(SCHOOL_A)] });
     const more = new MorePage(page);
