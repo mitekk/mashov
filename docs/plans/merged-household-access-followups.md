@@ -1345,6 +1345,18 @@ suites pass over both.
    frontend renders exactly that. On a shared deployment, that one NULL row shows its
    error text to **every** household.
 
+   **Fixed** (`fix(sync): stop a spent error riding a fresh source-health row`). The
+   attempt now comes from the **same** variant key set the status already came from,
+   instead of from `allRuns.get(source)`, and an error a later success has superseded is
+   dropped. An error nothing has answered yet still travels — suppressing on
+   `status !== 'failed'` would have silenced a stale-but-failing source, which is the row
+   most worth reading. The NULL rule is untouched, as it must be.
+   `tests/integration/source-health-connection-scope.test.ts` is the proof on real
+   Postgres, watched red first: the row came back `fresh` with the orphan's
+   "Missing required Mashov credentials…" under it, exactly as the parent saw. Two unit
+   cases in `freshness.service.spec.ts` carry both halves. The existing per-connection
+   variant cases needed no change — neither was asserting the old `lastAttemptAt`.
+
 4. **Three sources report `לא סונכרן` minutes after succeeding — two-school only.**
    `studentGuidsIn` derives the guid list from a snapshot that admits NULL-stamped runs.
    The 16:36 cron wrote `behavior:<guid>` and `homework:<guid>` unstamped for **both**

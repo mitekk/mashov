@@ -451,6 +451,65 @@ describe('FreshnessService', () => {
       expect(results.filter((r) => r.source.startsWith('students'))).toHaveLength(1);
     });
 
+    it('does not carry an unstamped failure’s error onto a row a scoped success made fresh', async () => {
+      // T13 finding 3. `sync_run` holds a NULL-connection `failed` row under the
+      // bare source name, from a cron tick that ran before any connection
+      // existed; the branch-wide NULL rule admits it into every connection's
+      // snapshot. `status` came from the success variants and `lastErrorMessage`
+      // from the bare key, so the row read `fresh` with the orphan's error text
+      // underneath it — on a shared deployment, to every household.
+      const orphanFailure = makeSyncRun('mail_inbox', 'failed', 60);
+      orphanFailure.errorMessage = 'Missing required Mashov credentials in environment variables';
+      const scopedSuccess = makeSyncRun('mail_inbox:conn-abc', 'success', 5);
+
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(
+        new Map<string, SyncRun>([
+          ['mail_inbox', orphanFailure],
+          ['mail_inbox:conn-abc', scopedSuccess],
+        ]),
+      );
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(
+        new Map<string, SyncRun>([['mail_inbox:conn-abc', scopedSuccess]]),
+      );
+
+      const health = (await service.getAllSourceHealth([])).find(
+        (r) => r.source === 'mail_inbox',
+      );
+
+      expect(health?.status).toBe('fresh');
+      expect(health?.lastErrorMessage).toBeNull();
+      // The attempt comes from the same variant set as the status, so it is the
+      // success's own start rather than the orphan's.
+      expect(health?.lastAttemptAt).toBe(scopedSuccess.startedAt.toISOString());
+    });
+
+    it('keeps the error when no success has superseded the failing attempt', async () => {
+      // The other half of finding 3's fix: suppressing the error whenever the
+      // status is not `failed` would silence a stale-but-failing source, which
+      // still has to explain itself.
+      const recentFailure = makeSyncRun('mail_inbox', 'failed', 5);
+      recentFailure.errorMessage = 'upstream 502';
+      const oldSuccess = makeSyncRun('mail_inbox:conn-abc', 'success', 60);
+
+      mockSyncRunService.getAllSourceHealth.mockResolvedValue(
+        new Map<string, SyncRun>([
+          ['mail_inbox', recentFailure],
+          ['mail_inbox:conn-abc', oldSuccess],
+        ]),
+      );
+      mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(
+        new Map<string, SyncRun>([['mail_inbox:conn-abc', oldSuccess]]),
+      );
+
+      const health = (await service.getAllSourceHealth([])).find(
+        (r) => r.source === 'mail_inbox',
+      );
+
+      expect(health?.status).toBe('stale');
+      expect(health?.lastErrorMessage).toBe('upstream 502');
+      expect(health?.lastAttemptAt).toBe(recentFailure.startedAt.toISOString());
+    });
+
     it('includes per-student sources when studentGuids are provided', async () => {
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());

@@ -415,8 +415,6 @@ export class FreshnessService {
         }
 
         for (const source of sources) {
-          const latestRun = allRuns.get(source);
-
           // Look for the most recent success across the exact key AND any variant keys
           // (e.g. mail_counts:{conn.id}) so per-connection entries are not missed.
           const variantSuccessKeys = Array.from(successRuns.keys()).filter(
@@ -430,22 +428,51 @@ export class FreshnessService {
             }
           }
 
+          // The attempt comes from the SAME variant key set as the status, not
+          // from `allRuns.get(source)` — the bare key.
+          //
+          // T13 finding 3: the branch-wide NULL rule admits a cron run with no
+          // connection into every connection's snapshot, deliberately. When
+          // such a run sits under the bare source name and has `failed`, the
+          // bare key carried its error onto a row whose status the scoped
+          // success variant had already made `fresh` — a green row with
+          // "Missing required Mashov credentials…" beneath it, shown on a
+          // shared deployment to every household. Reading both from one set is
+          // what keeps the two halves of the row talking about the same runs.
+          let latestAttempt: SyncRun | undefined;
+          for (const k of allRuns.keys()) {
+            if (k !== source && !k.startsWith(`${source}:`)) continue;
+            const r = allRuns.get(k);
+            if (r && (!latestAttempt || r.startedAt > latestAttempt.startedAt)) {
+              latestAttempt = r;
+            }
+          }
+
           let status: SourceHealth['status'] = 'never_synced';
 
           if (latestSuccess?.endedAt) {
             const ageMinutes =
               (now.getTime() - new Date(latestSuccess.endedAt).getTime()) / 60000;
             status = ageMinutes <= threshold.staleThresholdMinutes ? 'fresh' : 'stale';
-          } else if (latestRun?.status === 'failed') {
+          } else if (latestAttempt?.status === 'failed') {
             status = 'failed';
           }
+
+          // An error a later success has superseded is spent, and does not
+          // travel. One that nothing has answered yet still explains itself —
+          // suppressing on `status !== 'failed'` instead would silence a
+          // stale-but-failing source, which is the row most worth reading.
+          const errorIsSpent =
+            !!latestSuccess?.endedAt &&
+            !!latestAttempt &&
+            latestSuccess.endedAt > latestAttempt.startedAt;
 
           results.push({
             source,
             status,
             lastSuccessAt: latestSuccess?.endedAt?.toISOString() ?? null,
-            lastAttemptAt: latestRun?.startedAt?.toISOString() ?? null,
-            lastErrorMessage: latestRun?.errorMessage ?? null,
+            lastAttemptAt: latestAttempt?.startedAt?.toISOString() ?? null,
+            lastErrorMessage: errorIsSpent ? null : latestAttempt?.errorMessage ?? null,
             fetchedCount: latestSuccess?.fetchedCount ?? null,
             staleThresholdMinutes: threshold.staleThresholdMinutes,
           });
