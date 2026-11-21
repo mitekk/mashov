@@ -3,6 +3,15 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService, PER_STUDENT_SOURCES } from '../sync/freshness.service';
 import type { SyncRunSnapshot } from '../sync/freshness.service';
 import { linksForStudents } from '../common/student-links';
+import { parentDisplayName } from '../common/parent-name';
+
+/** One child of one school, as the parent-details card lists them. */
+export interface ProfileChild {
+  studentGuid: string;
+  fullName: string;
+  classCode: string;
+  classNum: number;
+}
 
 @Injectable()
 export class SettingsService {
@@ -253,6 +262,40 @@ export class SettingsService {
         (newest.upstreamUserId ? null : newest.id);
     }
 
+    // The children each school lists, in one grouped read over the visibility
+    // edge (ADR-0031) -- mirroring `listLinks`' count query, so a card and the
+    // school row beneath it cannot disagree about how many children a school
+    // has. `Student.householdConnectionId` would undercount a child the other
+    // parent's connection happens to hold.
+    const links = await this.prisma.studentConnection.findMany({
+      where: {
+        householdConnectionId: { in: connections.map((conn) => conn.id) },
+        student: { isActive: true },
+      },
+      select: {
+        householdConnectionId: true,
+        student: {
+          select: { studentGuid: true, fullName: true, classCode: true, classNum: true },
+        },
+      },
+    });
+
+    const childrenByConnection = new Map<string, ProfileChild[]>();
+    for (const link of links) {
+      const bucket = childrenByConnection.get(link.householdConnectionId);
+      const child = {
+        studentGuid: link.student.studentGuid,
+        fullName: link.student.fullName,
+        classCode: link.student.classCode,
+        classNum: link.student.classNum,
+      };
+      if (bucket) bucket.push(child);
+      else childrenByConnection.set(link.householdConnectionId, [child]);
+    }
+    for (const bucket of childrenByConnection.values()) {
+      bucket.sort((a, b) => a.fullName.localeCompare(b.fullName, 'he'));
+    }
+
     const entries = [];
     for (const connection of connections) {
       let profile = stamped.get(connection.id) ?? null;
@@ -266,15 +309,20 @@ export class SettingsService {
         // most callers it is null. Unscoped, the page showed whichever profile
         // findFirst happened to return; scoped, it would go blank -- so fall
         // back to the name login already recorded for this user. That name is
-        // the one the *creating* credential set, which is R8's residual and
-        // not fixed here.
-        displayName: profile.displayName ?? appUser.displayName ?? '',
+        // the one the *creating* credential set, and it carries that
+        // credential's own `[child class]` tag -- one child, quoted under
+        // every school. `parentDisplayName` drops the tag; `children` below
+        // answers the question it was pretending to.
+        displayName: parentDisplayName(profile.displayName ?? appUser.displayName),
         email: profile.email ?? '',
         cellphone: profile.cellphone ?? '',
         schoolName: connection.schoolName ?? '',
         schoolYear: connection.schoolYear ?? new Date().getFullYear(),
         schoolCode: connection.schoolCode ?? 0,
         detailsState: profile.detailsState,
+        // `[]` for a school whose first roster sync has not landed yet -- the
+        // card renders no children line at all rather than claiming none.
+        children: childrenByConnection.get(connection.id) ?? [],
         updatedAt: profile.updatedAt.toISOString(),
       });
     }

@@ -31,12 +31,15 @@ const mockPrisma = {
     // findUnique. findFirst stays for the paths that still use it.
     findFirst: jest.fn(),
     findUnique: jest.fn(),
+    findMany: jest.fn(),
     update: jest.fn(),
     create: jest.fn(),
   },
   student: {
     upsert: jest.fn(),
     updateMany: jest.fn(),
+    // `getMe`'s children count, over the same predicate GET /children uses.
+    count: jest.fn().mockResolvedValue(0),
   },
   studentConnection: {
     upsert: jest.fn(),
@@ -92,6 +95,8 @@ describe('AuthService', () => {
     jest.clearAllMocks();
     mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
     mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
+    mockPrisma.student.count.mockResolvedValue(0);
+    mockPrisma.householdConnection.findMany.mockResolvedValue([]);
     mockSchoolYearService.resolveForSchool.mockResolvedValue({
       year: 2027,
       source: 'calendar',
@@ -728,6 +733,7 @@ describe('AuthService', () => {
       const result = await service.getMe('user-1');
 
       expect(Object.keys(result).sort()).toEqual([
+        'childrenCount',
         'displayName',
         'mashovUserId',
         'schools',
@@ -776,7 +782,58 @@ describe('AuthService', () => {
         mashovUserId: 'm1',
         username: 'u',
         displayName: 'U',
+        childrenCount: 0,
         schools: [],
+      });
+    });
+
+    // R8. `credential.displayName` is per-school and comes back as the
+    // parent's name plus ONE of that school's children; login writes it to
+    // the single global `AppUser.displayName`, so the header named that one
+    // child above every school's content. The count is the honest answer to
+    // what the tag was implying.
+    it('strips the credential child tag and reports the children count', async () => {
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'קורס דמיטרי [מיקה ז8]',
+      });
+      mockPrisma.householdConnection.findMany.mockResolvedValue([
+        { id: 'conn-a' },
+        { id: 'conn-b' },
+      ]);
+      mockPrisma.student.count.mockResolvedValue(2);
+
+      const result = await service.getMe('user-1');
+
+      expect(result.displayName).toBe('קורס דמיטרי');
+      expect(result.childrenCount).toBe(2);
+    });
+
+    it('counts children with the predicate /children uses', async () => {
+      // Not over `StudentConnection` directly: `visibleStudentWhere` admits a
+      // child no connection links yet, and a header saying "2 ילדים" over a
+      // page listing 3 is a bug the parent can see.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mashovUserId: 'mashov-1',
+        username: 'test',
+        displayName: 'Test Parent',
+      });
+      mockPrisma.householdConnection.findMany.mockResolvedValue([{ id: 'conn-a' }]);
+      mockPrisma.student.count.mockResolvedValue(1);
+
+      await service.getMe('user-1');
+
+      expect(mockPrisma.student.count).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { links: { some: { householdConnectionId: { in: ['conn-a'] } } } },
+            { links: { none: {} } },
+          ],
+          isActive: true,
+        },
       });
     });
   });

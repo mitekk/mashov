@@ -50,7 +50,7 @@
 | GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | planned |
 | POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
-| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, schools: MeSchool[] }` | 200, 401 | planned |
+| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | planned |
 
 ### School identity on the data
 
@@ -251,6 +251,15 @@ directly.
 unscoped, the page happened to show whichever profile came back first, and scoping it without the
 fallback would have left the name blank. Returns `null` (an empty body) when the caller has no
 profile row, rather than someone else's.
+
+**The name is stripped of its trailing `[...]` group** (`common/parent-name.ts`), on this route
+and on `/auth/me`. `credential.displayName` is per-school and arrives as the parent's name plus
+ONE of that school's children — `"קורס דמיטרי [מיקה ז8]"` — and the single global
+`AppUser.displayName` holds whichever credential created the user, so every card named that one
+child under every school. The stored value stays raw; the children come from `StudentConnection`
+instead, as `children` per entry here and as `childrenCount` on `/auth/me`. Both reads use the
+predicates their neighbours use — `listLinks`' count query here, `visibleStudentWhere` there —
+so a card cannot disagree with the school row beneath it, nor the header with `/children`.
 
 ### Phase 1 Endpoints (all require Auth: Yes in Phase 2)
 
@@ -792,14 +801,22 @@ empty body) when the caller has no profile row.
 
 ```typescript
 {
+  householdConnectionId: string;         // which linked school these details are from
   upstreamUserId: string;                // Mashov credential.userId
-  displayName: string;                   // profile name, else the app user's
+  displayName: string;                   // profile name, else the app user's; `[...]` stripped
   email: string;
   cellphone: string;
   schoolName: string;
   schoolYear: number;
   schoolCode: number;
   detailsState: number;
+  // The children THIS school lists; `[]` while its first roster sync is pending.
+  children: Array<{
+    studentGuid: string;
+    fullName: string;
+    classCode: string;
+    classNum: number;
+  }>;
   updatedAt: string;                     // ISO 8601
 }
 ```

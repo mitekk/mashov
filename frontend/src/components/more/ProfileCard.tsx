@@ -27,6 +27,20 @@ export function ProfileCard({ profile }: ProfileCardProps) {
           <p className="text-xs text-muted-foreground">
             {profile.schoolName} · {profile.schoolYear}
           </p>
+          {/*
+            The children THIS school lists. The name above used to carry one of
+            them in brackets -- the creating credential's -- so both of a
+            two-school parent's cards named the same child. Nothing renders
+            while a school's first roster sync is pending: no children line is
+            honest about not knowing yet, "ללא ילדים" would not be.
+          */}
+          {profile.children.length > 0 && (
+            <p data-testid="profile-card-children" className="text-xs text-muted-foreground">
+              {profile.children
+                .map((child) => `${child.fullName} ${child.classCode}${child.classNum}`)
+                .join(', ')}
+            </p>
+          )}
         </div>
       </div>
 
