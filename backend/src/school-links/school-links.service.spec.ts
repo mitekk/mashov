@@ -993,6 +993,80 @@ describe('SchoolLinksService.createLink', () => {
     });
   });
 
+  describe('school name fallback', () => {
+    // T13 finding 1. School B's Mashov login omits
+    // `schoolSettings.schoolName` entirely, and the writers passed it straight
+    // through, so the column was NULL and every `?? String(schoolCode)`
+    // fallback downstream made the chip and the contact card read `484121`.
+    // The real name was in the public `/api/schools` list the sign-in form
+    // already loads, and `SchoolYearService` already fetches that list on every
+    // login — so the fix is one lookup at write time, with no new upstream call
+    // on the cached path.
+    it("stores the public list's name when the login omits it", async () => {
+      const { prisma, upsert } = makePrisma();
+      const validate = jest.fn().mockResolvedValue(loginPayload({ schoolSettings: { schoolYear: 2027 } }));
+      const schoolNameFor = jest.fn().mockResolvedValue('חטיבת נעורים בראשית - צור יצחק (חטב)');
+      const service = makeService(prisma, {
+        validator: { validate },
+        schoolYear: {
+          resolveForSchool: jest.fn().mockResolvedValue({ year: 2027, source: 'calendar' }),
+          reconcileFromLogin: jest.fn((candidate: number) => ({ year: candidate, changed: false })),
+          invalidate: jest.fn(),
+          schoolNameFor,
+        },
+      });
+
+      await service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' });
+
+      expect(schoolNameFor).toHaveBeenCalledWith(999999);
+      const [args] = upsert.mock.calls[0] as [{ create: { schoolName?: string }; update: { schoolName?: string } }];
+      expect(args.create.schoolName).toBe('חטיבת נעורים בראשית - צור יצחק (חטב)');
+      expect(args.update.schoolName).toBe('חטיבת נעורים בראשית - צור יצחק (חטב)');
+    });
+
+    it('prefers the name the login does carry, and does not look it up', async () => {
+      const { prisma, upsert } = makePrisma();
+      const schoolNameFor = jest.fn().mockResolvedValue('something else');
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+        schoolYear: {
+          resolveForSchool: jest.fn().mockResolvedValue({ year: 2027, source: 'calendar' }),
+          reconcileFromLogin: jest.fn((candidate: number) => ({ year: candidate, changed: false })),
+          invalidate: jest.fn(),
+          schoolNameFor,
+        },
+      });
+
+      await service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' });
+
+      const [args] = upsert.mock.calls[0] as [{ create: { schoolName?: string } }];
+      expect(args.create.schoolName).toBe('תיכון רמון');
+      expect(schoolNameFor).not.toHaveBeenCalled();
+    });
+
+    it('writes undefined when neither source has a name, so an existing one survives', async () => {
+      // Prisma leaves a field alone on `undefined`, so the fallback can never
+      // DOWNGRADE a good name already stored. `?? String(schoolCode)` stays the
+      // last resort at the read sites: a semel is a worse label than a name but
+      // better than blank.
+      const { prisma, upsert } = makePrisma();
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload({ schoolSettings: { schoolYear: 2027 } })) },
+        schoolYear: {
+          resolveForSchool: jest.fn().mockResolvedValue({ year: 2027, source: 'calendar' }),
+          reconcileFromLogin: jest.fn((candidate: number) => ({ year: candidate, changed: false })),
+          invalidate: jest.fn(),
+          schoolNameFor: jest.fn().mockResolvedValue(null),
+        },
+      });
+
+      await service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' });
+
+      const [args] = upsert.mock.calls[0] as [{ update: Record<string, unknown> }];
+      expect(args.update.schoolName).toBeUndefined();
+    });
+  });
+
   describe('year resolution', () => {
     it("resolves this school's year independently of the household's other school", async () => {
       const { prisma } = makePrisma();

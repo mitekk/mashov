@@ -272,4 +272,82 @@ describe('SchoolYearService', () => {
       });
     });
   });
+
+  describe('schoolNameFor', () => {
+    // T13 finding 1. School B's Mashov login omits
+    // `schoolSettings.schoolName`, so every writer stored null and the
+    // `?? String(schoolCode)` fallbacks made the chip and the contact card read
+    // `484121`. The name was in the public `/api/schools` list all along — the
+    // sign-in form loads it to populate the picker — and this service already
+    // fetches that list on every login to resolve the year.
+    it('returns the name the public school list carries', async () => {
+      mockHttp.get.mockResolvedValue({
+        data: [
+          { semel: 484121, name: 'חטיבת נעורים בראשית - צור יצחק (חטב)', years: [2027] },
+          { semel: 482273, name: 'יצחק נבון - צור יצחק (יסודי)', years: [2027] },
+        ],
+      });
+      const service = makeService({});
+
+      await expect(service.schoolNameFor(484121)).resolves.toBe(
+        'חטיבת נעורים בראשית - צור יצחק (חטב)',
+      );
+    });
+
+    it('serves a resolved semel from the cache without a second HTTP call', async () => {
+      // The whole point of putting this here: no new upstream call per login.
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 484121, name: 'בית ספר ב', years: [2027] }],
+      });
+      const service = makeService({});
+
+      await service.resolveForSchool(484121);
+      const callsAfterResolve = mockHttp.get.mock.calls.length;
+
+      await expect(service.schoolNameFor(484121)).resolves.toBe('בית ספר ב');
+      expect(mockHttp.get).toHaveBeenCalledTimes(callsAfterResolve);
+    });
+
+    it('returns null when the list is unavailable', async () => {
+      mockHttp.get.mockRejectedValue(new Error('upstream down'));
+      const service = makeService({});
+
+      await expect(service.schoolNameFor(484121)).resolves.toBeNull();
+    });
+
+    it('returns null when the list has no entry for the semel', async () => {
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 482273, name: 'בית ספר א', years: [2027] }],
+      });
+      const service = makeService({});
+
+      await expect(service.schoolNameFor(484121)).resolves.toBeNull();
+    });
+
+    it('returns null for an entry whose name is blank', async () => {
+      // A blank name is worse than the semel: `?? String(schoolCode)` would not
+      // fire on an empty string, so the chip would render nothing at all.
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 484121, name: '   ', years: [2027] }],
+      });
+      const service = makeService({});
+
+      await expect(service.schoolNameFor(484121)).resolves.toBeNull();
+    });
+
+    it('drops the cached name when the semel is invalidated', async () => {
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 484121, name: 'בית ספר ב', years: [2027] }],
+      });
+      const service = makeService({});
+
+      await service.schoolNameFor(484121);
+      service.invalidate(484121);
+      mockHttp.get.mockResolvedValue({
+        data: [{ semel: 484121, name: 'השם החדש', years: [2027] }],
+      });
+
+      await expect(service.schoolNameFor(484121)).resolves.toBe('השם החדש');
+    });
+  });
 });

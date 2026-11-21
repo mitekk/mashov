@@ -201,7 +201,9 @@ export class SchoolLinksService {
     // anything is persisted.
     if (foreignOwner) {
       const schoolName =
-        login.data.accessToken?.schoolSettings?.schoolName ?? String(semel);
+        login.data.accessToken?.schoolSettings?.schoolName ??
+        (await this.schoolYearService.schoolNameFor(semel)) ??
+        String(semel);
 
       if (!foreignOwner.mergeable) {
         // A household actively using other schools is not an orphan:
@@ -623,6 +625,19 @@ export class SchoolLinksService {
     const schoolSettings = login.data.accessToken?.schoolSettings;
     const enrolledYears = login.data.accessToken?.userSchoolYears;
 
+    // T13 finding 1: some schools' login omits `schoolSettings.schoolName`
+    // entirely, and passing that through stored NULL — which the
+    // `?? String(schoolCode)` fallbacks downstream then turned into a bare
+    // semel on the chip and the contact card. The public `/api/schools` list
+    // has the name, and `SchoolYearService` already fetched that list to
+    // resolve the year above, so this is a cache hit rather than a new call.
+    //
+    // `undefined` rather than null when neither source has one: Prisma leaves
+    // an existing field alone on `undefined`, so the fallback can never
+    // downgrade a good name already stored.
+    const resolvedSchoolName =
+      schoolSettings?.schoolName ?? (await this.schoolYearService.schoolNameFor(semel)) ?? undefined;
+
     const connection = await this.prisma.householdConnection.upsert({
       where: { schoolCode_username: { schoolCode: semel, username } },
       create: {
@@ -630,7 +645,7 @@ export class SchoolLinksService {
         schoolYear: year,
         username,
         encryptedPassword: this.encryption.encrypt(password),
-        schoolName: schoolSettings?.schoolName,
+        schoolName: resolvedSchoolName,
         upstreamUserId: login.data.credential?.userId,
         lastLoginAt: new Date(),
         active: true,
@@ -643,7 +658,7 @@ export class SchoolLinksService {
       update: {
         schoolYear: year,
         encryptedPassword: this.encryption.encrypt(password),
-        schoolName: schoolSettings?.schoolName,
+        schoolName: resolvedSchoolName,
         upstreamUserId: login.data.credential?.userId,
         lastLoginAt: new Date(),
         active: true,

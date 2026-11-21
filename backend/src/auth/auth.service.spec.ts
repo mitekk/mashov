@@ -72,6 +72,7 @@ const mockSchoolYearService = {
   resolveForSchool: jest.fn(),
   reconcileFromLogin: jest.fn(),
   invalidate: jest.fn(),
+  schoolNameFor: jest.fn(),
 };
 
 const mockLoginResponse = {
@@ -95,6 +96,7 @@ describe('AuthService', () => {
       year: 2027,
       source: 'calendar',
     });
+    mockSchoolYearService.schoolNameFor.mockResolvedValue(null);
     mockSchoolYearService.reconcileFromLogin.mockImplementation((candidate: number) => ({
       year: candidate,
       changed: false,
@@ -393,6 +395,74 @@ describe('AuthService', () => {
         expect.objectContaining({ year: 2027 }),
         expect.anything(),
       );
+    });
+
+    it("falls back to the public school list's name when the login omits one", async () => {
+      // T13 finding 1, and the path it was actually observed on: school B's
+      // sign-in. `schoolSettings.schoolName` is absent, so the column was
+      // stored NULL and the `?? String(schoolCode)` fallbacks downstream made
+      // the chip and the contact card read `484121`. The name is in the public
+      // list `GET /auth/schools` already serves to populate the sign-in picker.
+      arrangeSuccessfulLogin({
+        credential: { userId: 'mashov-uid-1', displayName: 'Test Parent' },
+        accessToken: {
+          schoolSettings: { schoolYear: 2027 },
+          children: [],
+          username: 'testuser',
+          userSettings: { detailsState: 1 },
+        },
+      });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+      mockSchoolYearService.schoolNameFor.mockResolvedValue(
+        'חטיבת נעורים בראשית - צור יצחק (חטב)',
+      );
+
+      await service.login(484121, 'user', 'pass', '127.0.0.1');
+
+      expect(mockSchoolYearService.schoolNameFor).toHaveBeenCalledWith(484121);
+      expect(mockPrisma.householdConnection.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            schoolName: 'חטיבת נעורים בראשית - צור יצחק (חטב)',
+          }),
+        }),
+      );
+    });
+
+    it('does not look up a name the login already carries', async () => {
+      arrangeSuccessfulLogin();
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+
+      expect(mockSchoolYearService.schoolNameFor).not.toHaveBeenCalled();
+      expect(mockPrisma.householdConnection.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ schoolName: 'Test School' }),
+        }),
+      );
+    });
+
+    it('stores undefined when neither source has a name, leaving a stored one alone', async () => {
+      // Prisma leaves a field alone on `undefined`, so the fallback can never
+      // downgrade a good name already stored.
+      arrangeSuccessfulLogin({
+        credential: { userId: 'mashov-uid-1', displayName: 'Test Parent' },
+        accessToken: {
+          schoolSettings: { schoolYear: 2027 },
+          children: [],
+          username: 'testuser',
+          userSettings: { detailsState: 1 },
+        },
+      });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue({ id: 'conn-1' });
+
+      await service.login(484121, 'user', 'pass', '127.0.0.1');
+
+      const call = mockPrisma.householdConnection.update.mock.calls.at(-1) as [
+        { data: Record<string, unknown> },
+      ];
+      expect(call[0].data.schoolName).toBeUndefined();
     });
 
     it('finds the existing connection by school and username rather than by year', async () => {

@@ -1329,6 +1329,26 @@ suites pass over both.
    (`חטיבת נעורים בראשית - צור יצחק (חטב)`) is in the public `/api/v1/auth/schools` list
    the sign-in form already loads, so it is available and unused.
 
+   **Fixed** (`fix(auth): fall back to the public school list when a login omits the name`).
+   Resolved once at **write time**, so one lookup fixes every reader and no `??` chain
+   downstream moves. `SchoolYearService` already fetches `/api/schools` on every login to
+   resolve the year, and caches per semel for six hours — the name sits on the same entry
+   as `years`, so the new `schoolNameFor(semel)` is a cache hit on the common path and
+   adds **no upstream call**. Both writers already inject the service, so there was no new
+   wiring: `schoolSettings?.schoolName ?? (await schoolNameFor(semel)) ?? undefined` at all
+   five write sites (`auth.service.ts` ×3, `school-links.service.ts` ×2) and at the
+   merge-offer message. `undefined` rather than null is load-bearing: Prisma leaves an
+   existing field alone on `undefined`, so the fallback can never **downgrade** a good
+   name already stored. `String(schoolCode)` stays the last resort at the read sites — a
+   semel is a worse label than a name but better than blank — and a blank name from the
+   list is treated as none, since `?? String(schoolCode)` does not fire on an empty string
+   and the chip would render nothing at all.
+
+   Nine cases, watched red: six on `schoolNameFor` itself (the list's name, the cached
+   serve with no second HTTP call, an unavailable list, a missing entry, a blank name, and
+   invalidation) and three on each writer — the fallback firing, the login's own name
+   preferred with no lookup at all, and `undefined` when neither source has one.
+
 2. **`/inbox?school=X` filters the list but not the header badge.** `/mail/summary`
    takes no school parameter (`getSummary(userId?)`). A UX gap, not a correctness bug:
    the nav badge must stay household-global, so the two numbers legitimately differ —

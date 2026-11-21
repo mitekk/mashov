@@ -24,6 +24,15 @@ export interface SchoolYearLoginView {
 
 interface SchoolsApiEntry {
   semel?: number;
+  /**
+   * The school's display name, per `apis/get-api-schools.md`.
+   *
+   * Read here because some schools' login response omits
+   * `schoolSettings.schoolName` entirely (T13 finding 1), and this list is the
+   * only other place the name exists — the sign-in form already loads it to
+   * populate the school picker.
+   */
+  name?: string | null;
   years?: number[];
 }
 
@@ -57,7 +66,10 @@ export function calendarSchoolYear(now: Date): number {
 export class SchoolYearService {
   private readonly logger = new Logger(SchoolYearService.name);
   private readonly http: AxiosInstance;
-  private readonly cache = new Map<number, { resolved: ResolvedSchoolYear; at: number }>();
+  private readonly cache = new Map<
+    number,
+    { resolved: ResolvedSchoolYear; name: string | null; at: number }
+  >();
 
   constructor(
     private readonly configService: ConfigService,
@@ -80,6 +92,9 @@ export class SchoolYearService {
 
     const calendarYear = calendarSchoolYear(new Date());
     const apiYear = await this.maxYearFromSchoolsApi(semel);
+    // `maxYearFromSchoolsApi` reads the same entry the name lives on, so it
+    // captures the name on the way past rather than fetching the list twice.
+    const name = this.lastFetchedName;
 
     // max(), not the API alone: the published `years[]` appears to lag the
     // in-progress year, and the calendar never lags. An over-shoot is caught
@@ -112,7 +127,7 @@ export class SchoolYearService {
     }
 
     const resolved: ResolvedSchoolYear = { year, source };
-    this.cache.set(semel, { resolved, at: Date.now() });
+    this.cache.set(semel, { resolved, name, at: Date.now() });
     this.logger.log(`resolved year=${year} source=${source} semel=${semel}`);
     return resolved;
   }
@@ -156,10 +171,49 @@ export class SchoolYearService {
     }
   }
 
+  /**
+   * The school's display name from the public `/api/schools` list, or null.
+   *
+   * T13 finding 1: some schools' `POST /api/login` omits
+   * `schoolSettings.schoolName`, so every writer stored null and the
+   * `?? String(schoolCode)` fallbacks downstream made the school chip and the
+   * contact card read a bare semel. The name was available the whole time — the
+   * sign-in form loads this very list to populate its picker.
+   *
+   * It lives here because `resolveForSchool` already fetches `/api/schools` on
+   * every login and caches per semel for six hours, and the name sits on the
+   * same entry as `years`. So the fallback costs no new upstream call on the
+   * common path: a cache hit answers it, and only a cold semel fetches.
+   */
+  async schoolNameFor(semel: number): Promise<string | null> {
+    const cached = this.cache.get(semel);
+    if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+      return cached.name;
+    }
+
+    await this.maxYearFromSchoolsApi(semel);
+    return this.lastFetchedName;
+  }
+
+  /**
+   * The name read off the entry the last `/api/schools` lookup matched.
+   *
+   * A field rather than a return value because `maxYearFromSchoolsApi` has two
+   * callers that want different halves of the same entry, and fetching the list
+   * twice to get them would defeat the point of the cache.
+   */
+  private lastFetchedName: string | null = null;
+
   private async maxYearFromSchoolsApi(semel: number): Promise<number | null> {
+    this.lastFetchedName = null;
     try {
       const response = await this.http.get<SchoolsApiEntry[]>('/api/schools');
       const entry = (response.data ?? []).find((school) => Number(school?.semel) === Number(semel));
+      // Trimmed and emptiness-checked: a blank name is worse than the semel,
+      // because `?? String(schoolCode)` does not fire on an empty string and
+      // the chip would render nothing at all.
+      const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+      this.lastFetchedName = name.length > 0 ? name : null;
       const years = (entry?.years ?? []).filter((year) => Number.isInteger(year));
       return years.length > 0 ? Math.max(...years) : null;
     } catch (error) {

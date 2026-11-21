@@ -207,6 +207,22 @@ export class AuthService {
     const displayName = loginData.credential?.displayName ?? username;
     const schoolSettings = loginData.accessToken?.schoolSettings;
 
+    // T13 finding 1: some schools' login omits `schoolSettings.schoolName`
+    // entirely, and passing that through stored NULL — which the
+    // `?? String(schoolCode)` fallbacks downstream then turned into a bare
+    // semel on the chip and the contact card. The public `/api/schools` list
+    // (the same one `GET /auth/schools` serves to populate the sign-in picker)
+    // has the name, and `SchoolYearService` already fetched that list to
+    // resolve this login's year, so this is a cache hit rather than a new call.
+    //
+    // `undefined` rather than null when neither source has one: Prisma leaves
+    // an existing field alone on `undefined`, so the fallback can never
+    // downgrade a good name already stored.
+    const resolvedSchoolName =
+      schoolSettings?.schoolName ??
+      (await this.schoolYearService.schoolNameFor(Number(semel))) ??
+      undefined;
+
     if (!mashovUserId) {
       throw new UnauthorizedException({
         error: {
@@ -257,7 +273,7 @@ export class AuthService {
         data: {
           encryptedPassword,
           schoolYear: year,
-          schoolName: schoolSettings?.schoolName,
+          schoolName: resolvedSchoolName,
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
@@ -316,7 +332,7 @@ export class AuthService {
           // This is the mechanism that advances an existing connection with no
           // admin action: the 13 sync crons read conn.schoolYear, not the env.
           schoolYear: year,
-          schoolName: schoolSettings?.schoolName,
+          schoolName: resolvedSchoolName,
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
@@ -331,7 +347,7 @@ export class AuthService {
           schoolYear: year,
           username,
           encryptedPassword,
-          schoolName: schoolSettings?.schoolName,
+          schoolName: resolvedSchoolName,
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
