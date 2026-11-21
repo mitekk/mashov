@@ -8,12 +8,19 @@ import { SourceHealthList } from '@/components/more/SourceHealthList';
 import { ContentFreshnessCard } from '@/components/more/ContentFreshnessCard';
 import { ProfileCard } from '@/components/more/ProfileCard';
 import { SchoolLinksCard } from '@/components/more/SchoolLinksCard';
+import { TelegramCard } from '@/components/more/TelegramCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSourceHealth, useProfile } from '@/hooks/useSettings';
 import { useSchoolLinks } from '@/hooks/useSchoolLinks';
+import { useChildren } from '@/hooks/useChildren';
+import {
+  useDigestRecipients,
+  useUpdateDigestRecipient,
+} from '@/hooks/useDigestRecipients';
+import { useDisconnectTelegram } from '@/hooks/useTelegramLink';
 import { useMe } from '@/hooks/useAuth';
 import { deleteAllSchoolLinks, deleteSchoolLink } from '@/api/schoolLinks';
 import { ApiError } from '@/api/client';
@@ -36,6 +43,8 @@ export default function MorePage() {
   const { data: profiles } = useProfile();
   const { data: me } = useMe();
   const { data: schoolLinks } = useSchoolLinks();
+  const { data: childrenResponse } = useChildren();
+  const { data: digestRecipients } = useDigestRecipients();
   const { selectedChildGuid, setSelectedChildGuid } = useSelectedChild();
 
   // Disconnect confirm modal
@@ -63,6 +72,23 @@ export default function MorePage() {
     setUnlinkError(null);
     setPendingUnlink(link);
   };
+
+  // The Telegram disconnect confirm modal, and what went wrong with the last
+  // attempt. Paired, and only ever changed together through the helper below --
+  // the same discipline showUnlink and showDisconnect enforce, because a
+  // message left behind would greet the next attempt as a failure that has not
+  // happened yet.
+  const [showTelegramConfirm, setShowTelegramConfirm] = useState(false);
+  const [telegramDisconnectError, setTelegramDisconnectError] = useState<string | null>(null);
+
+  /** Open or close the Telegram modal, always clearing the last error with it. */
+  const showTelegramDisconnect = (open: boolean) => {
+    setTelegramDisconnectError(null);
+    setShowTelegramConfirm(open);
+  };
+
+  // What went wrong with the last per-child toggle, shown inside the card.
+  const [telegramToggleError, setTelegramToggleError] = useState<string | null>(null);
 
   // `undefined` -- ['school-links'] not resolved yet -- takes the PLURAL
   // branch. Being told "all schools will be deleted" with one school linked is
@@ -146,6 +172,9 @@ export default function MorePage() {
     },
   });
 
+  const telegramToggleMutation = useUpdateDigestRecipient();
+  const telegramDisconnectMutation = useDisconnectTelegram();
+
   const signOutMutation = useMutation({
     mutationFn: signOut,
     onSuccess: () => {
@@ -216,6 +245,36 @@ export default function MorePage() {
               <SourceHealthList sources={health.sources} />
             </div>
           )}
+        </section>
+
+        {/* Telegram updates. Between sync state and the account actions: it is
+            a delivery preference, not an account action -- disconnecting it
+            removes a chat id, not a household. */}
+        <section>
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            עדכונים בטלגרם
+          </h2>
+          <TelegramCard
+            recipients={digestRecipients ?? []}
+            allChildren={childrenResponse?.data ?? []}
+            pendingToggleId={
+              telegramToggleMutation.isPending
+                ? (telegramToggleMutation.variables?.id ?? null)
+                : null
+            }
+            toggleError={telegramToggleError}
+            onToggle={(id, enabled) => {
+              setTelegramToggleError(null);
+              telegramToggleMutation.mutate(
+                { id, enabled },
+                {
+                  onError: () =>
+                    setTelegramToggleError('לא הצלחנו לעדכן את ההגדרה. נסו שוב בעוד רגע.'),
+                },
+              );
+            }}
+            onDisconnect={() => showTelegramDisconnect(true)}
+          />
         </section>
 
         {/* Account actions */}
@@ -290,6 +349,62 @@ export default function MorePage() {
                 className="flex-1 rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground hover:opacity-90 transition-opacity disabled:opacity-60"
               >
                 {unlinkOneMutation.isPending ? 'מנתק...' : 'ניתוק'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTelegramConfirm && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="telegram-disconnect-modal-title"
+          data-testid="telegram-disconnect-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+        >
+          <div className="w-full max-w-sm space-y-4 rounded-2xl bg-card p-6 shadow-xl">
+            <h2
+              id="telegram-disconnect-modal-title"
+              className="text-base font-bold text-foreground"
+            >
+              לנתק את העדכונים בטלגרם?
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              נפסיק לשלוח עדכונים על כל הילדים, והחיבור לטלגרם יימחק. אפשר לחבר מחדש בכל שלב.
+            </p>
+            {telegramDisconnectError && (
+              <p
+                role="alert"
+                data-testid="telegram-disconnect-error"
+                className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+              >
+                {telegramDisconnectError}
+              </p>
+            )}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => showTelegramDisconnect(false)}
+                className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent/50"
+              >
+                ביטול
+              </button>
+              <button
+                data-testid="telegram-disconnect-confirm-btn"
+                disabled={telegramDisconnectMutation.isPending}
+                onClick={() => {
+                  setTelegramDisconnectError(null);
+                  telegramDisconnectMutation.mutate(undefined, {
+                    onSuccess: () => showTelegramDisconnect(false),
+                    onError: () =>
+                      setTelegramDisconnectError(
+                        'לא הצלחנו לנתק כרגע. נסו שוב בעוד רגע.',
+                      ),
+                  });
+                }}
+                className="flex-1 rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+              >
+                {telegramDisconnectMutation.isPending ? 'מנתק...' : 'ניתוק'}
               </button>
             </div>
           </div>
