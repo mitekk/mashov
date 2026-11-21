@@ -21,6 +21,9 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
       findFirst: overrides.householdFindFirst ?? jest.fn().mockResolvedValue(null),
       findMany: overrides.householdFindMany ?? jest.fn().mockResolvedValue([]),
     },
+    studentConnection: {
+      findMany: overrides.studentConnectionFindMany ?? jest.fn().mockResolvedValue([]),
+    },
   } as unknown as jest.Mocked<PrismaService>;
 }
 
@@ -543,6 +546,64 @@ describe('SettingsService', () => {
       await service.getSourceHealth('conn-1');
 
       expect(getAllSourceHealth).toHaveBeenCalledWith([], expect.anything());
+    });
+
+    it('drops a guid the caller’s own visibility edges do not list', async () => {
+      // T13 finding 4, two-school only. An unstamped cron tick writes
+      // `homework:<guid>` and `behavior:<guid>` for BOTH children with no
+      // connection, and the branch-wide NULL rule admits those rows into every
+      // connection's snapshot — deliberately, and that stays. The consequence
+      // the leak comment does not name is that the foreign guid then *decides*
+      // a row's status: `groups` has no NULL-stamped rows at all, so the other
+      // school's guid finds no success for this connection and the row goes
+      // `never_synced` minutes after `groups` succeeded.
+      const studentConnectionFindMany = jest.fn().mockResolvedValue([
+        { studentGuid: 'mine-1', householdConnectionId: 'conn-1' },
+        { studentGuid: 'theirs-1', householdConnectionId: 'conn-2' },
+      ]);
+      const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const loadSyncRuns = jest.fn().mockResolvedValue({
+        allRuns: new Map([
+          ['homework:mine-1', {}],
+          ['homework:theirs-1', {}],
+        ]),
+        successRuns: new Map([['behavior:theirs-1', {}]]),
+      });
+
+      const service = new SettingsService(
+        makeMockPrisma({ studentConnectionFindMany }),
+        makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+      );
+
+      await service.getSourceHealth('conn-1');
+
+      expect(getAllSourceHealth).toHaveBeenCalledWith(['mine-1'], expect.anything());
+    });
+
+    it('keeps a guid no connection lists at all', async () => {
+      // Unlinked is readable — ownership unknown is not somebody else's. The
+      // same reading as `canSeeStudent` and `connectionStudentWhere`; narrowing
+      // it here would hide a child's sources from the parent who has them.
+      const studentConnectionFindMany = jest.fn().mockResolvedValue([
+        { studentGuid: 'theirs-1', householdConnectionId: 'conn-2' },
+      ]);
+      const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const loadSyncRuns = jest.fn().mockResolvedValue({
+        allRuns: new Map([
+          ['homework:unlinked-1', {}],
+          ['homework:theirs-1', {}],
+        ]),
+        successRuns: new Map(),
+      });
+
+      const service = new SettingsService(
+        makeMockPrisma({ studentConnectionFindMany }),
+        makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+      );
+
+      await service.getSourceHealth('conn-1');
+
+      expect(getAllSourceHealth).toHaveBeenCalledWith(['unlinked-1'], expect.anything());
     });
 
     // Any signed-in user used to get every household's sources. Per-student

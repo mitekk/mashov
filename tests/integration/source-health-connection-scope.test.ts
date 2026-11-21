@@ -205,4 +205,42 @@ describe('Source health for one connection, with two schools in the table', () =
     });
   });
 
+  describe('finding 4 — a foreign guid must not decide a row’s status', () => {
+    it('does not report groups never_synced for the connection whose groups run succeeded', async () => {
+      const { sources } = await makeSettings().getSourceHealth(CONN_A, USER_A);
+      const groups = sources.filter((s) => s.source.startsWith('groups'));
+
+      expect(groups.length).toBeGreaterThan(0);
+      // The defect: `groups` only ever runs inside a connection-scoped refresh,
+      // so B's guid has no NULL-stamped row to find and yields `never_synced`.
+      // `normalizeSources` then reduces the variants worst-wins and the row
+      // goes red minutes after A's own `groups` succeeded.
+      expect(groups.map((s) => s.status)).not.toContain('never_synced');
+      expect(sources.find((s) => s.source === `groups:${GUID_A}`)?.status).toBe('fresh');
+    });
+
+    it('never mentions the other household’s guid', async () => {
+      const { sources } = await makeSettings().getSourceHealth(CONN_A, USER_A);
+
+      expect(sources.some((s) => s.source.includes(GUID_B))).toBe(false);
+    });
+
+    it('still lists a child no connection lists at all', async () => {
+      // Unlinked is readable. This is the half that must NOT narrow — the same
+      // reading as `canSeeStudent`, and `household-isolation` is its guard.
+      await prisma.studentConnection.deleteMany({ where: { studentGuid: GUID_A } });
+      try {
+        const { sources } = await makeSettings().getSourceHealth(CONN_A, USER_A);
+        expect(sources.some((s) => s.source === `groups:${GUID_A}`)).toBe(true);
+      } finally {
+        await prisma.studentConnection.create({
+          data: {
+            studentGuid: GUID_A,
+            householdConnectionId: CONN_A,
+            lastSeenInRosterAt: new Date(),
+          },
+        });
+      }
+    });
+  });
 });

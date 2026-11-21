@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService, PER_STUDENT_SOURCES } from '../sync/freshness.service';
 import type { SyncRunSnapshot } from '../sync/freshness.service';
+import { linksForStudents } from '../common/student-links';
 
 @Injectable()
 export class SettingsService {
@@ -56,7 +57,7 @@ export class SettingsService {
     // One load of the sync_run maps, shared by both reads below. Fetching them
     // per call meant four round trips for this one response.
     const snapshot = await this.freshnessService.loadSyncRuns(householdConnectionId);
-    const studentGuids = this.studentGuidsIn(snapshot);
+    const studentGuids = await this.studentGuidsIn(snapshot, householdConnectionId);
 
     const [sources, freshness] = await Promise.all([
       this.freshnessService.getAllSourceHealth(studentGuids, snapshot),
@@ -74,13 +75,41 @@ export class SettingsService {
   }
 
   /**
-   * The students a snapshot actually mentions, read back out of its run keys.
+   * The students a snapshot mentions *and* this connection may see.
    *
-   * Only an exact `<perStudentSource>:<guid>` shape counts. `mail_counts:<connId>`
-   * and `schoolActivities:<userId>` carry a colon too but no student, and a
-   * `history:<year>:…` backfill key is not a live source at all.
+   * Only an exact `<perStudentSource>:<guid>` shape counts in the first half.
+   * `mail_counts:<connId>` and `schoolActivities:<userId>` carry a colon too but
+   * no student, and a `history:<year>:…` backfill key is not a live source at
+   * all.
+   *
+   * The second half is T13 finding 4, and it is two-school-only. The snapshot
+   * admits runs with no connection — the branch-wide NULL rule, deliberate and
+   * load-bearing, since every `@Cron` entrypoint opens its run unstamped. So an
+   * unstamped tick that wrote `homework:<guid>` and `behavior:<guid>` for BOTH
+   * children puts both schools' guids into one connection's list. The leak the
+   * comment above `getSourceHealth` records; the consequence it does not name is
+   * that the foreign guid then **decides** a row's status — `groups`,
+   * `lessons_count` and `message_board` only ever run inside a
+   * connection-scoped refresh, so they have no NULL-stamped row for the other
+   * school's guid, it finds no success for this connection, and the row reports
+   * `never_synced` minutes after the source succeeded. A guid with no success
+   * here is not evidence the source never synced; it is evidence the guid is not
+   * ours.
+   *
+   * The visibility edge is the authority (ADR-0031), so the guids are
+   * intersected with this connection's own `student_connection` rows. A guid
+   * with NO links is kept: unlinked is readable, the same reading as
+   * `canSeeStudent` and `connectionStudentWhere` — ownership unknown is not
+   * somebody else's. Only a guid whose links exist and exclude this connection
+   * is dropped.
+   *
+   * Narrowing this, not fixing it: `Student` scoped to a household is the real
+   * fix and has its own ADR.
    */
-  private studentGuidsIn(snapshot: SyncRunSnapshot): string[] {
+  private async studentGuidsIn(
+    snapshot: SyncRunSnapshot,
+    householdConnectionId: string,
+  ): Promise<string[]> {
     const guids = new Set<string>();
 
     for (const key of [...snapshot.allRuns.keys(), ...snapshot.successRuns.keys()]) {
@@ -94,7 +123,16 @@ export class SettingsService {
       if (guid.length > 0 && !guid.includes(':')) guids.add(guid);
     }
 
-    return [...guids];
+    if (guids.size === 0) return [];
+
+    // One query for the whole list, not one per guid.
+    const links = await linksForStudents(this.prisma, [...guids]);
+
+    return [...guids].filter((guid) => {
+      const connections = links.get(guid);
+      if (!connections || connections.length === 0) return true;
+      return connections.includes(householdConnectionId);
+    });
   }
 
   /**

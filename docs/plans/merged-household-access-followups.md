@@ -1374,6 +1374,21 @@ suites pass over both.
    run can still see a guid that is not theirs"). What it does not name is this
    consequence: the foreign guid does not merely appear, it **decides the row's status**.
 
+   **Fixed** (`fix(settings): stop a foreign guid deciding a source-health row's status`).
+   `studentGuidsIn` now intersects the guids it reads out of the run keys with the
+   caller's own `student_connection` edges — the visibility edge is the authority per
+   ADR-0031, and one `linksForStudents` query covers the whole list. A guid with **no**
+   links is kept: unlinked is readable, the same reading as `canSeeStudent` and
+   `connectionStudentWhere`. Only a guid whose links exist and exclude this connection is
+   dropped. The NULL rule is untouched, and `getAllSourceHealth` is not touched at all.
+   This is still a **narrowing, not the fix** — `Student` scoped to a household remains
+   the real one, with its own ADR; what is gone is the foreign guid deciding the status.
+   Watched red first in `tests/integration/source-health-connection-scope.test.ts`:
+   `groups` came back `["fresh", "fresh", "never_synced"]` with B's guid in A's response.
+   A third case asserts an unlinked child's sources are still listed, and
+   `household-isolation.test.ts` stays green — the guard that nothing a household
+   legitimately sees was narrowed.
+
 5. **The refresh is permanently `partial`.** `school-activities.task.ts:103-108` does
    `new Date(item.endAnswerDate)` and throws on `NaN`. It fails on activity 3 at school A
    and activity 13 at school B — both schools, every refresh — so the envelope can never
