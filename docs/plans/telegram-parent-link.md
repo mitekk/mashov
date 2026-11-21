@@ -1,5 +1,19 @@
 # Connect Telegram for children's updates — a parent-driven wizard in `/more`
 
+> **As built, this plan diverged in three places** — all found by the whole-branch review and
+> recorded in [ADR-0033](../adr/0033-parent-driven-telegram-linking.md), which is the
+> authoritative account:
+>
+> 1. The ownership check is **`ownsStudentForDelivery`**, not `canSeeStudent`. The latter admits
+>    a child no connection lists, which would have left the hole open for exactly those
+>    children. Both write paths also require the child to be on the *active* roster.
+> 2. Only a **private** Telegram chat is bound. A `/start` from a group — which a forwarded deep
+>    link reaches — is refused.
+> 3. The status response carries **`deliveryEnabled`**, **`confirmationPending`** and
+>    **`subscribedGuids`** beyond the route table below: step 4 cannot otherwise tell a
+>    confirmation still in flight from one that failed, name the children the server actually
+>    subscribed, or say that sending is turned off on this server.
+
 ## Context
 
 The digest engine is already built and has never been reachable by a parent.
