@@ -10,9 +10,12 @@ eight were fixed on the branch, and **B1** was fixed afterwards in `1dcb60e`. Th
 second (`/code-review high`, 2026-11-19, after **G1** landed) found twelve more, all
 recorded here as **R1–R12**.
 
-What is open: the minors, and the three defects **T13** turned up against the live
-stack (see its findings — two of them reachable only with two schools linked). Every
-numbered item on this plan is now closed, **T13**–**T14** included. **No bug this plan
+What is open: the minors, and **one question** — why the *successful* 204 did not close
+the unlink modal during T13's live run (finding **6**'s second half; it does not
+reproduce, see there). All **six** of T13's findings have been worked: the three defects
+(**3**, **4**, **5**) are fixed, the two gaps (**1**, **2**) are closed, and **6** is
+fixed in the half that reading settled. Every numbered item on this plan is now closed,
+**T13**–**T14** included. **No bug this plan
 recorded is open at all** — every **B** item is done (**B1**–**B4**), as is
 every **R** item (**R1**–**R17**), along with **G1**, **G2** and N1, all kept as record. With batch 6 closed, the refresh envelope's
 `status` means what it says: `partial` exactly when something in the household
@@ -54,7 +57,7 @@ stays true.
 | 7 | **R8**, **R9**, **R10**, **R17** | **done** | Four independent small correctness fixes in the auth/link path — each a branch or a status that meant something other than what it said. R17 turned out not to be a two-line reorder: the orphan lookup it would have moved is a cross-household existence oracle, so `assertLinkable` split into a free pre-limit half and a rate-limited one. R10's recorded precedent was wrong and the fix follows `auth.controller`'s envelope rather than the service's bare `Error`. |
 | 8 | **B2**, **B4** | **done** | The two pre-existing bugs, and the only items on the branch that predated it. They shared nothing — different services, different screens, no common seam — so B4 went first and was green and committed before B2 spent the session. B4 turned out worse than "a stale number": the school label and the contact details came from two different queries, so a two-school parent was shown school A's phone number captioned with school B's name. B2 was the whole session: `findForeignOwner` now returns a verdict instead of throwing, the decision moves after the password is proven, and the merge runs in one transaction with the Redis session mirror deleted on both sides of it. See [ADR-0032](../adr/0032-household-merge-trust-model.md). |
 | 8.5 | **G2** | **done** | A coverage gap, not a behaviour one: the school preference `3afde47` added was proved against the unit spec's in-memory Prisma and not against real Postgres. Closed by `tests/integration/connection-scope-school-preference.test.ts` — its own two-school seed and cleanup, as anticipated. Watched red first by removing the preference: the caller's resolve landed on their newer school-**B** connection for a child stamped at school **A**, which is their own password spent on an account that holds nothing about that child. |
-| 9 | **T13**, then **T14** | **done** | T13 needed real second-school Mashov credentials and a full cron cycle, so it ran attended, against the live stack with two real schools linked. All eight boxes passed, including the two that only two schools can reach; it also turned up six findings, three of them real defects and two of those invisible to a one-school household. T14 is closed: T14 is closed: the deletions, the field removals, the `.env.example` entries and **PRD-v3** all landed. Two of its bullets needed the parent rather than the code — `.env.example` is denied by the session's permission settings (the same block the implementing session hit, not the `DB_PORT` fix this row used to claim had lifted it), so they appended those two entries from the drafted text, and the PRD went through the user-invoked `/prd` skill as `.claude/rules/prd.md` requires. |
+| 9 | **T13**, then **T14** | **done** | T13 needed real second-school Mashov credentials and a full cron cycle, so it ran attended, against the live stack with two real schools linked. All eight boxes passed, including the two that only two schools can reach; it also turned up six findings, three of them real defects and two of those invisible to a one-school household. All six have since been worked, one commit each: findings **3** and **4** (the source-health card), **5** (the permanently `partial` refresh), **6**'s settled half (a silent failed unlink), **1** (the NULL `schoolName`) and **2** (the filtered inbox and the household-global badge). Two things are deliberately left open and named there: **6**'s live cause, which the e2e reproduction does not reproduce, and `Student` scoped to a household — the real fix behind **4**, which is a schema change with its own ADR. T14 is closed: T14 is closed: the deletions, the field removals, the `.env.example` entries and **PRD-v3** all landed. Two of its bullets needed the parent rather than the code — `.env.example` is denied by the session's permission settings (the same block the implementing session hit, not the `DB_PORT` fix this row used to claim had lifted it), so they appended those two entries from the drafted text, and the PRD went through the user-invoked `/prd` skill as `.claude/rules/prd.md` requires. |
 
 Batches 1 through 8 are done: no open item puts one household's data on another's
 *screen*, none puts a household's *request* in another's Mashov account, no reader left
@@ -71,9 +74,11 @@ behaviour the suites already covered; the two it alone could reach — the unlin
 sign-in with either school's credentials — both passed, and it found three defects no
 test on this branch can see. Two of them (**3** and **4** in its findings) need two
 schools to exist at all, which is the whole argument for having run it: 1195 unit tests
-and 12 integration suites pass over both. They are recorded there, not fixed — closing
-them is new work, and the NULL-admitting `sync_run` read that causes both is a
-branch-wide rule, not a local slip.
+and 12 integration suites pass over both. They were recorded there rather than fixed,
+because closing them was new work — and that work has since been done, one commit per
+finding. The NULL-admitting `sync_run` read that causes both is a branch-wide rule rather
+than a local slip, and it still stands untouched: what the fixes changed is the two places
+that read a connection-scoped fact and an unscoped one into the same row.
 
 ---
 
@@ -1316,12 +1321,26 @@ aggregated worst-wins across both schools and reported `partial` — **R12** wor
 against real data, where the old code would have reported one school's envelope as
 `success`.
 
-#### Six findings, none of them in T13's fix scope
+#### Six findings, all since resolved
 
-All are recorded rather than fixed; **3**, **4** and **6** are new work, **1** and **2**
-are gaps, **5** is a plain parse bug. Findings **3** and **4** are reachable *only* with
-two schools, which is what T13 exists to catch — 1195 unit tests and 12 integration
-suites pass over both.
+None were in T13's own fix scope — **3**, **4** and **6** were new work, **1** and **2**
+gaps, **5** a plain parse bug — so T13 recorded them and a later batch closed them, one
+commit per finding, each amended in place below. Findings **3** and **4** are reachable
+*only* with two schools, which is the whole argument for having run T13 at all: 1195 unit
+tests and 12 integration suites passed over both.
+
+Two things stayed open, and both are named in their entries rather than hidden here:
+**6**'s live cause (the e2e reproduction the brief demanded first is green, so the code is
+right and the live behaviour is unexplained) and `Student` scoped to a household — the
+real fix behind **4**, whose closure here is a narrowing that stops a foreign guid
+*deciding* a row's status but does not stop it existing.
+
+One load-bearing thing did **not** change in any of the six fixes: the branch-wide rule
+that `sync_run` readers admit `WHERE ("householdConnectionId" = $1 OR ... IS NULL)`.
+Findings **3** and **4** both surface through it, and narrowing it would report
+`never_synced` for a dozen sources whose crons are succeeding — every `@Cron` entrypoint
+opens its run unstamped. The defects were two places that mixed a connection-scoped fact
+with an unscoped one in one row; what was fixed is the mixing.
 
 1. **School B's `schoolName` is NULL.** B's Mashov login omits
    `schoolSettings.schoolName`, so the `?? String(schoolCode)` fallbacks fire and the
