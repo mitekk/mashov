@@ -90,6 +90,12 @@ services:
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
+      # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
+      # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
+      # it starts, and the mint route answers 503.
+      TELEGRAM_LINK_CODE_TTL_MINUTES: ${TELEGRAM_LINK_CODE_TTL_MINUTES:-15}
+      TELEGRAM_POLL_TIMEOUT_SECONDS: ${TELEGRAM_POLL_TIMEOUT_SECONDS:-30}
+      TELEGRAM_POLL_ENABLED: ${TELEGRAM_POLL_ENABLED:-true}
       # Secrets. Never logged; see the note in ADR-0026 about ops/ having no
       # secrets-management path for them yet.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

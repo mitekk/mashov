@@ -183,7 +183,8 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 A per-child Hebrew briefing, pushed hourly from 13:00 to 19:00 Asia/Jerusalem — but only when
 that child has something unreported. Nothing new means no model call, no message, no cost.
 Delivery is opt-in per child: a child gets a digest only if an enabled recipient row exists for
-it (`POST /api/v1/digest/recipients`).
+it. A parent creates those rows themselves, in `עוד` → `עדכונים בטלגרם` — see
+**Connecting a parent's Telegram** below.
 
 | Variable | What | Default |
 |---|---|---|
@@ -197,7 +198,10 @@ it (`POST /api/v1/digest/recipients`).
 | `DIGEST_LLM_EFFORT` | how hard it thinks first — `low`/`medium`/`high`/`xhigh`/`max` | `low` |
 | `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |
 | `ANTHROPIC_API_KEY` | **secret.** Omit it and the digest still sends, using the deterministic renderer | unset |
-| `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather | unset |
+| `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather. Also the master switch for the link wizard: without it the mint route answers `503` and the poller never starts | unset |
+| `TELEGRAM_LINK_CODE_TTL_MINUTES` | how long a one-time link code stays valid | `15` |
+| `TELEGRAM_POLL_TIMEOUT_SECONDS` | how long each `getUpdates` long poll waits | `30` |
+| `TELEGRAM_POLL_ENABLED` | set `false` to stop polling — required if you ever set a webhook on the bot, since Telegram refuses `getUpdates` while one is active | `true` |
 
 Both defaults are deliberately inert: merging the feature changes nothing until `DIGEST_ENABLED`
 is `true`, and even then `DIGEST_DRY_RUN` keeps it from messaging anyone until you set it to
@@ -213,6 +217,33 @@ timeout, refusal, malformed output — falls back to deterministic Hebrew and st
 > field, only when the work was given. The digest estimates from an explicit date written in the
 > teacher's text, else the group's next lesson, and labels it as an estimate.
 > See [ADR-0027](docs/adr/0027-derived-homework-deadlines.md).
+
+### Connecting a parent's Telegram
+
+A parent opens `עוד` → `עדכונים בטלגרם`, picks which children to hear about, taps one button,
+and presses START in Telegram. They type nothing: the backend reads their chat id out of that
+START and writes the recipient rows itself. Per-child toggles and a disconnect live back in
+`עוד` afterwards.
+
+A Telegram bot can never start a conversation — it may only message a chat that has already
+pressed START on it — so that press is unavoidable in any design. What this avoids is making
+the parent *also* find `@userinfobot` and retype a number, which buys nothing and verifies
+nothing.
+
+Setting it up as an operator is one step: get a token from `@BotFather` and set
+`TELEGRAM_BOT_TOKEN`. The bot's `@username` is read from Telegram's own `getMe`, not
+configured, so it cannot drift from the deployed token. Without a token the wizard says the
+server is not set up for Telegram rather than rendering a dead link.
+
+The chat id arrives over `getUpdates` long-polling, not a webhook: a webhook needs a public
+HTTPS URL Telegram can reach, and this stack is local Docker behind NAT. The two are **mutually
+exclusive on one bot** — if you ever call `setWebhook`, set `TELEGRAM_POLL_ENABLED=false`, and
+only one backend replica may poll. See
+[ADR-0033](docs/adr/0033-parent-driven-telegram-linking.md).
+
+> **The link code is a credential.** A guessed code would bind the guesser's own chat to another
+> family's account and start streaming that family's children's behaviour reports to them.
+> Hence 16 random bytes, single-use, a 15-minute TTL, and a rate-limited mint route.
 
 To try it on your own machine — including the Telegram RTL check, which no test can make —
 follow [docs/ops/digest-local-test.md](docs/ops/digest-local-test.md). It seeds a synthetic
