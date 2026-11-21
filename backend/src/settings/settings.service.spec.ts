@@ -501,10 +501,10 @@ describe('SettingsService', () => {
     // response with status 'never_synced' even when no sync_run row for them
     // existed anywhere. Scoping the sync_run reads alone did nothing about it.
     it('enumerates per-student sources from the caller snapshot, not from every child', async () => {
-      const studentFindMany = jest.fn().mockResolvedValue([
-        { studentGuid: 'mine-1' },
-        { studentGuid: 'a-stranger-child' },
-      ]);
+      // `student.findMany` is still read, but only to *narrow* the snapshot's
+      // own guids -- it is bounded by an `in` list and can no longer widen the
+      // response to a child the caller's runs never mention.
+      const studentFindMany = jest.fn().mockResolvedValue([{ studentGuid: 'mine-1' }]);
       const getAllSourceHealth = jest.fn().mockResolvedValue([]);
       const loadSyncRuns = jest.fn().mockResolvedValue({
         allRuns: new Map([['homework:mine-1', {}], ['notifications', {}]]),
@@ -518,10 +518,62 @@ describe('SettingsService', () => {
 
       await service.getSourceHealth('conn-1');
 
-      expect(studentFindMany).not.toHaveBeenCalled();
+      expect(studentFindMany).toHaveBeenCalledWith({
+        where: { studentGuid: { in: ['mine-1'] }, isActive: true },
+        select: { studentGuid: true },
+      });
       expect(getAllSourceHealth).toHaveBeenCalledWith(['mine-1'], expect.anything());
       const [guids] = getAllSourceHealth.mock.calls[0] as [string[]];
       expect(guids).not.toContain('a-stranger-child');
+    });
+
+    // A departed child. `RosterPresenceService` flips `isActive` to false when
+    // she stops appearing in any roster, and from that moment every
+    // per-student task skips her -- `studentScopeForContext` filters
+    // `isActive: true`. Her last run before that was often a failed one, and
+    // because no future run can ever supersede it, `errorIsSpent` never fires
+    // and `/more` printed a four-day-old red error under a green check,
+    // permanently.
+    it('drops a guid whose student is no longer active', async () => {
+      const studentFindMany = jest.fn().mockResolvedValue([{ studentGuid: 'here-1' }]);
+      const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const loadSyncRuns = jest.fn().mockResolvedValue({
+        allRuns: new Map([
+          ['homework:here-1', {}],
+          ['homework:departed-1', {}],
+        ]),
+        successRuns: new Map([['homework:departed-1', {}]]),
+      });
+
+      const service = new SettingsService(
+        makeMockPrisma({ studentFindMany }),
+        makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+      );
+
+      await service.getSourceHealth('conn-1');
+
+      expect(getAllSourceHealth).toHaveBeenCalledWith(['here-1'], expect.anything());
+    });
+
+    // Unlike the visibility rule one test below, a *missing* Student row is not
+    // "ownership unknown". Nothing will ever sync that guid again, so its
+    // frozen status is not news.
+    it('drops a guid with no student row at all', async () => {
+      const studentFindMany = jest.fn().mockResolvedValue([]);
+      const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const loadSyncRuns = jest.fn().mockResolvedValue({
+        allRuns: new Map([['homework:ghost-1', {}]]),
+        successRuns: new Map(),
+      });
+
+      const service = new SettingsService(
+        makeMockPrisma({ studentFindMany }),
+        makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+      );
+
+      await service.getSourceHealth('conn-1');
+
+      expect(getAllSourceHealth).toHaveBeenCalledWith([], expect.anything());
     });
 
     it('ignores a colon-bearing key that is not a per-student source', async () => {
@@ -562,6 +614,10 @@ describe('SettingsService', () => {
         { studentGuid: 'theirs-1', householdConnectionId: 'conn-2' },
       ]);
       const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const studentFindMany = jest.fn().mockResolvedValue([
+        { studentGuid: 'mine-1' },
+        { studentGuid: 'theirs-1' },
+      ]);
       const loadSyncRuns = jest.fn().mockResolvedValue({
         allRuns: new Map([
           ['homework:mine-1', {}],
@@ -571,7 +627,7 @@ describe('SettingsService', () => {
       });
 
       const service = new SettingsService(
-        makeMockPrisma({ studentConnectionFindMany }),
+        makeMockPrisma({ studentConnectionFindMany, studentFindMany }),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
       );
 
@@ -588,6 +644,10 @@ describe('SettingsService', () => {
         { studentGuid: 'theirs-1', householdConnectionId: 'conn-2' },
       ]);
       const getAllSourceHealth = jest.fn().mockResolvedValue([]);
+      const studentFindMany = jest.fn().mockResolvedValue([
+        { studentGuid: 'unlinked-1' },
+        { studentGuid: 'theirs-1' },
+      ]);
       const loadSyncRuns = jest.fn().mockResolvedValue({
         allRuns: new Map([
           ['homework:unlinked-1', {}],
@@ -597,7 +657,7 @@ describe('SettingsService', () => {
       });
 
       const service = new SettingsService(
-        makeMockPrisma({ studentConnectionFindMany }),
+        makeMockPrisma({ studentConnectionFindMany, studentFindMany }),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
       );
 
@@ -659,7 +719,9 @@ describe('SettingsService', () => {
       });
 
       const service = new SettingsService(
-        makeMockPrisma({}),
+        makeMockPrisma({
+          studentFindMany: jest.fn().mockResolvedValue([{ studentGuid: 'guid-1' }]),
+        }),
         makeMockFreshnessService({
           loadSyncRuns,
           getAllSourceHealth,

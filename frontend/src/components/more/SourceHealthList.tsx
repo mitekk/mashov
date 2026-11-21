@@ -100,33 +100,56 @@ function normalizeSources(sources: SourceHealth[]): SourceHealth[] {
     .sort(([, a], [, b]) => a.firstIndex - b.firstIndex)
     .map(([baseSource, group]) => {
       const entries = group.scopedEntries.length > 0 ? group.scopedEntries : group.baseEntries;
-      const initial = entries[0];
 
-      return entries.slice(1).reduce<SourceHealth>(
-        (combined, current) => {
-          const status = selectWorseStatus(combined.status, current.status);
-          const latestSuccessAt = maxIsoDate(combined.lastSuccessAt, current.lastSuccessAt);
-          const latestAttemptAt = maxIsoDate(combined.lastAttemptAt, current.lastAttemptAt);
-          const lastErrorMessage =
-            status === 'failed'
-              ? current.lastErrorMessage ?? combined.lastErrorMessage
-              : combined.lastErrorMessage;
-
-          return {
-            source: baseSource,
-            status,
-            lastSuccessAt: latestSuccessAt,
-            lastAttemptAt: latestAttemptAt,
-            lastErrorMessage,
-            fetchedCount: null,
-            staleThresholdMinutes: combined.staleThresholdMinutes,
-          };
-        },
-        {
-          ...initial,
-          source: baseSource,
-        },
+      // Folded from a neutral seed over EVERY entry, rather than from
+      // `{...entries[0]}` over the rest. The old seed carried entries[0]'s
+      // `lastErrorMessage` through the whole reduce unconditionally — the
+      // `status === 'failed'` guard only ever applied to the *incoming* entry
+      // — so whenever entries[0] was fresh with an error the backend had not
+      // yet marked spent, the row rendered a green `תקין`, a relative time
+      // taken from another child's success, and that error, all on one line.
+      // A departed child's key is exactly that shape and never stops being
+      // it: nothing will ever sync her again, so no later success can
+      // supersede her last failure.
+      const merged = entries.reduce<{
+        status: SourceStatus;
+        lastSuccessAt: string | null;
+        lastAttemptAt: string | null;
+        errorFrom: SourceHealth | null;
+      }>(
+        (combined, current) => ({
+          status: selectWorseStatus(combined.status, current.status),
+          lastSuccessAt: maxIsoDate(combined.lastSuccessAt, current.lastSuccessAt),
+          lastAttemptAt: maxIsoDate(combined.lastAttemptAt, current.lastAttemptAt),
+          // The error belongs to the entry whose status is the worst one
+          // carrying one, so the message and the icon describe the same run.
+          errorFrom:
+            current.lastErrorMessage &&
+            (!combined.errorFrom ||
+              STATUS_PRIORITY[current.status] > STATUS_PRIORITY[combined.errorFrom.status])
+              ? current
+              : combined.errorFrom,
+        }),
+        { status: 'fresh', lastSuccessAt: null, lastAttemptAt: null, errorFrom: null },
       );
+
+      // Suppressed only on a merged `fresh`: every contributing entry is then
+      // fresh, and the backend reaches the same verdict for the bare key via
+      // `errorIsSpent`. Deliberately not `status !== 'failed'` — a
+      // stale-but-failing source is the row most worth reading, the rule
+      // `freshness.service.ts` already states.
+      const lastErrorMessage =
+        merged.status === 'fresh' ? null : merged.errorFrom?.lastErrorMessage ?? null;
+
+      return {
+        source: baseSource,
+        status: merged.status,
+        lastSuccessAt: merged.lastSuccessAt,
+        lastAttemptAt: merged.lastAttemptAt,
+        lastErrorMessage,
+        fetchedCount: null,
+        staleThresholdMinutes: entries[0].staleThresholdMinutes,
+      };
     });
 }
 

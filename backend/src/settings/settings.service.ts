@@ -103,6 +103,22 @@ export class SettingsService {
    * somebody else's. Only a guid whose links exist and exclude this connection
    * is dropped.
    *
+   * The surviving guids are then narrowed to children that still exist and are
+   * `isActive`, and here a *missing* row is dropped rather than kept — the
+   * opposite call from the visibility rule above, deliberately. The two
+   * absences mean different things. No link means "ownership unknown, link on
+   * the next roster refresh", a gap a later sync fills, so hiding the row
+   * would hide a parent's own child. No `Student` row — or an inactive one,
+   * which `RosterPresenceService` writes when a child stops appearing in every
+   * roster — means nothing will ever sync that guid again: every per-student
+   * task scopes its loop with `studentScopeForContext`, which filters
+   * `isActive: true`. So the key's status is frozen at whatever its last run
+   * left, and if that run `failed`, `errorIsSpent` can never fire for it,
+   * because no later success will ever outrank the failure. The row then
+   * prints a permanent red error for a child who left. A frozen status is not
+   * news; the key should not exist at all, which is what
+   * `SyncRunRetentionService` finishes.
+   *
    * Narrowing this, not fixing it: `Student` scoped to a household is the real
    * fix and has its own ADR.
    */
@@ -128,11 +144,23 @@ export class SettingsService {
     // One query for the whole list, not one per guid.
     const links = await linksForStudents(this.prisma, [...guids]);
 
-    return [...guids].filter((guid) => {
+    const visible = [...guids].filter((guid) => {
       const connections = links.get(guid);
       if (!connections || connections.length === 0) return true;
       return connections.includes(householdConnectionId);
     });
+
+    if (visible.length === 0) return [];
+
+    // Bounded by the `in` list: this narrows the snapshot's own guids and can
+    // never widen the response to a child the caller's runs never mention.
+    const active = await this.prisma.student.findMany({
+      where: { studentGuid: { in: visible }, isActive: true },
+      select: { studentGuid: true },
+    });
+    const activeGuids = new Set(active.map((student) => student.studentGuid));
+
+    return visible.filter((guid) => activeGuids.has(guid));
   }
 
   /**

@@ -48,6 +48,14 @@ jobs:
         working-directory: frontend
         run: npx tsc --noEmit
 
+      # Component-level render tests (vitest + jsdom). They live in the lint
+      # job rather than `unit-test` because that job runs the backend suite
+      # inside Docker, and these need no container -- the frontend deps are
+      # already installed two steps above.
+      - name: Unit test frontend
+        working-directory: frontend
+        run: npm test
+
   # ────────────────────────────────────────────────────────────────────────────
   # 2. UNIT TESTS — run inside Docker container
   # ────────────────────────────────────────────────────────────────────────────
