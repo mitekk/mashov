@@ -103,10 +103,19 @@ export class DigestRecipientService {
     });
   }
 
-  /** The caller's own recipients for a child, not every household's. */
-  async listFor(studentGuid: string, userId: string): Promise<DigestRecipient[]> {
+  /**
+   * The caller's own recipients, not every household's.
+   *
+   * `studentGuid` is optional because the `/more` card asks "what am I
+   * subscribed to" without naming a child, and joins names, classes and school
+   * labels client-side from the already-cached children list.
+   */
+  async list(options: { userId: string; studentGuid?: string }): Promise<DigestRecipient[]> {
     return this.prisma.digestRecipient.findMany({
-      where: { studentGuid, userId },
+      where: {
+        userId: options.userId,
+        ...(options.studentGuid ? { studentGuid: options.studentGuid } : {}),
+      },
       orderBy: { createdAt: 'asc' },
     });
   }

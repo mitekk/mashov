@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
 import { DigestModule } from '../digest/digest.module';
 import { TelegramClient } from './telegram.client';
+import { TelegramController } from './telegram.controller';
 import { TelegramLinkService } from './telegram-link.service';
 import { TelegramPollerService } from './telegram-poller.service';
 
@@ -21,6 +22,7 @@ import { TelegramPollerService } from './telegram-poller.service';
  */
 @Module({
   imports: [PrismaModule, DigestModule],
+  controllers: [TelegramController],
   providers: [TelegramClient, TelegramLinkService, TelegramPollerService],
   exports: [TelegramLinkService],
 })

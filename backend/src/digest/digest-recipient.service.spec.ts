@@ -157,12 +157,23 @@ describe('DigestRecipientService', () => {
   it('lists the recipients for one child', async () => {
     const harness = makeHarness();
 
-    const listed = await harness.service.listFor('stu-1', 'user-1');
+    const listed = await harness.service.list({ userId: 'user-1', studentGuid: 'stu-1' });
 
     expect(listed).toHaveLength(1);
     expect((harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where).toMatchObject(
       { studentGuid: 'stu-1', userId: 'user-1' },
     );
+  });
+
+  it('lists everything the caller is subscribed to when no child is named', async () => {
+    // The /more card asks "what am I subscribed to" without naming a child, so
+    // the studentGuid filter has to be omittable rather than required.
+    const harness = makeHarness();
+
+    await harness.service.list({ userId: 'user-1' });
+
+    const where = (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where;
+    expect(where).toEqual({ userId: 'user-1' });
   });
 
   it('updates the enabled flag', async () => {
@@ -218,7 +229,7 @@ describe('DigestRecipientService', () => {
   it('lists only the recipients the caller created for that child', async () => {
     const harness = makeHarness();
 
-    await harness.service.listFor('stu-1', 'user-1');
+    await harness.service.list({ userId: 'user-1', studentGuid: 'stu-1' });
 
     expect(
       (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,
