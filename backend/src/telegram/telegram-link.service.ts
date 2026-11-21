@@ -26,6 +26,28 @@ export interface MintedTelegramLink {
 
 export type TelegramLinkStatus = 'pending' | 'linked' | 'expired';
 
+/** Only the fields of a Telegram update this project reads. */
+export interface TelegramUpdate {
+  update_id: number;
+  message?: {
+    chat?: { id?: number | string };
+    text?: string;
+  };
+}
+
+/**
+ * `/start`, `/start <code>`, and the `/start@botname <code>` form Telegram
+ * sends in groups. Anything else is ordinary chatter and is ignored.
+ */
+const START_COMMAND = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s+(\S+))?\s*$/;
+
+const REPLY_ALREADY_CONNECTED =
+  'הטלגרם הזה כבר מחובר לחשבון שלכם ✅ אין צורך לעשות שוב — העדכונים ימשיכו להגיע לכאן.';
+const REPLY_LINK_DEAD =
+  'הקישור הזה כבר לא בתוקף. פתחו שוב את האפליקציה, היכנסו ל"עוד" → "עדכונים בטלגרם" וקבלו קישור חדש.';
+const REPLY_NEEDS_APP =
+  'שלום! כדי לקבל עדכונים על הילדים, פתחו את האפליקציה, היכנסו ל"עוד" → "עדכונים בטלגרם" ולחצו על הקישור משם.';
+
 export interface TelegramLinkState {
   status: TelegramLinkStatus;
   linkedAt: Date | null;
@@ -203,6 +225,137 @@ export class TelegramLinkService {
     });
     await this.prisma.telegramLinkCode.deleteMany({ where: { userId } });
     return removed.count;
+  }
+
+  /**
+   * One Telegram update, from the poller. The chat id in it is the whole point.
+   *
+   * Never throws: the poller delegates every update here and must survive a bad
+   * one, so everything unexpected is ignored or logged. Reprocessing is safe by
+   * construction, because claiming the code is a conditional update
+   * (`consumedAt: null`) and the recipient writes are upserts -- which is what
+   * lets the poller keep its offset in memory and still be handed the last 24
+   * hours of unconfirmed updates after a restart.
+   */
+  async consume(update: TelegramUpdate, now: Date = new Date()): Promise<void> {
+    const rawChatId = update.message?.chat?.id;
+    const text = update.message?.text?.trim();
+    if (rawChatId === undefined || rawChatId === null || !text) return;
+
+    const match = START_COMMAND.exec(text);
+    if (!match) return;
+
+    const chatId = String(rawChatId);
+    const code = match[1];
+    if (!code) {
+      // A bare START: somebody found the bot by name. There is no account to
+      // bind, and guessing one would be the whole threat this design avoids.
+      await this.reply(chatId, REPLY_NEEDS_APP);
+      return;
+    }
+
+    const row = await this.prisma.telegramLinkCode.findFirst({ where: { code } });
+    if (!row) {
+      await this.reply(chatId, REPLY_LINK_DEAD);
+      return;
+    }
+
+    // The claim and the single-use check are one statement on purpose. A second
+    // START for the same code -- a replay from Telegram's 24-hour retention, or
+    // a parent tapping the link twice -- claims nothing and changes nothing.
+    const claimed = await this.prisma.telegramLinkCode.updateMany({
+      where: { code, consumedAt: null, expiresAt: { gt: now } },
+      data: { chatId, consumedAt: now },
+    });
+    if (claimed.count === 0) {
+      const sameChatAlreadyLinked = row.consumedAt !== null && row.chatId === chatId;
+      await this.reply(chatId, sameChatAlreadyLinked ? REPLY_ALREADY_CONNECTED : REPLY_LINK_DEAD);
+      return;
+    }
+
+    // Re-validated here as well as at mint time: the roster can change in
+    // between, and a child who has left must not cost the parent their other
+    // children's updates, so a guid that is no longer visible is skipped.
+    const visible: string[] = [];
+    for (const studentGuid of row.studentGuids) {
+      if (await canSeeStudent(this.prisma, row.userId, studentGuid)) visible.push(studentGuid);
+    }
+
+    for (const studentGuid of visible) {
+      await this.prisma.digestRecipient.upsert({
+        where: {
+          studentGuid_channel_address: { studentGuid, channel: 'telegram', address: chatId },
+        },
+        create: { userId: row.userId, studentGuid, channel: 'telegram', address: chatId },
+        // The parent just chose this child in the wizard, so an explicit
+        // re-subscribe overrides an earlier toggle-off. activeFrom is left
+        // alone: resetting it would drop today's items they have not had yet.
+        update: { enabled: true },
+      });
+    }
+
+    await this.sendConfirmation(row.id, chatId, visible, now);
+  }
+
+  /**
+   * The proof the parent asked for, at the one moment the chat is known
+   * reachable. Sent from here rather than by the digest cron because the cron
+   * honours DIGEST_DRY_RUN, has an in-process single-run guard, correctly sends
+   * nothing on a quiet day, and would consume the dedup claims the 13:00 run
+   * needs -- any of which would leave the parent staring at a silent Telegram
+   * concluding the link failed.
+   */
+  private async sendConfirmation(
+    codeRowId: string,
+    chatId: string,
+    studentGuids: string[],
+    now: Date,
+  ): Promise<void> {
+    const students =
+      studentGuids.length > 0
+        ? await this.prisma.student.findMany({
+            where: { studentGuid: { in: studentGuids } },
+            select: { studentGuid: true, privateName: true },
+          })
+        : [];
+    const names = students.map((student) => student.privateName).filter(Boolean);
+
+    const text =
+      names.length > 0
+        ? `הטלגרם שלכם מחובר ✅\n` +
+          `מעכשיו תקבלו כאן עדכון יומי על ${names.join(' ו')} — רק בימים שבהם באמת קרה משהו.\n` +
+          `אפשר לכבות או להוסיף ילדים בכל רגע במסך "עוד" באפליקציה.`
+        : `הטלגרם שלכם מחובר ✅\n` +
+          `לא הצלחנו לרשום אף ילד כרגע. פתחו את מסך "עוד" באפליקציה ובחרו מי שתרצו לקבל עליו עדכונים.`;
+
+    try {
+      await this.sender.send(chatId, text);
+      await this.prisma.telegramLinkCode.update({
+        where: { id: codeRowId },
+        data: { confirmationSentAt: now, confirmationError: null },
+      });
+    } catch (error) {
+      // The rows are written and the code is spent. A failed confirmation is
+      // something the wizard shows the parent, not something that unwinds a
+      // link that otherwise worked.
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Telegram link confirmation failed: ${message}`);
+      await this.prisma.telegramLinkCode.update({
+        where: { id: codeRowId },
+        data: { confirmationSentAt: null, confirmationError: message },
+      });
+    }
+  }
+
+  /** A courtesy message to a chat we are not binding. Never fatal. */
+  private async reply(chatId: string, text: string): Promise<void> {
+    try {
+      await this.sender.send(chatId, text);
+    } catch (error) {
+      this.logger.warn(
+        `Could not answer Telegram chat: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   private ttlMinutes(): number {
