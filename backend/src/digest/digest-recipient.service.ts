@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { DigestDelivery, DigestRecipient } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { canSeeStudent } from '../common/student-links';
 
 /** Channels a sender exists for. A row for anything else could never deliver. */
 const SUPPORTED_CHANNELS = ['telegram', 'log'];
@@ -51,11 +52,11 @@ export interface DigestDeliveryTarget {
  * row exists for it. That makes delivery strictly opt-in, which is the right
  * default for pushing a child's behavior data to a messaging app.
  *
- * Knowingly accepted limitation: nothing stops user A creating a row for user
- * B's child, because there is no FK to validate against. What is done here is
- * what can be done -- the studentGuid must be on the active roster, and the
- * creating userId is recorded on every row, so each one is attributable. A real
- * ownership model is separate work; see ADR-0026.
+ * Creation is scoped to the caller's own children. `Student` still has no
+ * userId FK, but ADR-0031's `StudentConnection` link set answers "who may see
+ * this child", and `canSeeStudent` is that answer -- so user A can no longer
+ * create a row pointing user B's child at their own Telegram chat. This
+ * supersedes ADR-0026's accepted recipient-ownership limitation; see ADR-0033.
  */
 @Injectable()
 export class DigestRecipientService {
@@ -81,6 +82,14 @@ export class DigestRecipientService {
     });
     if (!onRoster) {
       throw new BadRequestException(`No active child with studentGuid "${studentGuid}".`);
+    }
+
+    // Roster membership is not ownership. Without this, an authenticated parent
+    // could point another family's child at their own Telegram chat and start
+    // receiving that child's behavior reports -- ADR-0026's accepted hole,
+    // which stopped being acceptable the moment a UI creates these rows.
+    if (!(await canSeeStudent(this.prisma, userId, studentGuid))) {
+      throw new ForbiddenException('This child belongs to another household.');
     }
 
     return this.prisma.digestRecipient.create({

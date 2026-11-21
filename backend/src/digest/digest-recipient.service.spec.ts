@@ -13,11 +13,34 @@ const RECIPIENT = {
   activeFrom: new Date('2026-11-17T00:00:00Z'),
 };
 
-function makeHarness(options: { roster?: string[]; existing?: unknown } = {}) {
+function makeHarness(
+  options: {
+    roster?: string[];
+    existing?: unknown;
+    /** studentGuid -> the connections that list the child. */
+    links?: { studentGuid: string; householdConnectionId: string }[];
+    /** The caller's own active connections. */
+    connections?: string[];
+  } = {},
+) {
   const roster = options.roster ?? ['stu-1'];
+  // Visibility is the link set, not the routing stamp (ADR-0031). By default
+  // the child under test is one the caller can see.
+  const links = options.links ?? [{ studentGuid: 'stu-1', householdConnectionId: 'conn-1' }];
+  const connections = options.connections ?? ['conn-1'];
   // `?? RECIPIENT` would defeat the point: null is the case under test.
   const existing = 'existing' in options ? options.existing : RECIPIENT;
   const prisma = {
+    studentConnection: {
+      findMany: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { studentGuid: string } }) =>
+          links.filter((link) => link.studentGuid === where.studentGuid),
+        ),
+    },
+    householdConnection: {
+      findMany: jest.fn().mockResolvedValue(connections.map((id) => ({ id }))),
+    },
     student: {
       findMany: jest
         .fn()
@@ -62,8 +85,6 @@ describe('DigestRecipientService', () => {
   });
 
   it('refuses a studentGuid that is not on the active roster', async () => {
-    // Student has no userId FK, so this check plus the recorded userId is the
-    // only validation available. See ADR-0026.
     const harness = makeHarness({ roster: ['other-child'] });
 
     await expect(
@@ -74,6 +95,39 @@ describe('DigestRecipientService', () => {
       }),
     ).rejects.toThrow(BadRequestException);
     expect(harness.prisma.digestRecipient.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a child on the roster that the caller cannot see', async () => {
+    // The roster check alone was ADR-0026's accepted hole: it let one parent
+    // point another family's child at their own Telegram chat. A UI creates
+    // these rows now, so visibility is checked, not just roster membership.
+    const harness = makeHarness({
+      links: [{ studentGuid: 'stu-1', householdConnectionId: 'someone-elses-conn' }],
+      connections: ['conn-1'],
+    });
+
+    await expect(
+      harness.service.create('user-1', {
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address: '12345',
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(harness.prisma.digestRecipient.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts a child no connection lists yet', async () => {
+    // Unlinked means "ownership unknown, link on the next roster refresh", not
+    // "nobody's" -- the same reading canSeeStudent and visibleStudentWhere use.
+    const harness = makeHarness({ links: [] });
+
+    await expect(
+      harness.service.create('user-1', {
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address: '12345',
+      }),
+    ).resolves.toMatchObject({ studentGuid: 'stu-1' });
   });
 
   it('refuses a channel it has no sender for', async () => {

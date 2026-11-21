@@ -293,7 +293,7 @@ for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
 | Method | Path | Auth | Request Body | Response Body | Status | State |
 |--------|------|------|--------------|---------------|--------|-------|
 | GET | `/api/v1/digest/recipients?studentGuid=` | **Yes** | — | `{ data: DigestRecipient[] }` | 200, 400, 401 | new |
-| POST | `/api/v1/digest/recipients` | **Yes** | `{ studentGuid, channel, address, displayName? }` | `{ data: DigestRecipient }` | 201, 400, 401 | new |
+| POST | `/api/v1/digest/recipients` | **Yes** | `{ studentGuid, channel, address, displayName? }` | `{ data: DigestRecipient }` | 201, 400, 401, 403 | new |
 | PATCH | `/api/v1/digest/recipients/:id` | **Yes** | `{ enabled?, displayName? }` | `{ data: DigestRecipient }` | 200, 401, 404 | new |
 | DELETE | `/api/v1/digest/recipients/:id` | **Yes** | — | — | 204, 401, 403, 404 | new |
 | POST | `/api/v1/digest/runs` | **Yes** | `{ studentGuid?, dryRun? }` | `{ data: DigestRunResult[] }` | 201, 401, 429 | new |
@@ -906,5 +906,5 @@ return 403 otherwise.
 6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects`, `/children/notices`, and `/children/timetable` return full lists (no pagination needed at current data scale).
 7. **Read/handled state** — implemented directly on items (`isNew`, `isArchived` fields on `homework_item` and `behavior_item`; `isNew` on `mail_conversation`). There is no separate `read_state` table in Phase 1. State is household-global.
 8. **Digest deadlines** — the `צפי הגשה` date in a digest message is an *estimate*, never a due date. Mashov exposes no homework due-date field; the estimate comes from an explicit deadline written in the Hebrew text when there is one, else the group's next lesson from the timetable. ADR-0027 records this departure from the requirement not to promise due-soon logic.
-9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. The API validates that `studentGuid` is on the active roster and records the creating `userId`, but nothing prevents a row for another household's child. ADR-0026 documents the limitation.
+9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. Creation validates that `studentGuid` is on the active roster **and** that the caller can see the child (`canSeeStudent`, the ADR-0031 link set), answering `403 FORBIDDEN` otherwise; the creating `userId` is recorded and scopes every mutation and the delivery history. ADR-0033 closed the cross-household hole ADR-0026 had accepted.
 10. **Timetable** — synced weekly (Sunday 03:00). The `day` field uses Israeli school week: 1=Sunday, 2=Monday, …, 6=Friday. Frontend should handle the case where `data` is empty (sync not yet run or source returned no data).
