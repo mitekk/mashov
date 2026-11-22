@@ -24,9 +24,9 @@ BEGIN;
 CREATE TEMPORARY VIEW local_digest_day AS
   SELECT ((now() AT TIME ZONE 'Asia/Jerusalem')::date)::timestamp AS today;
 
--- Scope the rows to the year the digest will resolve. With no active
--- household connection, currentSchoolYearFor() falls back to the calendar:
--- Sep 2026 - Jun 2027 is year 2027.
+-- Scope the rows to the year the digest will resolve. The seeded household
+-- connection below carries the same year, so currentSchoolYearFor() agrees
+-- with these rows whichever source it reads: Sep 2026 - Jun 2027 is 2027.
 CREATE TEMPORARY VIEW local_digest_year AS
   SELECT CASE
            WHEN EXTRACT(MONTH FROM now()) >= 9 THEN EXTRACT(YEAR FROM now()) + 1
@@ -56,6 +56,24 @@ ON CONFLICT (id) DO UPDATE
       "lastActivityAt" = now(),
       "revokedAt" = NULL;
 
+-- The school this parent is connected to. Not optional furniture: a digest
+-- run re-checks at send time that the subscribing parent still owns the child
+-- (ADR-0035), and ownership is the `student_connection` link below read
+-- through an ACTIVE connection of theirs. Without both rows the run finds no
+-- targets at all and the manual endpoint answers `[]`.
+INSERT INTO household_connection (
+  id, "userId", "schoolCode", "schoolYear", username, "encryptedPassword",
+  "schoolName", active, "lastLoginAt", "createdAt", "updatedAt"
+)
+SELECT
+  'local-digest-conn', 'local-digest-user', 999999, school_year,
+  'local-digest', 'not-a-real-secret', 'בית ספר מקומי', true, now(), now(), now()
+FROM local_digest_year
+ON CONFLICT (id) DO UPDATE
+  SET active = true,
+      "schoolYear" = (SELECT school_year FROM local_digest_year),
+      "updatedAt" = now();
+
 -- The child. First name only ever reaches the model; the family name is here
 -- precisely so the redaction has something to strip.
 INSERT INTO student (
@@ -69,6 +87,15 @@ VALUES (
 ON CONFLICT ("studentGuid") DO UPDATE
   SET "isActive" = true, "updatedAt" = now();
 
+-- The visibility edge: this connection's login roster lists the child
+-- (ADR-0031). It is what `ownsStudentForDelivery` reads.
+INSERT INTO student_connection (
+  "studentGuid", "householdConnectionId", "firstSeenAt", "lastSeenInRosterAt"
+)
+VALUES ('local-digest-guid', 'local-digest-conn', now(), now())
+ON CONFLICT ("studentGuid", "householdConnectionId") DO UPDATE
+  SET "lastSeenInRosterAt" = now();
+
 -- Who the digest goes to. The address is a placeholder: a dry run routes
 -- every send through LogSender regardless of channel, so nothing leaves the
 -- host until you replace this with a real chat id and turn dry run off.
@@ -81,9 +108,9 @@ SELECT
   'telegram', '0000000000', 'Local dry run',
   true, today - interval '30 days', now(), now()
 FROM local_digest_day
--- Conflict on the id, not on (studentGuid, channel, address): once you point
--- this row at a real chat id the tuple no longer matches, and the insert would
--- fail on the primary key instead. `address` is deliberately left alone here,
+-- Conflict on the id, not on (userId, studentGuid, channel, address): once you
+-- point this row at a real chat id the tuple no longer matches, and the insert
+-- would fail on the primary key instead. `address` is deliberately left alone here,
 -- so re-seeding to clear the ledger cannot silently redirect a real send back
 -- to the placeholder.
 ON CONFLICT (id) DO UPDATE

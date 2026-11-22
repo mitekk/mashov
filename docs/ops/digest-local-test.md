@@ -142,8 +142,8 @@ and **no** duplicate recipient rows.
 The seeded child is the one to pick. `backend/scripts/seed-digest-local.sql`
 leaves `digest_recipient` with a placeholder address; the wizard overwrites it
 with your real chat id through the upsert on
-`@@unique([studentGuid, channel, address])`, so pick the seeded child in step 2
-rather than editing the row.
+`@@unique([userId, studentGuid, channel, address])`, so pick the seeded child in
+step 2 rather than editing the row.
 
 Now re-seed (to clear the ledger) and run the digest itself:
 
@@ -158,6 +158,38 @@ curl -s -X POST http://localhost:3001/api/v1/digest/runs \
 Two more checks worth making back in `עוד`: toggle one child off and re-run —
 that child must drop out of the results — and `ניתוק`, after which the
 `digest_recipient` rows and the link codes are both gone.
+
+## Two parents, one child
+
+The isolation ADR-0035 describes only shows up with a second account, and
+nothing automated covers the real Telegram leg of it. Worth half an hour before
+a release that touches the digest.
+
+Sign a second app account in, link its own Telegram chat, and subscribe it to
+the **same** child as the first. Then, with `DIGEST_ENABLED=true` and
+`DIGEST_DRY_RUN=false`:
+
+- each chat gets its own message, and the `אישורים שממתינים לך` section in each
+  carries only that account's own unanswered forms — a form only one of them has
+  to answer must not appear in the other's message;
+- `GET /api/v1/digest/deliveries` as each account returns only its own runs, so
+  neither `messageText` appears in the other's history;
+- `digest_reported_item` holds one row per account per item:
+
+  ```bash
+  docker compose exec -T db psql -U postgres -d mashov -At \
+    -c "select \"userId\", count(*) from digest_reported_item
+        where \"studentGuid\"='local-digest-guid' group by 1;"
+  ```
+
+- unlink the school on **one** account (`הגדרות` → the school → disconnect).
+  That chat must go silent on the next run while the other keeps receiving, and
+  that account's `digest_recipient`, `digest_reported_item` and `digest_delivery`
+  rows for the child must be gone while the other account's remain.
+
+If both accounts linked the *same* chat, expect one copy of an identical
+message, with the suppression recorded in the second delivery row's
+`errorMessage`.
 
 If you have no bot token, the wizard says so on step 2 rather than offering a
 dead `t.me/undefined` link. If `DIGEST_ENABLED` is false, its last step says
