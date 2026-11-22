@@ -303,9 +303,7 @@ describe('Household merge — adding a school another household already owns', (
     expect(orphan).not.toBeNull();
     expect(orphan?.mergedIntoUserId).toBe(USER_A);
 
-    // Keyed on `[studentGuid, channel, address]`, which omits `userId` — the
-    // same tuple cannot exist under both households, so this re-point can
-    // never collide and a skip-on-conflict branch would be dead code.
+    // The subscription travels with the connection that justified it.
     const recipients = await prisma.digestRecipient.findMany({
       where: { studentGuid: CHILD_B },
     });
@@ -331,6 +329,35 @@ describe('Household merge — adding a school another household already owns', (
       // household's preference.
       ['shared-item', false],
     ]);
+  });
+
+  it('merges a household that already holds the same subscription', async () => {
+    // The recipient key now carries the userId, so the same (child, chat)
+    // tuple CAN exist under both households -- and in the household this
+    // merge is for, both parents have usually linked the same family chat.
+    // Re-pointing the orphan's row onto it is a P2002 inside the merge
+    // transaction, which fails the whole merge identically on every retry.
+    await seed();
+
+    for (const userId of [USER_A, USER_B]) {
+      await prisma.digestRecipient.create({
+        data: {
+          userId,
+          studentGuid: CHILD_B,
+          channel: 'telegram',
+          address: 'hm-shared-chat',
+          enabled: true,
+        },
+      });
+    }
+
+    await expect(addSchoolB(true)).resolves.toMatchObject({ semel: SEMEL_B });
+
+    // One row survives, the surviving household's own.
+    const recipients = await prisma.digestRecipient.findMany({
+      where: { studentGuid: CHILD_B, address: 'hm-shared-chat' },
+    });
+    expect(recipients.map((row) => row.userId)).toEqual([USER_A]);
   });
 
   // The DoD's live-session case, and the reason the Redis deletes bracket the
