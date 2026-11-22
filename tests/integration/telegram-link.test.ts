@@ -5,7 +5,9 @@
  * is a database-level one that a mocked Prisma cannot show:
  *
  *  1. A START binds the chat and writes one recipient row per chosen child,
- *     through the `@@unique([studentGuid, channel, address])` upsert.
+ *     through the `@@unique([userId, studentGuid, channel, address])` upsert --
+ *     which is also what gives the second parent of a shared child their own
+ *     row for a chat the first parent has already linked.
  *  2. A replayed START changes nothing. Telegram retains unconfirmed updates
  *     for 24 hours and the poller's offset is in memory, so reprocessing is not
  *     a hypothetical — it is what a restart does. The single conditional
@@ -42,10 +44,12 @@ const CONN_B = 'tg-conn-b';
 const CHILD_A1 = 'tg-child-a1';
 const CHILD_A2 = 'tg-child-a2';
 const CHILD_B1 = 'tg-child-b1';
+/** Both parents' connections list this one: two accounts, one child. */
+const CHILD_SHARED = 'tg-child-shared';
 const CHAT_ID = '555000111';
 
 const USER_IDS = [PARENT_A, PARENT_B];
-const GUIDS = [CHILD_A1, CHILD_A2, CHILD_B1];
+const GUIDS = [CHILD_A1, CHILD_A2, CHILD_B1, CHILD_SHARED];
 
 /** Records what would have been delivered, so assertions can read the text. */
 class CapturingSender {
@@ -80,6 +84,7 @@ describe('Parent-driven Telegram linking', () => {
 
   beforeEach(async () => {
     await prisma.digestRecipient.deleteMany({ where: { userId: { in: USER_IDS } } });
+    await prisma.digestReportedItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.telegramLinkCode.deleteMany({ where: { userId: { in: USER_IDS } } });
     await prisma.studentConnection.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.student.deleteMany({ where: { studentGuid: { in: GUIDS } } });
@@ -121,6 +126,7 @@ describe('Parent-driven Telegram linking', () => {
       [CHILD_A1, CONN_A, 'אבי'],
       [CHILD_A2, CONN_A, 'נועה'],
       [CHILD_B1, CONN_B, 'דנה'],
+      [CHILD_SHARED, CONN_A, 'יובל'],
     ] as const) {
       await prisma.student.create({
         data: {
@@ -143,6 +149,17 @@ describe('Parent-driven Telegram linking', () => {
         },
       });
     }
+
+    // The second parent's own view of the shared child. A child's visibility
+    // is a set of connections, not the one that answered (ADR-0031).
+    await prisma.studentConnection.create({
+      data: {
+        studentGuid: CHILD_SHARED,
+        householdConnectionId: CONN_B,
+        firstSeenAt: new Date(),
+        lastSeenInRosterAt: new Date(),
+      },
+    });
 
     const prismaService = prisma as unknown as PrismaService;
     const config = { get: () => undefined } as unknown as ConfigService;
@@ -176,6 +193,34 @@ describe('Parent-driven Telegram linking', () => {
         true,
       );
       expect(rows.every((row) => row.enabled)).toBe(true);
+    });
+
+    it('gives the second parent their own row for the same chat and child', async () => {
+      // One family group chat, one child, both parents. Keyed without the
+      // userId, the second START found the FIRST parent's row and only
+      // flipped `enabled` on it: the second parent ended up with no row, a
+      // wizard reporting a link with zero children, toggles that changed
+      // nothing and a disconnect that could not remove it.
+      const mumCode = await links.mint(PARENT_A, [CHILD_SHARED]);
+      await links.consume(startUpdate(mumCode.code));
+      const dadCode = await links.mint(PARENT_B, [CHILD_SHARED]);
+
+      await links.consume(startUpdate(dadCode.code));
+
+      const rows = await prisma.digestRecipient.findMany({
+        where: { studentGuid: CHILD_SHARED, address: CHAT_ID },
+        orderBy: { userId: 'asc' },
+      });
+      expect(rows.map((row) => row.userId)).toEqual([PARENT_A, PARENT_B]);
+      expect(rows.every((row) => row.enabled)).toBe(true);
+
+      // And the second parent's row is theirs to control: `remove` refuses a
+      // row another user created, so a shared row could not be deleted at all.
+      const dadRow = rows.find((row) => row.userId === PARENT_B);
+      await expect(recipients.remove(dadRow!.id, PARENT_B)).resolves.toBeUndefined();
+      expect(
+        await prisma.digestRecipient.count({ where: { studentGuid: CHILD_SHARED } }),
+      ).toBe(1);
     });
 
     it('marks the code consumed and records the chat it bound', async () => {
@@ -469,6 +514,35 @@ describe('Parent-driven Telegram linking', () => {
       await links.disconnect(PARENT_A);
 
       expect(await prisma.digestRecipient.count({ where: { userId: PARENT_B } })).toBe(1);
+    });
+
+    it('takes this parent’s dedup ledger with it, and only theirs', async () => {
+      // Left behind, a re-link finds every item it had already reported still
+      // in the ledger and says nothing about any of them -- reconnecting then
+      // looks like it changed nothing. Scoped to this parent, so the other
+      // parent of a shared child keeps their own.
+      const minted = await links.mint(PARENT_A, [CHILD_SHARED]);
+      await links.consume(startUpdate(minted.code));
+      for (const userId of [PARENT_A, PARENT_B]) {
+        await prisma.digestReportedItem.create({
+          data: {
+            userId,
+            studentGuid: CHILD_SHARED,
+            itemType: 'behavior',
+            itemId: 'tg-beh-1',
+            contentHash: 'tg-hash-1',
+            reportedFor: new Date('2026-11-20T00:00:00Z'),
+            confirmedAt: new Date(),
+          },
+        });
+      }
+
+      await links.disconnect(PARENT_A);
+
+      const left = await prisma.digestReportedItem.findMany({
+        where: { studentGuid: CHILD_SHARED },
+      });
+      expect(left.map((row) => row.userId)).toEqual([PARENT_B]);
     });
   });
 });

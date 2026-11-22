@@ -88,9 +88,13 @@ Two shaping decisions came out of what the data actually is:
   same letter would otherwise arrive twice, so the `userId` is folded into the content hash and
   the dedup lookup for an activity is **not** scoped to one `studentGuid`: whichever child's run
   claims it first reports it, and the sibling's run sees it as already said. The same form for a
-  *different* parent hashes differently and still reaches them. Which parent owns the section in
-  a two-parent household is decided by the earliest `activeFrom` among the child's recipients —
-  stable, and deliberately not row order.
+  *different* parent hashes differently and still reaches them.
+
+  > **Superseded by [ADR-0035](0035-per-user-digest-isolation.md).** "Which parent owns the
+  > section in a two-parent household is decided by the earliest `activeFrom` among the child's
+  > recipients" was the leak: that parent's forms were rendered into the one message both parents
+  > received. A run is now per (child, parent), each parent's message carries their own forms, and
+  > the model is handed none at all.
 - **Only the unanswered ones, and only while the deadline is ahead**
   (`DIGEST_ACTIVITY_WINDOW_DAYS`, default 7). A passed deadline is not actionable, and nagging
   about it would otherwise be the only content in every message for the rest of the year.

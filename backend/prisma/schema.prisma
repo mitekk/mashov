@@ -621,7 +621,12 @@ model DigestRecipient {
 
   user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([studentGuid, channel, address])
+  /// `userId` leads the key because a subscription belongs to a parent, not to
+  /// a chat. Without it, two parents linking one family group chat for one
+  /// child shared a single row: the second parent's START found the first's
+  /// row and only flipped `enabled`, so they had no row of their own to see,
+  /// toggle or delete.
+  @@unique([userId, studentGuid, channel, address])
   @@index([studentGuid, enabled])
   @@index([userId])
   @@map("digest_recipient")
@@ -670,7 +675,19 @@ model TelegramLinkCode {
 /// ledger; ADR-0017 forbids durable state in Redis, so the uniqueness of these rows
 /// is what makes the digest at-most-once.
 model DigestReportedItem {
-  id              String    @id @default(cuid())
+  id String @id @default(cuid())
+  /// The subscribing parent this row was reported to. One run per (child,
+  /// user), each with its own ledger: two parents of one child are told the
+  /// same per-child news independently, and one of them unlinking their school
+  /// must not take the other's dedup state with it.
+  ///
+  /// Declared with a default on purpose: production's schema comes from
+  /// `prisma db push --accept-data-loss`, and adding a required column with no
+  /// default to a populated table is not executable under that flag. The
+  /// migration backfills the real value; see
+  /// prisma/migrations/20261124000000_digest_per_user/migration.sql, and the
+  /// same reasoning written out in 20261117000000_school_year_scoping.
+  userId          String    @default("")
   studentGuid     String
   /// 'behavior' | 'homework_new' | 'homework_due' - the *reason* the item was
   /// reported. Distinct types let one homework row be reported once as newly
@@ -709,13 +726,36 @@ model DigestReportedItem {
   /// Named explicitly: the generated name would exceed Postgres's 63-character
   /// identifier limit and be silently truncated, drifting `db push` from the
   /// committed migration.
-  @@unique([studentGuid, itemType, itemId, contentHash], map: "digest_reported_item_dedup_key")
+  @@unique([userId, studentGuid, itemType, itemId, contentHash], map: "digest_reported_item_dedup_key")
   @@index([studentGuid, reportedFor])
   /// The checker's hottest query: one lookup per child per run against the
-  /// hashes it just computed. The dedup unique leads with studentGuid, so
-  /// without this Postgres scans every row that child has ever had.
-  @@index([studentGuid, contentHash])
+  /// hashes it just computed. The dedup unique leads with userId, so without
+  /// this Postgres scans every row that child has ever had.
+  @@index([userId, studentGuid, contentHash])
+  /// The consent-form arm of `dropAlreadyReported` omits `studentGuid` on
+  /// purpose -- form dedup is household-wide across siblings -- so it can
+  /// otherwise use only the `userId` prefix of the index above.
+  @@index([userId, contentHash])
   @@map("digest_reported_item")
+}
+
+/// One row per one-time data migration that must never run a second time.
+///
+/// A table rather than a constant, and declared here rather than only in the
+/// migration file, because `prisma db push --accept-data-loss` -- which is how
+/// production gets its schema, on every boot -- DROPS a table the schema does
+/// not mention. A marker that push deletes is a marker that resets on every
+/// restart, which is no marker at all.
+///
+/// Only statements that are unsafe to repeat need this. Every other statement
+/// in prisma/migrations is written to be idempotent, which is cheaper and
+/// needs no bookkeeping.
+model DataBackfill {
+  /// A stable name for the statement, e.g. "digest-per-user-ledger-copy".
+  id        String   @id
+  appliedAt DateTime @default(now())
+
+  @@map("data_backfill")
 }
 
 /// The digest's own run log. Deliberately NOT recorded in `sync_run`: a digest is
@@ -724,7 +764,12 @@ model DigestReportedItem {
 /// the freshness percentage the dashboard shows. Every run writes a row, including
 /// `skipped_empty` - it is the only way to tell a quiet day from a broken job.
 model DigestDelivery {
-  id             String   @id @default(cuid())
+  id String @id @default(cuid())
+  /// Whose run this was. `GET /digest/deliveries` scopes on it: the row holds
+  /// `messageText`, which now contains that parent's own unanswered consent
+  /// forms, so scoping by child let the other parent of a shared child read
+  /// it. Defaulted for the same `db push` reason as DigestReportedItem.userId.
+  userId         String   @default("")
   studentGuid    String
   reportFor      DateTime @db.Date
   runAt          DateTime @default(now())
@@ -739,5 +784,8 @@ model DigestDelivery {
   errorMessage   String?
 
   @@index([studentGuid, reportFor])
+  /// `listDeliveries` filters on userId and orders by `runAt desc`, and the
+  /// table now grows by a row per run per subscribing user.
+  @@index([userId, runAt])
   @@map("digest_delivery")
 }

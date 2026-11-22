@@ -38,6 +38,7 @@ const CHILD_WITH_NEWS = 'digest-child-news';
 const QUIET_CHILD = 'digest-child-quiet';
 const USER_ID = 'digest-user-1';
 const MASHOV_USER_ID = 'digest-mashov-1';
+const CONNECTION_ID = 'digest-conn-1';
 const SCHOOL_YEAR = 2027;
 const TIMEZONE = 'Asia/Jerusalem';
 
@@ -115,7 +116,9 @@ describe('Per-child daily digest', () => {
     await prisma.behaviorItem.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.studentRelease.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.schoolActivity.deleteMany({ where: { userId: USER_ID } });
+    await prisma.studentConnection.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.student.deleteMany({ where: { studentGuid: { in: guids } } });
+    await prisma.householdConnection.deleteMany({ where: { id: CONNECTION_ID } });
     await prisma.appUser.deleteMany({ where: { id: USER_ID } });
 
     await prisma.appUser.create({
@@ -125,6 +128,22 @@ describe('Per-child daily digest', () => {
         semel: 998877,
         username: 'digest-test',
         displayName: 'Digest Test',
+      },
+    });
+
+    // The connection that lists these children, and the links recording it.
+    // Not decoration: a run re-checks at send time that the subscribing
+    // parent still owns the child, and an unattributed child belongs to
+    // nobody (ADR-0035, ownsStudentForDelivery).
+    await prisma.householdConnection.create({
+      data: {
+        id: CONNECTION_ID,
+        userId: USER_ID,
+        schoolCode: 998877,
+        schoolYear: SCHOOL_YEAR,
+        username: 'digest-test-login',
+        encryptedPassword: 'not-a-real-secret',
+        active: true,
       },
     });
 
@@ -142,6 +161,15 @@ describe('Per-child daily digest', () => {
           classNum: 3,
           gender: 'M',
           isActive: true,
+        },
+      });
+
+      await prisma.studentConnection.create({
+        data: {
+          studentGuid: guid,
+          householdConnectionId: CONNECTION_ID,
+          firstSeenAt: new Date(),
+          lastSeenInRosterAt: new Date(),
         },
       });
 
@@ -523,7 +551,9 @@ describe('Digest releases and school activities', () => {
     await prisma.digestRecipient.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.behaviorItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.studentConnection.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.student.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.householdConnection.deleteMany({ where: { id: CONNECTION_ID } });
     await prisma.appUser.deleteMany({ where: { id: USER_ID } });
 
     // Both children opted in under one parent, and nothing else to report --
@@ -537,6 +567,22 @@ describe('Digest releases and school activities', () => {
         semel: 998877,
         username: 'digest-test',
         displayName: 'Digest Test',
+      },
+    });
+
+    // The connection that lists these children, and the links recording it.
+    // Not decoration: a run re-checks at send time that the subscribing
+    // parent still owns the child, and an unattributed child belongs to
+    // nobody (ADR-0035, ownsStudentForDelivery).
+    await prisma.householdConnection.create({
+      data: {
+        id: CONNECTION_ID,
+        userId: USER_ID,
+        schoolCode: 998877,
+        schoolYear: SCHOOL_YEAR,
+        username: 'digest-test-login',
+        encryptedPassword: 'not-a-real-secret',
+        active: true,
       },
     });
 
@@ -554,6 +600,15 @@ describe('Digest releases and school activities', () => {
           classNum: 3,
           gender: privateName === 'נועה' ? 'נ' : 'ז',
           isActive: true,
+        },
+      });
+
+      await prisma.studentConnection.create({
+        data: {
+          studentGuid: guid,
+          householdConnectionId: CONNECTION_ID,
+          firstSeenAt: new Date(),
+          lastSeenInRosterAt: new Date(),
         },
       });
 

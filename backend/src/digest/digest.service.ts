@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -6,13 +6,39 @@ import { SchoolYearService } from '../common/school-year/school-year.service';
 import { DigestCheckerService, STALE_CLAIM_MS } from './digest-checker.service';
 import { DigestCollectorService } from './digest-collector.service';
 import { DigestSummarizerService } from './digest-summarizer.service';
-import { DigestRecipientService, DigestDeliveryTarget } from './digest-recipient.service';
+import {
+  DigestRecipientService,
+  DigestDeliveryTarget,
+  DigestSkippedTarget,
+} from './digest-recipient.service';
 import { DigestSender } from './senders/digest-sender.interface';
 import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
 import { jerusalemDayBounds } from './digest-deadline.service';
 import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
+
+/**
+ * The claimed hashes a child's prose is written from, sorted.
+ *
+ * Activity hashes are excluded because they embed the owning `userId`, so two
+ * parents' claims for the same form hash differently -- and the forms are not
+ * in the summarizer's payload anyway. Every other hash is derived from the
+ * child's own row, which is what makes an equal list mean an equal payload
+ * for the fields the model is shown. (`childFirstName`, `childGender` and the
+ * timetable estimates are re-read per target and are not in any hash; two
+ * targets of one child are seconds apart, so the only way they could diverge
+ * is a row edited mid-run, and the shared summary then carries the first
+ * reading of it.)
+ *
+ * An empty list means there is nothing for the model to write about.
+ */
+function nonActivityHashes(claimed: DigestCandidate[]): string[] {
+  return claimed
+    .filter((candidate) => candidate.itemType !== 'activity')
+    .map((candidate) => candidate.contentHash)
+    .sort();
+}
 
 const DEFAULT_TIMEZONE = 'Asia/Jerusalem';
 
@@ -37,10 +63,19 @@ const DEFAULT_DUE_LOOKBACK_DAYS = 14;
  */
 const SYNC_SOURCES_BEHIND_THE_DIGEST = ['homework', 'behavior'];
 
-export type DigestRunStatus = 'sent' | 'skipped_empty' | 'skipped_stale' | 'failed' | 'dry_run';
+export type DigestRunStatus =
+  | 'sent'
+  | 'skipped_empty'
+  | 'skipped_stale'
+  /** The send-time ownership guard refused the (child, parent) pair. */
+  | 'skipped_unowned'
+  | 'failed'
+  | 'dry_run';
 
 export interface DigestRunResult {
   studentGuid: string;
+  /** The subscribing parent this run was for: one result per (child, user). */
+  userId: string;
   status: DigestRunStatus;
   itemCount: number;
   recipientCount: number;
@@ -117,12 +152,16 @@ export class DigestService {
       const now = options.now ?? new Date();
       const dryRun = options.dryRun ?? this.isDryRunByDefault();
 
-      const allTargets = await this.recipients.listDeliveryTargets(options.userId);
-      const targets = options.studentGuid
-        ? allTargets.filter((target) => target.studentGuid === options.studentGuid)
-        : allTargets;
+      const named = <T extends { studentGuid: string }>(rows: T[]): T[] =>
+        options.studentGuid
+          ? rows.filter((row) => row.studentGuid === options.studentGuid)
+          : rows;
 
-      if (targets.length === 0) return [];
+      const listed = await this.recipients.listDeliveryTargets(options.userId);
+      const targets = named(listed.targets);
+      const skipped = named(listed.skipped);
+
+      if (targets.length === 0 && skipped.length === 0) return [];
 
       if (dryRun && this.isEnabledByConfig()) {
         // Worth saying out loud: this combination spends a model call per child
@@ -138,11 +177,51 @@ export class DigestService {
       // residential proxy, which this module must never touch.
       const schoolYear = await this.schoolYear.currentSchoolYearFor();
 
+      // Staleness depends on the child alone, so two parents of one child ask
+      // the same question. Memoized for the run, not held between runs: a
+      // sync that recovers mid-afternoon must be visible to the next tick.
+      const staleness = new Map<string, Date | null>();
+
+      // What this run has already put in front of a chat, as
+      // channel + address + hash(text). Two parents of one child who linked
+      // the same family chat each get their own run now, so without this the
+      // chat receives the same message twice in a row. Byte-identical only:
+      // if their consent forms differ the messages differ and both are news.
+      // Per run, never held between runs -- the ledger is what stops a repeat
+      // tomorrow.
+      const alreadySent = new Set<string>();
+
+      // One model call per child per run, as before this became per-parent.
+      // Keyed on the child and the non-activity content hashes it claimed:
+      // those hashes are userId-independent by construction, so an equal key
+      // means an equal payload. Per run, so a change between runs is seen.
+      const summaries = new Map<string, DigestSummary>();
+
       const results: DigestRunResult[] = [];
+
+      // The refusals first, so a parent whose digest has stopped sees a row
+      // for it in the same history as everything else.
+      for (const refused of skipped) {
+        results.push(await this.recordRefused(refused, now));
+      }
+
+      // Strictly sequential, and not only for the per-child isolation
+      // homework.task.ts wants. Consent-form dedup across a parent's children
+      // rests on the checker seeing the previous target's ledger row, so a
+      // `Promise.all` over the targets of one household would send the same
+      // form twice. See ADR-0035.
       for (const target of targets) {
-        // Per-child isolation, as homework.task.ts does: one child's model or
-        // Telegram failure must not stop the others.
-        results.push(await this.runForChild(target, schoolYear, now, dryRun));
+        results.push(
+          await this.runForChild(
+            target,
+            schoolYear,
+            now,
+            dryRun,
+            staleness,
+            alreadySent,
+            summaries,
+          ),
+        );
       }
       return results;
     } finally {
@@ -155,8 +234,11 @@ export class DigestService {
     schoolYear: number,
     now: Date,
     dryRun: boolean,
+    staleness: Map<string, Date | null>,
+    alreadySent: Set<string>,
+    summaries: Map<string, DigestSummary>,
   ): Promise<DigestRunResult> {
-    const { studentGuid } = target;
+    const { studentGuid, userId } = target;
     const { tomorrowStart, reportFor: defaultReportFor } = jerusalemDayBounds(now, this.timeZone());
     const runId = randomUUID();
     let reportFor = defaultReportFor;
@@ -168,30 +250,46 @@ export class DigestService {
         schoolYear,
         now,
         activeFrom: target.activeFrom,
-        userId: target.userId,
+        userId,
       });
       reportFor = check.reportFor;
 
       if (check.candidates.length === 0) {
-        return await this.recordQuiet(studentGuid, reportFor, now);
+        return await this.recordQuiet(userId, studentGuid, reportFor, now, staleness);
       }
 
-      claimed = await this.claim(studentGuid, check.candidates, reportFor, runId, now, tomorrowStart);
+      claimed = await this.claim(
+        userId,
+        studentGuid,
+        check.candidates,
+        reportFor,
+        runId,
+        now,
+        tomorrowStart,
+      );
       if (claimed.length === 0) {
         this.logger.log(
           `Digest ${studentGuid}: every item is owned by another run or already delivered; sending nothing.`,
         );
-        return await this.recordEmpty(studentGuid, reportFor, 'already claimed elsewhere');
+        return await this.recordEmpty(userId, studentGuid, reportFor, 'already claimed elsewhere');
       }
 
       const payload = await this.collector.collect({
         studentGuid,
         candidates: claimed,
         reportFor,
-        userId: target.userId,
+        userId,
       });
 
-      const summary = await this.summarizer.summarize(payload);
+      // Without the consent forms. They belong to this parent rather than to
+      // the child, while everything else in the payload is the same for both
+      // of a child's parents -- which is what lets one summary serve both
+      // runs. The section is rendered from the deterministic line instead.
+      //
+      // Shared, not re-requested: the summary is read-only downstream, so the
+      // other parent's run for the same child and the same claimed items gets
+      // the same object rather than a second Sonnet call.
+      const summary = await this.summaryFor(studentGuid, claimed, payload, summaries);
       const { payload: narrowed, resolutionByItemId } = narrowDueTomorrow(
         payload,
         summary,
@@ -202,8 +300,17 @@ export class DigestService {
 
       if (surviving.size === 0) {
         // Everything the checker widened in turned out not to be due tomorrow.
-        await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId, tomorrowStart);
+        await this.settleUnsent(
+          userId,
+          studentGuid,
+          claimed,
+          surviving,
+          resolutionByItemId,
+          runId,
+          tomorrowStart,
+        );
         return await this.recordEmpty(
+          userId,
           studentGuid,
           reportFor,
           'no item survived deadline resolution',
@@ -214,7 +321,7 @@ export class DigestService {
       const message = renderReport(narrowed, lines);
 
       const enabled = await this.prisma.digestRecipient.findMany({
-        where: { studentGuid, enabled: true },
+        where: { userId, studentGuid, enabled: true },
         select: { channel: true, address: true },
       });
 
@@ -225,11 +332,17 @@ export class DigestService {
         // day's items confirmed as reported: confirming them would bury this
         // behaviour and homework permanently, because the content hashes stay
         // in the ledger and nothing ever re-reports an item already in it.
-        await this.releaseClaims(studentGuid, claimed, runId);
-        return await this.recordEmpty(studentGuid, reportFor, 'no enabled recipient left');
+        await this.releaseClaims(userId, studentGuid, claimed, runId);
+        return await this.recordEmpty(userId, studentGuid, reportFor, 'no enabled recipient left');
       }
 
-      const { delivered, failures } = await this.deliver(enabled, message, dryRun);
+      const { delivered, failures, suppressed } = await this.deliver(
+        studentGuid,
+        enabled,
+        message,
+        dryRun,
+        alreadySent,
+      );
 
       if (delivered === 0 && enabled.length > 0) {
         throw new Error(`no recipient could be reached (${failures.join('; ')})`);
@@ -240,8 +353,8 @@ export class DigestService {
       if (dryRun) {
         // A dry run must not mark anything reported, or the first real run
         // would find nothing left to say.
-        await this.releaseClaims(studentGuid, claimed, runId);
-        return await this.record(studentGuid, reportFor, {
+        await this.releaseClaims(userId, studentGuid, claimed, runId);
+        return await this.record(userId, studentGuid, reportFor, {
           status: 'dry_run',
           itemCount,
           recipientCount: enabled.length,
@@ -251,18 +364,33 @@ export class DigestService {
         });
       }
 
-      await this.settleUnsent(studentGuid, claimed, surviving, resolutionByItemId, runId, tomorrowStart);
-      await this.confirmClaims(studentGuid, [...surviving], runId);
+      await this.settleUnsent(
+        userId,
+        studentGuid,
+        claimed,
+        surviving,
+        resolutionByItemId,
+        runId,
+        tomorrowStart,
+      );
+      await this.confirmClaims(userId, studentGuid, [...surviving], runId);
 
-      return await this.record(studentGuid, reportFor, {
+      return await this.record(userId, studentGuid, reportFor, {
         status: 'sent',
         itemCount,
-        recipientCount: delivered,
+        // Chats actually reached. A suppression counts as delivered for the
+        // guard above -- otherwise a suppressed-only run throws, releases its
+        // claims and retries the same suppressed send every hour -- but it is
+        // not a recipient reached, and `recipientCount` is what the delivery
+        // stats aggregate.
+        recipientCount: delivered - suppressed,
         usedLlm: summary.usedLlm,
         messageText: message,
         channel: enabled[0]?.channel ?? null,
         // A partial failure is recorded but does not undo a real delivery.
-        errorMessage: failures.length > 0 ? failures.join('; ') : undefined,
+        // The suppression note rides on the same field, so support can tell
+        // "sent" from "the other parent's run sent this exact text already".
+        errorMessage: deliveryNote(failures, suppressed),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -271,10 +399,10 @@ export class DigestService {
       // Roll our own claim back so the next hourly run retries. Scoped to this
       // run's id so a concurrent run's claim is never deleted.
       if (claimed.length > 0) {
-        await this.releaseClaims(studentGuid, claimed, runId).catch(() => undefined);
+        await this.releaseClaims(userId, studentGuid, claimed, runId).catch(() => undefined);
       }
 
-      return await this.record(studentGuid, reportFor, {
+      return await this.record(userId, studentGuid, reportFor, {
         status: 'failed',
         itemCount: 0,
         recipientCount: 0,
@@ -282,6 +410,83 @@ export class DigestService {
         errorMessage: message,
       });
     }
+  }
+
+  /**
+   * Writes the stop of a target the send-time ownership guard refused.
+   *
+   * Once per school day per (child, parent), not once per run: the cron runs
+   * seven times a day and a retired child's stale recipient row never stops
+   * being refused, so an unconditional write would bury the history this
+   * exists to make readable under 630 identical rows before the retention
+   * sweep reached them.
+   *
+   * The result is returned either way, so a manual run always says what
+   * happened even when the row was written by an earlier run today.
+   */
+  private async recordRefused(
+    refused: DigestSkippedTarget,
+    now: Date,
+  ): Promise<DigestRunResult> {
+    const { reportFor } = jerusalemDayBounds(now, this.timeZone());
+    const fields = {
+      status: 'skipped_unowned' as const,
+      itemCount: 0,
+      recipientCount: 0,
+      usedLlm: false,
+      errorMessage: refused.reason,
+    };
+
+    const alreadyRecorded = await this.prisma.digestDelivery.findFirst({
+      where: {
+        userId: refused.userId,
+        studentGuid: refused.studentGuid,
+        reportFor,
+        status: 'skipped_unowned',
+      },
+      select: { id: true },
+    });
+
+    if (alreadyRecorded) {
+      return {
+        studentGuid: refused.studentGuid,
+        userId: refused.userId,
+        ...fields,
+        error: refused.reason,
+      };
+    }
+
+    return this.record(refused.userId, refused.studentGuid, reportFor, fields);
+  }
+
+  /**
+   * The prose for this run: the model's, or the deterministic renderer's.
+   *
+   * Two things happen here. A run whose only claims are consent forms never
+   * reaches the model at all -- the forms are withheld from its payload, so
+   * the prompt would carry no facts beyond the child's gender and the date,
+   * and a headline written from nothing is a headline invented. And a run for
+   * a child another parent's run has already summarized in this pass reuses
+   * that summary rather than paying for an identical one.
+   */
+  private async summaryFor(
+    studentGuid: string,
+    claimed: DigestCandidate[],
+    payload: DigestPayload,
+    summaries: Map<string, DigestSummary>,
+  ): Promise<DigestSummary> {
+    const hashes = nonActivityHashes(claimed);
+    if (hashes.length === 0) {
+      return { lines: deterministicLines(payload), deadlineResolutions: [], usedLlm: false };
+    }
+
+    const key = `${studentGuid}\u0000${hashes.join('|')}`;
+    const memoed = summaries.get(key);
+    if (memoed) return memoed;
+
+    const summary = await this.summarizer.summarize({ ...payload, activities: [] });
+    summaries.set(key, summary);
+    return summary;
   }
 
   /**
@@ -299,6 +504,7 @@ export class DigestService {
    * item gets sent twice.
    */
   private async claim(
+    userId: string,
     studentGuid: string,
     candidates: DigestCandidate[],
     reportFor: Date,
@@ -310,6 +516,7 @@ export class DigestService {
 
     await this.prisma.digestReportedItem.createMany({
       data: candidates.map((candidate) => ({
+        userId,
         studentGuid,
         itemType: candidate.itemType,
         itemId: candidate.itemId,
@@ -322,6 +529,12 @@ export class DigestService {
 
     await this.prisma.digestReportedItem.updateMany({
       where: {
+        // `userId` is load-bearing here, not decoration. This is the only
+        // write in the claim protocol not already scoped by `claimedBy`, so
+        // without it user A's run restamps user B's rows -- claimedBy=A,
+        // confirmedAt=null -- and B's own confirm and settle then match
+        // nothing, so the item is re-reported to B half an hour later.
+        userId,
         studentGuid,
         contentHash: { in: hashes },
         OR: [
@@ -335,7 +548,7 @@ export class DigestService {
     });
 
     const owned = await this.prisma.digestReportedItem.findMany({
-      where: { studentGuid, claimedBy: runId },
+      where: { userId, studentGuid, claimedBy: runId },
       select: { contentHash: true },
     });
     const ownedHashes = new Set(owned.map((row) => row.contentHash));
@@ -345,18 +558,40 @@ export class DigestService {
 
   /** Sends to each recipient independently, so one bad address cannot undo the rest. */
   private async deliver(
+    studentGuid: string,
     recipients: { channel: string; address: string }[],
     message: string,
     dryRun: boolean,
-  ): Promise<{ delivered: number; failures: string[] }> {
+    alreadySent: Set<string>,
+  ): Promise<{ delivered: number; failures: string[]; suppressed: number }> {
     let delivered = 0;
+    let suppressed = 0;
     const failures: string[] = [];
+    const digest = createHash('sha256').update(message).digest('hex');
 
     for (const recipient of recipients) {
+      // Per child as well as per chat. Two children whose messages render
+      // identically -- two studentGuids for the same child, which a
+      // re-enrolment or two schools listing them both produce -- would
+      // otherwise have the second one's send suppressed and its claims
+      // confirmed, losing that child's news for good.
+      const fingerprint = `${recipient.channel}\u0000${recipient.address}\u0000${studentGuid}\u0000${digest}`;
+      if (alreadySent.has(fingerprint)) {
+        // Counted as delivered, deliberately: the parent has the message. The
+        // `delivered === 0` guard below throws, which releases the claims --
+        // so a run whose only recipient was suppressed would retry the same
+        // suppressed send every hour, with a fresh model call each time, and
+        // never confirm anything.
+        suppressed += 1;
+        delivered += 1;
+        continue;
+      }
+
       try {
         const sender = dryRun ? this.logSender : this.senderFor(recipient.channel);
         await sender.send(recipient.address, message);
         delivered += 1;
+        alreadySent.add(fingerprint);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         this.logger.warn(`Digest delivery to ${recipient.channel} failed: ${reason}`);
@@ -364,7 +599,7 @@ export class DigestService {
       }
     }
 
-    return { delivered, failures };
+    return { delivered, failures, suppressed };
   }
 
   /**
@@ -391,6 +626,7 @@ export class DigestService {
    * buried by a promise nobody can keep.
    */
   private async settleUnsent(
+    userId: string,
     studentGuid: string,
     claimed: DigestCandidate[],
     surviving: Set<string>,
@@ -421,13 +657,13 @@ export class DigestService {
 
     for (const [time, hashes] of byDate) {
       await this.prisma.digestReportedItem.updateMany({
-        where: { studentGuid, claimedBy: runId, contentHash: { in: hashes } },
+        where: { userId, studentGuid, claimedBy: runId, contentHash: { in: hashes } },
         data: { confirmedAt: new Date(), resolvedDueDate: new Date(time), claimedBy: null },
       });
     }
 
     if (toRelease.length > 0) {
-      await this.releaseClaims(studentGuid, toRelease, runId);
+      await this.releaseClaims(userId, studentGuid, toRelease, runId);
     }
   }
 
@@ -460,12 +696,13 @@ export class DigestService {
 
   /** Marks items as fully reported. `resolvedDueDate` null means exactly that. */
   private async confirmClaims(
+    userId: string,
     studentGuid: string,
     hashes: string[],
     runId: string,
   ): Promise<void> {
     await this.prisma.digestReportedItem.updateMany({
-      where: { studentGuid, claimedBy: runId, contentHash: { in: hashes } },
+      where: { userId, studentGuid, claimedBy: runId, contentHash: { in: hashes } },
       data: { confirmedAt: new Date(), resolvedDueDate: null, claimedBy: null },
     });
   }
@@ -476,12 +713,14 @@ export class DigestService {
    * claim a concurrent run is holding.
    */
   private async releaseClaims(
+    userId: string,
     studentGuid: string,
     claimed: DigestCandidate[],
     runId: string,
   ): Promise<void> {
     await this.prisma.digestReportedItem.deleteMany({
       where: {
+        userId,
         studentGuid,
         claimedBy: runId,
         contentHash: { in: claimed.map((candidate) => candidate.contentHash) },
@@ -497,19 +736,24 @@ export class DigestService {
    * not spoken to the school since Tuesday.
    */
   private async recordQuiet(
+    userId: string,
     studentGuid: string,
     reportFor: Date,
     now: Date,
+    staleness: Map<string, Date | null>,
   ): Promise<DigestRunResult> {
-    const staleSince = await this.staleSyncSince(now, studentGuid);
+    const memoed = staleness.get(studentGuid);
+    const staleSince =
+      memoed !== undefined ? memoed : await this.staleSyncSince(now, studentGuid);
+    staleness.set(studentGuid, staleSince);
     if (staleSince === null) {
-      return this.recordEmpty(studentGuid, reportFor, 'nothing unreported');
+      return this.recordEmpty(userId, studentGuid, reportFor, 'nothing unreported');
     }
 
     this.logger.warn(
       `Digest ${studentGuid}: no items, but school data has not synced successfully since ${staleSince.toISOString()}.`,
     );
-    return this.record(studentGuid, reportFor, {
+    return this.record(userId, studentGuid, reportFor, {
       status: 'skipped_stale',
       itemCount: 0,
       recipientCount: 0,
@@ -549,12 +793,13 @@ export class DigestService {
   }
 
   private async recordEmpty(
+    userId: string,
     studentGuid: string,
     reportFor: Date,
     reason: string,
   ): Promise<DigestRunResult> {
     this.logger.log(`Digest ${studentGuid}: ${reason}; nothing sent.`);
-    return this.record(studentGuid, reportFor, {
+    return this.record(userId, studentGuid, reportFor, {
       status: 'skipped_empty',
       itemCount: 0,
       recipientCount: 0,
@@ -568,6 +813,7 @@ export class DigestService {
    * exposes that.
    */
   private async record(
+    userId: string,
     studentGuid: string,
     reportFor: Date,
     fields: {
@@ -582,6 +828,7 @@ export class DigestService {
   ): Promise<DigestRunResult> {
     await this.prisma.digestDelivery.create({
       data: {
+        userId,
         studentGuid,
         reportFor,
         status: fields.status,
@@ -596,6 +843,7 @@ export class DigestService {
 
     return {
       studentGuid,
+      userId,
       status: fields.status,
       itemCount: fields.itemCount,
       recipientCount: fields.recipientCount,
@@ -658,12 +906,16 @@ function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPa
   // news from the message while the ledger still recorded it as reported --
   // meaning it would never be mentioned again. The deterministic sentence is
   // plainer than the model's and complete, which is the right trade here.
+  // The model is handed no consent forms at all, so its line about them -- if
+  // it writes one anyway -- describes nothing. Replaced outright rather than
+  // only when blank, which is all the loop below would do.
+  lines.activityLine = fallback.activityLine;
+
   const sections = [
     ['behaviorLine', after.behavior.length],
     ['homeworkLine', after.homeworkNew.length],
     ['dueTomorrowLine', after.homeworkDueTomorrow.length],
     ['releaseLine', after.releases.length],
-    ['activityLine', after.activities.length],
   ] as const;
 
   for (const [key, itemCount] of sections) {
@@ -760,4 +1012,20 @@ function countItems(payload: DigestPayload): number {
     ...payload.activities.map((fact) => `activity:${fact.id}`),
   ]);
   return ids.size;
+}
+
+/**
+ * What goes in the delivery row's `errorMessage`.
+ *
+ * Partial send failures and suppressions share the column because both are
+ * "the row says sent, and here is the asterisk".
+ */
+function deliveryNote(failures: string[], suppressed: number): string | undefined {
+  const notes = [...failures];
+  if (suppressed > 0) {
+    notes.push(
+      `suppressed ${suppressed} duplicate send(s): an identical message had already gone to that chat in this run`,
+    );
+  }
+  return notes.length > 0 ? notes.join('; ') : undefined;
 }

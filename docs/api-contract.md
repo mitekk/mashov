@@ -297,7 +297,12 @@ so a card cannot disagree with the school row beneath it, nor the header with `/
 ### Digest — per-child daily activity briefing
 
 Delivery is strictly opt-in: a child receives a digest only if an enabled recipient row exists
-for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
+for it. See ADR-0026 (delivery and LLM egress), ADR-0027 (derived deadlines) and ADR-0035
+(per-user isolation).
+
+A run is one **(child, subscribing parent)**, not one child: both parents of a shared child get
+their own message, their own dedup ledger and their own delivery row, and each message carries
+only that parent's unanswered consent forms.
 
 | Method | Path | Auth | Request Body | Response Body | Status | State |
 |--------|------|------|--------------|---------------|--------|-------|
@@ -306,7 +311,7 @@ for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
 | PATCH | `/api/v1/digest/recipients/:id` | **Yes** | `{ enabled?, displayName? }` | `{ data: DigestRecipient }` | 200, 401, 404 | new |
 | DELETE | `/api/v1/digest/recipients/:id` | **Yes** | — | — | 204, 401, 403, 404 | new |
 | POST | `/api/v1/digest/runs` | **Yes** | `{ studentGuid?, dryRun? }` | `{ data: DigestRunResult[] }` | 201, 401, 429 | new |
-| GET | `/api/v1/digest/deliveries?studentGuid=&page=&limit=` | **Yes** | — | Paginated `DigestDelivery[]` | 200, 401 | new |
+| GET | `/api/v1/digest/deliveries?studentGuid=&page=&limit=` | **Yes** | — | Paginated `DigestDelivery[]` | 200, 401 | changed |
 | POST | `/api/v1/digest/telegram-links` | **Yes** | `{ studentGuids: string[] }` | `{ data: TelegramLink }` | 201, 400, 401, 403, 429, 503 | new |
 | GET | `/api/v1/digest/telegram-links/:code` | **Yes** | — | `{ data: TelegramLinkState }` | 200, 401, 404 | new |
 | DELETE | `/api/v1/digest/telegram-links` | **Yes** | — | — | 204, 401 | new |
@@ -954,7 +959,8 @@ gets the longer timeout rather than the 15 s default.
   "data": [
     {
       "studentGuid": "string",
-      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
+      "userId": "string (whose run this was)",
+      "status": "sent | skipped_empty | skipped_stale | skipped_unowned | failed | dry_run",
       "itemCount": 2,
       "recipientCount": 1,
       "usedLlm": true,
@@ -963,6 +969,9 @@ gets the longer timeout rather than the 15 s default.
   ]
 }
 ```
+
+One element per (child, subscribing parent). A manual run is already scoped to the caller, so
+`userId` is theirs on every element; the cron produces one per subscriber.
 
 `dryRun` renders and logs the message without sending it, and marks nothing as reported, so a
 later real run still has something to say. It defaults to the `DIGEST_DRY_RUN` env var, which
@@ -975,10 +984,11 @@ itself defaults to `true`.
   "data": [
     {
       "id": "string",
+      "userId": "string",
       "studentGuid": "string",
       "reportFor": "2026-11-17",
       "runAt": "2026-11-17T13:00:04Z",
-      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
+      "status": "sent | skipped_empty | skipped_stale | skipped_unowned | failed | dry_run",
       "itemCount": 2,
       "recipientCount": 1,
       "channel": "telegram",
@@ -990,6 +1000,22 @@ itself defaults to `true`.
   "pagination": { "page": 1, "limit": 20, "total": 7, "totalPages": 1 }
 }
 ```
+
+`recipientCount` is the number of chats actually reached. When two accounts link the same chat for
+the same child, the second run of that pass suppresses the byte-identical resend: its row is
+`status: "sent"` with `recipientCount: 0` and the suppression named in `errorMessage`.
+
+**Scoped by user, not by subscribed child** (ADR-0035). It used to answer every row for every
+child the caller held a recipient for, which in a two-parent household meant each parent could
+read the other's `messageText` -- and that text now contains the other parent's own unanswered
+consent forms. A run records whose it was, so that is the scope. `studentGuid` narrows it
+further, within the caller's own rows.
+
+`skipped_unowned` is the third: the run was refused at send time because that account no longer
+owns that child -- the school it was connected through is gone, or the child has left the active
+roster. The reason is in `errorMessage`. Nothing is deleted when this happens (revocation belongs
+to the unlink path, and a transient roster gap must not drop a subscription), and the row is
+written once per school day however many times the cron runs.
 
 Every run writes a row, `status: "skipped_empty"` included. That is deliberate: without it a
 quiet child is indistinguishable from a broken job. `skipped_stale` is the stronger version of

@@ -285,12 +285,40 @@ export class TelegramLinkService {
    * chat id stops being stored at all, and a parent's chat id is personal data.
    * The codes go with them so nothing left behind could re-bind the chat.
    * Per-child off is `PATCH /digest/recipients/:id`, not this.
+   *
+   * This parent's dedup ledger for those children goes too, for the reason
+   * `ConnectionService` gives on the same deletes: left behind, a re-link
+   * finds every item it had already reported still in the ledger and says
+   * nothing about any of them, so reconnecting looks like it changed nothing.
+   * Scoped to this user, so the other parent of a shared child keeps theirs.
+   *
+   * The delivery history stays, which is where this differs from an unlink:
+   * there the child and the connection are going away, here the parent has
+   * only switched the channel off. The rows are their own run history, they
+   * are readable through `GET /digest/deliveries`, and they carry no chat id.
+   *
+   * One transaction, so a crash between the statements cannot leave the
+   * subscriptions gone and the ledger behind -- which is the one combination
+   * that silences a re-link.
    */
   async disconnect(userId: string): Promise<number> {
-    const removed = await this.prisma.digestRecipient.deleteMany({
+    // Read before the deletes: afterwards there is no row left to say which
+    // children the ledger rows belonged to.
+    const subscribed = await this.prisma.digestRecipient.findMany({
       where: { userId, channel: 'telegram' },
+      select: { studentGuid: true },
+      distinct: ['studentGuid'],
     });
-    await this.prisma.telegramLinkCode.deleteMany({ where: { userId } });
+    const studentGuids = subscribed.map((row) => row.studentGuid);
+
+    const [removed] = await this.prisma.$transaction([
+      this.prisma.digestRecipient.deleteMany({ where: { userId, channel: 'telegram' } }),
+      this.prisma.digestReportedItem.deleteMany({
+        where: { userId, studentGuid: { in: studentGuids } },
+      }),
+      this.prisma.telegramLinkCode.deleteMany({ where: { userId } }),
+    ]);
+
     return removed.count;
   }
 
@@ -374,7 +402,15 @@ export class TelegramLinkService {
     for (const studentGuid of visible) {
       await this.prisma.digestRecipient.upsert({
         where: {
-          studentGuid_channel_address: { studentGuid, channel: 'telegram', address: chatId },
+          // Keyed on the parent too: the same chat can be linked by both
+          // parents of one child, and each of them needs their own row to
+          // see, toggle and disconnect.
+          userId_studentGuid_channel_address: {
+            userId: row.userId,
+            studentGuid,
+            channel: 'telegram',
+            address: chatId,
+          },
         },
         create: { userId: row.userId, studentGuid, channel: 'telegram', address: chatId },
         // The parent just chose this child in the wizard, so an explicit

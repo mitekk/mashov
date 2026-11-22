@@ -390,18 +390,30 @@ describe('buildPrompt with releases and activities', () => {
     expect(prompt).not.toContain('אבי');
   });
 
-  it('tells the model the consent form title and its deadline', () => {
+  it('never tells the model about a consent form', () => {
+    // The forms section is per parent, and the prose is shared between the
+    // parents of one child (ADR-0035), so the model is handed no forms at all
+    // and the section uses the deterministic Hebrew line. Enforced here
+    // rather than only at the call site: this function is the PII boundary,
+    // and a form title is one more thing that need never leave the host.
     const prompt = buildPrompt({ ...makePayload(), activities: [ACTIVITY] });
 
-    expect(prompt).toContain('טיול שנתי לגליל');
-    expect(prompt).toContain('20/11/2026');
+    expect(prompt).not.toContain('טיול שנתי לגליל');
+    expect(prompt).not.toContain('אישורים שממתינים');
   });
 
-  it('asks for a line about each of the two new sections', () => {
-    // Without these the schema would reject nothing and the template would
-    // render the sections with no prose at all.
+  it('asks for a line about the release section', () => {
+    // Without it the schema would reject nothing and the template would
+    // render the section with no prose at all.
     expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
-      expect.arrayContaining(['releaseLine', 'activityLine']),
+      expect.arrayContaining(['releaseLine']),
     );
+  });
+
+  it('asks for no line about consent forms, having been given none', () => {
+    // A field the model is asked to fill with nothing to fill it from is a
+    // field it hallucinates into.
+    expect(Object.keys(OUTPUT_SCHEMA.properties)).not.toContain('activityLine');
+    expect(OUTPUT_SCHEMA.required as readonly string[]).not.toContain('activityLine');
   });
 });

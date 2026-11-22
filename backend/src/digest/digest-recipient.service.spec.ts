@@ -21,6 +21,15 @@ function makeHarness(
     links?: { studentGuid: string; householdConnectionId: string }[];
     /** The caller's own active connections. */
     connections?: string[];
+    /** Per-user active connections, for the two-user cases. */
+    connectionsByUser?: Record<string, string[]>;
+    /** The rows `listDeliveryTargets` reads back. */
+    recipientRows?: {
+      studentGuid: string;
+      activeFrom: Date;
+      userId: string;
+      enabled?: boolean;
+    }[];
   } = {},
 ) {
   const roster = options.roster ?? ['stu-1'];
@@ -32,19 +41,38 @@ function makeHarness(
   const existing = 'existing' in options ? options.existing : RECIPIENT;
   const prisma = {
     studentConnection: {
+      // Honours both shapes the helpers use: one child (`canSeeStudent`,
+      // `ownsStudentForDelivery`) and a batch (`linksForStudents`).
       findMany: jest
         .fn()
-        .mockImplementation(({ where }: { where: { studentGuid: string } }) =>
-          links.filter((link) => link.studentGuid === where.studentGuid),
+        .mockImplementation(
+          ({ where }: { where: { studentGuid: string | { in: string[] } } }) => {
+            const wanted = where.studentGuid;
+            const match =
+              typeof wanted === 'string'
+                ? (guid: string) => guid === wanted
+                : (guid: string) => wanted.in.includes(guid);
+            return links.filter((link) => match(link.studentGuid));
+          },
         ),
     },
     householdConnection: {
-      findMany: jest.fn().mockResolvedValue(connections.map((id) => ({ id }))),
+      // Honours `where.userId`, as Postgres would: a mock that answers the
+      // same connection set for every user would report the per-user ownership
+      // guard as working when it is reading somebody else's connections.
+      findMany: jest.fn().mockImplementation(({ where }: { where: { userId: string } }) => {
+        const ids = options.connectionsByUser?.[where.userId] ?? connections;
+        return ids.map((id) => ({ id }));
+      }),
     },
     student: {
       findMany: jest
         .fn()
-        .mockResolvedValue(roster.map((studentGuid) => ({ studentGuid }))),
+        .mockImplementation(({ where }: { where?: { studentGuid?: { in: string[] } } }) =>
+          roster
+            .filter((guid) => where?.studentGuid?.in?.includes(guid) ?? true)
+            .map((studentGuid) => ({ studentGuid })),
+        ),
       findFirst: jest
         .fn()
         .mockImplementation(({ where }: { where: { studentGuid: string } }) =>
@@ -53,7 +81,17 @@ function makeHarness(
     },
     digestRecipient: {
       create: jest.fn().mockResolvedValue(RECIPIENT),
-      findMany: jest.fn().mockResolvedValue([RECIPIENT]),
+      // Honours `where.userId` and `where.enabled`, as Postgres would.
+      findMany: jest
+        .fn()
+        .mockImplementation(
+          ({ where }: { where?: { userId?: string; enabled?: boolean } } = {}) =>
+            (options.recipientRows ?? [RECIPIENT]).filter(
+              (row) =>
+                (where?.userId === undefined || row.userId === where.userId) &&
+                (where?.enabled === undefined || (row.enabled ?? true) === where.enabled),
+            ),
+        ),
       count: jest.fn().mockResolvedValue(1),
       findUnique: jest.fn().mockResolvedValue(existing),
       update: jest.fn().mockResolvedValue({ ...RECIPIENT, enabled: false }),
@@ -276,27 +314,39 @@ describe('DigestRecipientService', () => {
     ).toMatchObject({ studentGuid: 'stu-1', userId: 'user-1' });
   });
 
-  it('scopes delivery history to children the caller actually receives digests for', async () => {
-    // A delivery row holds messageText -- the rendered behavior remarks that
-    // were sent to a parent. It must not be readable for another family's child
-    // just because the reader is authenticated.
+  it('scopes delivery history to the runs made for the caller, not for their child', async () => {
+    // A delivery row holds messageText -- the rendered behavior remarks, and
+    // the caller's own unanswered consent forms, that were sent to one parent.
+    // Scoping by child let the second parent of a shared child read the first
+    // parent's message; the run now writes whose run it was, so the scope is
+    // that.
     const harness = makeHarness();
 
     await harness.service.listDeliveries('user-1', {});
 
     const where = (harness.prisma.digestDelivery.findMany as jest.Mock).mock.calls[0][0].where;
-    expect(where.studentGuid).toEqual({ in: ['stu-1'] });
+    expect(where).toEqual({ userId: 'user-1' });
+    expect(where.studentGuid).toBeUndefined();
   });
 
-  it('returns no history at all for a user with no recipients', async () => {
+  it('narrows delivery history to one child without widening past the caller', async () => {
     const harness = makeHarness();
-    (harness.prisma.digestRecipient.findMany as jest.Mock).mockResolvedValue([]);
+
+    await harness.service.listDeliveries('user-1', { studentGuid: 'stu-1' });
+
+    expect((harness.prisma.digestDelivery.findMany as jest.Mock).mock.calls[0][0].where).toEqual({
+      userId: 'user-1',
+      studentGuid: 'stu-1',
+    });
+  });
+
+  it('returns no history at all for a user with no runs', async () => {
+    const harness = makeHarness();
 
     const page = await harness.service.listDeliveries('user-1', {});
 
     expect(page.data).toEqual([]);
     expect(page.pagination.total).toBe(0);
-    expect(harness.prisma.digestDelivery.findMany).not.toHaveBeenCalled();
   });
 
   it('lists the children that have at least one enabled recipient', async () => {
@@ -304,7 +354,7 @@ describe('DigestRecipientService', () => {
     // with no enabled recipient is never collected for and never summarized.
     const harness = makeHarness();
 
-    const targets = await harness.service.listDeliveryTargets();
+    const { targets } = await harness.service.listDeliveryTargets();
 
     expect(targets).toEqual([
       {
@@ -330,5 +380,149 @@ describe('DigestRecipientService', () => {
     expect(
       (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,
     ).toMatchObject({ enabled: true, userId: 'user-1' });
+  });
+
+  it('returns one target per subscribing user for a child two parents share', async () => {
+    // One target per child meant one run, one dedup ledger and one message for
+    // a child both parents subscribe to -- so the message carried whichever
+    // parent's consent forms the earliest row pointed at, and the other parent
+    // was told forms were awaiting their answer that were not theirs.
+    const harness = makeHarness({
+      recipientRows: [
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-10T00:00:00Z'), userId: 'user-2' },
+      ],
+      connectionsByUser: { 'user-1': ['conn-1'], 'user-2': ['conn-1'] },
+    });
+
+    const { targets } = await harness.service.listDeliveryTargets();
+
+    expect(targets).toEqual([
+      {
+        studentGuid: 'stu-1',
+        activeFrom: new Date('2026-11-01T00:00:00Z'),
+        recipientCount: 1,
+        userId: 'user-1',
+      },
+      {
+        studentGuid: 'stu-1',
+        activeFrom: new Date('2026-11-10T00:00:00Z'),
+        recipientCount: 1,
+        userId: 'user-2',
+      },
+    ]);
+  });
+
+  it('takes each user’s own earliest activeFrom, not the household’s', async () => {
+    // The earliest row used to set the cutoff for everybody, so a parent who
+    // subscribed in November was sent September's items because the other
+    // parent had subscribed then.
+    const harness = makeHarness({
+      recipientRows: [
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-09-01T00:00:00Z'), userId: 'user-1' },
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-10T00:00:00Z'), userId: 'user-2' },
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-20T00:00:00Z'), userId: 'user-2' },
+      ],
+      connectionsByUser: { 'user-1': ['conn-1'], 'user-2': ['conn-1'] },
+    });
+
+    const { targets } = await harness.service.listDeliveryTargets();
+
+    const second = targets.find((target) => target.userId === 'user-2');
+    expect(second).toEqual({
+      studentGuid: 'stu-1',
+      activeFrom: new Date('2026-11-10T00:00:00Z'),
+      recipientCount: 2,
+      userId: 'user-2',
+    });
+  });
+
+  it('drops a target whose child the subscribing user no longer owns', async () => {
+    // The adoption path repoints a HouseholdConnection to another AppUser and
+    // leaves the old owner's recipient rows behind, so a row alone cannot be
+    // trusted at send time. Checked here rather than in the orchestrator, so
+    // the cron and the manual run both get it.
+    const harness = makeHarness({
+      recipientRows: [
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'ex-owner' },
+      ],
+      connectionsByUser: { 'user-1': ['conn-1'], 'ex-owner': [] },
+    });
+
+    const { targets } = await harness.service.listDeliveryTargets();
+
+    expect(targets.map((target) => target.userId)).toEqual(['user-1']);
+  });
+
+  it('drops a target whose child has been retired from the roster', async () => {
+    // RosterPresenceService sets isActive false when a child stops appearing.
+    // A stale recipient row must not keep a retired child's digest running.
+    const harness = makeHarness({ roster: [] });
+
+    expect((await harness.service.listDeliveryTargets()).targets).toEqual([]);
+  });
+
+  it('drops a target for a child no connection lists at all', async () => {
+    // ownsStudentForDelivery, not canSeeStudent: an unattributed child belongs
+    // to nobody until a roster refresh says otherwise, and the cost of being
+    // wrong here is another family's conduct reports on a stranger's phone.
+    const harness = makeHarness({ links: [] });
+
+    expect((await harness.service.listDeliveryTargets()).targets).toEqual([]);
+  });
+
+  it('reports the targets it dropped, and why', async () => {
+    // A dropped target is a digest that has silently stopped. Every other way
+    // a run stops writes a `digest_delivery` row -- that is what makes a quiet
+    // child distinguishable from a broken job -- so the orchestrator has to be
+    // told which targets went and for what reason.
+    const harness = makeHarness({
+      recipientRows: [
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'ex-owner' },
+        { studentGuid: 'gone', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+      ],
+      connectionsByUser: { 'user-1': ['conn-1'], 'ex-owner': [] },
+      roster: ['stu-1'],
+      links: [
+        { studentGuid: 'stu-1', householdConnectionId: 'conn-1' },
+        { studentGuid: 'gone', householdConnectionId: 'conn-1' },
+      ],
+    });
+
+    const { targets, skipped } = await harness.service.listDeliveryTargets();
+
+    expect(targets.map((target) => [target.userId, target.studentGuid])).toEqual([
+      ['user-1', 'stu-1'],
+    ]);
+    expect(skipped.map((entry) => [entry.userId, entry.studentGuid])).toEqual([
+      ['ex-owner', 'stu-1'],
+      ['user-1', 'gone'],
+    ]);
+    expect(skipped[0].reason).toMatch(/no longer owns/i);
+    expect(skipped[1].reason).toMatch(/roster/i);
+  });
+
+  it('reads each user’s connections once, not once per target', async () => {
+    // Two queries per target would be 2N queries on a cron that already runs
+    // seven times a day; the helpers answer in batch.
+    const harness = makeHarness({
+      recipientRows: [
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+        { studentGuid: 'stu-2', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+      ],
+      roster: ['stu-1', 'stu-2'],
+      links: [
+        { studentGuid: 'stu-1', householdConnectionId: 'conn-1' },
+        { studentGuid: 'stu-2', householdConnectionId: 'conn-1' },
+      ],
+    });
+
+    const { targets } = await harness.service.listDeliveryTargets();
+
+    expect(targets).toHaveLength(2);
+    expect(harness.prisma.householdConnection.findMany).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.studentConnection.findMany).toHaveBeenCalledTimes(1);
   });
 });

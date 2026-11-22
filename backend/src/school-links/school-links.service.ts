@@ -528,11 +528,83 @@ export class SchoolLinksService {
         data: { revokedAt: new Date() },
       });
 
-      // The unique key is `[studentGuid, channel, address]` and OMITS
-      // `userId`, so the same tuple cannot exist under both households
-      // globally -- the re-point is collision-free and a skip-on-conflict
-      // branch here would be unreachable code.
+      // The unique key is `[userId, studentGuid, channel, address]`, so the
+      // same (child, chat) tuple CAN exist under both households -- and for
+      // the household this merge exists for it usually does: both parents
+      // linked the family group chat for the same child. Re-pointing the
+      // orphan's row onto a tuple the survivor already holds is a P2002
+      // inside this transaction, which fails the whole merge, identically on
+      // every retry.
+      //
+      // The survivor's own row wins and the orphan's duplicate is dropped,
+      // rather than the reverse: the surviving row is the one whose
+      // `activeFrom` and `enabled` the parent has been living with, and a
+      // subscription dropped here is one the parent can re-create from the
+      // wizard in a few taps.
+      const ours = await tx.digestRecipient.findMany({
+        where: { userId },
+        select: { studentGuid: true, channel: true, address: true },
+      });
+      if (ours.length > 0) {
+        await tx.digestRecipient.deleteMany({
+          where: {
+            userId: orphanUserId,
+            OR: ours.map((row) => ({
+              studentGuid: row.studentGuid,
+              channel: row.channel,
+              address: row.address,
+            })),
+          },
+        });
+      }
+
       await tx.digestRecipient.updateMany({
+        where: { userId: orphanUserId },
+        data: { userId },
+      });
+
+      // The dedup ledger and the delivery log travel with the subscription.
+      // Both gained a `userId` with the per-user digest (ADR-0035), and
+      // leaving them behind is not a tidiness problem: the repointed recipient
+      // row keeps its `activeFrom`, which can be months old, so the merged
+      // household's next run would arrive at an empty ledger and re-report the
+      // entire active window -- today's behaviour, three days of newly
+      // assigned homework, fourteen days of hint-matched due homework, seven
+      // days of consent forms. That is the backlog the migration's ledger copy
+      // exists to prevent, arriving through the other door.
+      //
+      // Colliding rows first, as with the recipients above, because the dedup
+      // unique now carries `userId` and a shared child can legitimately have
+      // a row under both households.
+      //
+      // By correlated subquery rather than reading the survivor's keys and
+      // passing them back as an OR list: the recipient table holds a handful
+      // of rows per household, but the ledger holds one per reported item for
+      // ninety days, and a key list that long would exceed Postgres's 16-bit
+      // bind-parameter limit -- the same failure class connection.service.ts
+      // documents, where it breaks an unlink permanently.
+      await tx.$executeRaw`
+        DELETE FROM "digest_reported_item" o
+        WHERE o."userId" = ${orphanUserId}
+          AND EXISTS (
+            SELECT 1
+            FROM "digest_reported_item" t
+            WHERE t."userId" = ${userId}
+              AND t."studentGuid" = o."studentGuid"
+              AND t."itemType" = o."itemType"
+              AND t."itemId" = o."itemId"
+              AND t."contentHash" = o."contentHash"
+          )
+      `;
+
+      await tx.digestReportedItem.updateMany({
+        where: { userId: orphanUserId },
+        data: { userId },
+      });
+
+      // No unique key here, so nothing to collide: the history of both
+      // households simply becomes the history of the one that survives.
+      await tx.digestDelivery.updateMany({
         where: { userId: orphanUserId },
         data: { userId },
       });

@@ -56,8 +56,16 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
   };
 }
 
+/** The subscribing parent every default fixture belongs to. */
+const USER_A = 'user-a';
+const USER_B = 'user-b';
+
 interface HarnessOptions {
-  targets?: { studentGuid: string; activeFrom: Date; recipientCount: number }[];
+  targets?: { studentGuid: string; activeFrom: Date; recipientCount: number; userId: string }[];
+  /** Targets the send-time ownership guard refused. */
+  skipped?: { studentGuid: string; userId: string; reason: string }[];
+  /** Delivery rows already on record for today, for the once-a-day check. */
+  existingDeliveries?: { userId: string; studentGuid: string; status: string }[];
   candidates?: DigestCandidate[];
   payload?: DigestPayload;
   claimCount?: number;
@@ -65,7 +73,7 @@ interface HarnessOptions {
   ownedHashes?: string[];
   latestSyncAt?: Date;
   syncRuns?: { source: string; endedAt: Date; startedAt: Date }[];
-  recipients?: { channel: string; address: string; enabled: boolean }[];
+  recipients?: { channel: string; address: string; enabled: boolean; userId?: string }[];
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
   dueTomorrowLine?: string;
   sendImpl?: jest.Mock;
@@ -75,7 +83,12 @@ interface HarnessOptions {
 
 function makeHarness(options: HarnessOptions = {}) {
   const targets = options.targets ?? [
-    { studentGuid: 'stu-1', activeFrom: new Date('2026-09-01T00:00:00Z'), recipientCount: 1 },
+    {
+      studentGuid: 'stu-1',
+      activeFrom: new Date('2026-09-01T00:00:00Z'),
+      recipientCount: 1,
+      userId: USER_A,
+    },
   ];
   const candidates = options.candidates ?? [BEHAVIOR_CANDIDATE];
 
@@ -120,15 +133,34 @@ function makeHarness(options: HarnessOptions = {}) {
       }),
     },
     digestReportedItem: { createMany, updateMany, deleteMany, findMany: reportedFindMany },
-    digestDelivery: { create: deliveryCreate },
+    digestDelivery: {
+      create: deliveryCreate,
+      // Honours the where-clause, as Postgres would: the run asks whether it
+      // has already recorded this stop today.
+      findFirst: jest.fn().mockImplementation(({ where }) =>
+        (options.existingDeliveries ?? []).find(
+          (row) =>
+            row.userId === where?.userId &&
+            row.studentGuid === where?.studentGuid &&
+            row.status === where?.status,
+        ) ?? null,
+      ),
+    },
     digestRecipient: {
       // Honours the where-clause, as Postgres would: the service relies on
-      // `where: { enabled: true }` rather than filtering again in code.
+      // `where: { enabled: true, userId }` rather than filtering again in
+      // code. The userId arm matters most -- a mock that answered every
+      // household's chats to every run would report the per-user isolation as
+      // working while the run sent one parent's message to the other's chat.
       findMany: jest.fn().mockImplementation(({ where }) => {
         const all = options.recipients ?? [
-          { channel: 'telegram', address: '12345', enabled: true },
+          { channel: 'telegram', address: '12345', enabled: true, userId: USER_A },
         ];
-        return all.filter((r) => (where?.enabled === undefined ? true : r.enabled === where.enabled));
+        return all.filter(
+          (r) =>
+            (where?.enabled === undefined || r.enabled === where.enabled) &&
+            (where?.userId === undefined || (r.userId ?? USER_A) === where.userId),
+        );
       }),
     },
   } as unknown as PrismaService;
@@ -164,7 +196,9 @@ function makeHarness(options: HarnessOptions = {}) {
   } as unknown as DigestSummarizerService;
 
   const recipients = {
-    listDeliveryTargets: jest.fn().mockResolvedValue(targets),
+    listDeliveryTargets: jest
+      .fn()
+      .mockResolvedValue({ targets, skipped: options.skipped ?? [] }),
   } as unknown as DigestRecipientService;
 
   const send = options.sendImpl ?? jest.fn().mockResolvedValue(undefined);
@@ -280,8 +314,8 @@ describe('DigestService.runAll', () => {
   it('keeps one child failing from stopping the others', async () => {
     const harness = makeHarness({
       targets: [
-        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1 },
-        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1 },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
       ],
       checkImpl: jest
         .fn()
@@ -454,8 +488,8 @@ describe('DigestService.runAll', () => {
   it('runs only the requested child when one is named', async () => {
     const harness = makeHarness({
       targets: [
-        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1 },
-        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1 },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
       ],
     });
 
@@ -468,7 +502,7 @@ describe('DigestService.runAll', () => {
   it('passes the recipients activeFrom cutoff to the checker', async () => {
     const activeFrom = new Date('2026-11-01T00:00:00Z');
     const harness = makeHarness({
-      targets: [{ studentGuid: 'stu-1', activeFrom, recipientCount: 1 }],
+      targets: [{ studentGuid: 'stu-1', activeFrom, recipientCount: 1, userId: USER_A }],
     });
 
     await harness.service.runAll({ now: NOW });
@@ -712,7 +746,14 @@ describe('DigestService.runAll', () => {
     const long_ago = new Date(NOW.getTime() - 9 * 60 * 60 * 1000);
     const harness = makeHarness({
       candidates: [],
-      targets: [{ studentGuid: 'stu-2', activeFrom: new Date('2026-09-01T00:00:00Z'), recipientCount: 1 }],
+      targets: [
+        {
+          studentGuid: 'stu-2',
+          activeFrom: new Date('2026-09-01T00:00:00Z'),
+          recipientCount: 1,
+          userId: USER_A,
+        },
+      ],
       syncRuns: [
         { source: 'homework:stu-1', endedAt: long_ago, startedAt: long_ago },
         { source: 'behavior:stu-1', endedAt: long_ago, startedAt: long_ago },
@@ -843,6 +884,480 @@ describe('DigestService.runAll', () => {
 
     const sent = harness.send.mock.calls[0][1] as string;
     expect(sent).toContain('התנהגות');
+  });
+
+  it('runs once per subscribing parent for a child they share', async () => {
+    // One run per child meant one message, rendered from one parent's consent
+    // forms, sent to both chats -- and one dedup ledger, so whichever run went
+    // first silenced the item for the other parent.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results).toHaveLength(2);
+    expect(results.map((result) => result.userId)).toEqual([USER_A, USER_B]);
+    // Each parent's own chat, once -- not both chats twice.
+    expect(harness.send.mock.calls.map((call) => call[0])).toEqual(['111', '222']);
+    expect(
+      (harness.checker.check as jest.Mock).mock.calls.map((call) => call[0].userId),
+    ).toEqual([USER_A, USER_B]);
+  });
+
+  it('reads back only its own recipients, not the other parent’s chat', async () => {
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '999', enabled: true, userId: USER_B },
+      ],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls.map((call) => call[0])).toEqual(['111']);
+    expect(
+      (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,
+    ).toMatchObject({ studentGuid: 'stu-1', enabled: true, userId: USER_A });
+  });
+
+  it('claims, confirms and releases under its own userId', async () => {
+    const harness = makeHarness({
+      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.createMany.mock.calls[0][0].data[0].userId).toBe(USER_A);
+    expect(harness.deleteMany.mock.calls[0][0].where.userId).toBe(USER_A);
+  });
+
+  it('confirms only its own rows', async () => {
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(confirmCalls(harness.updateMany)[0][0].where.userId).toBe(USER_A);
+  });
+
+  it('does not restamp another parent’s rows when taking over a stale claim', async () => {
+    // The takeover is the only write not already scoped by `claimedBy`.
+    // Unscoped, user A's run restamps user B's rows -- claimedBy=A,
+    // confirmedAt=null -- so B's own confirm matches nothing and B is told the
+    // same thing again half an hour later.
+    const harness = makeHarness({ claimCount: 0, takeoverCount: 1, ownedHashes: ['hash-beh'] });
+
+    await harness.service.runAll({ now: NOW });
+
+    const takeover = harness.updateMany.mock.calls[0][0];
+    expect(takeover.where.userId).toBe(USER_A);
+  });
+
+  it('defers a deadline only on its own row', async () => {
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', null)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-11-19' }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(deferralCalls(harness.updateMany)[0][0].where.userId).toBe(USER_A);
+  });
+
+  it('records whose run each delivery row was', async () => {
+    // GET /digest/deliveries scopes on this: the row holds the message text,
+    // which now contains that parent's own consent forms.
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.deliveryCreate.mock.calls[0][0].data.userId).toBe(USER_A);
+  });
+
+  it('records the userId on a quiet day too', async () => {
+    const harness = makeHarness({ candidates: [] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.deliveryCreate.mock.calls[0][0].data.userId).toBe(USER_A);
+  });
+
+  it('asks about a child’s sync freshness once, not once per subscribing parent', async () => {
+    // Staleness depends on the child alone, and the query is two rows per
+    // child. Two parents of three children would otherwise be twelve.
+    const harness = makeHarness({
+      candidates: [],
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      latestSyncAt: new Date(NOW.getTime() - 9 * 60 * 60 * 1000),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results.map((result) => result.status)).toEqual(['skipped_stale', 'skipped_stale']);
+    expect(harness.prisma.syncRun.findFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends one copy of an identical message to a chat both parents linked', async () => {
+    // One family, one group chat, both parents linked it. Each of them now has
+    // their own row and their own run, so without this the chat gets the same
+    // message twice in a row.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    // Both runs count as delivered. The `delivered === 0` guard throws, which
+    // would release the claims and retry the same suppressed send every hour,
+    // forever.
+    expect(results.map((result) => result.status)).toEqual(['sent', 'sent']);
+    expect(confirmCalls(harness.updateMany)).toHaveLength(2);
+    // Recorded, so support can tell a delivery from a suppression.
+    expect(harness.deliveryCreate.mock.calls[1][0].data.errorMessage).toMatch(/suppressed/i);
+    expect(harness.deliveryCreate.mock.calls[0][0].data.errorMessage).toBeNull();
+  });
+
+  it('does not count a suppressed send as a recipient reached', async () => {
+    // `recipientCount` is what the delivery stats aggregate, so counting a
+    // suppression there reports a message as having gone to two chats when it
+    // went to one. The `delivered === 0` guard still has to see it -- a
+    // suppressed-only run that threw would release its claims and retry the
+    // same suppressed send every hour -- so the two counts are separate.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results.map((result) => result.recipientCount)).toEqual([1, 0]);
+    expect(results.map((result) => result.status)).toEqual(['sent', 'sent']);
+    expect(harness.deliveryCreate.mock.calls[1][0].data.recipientCount).toBe(0);
+  });
+
+  it('sends to the shared chat again when the two parents’ messages differ', async () => {
+    // Byte-identical is the only thing suppressed. A consent form only one of
+    // them has to answer makes the messages differ, and then both are news.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_B },
+      ],
+    });
+    // The real difference is a consent form only one parent has to answer;
+    // any difference in the rendered text does, and a second child name keeps
+    // this test about the suppression rather than about the forms section.
+    (harness.collector.collect as jest.Mock)
+      .mockResolvedValueOnce(makePayload())
+      .mockResolvedValueOnce(makePayload({ childFirstName: 'נועה' }));
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('suppresses a repeat to one chat per child, not across two children', async () => {
+    // Two children of one parent, reported to one chat, whose rendered
+    // messages happen to be identical -- two studentGuids for the same child
+    // (a re-enrolment, or two schools listing them) is the shape that really
+    // produces this. Keyed on channel + address + text alone, the second
+    // child's send is suppressed while its claims are confirmed, so that
+    // child's news is lost for good.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+      ],
+      recipients: [{ channel: 'telegram', address: '111', enabled: true, userId: USER_A }],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(2);
+    expect(results.every((result) => result.status === 'sent')).toBe(true);
+  });
+
+  it('suppresses only within one run, never across runs', async () => {
+    // The ledger is what stops a repeat between runs. Carrying the set over
+    // would silence a genuinely identical digest the next day.
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('hands the summarizer no consent forms, having collected them', async () => {
+    // The forms section is the one input that is per parent, so the prose --
+    // which is shared between the parents of one child -- must not depend on
+    // it. The deterministic Hebrew line renders the section instead.
+    // A mixed day, so the model is called at all: a day whose ONLY news is a
+    // form skips it entirely, which the next test pins.
+    const harness = makeHarness({
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'activity', itemId: '7', contentHash: 'hash-act' },
+      ],
+      ownedHashes: ['hash-beh', 'hash-act'],
+      payload: makePayload({
+        activities: [
+          {
+            id: '7',
+            title: 'טיול שנתי לגליל',
+            activityStartDate: TOMORROW,
+            endAnswerDate: TOMORROW,
+          },
+        ],
+      }),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    // Collected, so the section can be rendered and the claim confirmed...
+    expect((harness.collector.collect as jest.Mock).mock.calls[0][0].candidates).toHaveLength(2);
+    // ...and summarized without them.
+    expect((harness.summarizer.summarize as jest.Mock).mock.calls[0][0].activities).toEqual([]);
+    expect(harness.send.mock.calls[0][1]).toContain('טיול שנתי לגליל');
+  });
+
+  it('ignores a forms line the model wrote anyway', async () => {
+    // Today's substitution only fires when the model's line is blank, so a
+    // hallucinated sentence about a section the model was given nothing for
+    // would ship to the parent.
+    const harness = makeHarness({
+      candidates: [{ itemType: 'activity', itemId: '7', contentHash: 'hash-act' }],
+      payload: makePayload({
+        behavior: [],
+        activities: [
+          {
+            id: '7',
+            title: 'טיול שנתי לגליל',
+            activityStartDate: TOMORROW,
+            endAnswerDate: TOMORROW,
+          },
+        ],
+      }),
+    });
+    (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
+      lines: {
+        headline: 'כותרת',
+        behaviorLine: '',
+        homeworkLine: '',
+        dueTomorrowLine: '',
+        releaseLine: '',
+        activityLine: 'יש אישור שממתין, אבל אין לי מושג איזה',
+      },
+      deadlineResolutions: [],
+      usedLlm: true,
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).not.toContain('אין לי מושג');
+    expect(sent).toContain('ממתינים לתשובתך');
+  });
+
+  it('spends one model call on a child two parents subscribe to', async () => {
+    // The prose covers only per-child facts, which are identical for both
+    // parents -- the one input that is not, consent forms, is withheld from
+    // the model. So a second run for the same child and the same claimed
+    // items would pay Sonnet twice for the same paragraph.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).toHaveBeenCalledTimes(1);
+    // Both parents still get their message.
+    expect(results.map((result) => result.status)).toEqual(['sent', 'sent']);
+    expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not share one child’s summary with another child', async () => {
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+      ],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).toHaveBeenCalledTimes(2);
+  });
+
+  it('summarizes again when the two parents have claimed different items', async () => {
+    // One parent was already told about the behaviour event, so their payload
+    // is not the other parent's payload and the prose cannot be shared.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_B },
+      ],
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'homework_new', itemId: 'hw-1', contentHash: 'hash-hw' },
+      ],
+      payload: makePayload({
+        homeworkNew: [
+          {
+            id: 'hw-1',
+            subjectName: 'חשבון',
+            homeworkText: 'לפתור עמוד 42',
+            remark: null,
+            lessonDate: TODAY,
+            groupId: 55,
+            estimatedDueDate: null,
+          },
+        ],
+      }),
+    });
+    const owned = harness.reportedFindMany as jest.Mock;
+    owned
+      .mockImplementationOnce(() => [{ contentHash: 'hash-beh' }, { contentHash: 'hash-hw' }])
+      .mockImplementationOnce(() => [{ contentHash: 'hash-beh' }]);
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call the model for a run with nothing but consent forms', async () => {
+    // Forms are withheld from the summarizer, so on a day whose only news is a
+    // form the prompt carries no facts at all -- just the child's gender and
+    // the date. The model is then asked for a headline and four section lines
+    // with nothing to base them on, and `linesFor` keeps the headline it
+    // invents. One Sonnet call per run, seven times a day, for prose that is
+    // either discarded or made up.
+    const harness = makeHarness({
+      candidates: [{ itemType: 'activity', itemId: '7', contentHash: 'hash-act' }],
+      payload: makePayload({
+        behavior: [],
+        activities: [
+          {
+            id: '7',
+            title: 'טיול שנתי לגליל',
+            activityStartDate: TOMORROW,
+            endAnswerDate: TOMORROW,
+          },
+        ],
+      }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).not.toHaveBeenCalled();
+    expect(results[0].status).toBe('sent');
+    expect(results[0].usedLlm).toBe(false);
+    // The section is still there, from the deterministic line.
+    expect(harness.send.mock.calls[0][1]).toContain('טיול שנתי לגליל');
+  });
+
+  it('records a target the ownership guard refused, instead of going quiet', async () => {
+    // Every other way a run stops writes a delivery row, which is what makes a
+    // quiet child distinguishable from a broken job. A parent whose digest
+    // stops because the school it was connected through is gone deserves the
+    // same: without this their history simply ends, and support has nothing
+    // but a log line.
+    const harness = makeHarness({
+      targets: [],
+      skipped: [
+        { studentGuid: 'stu-9', userId: USER_B, reason: 'this account no longer owns this child' },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        studentGuid: 'stu-9',
+        userId: USER_B,
+        status: 'skipped_unowned',
+        itemCount: 0,
+        recipientCount: 0,
+      }),
+    ]);
+    const row = harness.deliveryCreate.mock.calls[0][0].data;
+    expect(row.status).toBe('skipped_unowned');
+    expect(row.userId).toBe(USER_B);
+    expect(row.errorMessage).toMatch(/no longer owns/i);
+    // Nothing was checked, collected, summarized or sent for it.
+    expect(harness.checker.check).not.toHaveBeenCalled();
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('records a refused target once a day, not once a run', async () => {
+    // Seven runs a day against a permanently retired child would otherwise
+    // write seven identical rows a day until the retention sweep, burying the
+    // history it exists to make readable.
+    const harness = makeHarness({
+      targets: [],
+      skipped: [{ studentGuid: 'stu-9', userId: USER_B, reason: 'no longer owns' }],
+      existingDeliveries: [
+        { userId: USER_B, studentGuid: 'stu-9', status: 'skipped_unowned' },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.deliveryCreate).not.toHaveBeenCalled();
+    // Still reported to the caller, so a manual run says what happened.
+    expect(results[0]).toMatchObject({ studentGuid: 'stu-9', status: 'skipped_unowned' });
+  });
+
+  it('does not report another child’s refusal when one child is named', async () => {
+    const harness = makeHarness({
+      skipped: [{ studentGuid: 'stu-9', userId: USER_B, reason: 'no longer owns' }],
+    });
+
+    const results = await harness.service.runAll({ now: NOW, studentGuid: 'stu-1' });
+
+    expect(results.map((result) => result.studentGuid)).toEqual(['stu-1']);
   });
 
   it('marks the delivery as not having used the model when it fell back', async () => {

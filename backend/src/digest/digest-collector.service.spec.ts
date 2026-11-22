@@ -70,6 +70,7 @@ describe('DigestCollectorService.collect', () => {
       studentGuid: 'stu-1',
       candidates: [candidate()],
       reportFor: REPORT_FOR,
+      userId: 'user-1',
     });
 
     expect(payload.childFirstName).toBe('אבי');
@@ -84,6 +85,7 @@ describe('DigestCollectorService.collect', () => {
       studentGuid: 'stu-1',
       candidates: [candidate()],
       reportFor: REPORT_FOR,
+      userId: 'user-1',
     });
 
     expect(payload.behavior).toHaveLength(1);
@@ -102,6 +104,7 @@ describe('DigestCollectorService.collect', () => {
         candidate({ itemType: 'homework_due', itemId: 'hw-2', estimatedDueDate: TOMORROW }),
       ],
       reportFor: REPORT_FOR,
+      userId: 'user-1',
     });
 
     expect(payload.homeworkNew.map((item) => item.id)).toEqual(['hw-1']);
@@ -117,6 +120,7 @@ describe('DigestCollectorService.collect', () => {
         candidate({ itemType: 'homework_due', itemId: 'hw-1', estimatedDueDate: TOMORROW }),
       ],
       reportFor: REPORT_FOR,
+      userId: 'user-1',
     });
 
     expect(payload.homeworkDueTomorrow[0].estimatedDueDate).toEqual(TOMORROW);
@@ -133,6 +137,7 @@ describe('DigestCollectorService.collect', () => {
         candidate({ itemType: 'homework_due', itemId: 'hw-1', estimatedDueDate: TOMORROW }),
       ],
       reportFor: REPORT_FOR,
+      userId: 'user-1',
     });
 
     expect(payload.homeworkNew).toHaveLength(1);
@@ -146,6 +151,7 @@ describe('DigestCollectorService.collect', () => {
       studentGuid: 'stu-1',
       candidates: [candidate()],
       reportFor: REPORT_FOR,
+      userId: 'user-1',
     });
 
     expect(harness.prisma.homeworkItem.findMany).not.toHaveBeenCalled();
@@ -159,6 +165,7 @@ describe('DigestCollectorService.collect', () => {
       studentGuid: 'stu-1',
       candidates: [candidate()],
       reportFor: REPORT_FOR,
+      userId: 'user-1',
     });
 
     const select = (harness.prisma.behaviorItem.findMany as jest.Mock).mock.calls[0][0].select;
