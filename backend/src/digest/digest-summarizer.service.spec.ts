@@ -18,7 +18,7 @@ import type { DigestPayload } from './digest.types';
 
 const REPORT_FOR = new Date('2026-11-17T00:00:00Z');
 
-function makePayload(): DigestPayload {
+function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
   return {
     childFirstName: 'אבי',
     childGender: 'male',
@@ -27,7 +27,7 @@ function makePayload(): DigestPayload {
       {
         id: 'beh-1',
         achvaName: 'איחור',
-        classification: 'negative',
+        classification: 'attention',
         justifiable: true,
         subject: 'מתמטיקה',
         remark: 'הגיע באיחור של 10 דקות',
@@ -48,12 +48,16 @@ function makePayload(): DigestPayload {
     homeworkDueTomorrow: [],
     releases: [],
     activities: [],
+    board: [],
+    ...overrides,
   };
 }
 
 const GOOD_OUTPUT = {
   headline: 'יום עם איחור אחד',
   behaviorLine: 'נרשם איחור בשיעור מתמטיקה.',
+  positiveLine: '',
+  boardLine: '',
   homeworkLine: 'ניתנה מטלה בחשבון.',
   dueTomorrowLine: '',
   releaseLine: '',
@@ -408,6 +412,76 @@ describe('buildPrompt with releases and activities', () => {
     expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
       expect.arrayContaining(['releaseLine']),
     );
+  });
+
+  it('asks for a separate line about positive notes', () => {
+    // One behaviour line meant praise and an absence were written as one
+    // sentence, under a heading that fit neither.
+    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
+      expect.arrayContaining(['positiveLine']),
+    );
+    expect(OUTPUT_SCHEMA.required as readonly string[]).toContain('positiveLine');
+  });
+
+  it('separates the positive events from the ones needing attention in the prompt', () => {
+    const prompt = buildPrompt(
+      makePayload({
+        behavior: [
+          {
+            id: 'b1',
+            achvaName: 'חיסור',
+            classification: 'attention',
+            justifiable: false,
+            subject: 'מתמטיקה',
+            remark: null,
+            lessonDate: REPORT_FOR,
+            eventAt: REPORT_FOR,
+          },
+          {
+            id: 'b2',
+            achvaName: 'חיזוק חיובי',
+            classification: 'positive',
+            justifiable: true,
+            subject: 'ספרות',
+            remark: null,
+            lessonDate: REPORT_FOR,
+            eventAt: REPORT_FOR,
+          },
+        ],
+      }),
+    );
+
+    const attention = prompt.indexOf('מתמטיקה');
+    const positive = prompt.indexOf('ספרות');
+    expect(attention).toBeGreaterThan(-1);
+    expect(positive).toBeGreaterThan(-1);
+    // Two blocks, so the model cannot blend a note of praise into a sentence
+    // about an absence.
+    expect(prompt).toContain('חיזוקים חיוביים');
+  });
+
+  it('asks for a line about the message board', () => {
+    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
+      expect.arrayContaining(['boardLine']),
+    );
+    expect(OUTPUT_SCHEMA.required as readonly string[]).toContain('boardLine');
+  });
+
+  it('puts the board notices in the prompt as their own block', () => {
+    const prompt = buildPrompt(
+      makePayload({
+        board: [
+          {
+            id: '4211',
+            text: 'ביום חמישי יום ספורט',
+            expirationDate: new Date('2026-11-30T00:00:00Z'),
+          },
+        ],
+      }),
+    );
+
+    expect(prompt).toContain('לוח המודעות');
+    expect(prompt).toContain('ביום חמישי יום ספורט');
   });
 
   it('asks for no line about consent forms, having been given none', () => {

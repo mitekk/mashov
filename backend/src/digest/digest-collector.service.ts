@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { stripMailHtmlToText } from '../telegram/html-to-text';
 import {
   DigestBehaviorFact,
+  DigestBoardFact,
   DigestCandidate,
   DigestActivityFact,
   DigestGender,
@@ -49,9 +51,11 @@ export class DigestCollectorService {
     });
 
     const releaseIds = idsOf(candidates, 'release').map((id) => Number(id));
+    const boardIds = idsOf(candidates, 'message_board').map((id) => Number(id));
     const activityIds = idsOf(candidates, 'activity').map((id) => Number(id));
 
     const behavior = behaviorIds.length > 0 ? await this.readBehavior(behaviorIds) : [];
+    const board = boardIds.length > 0 ? await this.readMessageBoard(studentGuid, boardIds) : [];
     const releases = releaseIds.length > 0 ? await this.readReleases(studentGuid, releaseIds) : [];
     const activities =
       activityIds.length > 0 && userId ? await this.readActivities(userId, activityIds) : [];
@@ -74,6 +78,7 @@ export class DigestCollectorService {
       releases,
       activities,
       behavior,
+      board,
       homeworkNew: newIds
         .map((id) => homeworkById.get(id))
         .filter((item): item is DigestHomeworkFact => item !== undefined),
@@ -149,6 +154,31 @@ export class DigestCollectorService {
       title: row.title,
       activityStartDate: row.activityStartDate,
       endAnswerDate: row.endAnswerDate,
+    }));
+  }
+
+  /**
+   * Keyed by `eventId`, Mashov's own id, because that is what the candidate
+   * carries -- the checker hashes the upstream id, not our row's cuid.
+   *
+   * `eventText` goes through the HTML stripper: MessageBoardTask sanitizes the
+   * notice but KEEPS `<a>`, `<p>`, `<br>` and `<strong>`, so the stored value
+   * is still markup, and the message carries no parse_mode.
+   */
+  private async readMessageBoard(
+    studentGuid: string,
+    eventIds: number[],
+  ): Promise<DigestBoardFact[]> {
+    const rows = await this.prisma.messageBoardItem.findMany({
+      where: { studentGuid, eventId: { in: eventIds } },
+      select: { eventId: true, eventText: true, expirationDate: true },
+      orderBy: { expirationDate: 'asc' },
+    });
+
+    return rows.map((row) => ({
+      id: String(row.eventId),
+      text: stripMailHtmlToText(row.eventText),
+      expirationDate: row.expirationDate,
     }));
   }
 

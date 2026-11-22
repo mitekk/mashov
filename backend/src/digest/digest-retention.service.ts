@@ -22,6 +22,8 @@ export interface DigestPruneResult {
   reportedItems: number;
   deliveries: number;
   linkCodes: number;
+  /** Rows in the inbox-notification dedup ledger. */
+  mailNotifications: number;
 }
 
 /**
@@ -63,6 +65,21 @@ export class DigestRetentionService {
       () => this.prisma.telegramLinkCode.deleteMany({ where: { createdAt: { lt: codeCutoff } } }),
     );
 
+    // The inbox notifier's own ledger, on the same 90-day cutoff as the
+    // digest's: `notifiedFor` is @db.Date for the same reason. Its own arm
+    // because it is its own table -- up to one row per message per linked
+    // chat, which only ever grows without this.
+    const mailNotifications = await this.deleteQuietly(
+      'mail_notified_message',
+      () => this.prisma.mailNotifiedMessage.deleteMany({ where: { notifiedFor: { lt: cutoff } } }),
+    );
+
+    if (mailNotifications > 0) {
+      this.logger.log(
+        `Pruned ${mailNotifications} mail notification ledger rows older than ${RETENTION_DAYS} days.`,
+      );
+    }
+
     if (reportedItems > 0 || deliveries > 0) {
       this.logger.log(
         `Pruned digest history older than ${RETENTION_DAYS} days: ` +
@@ -75,7 +92,7 @@ export class DigestRetentionService {
       );
     }
 
-    return { reportedItems, deliveries, linkCodes };
+    return { reportedItems, deliveries, linkCodes, mailNotifications };
   }
 
   private async deleteQuietly(

@@ -28,6 +28,7 @@ import { DigestDeadlineService } from '../../backend/src/digest/digest-deadline.
 import { DigestSummarizerService } from '../../backend/src/digest/digest-summarizer.service';
 import { DigestRecipientService } from '../../backend/src/digest/digest-recipient.service';
 import { DigestRetentionService } from '../../backend/src/digest/digest-retention.service';
+import { DigestAttachmentResolver } from '../../backend/src/digest/digest-attachment.resolver';
 import { jerusalemDayBounds } from '../../backend/src/digest/digest-deadline.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { ConfigService } from '../../backend/node_modules/@nestjs/config';
@@ -90,6 +91,10 @@ function makeService(prisma: PrismaClient, sender: DigestSender) {
     new DigestRecipientService(prismaService),
     sender,
     sender,
+    new DigestAttachmentResolver(prismaService),
+    // No media binding: these tests are about the ledger and the text, and the
+    // @Optional() injection falls back to the no-op, so nothing is downloaded
+    // or uploaded. src/telegram-media/** has its own specs.
   );
 }
 

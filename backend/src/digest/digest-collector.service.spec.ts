@@ -8,7 +8,7 @@ const TOMORROW = new Date('2026-11-18T00:00:00Z');
 const BEHAVIOR_ROW = {
   id: 'beh-1',
   achvaName: 'איחור',
-  classification: 'negative',
+  classification: 'attention',
   justifiable: true,
   subject: 'מתמטיקה',
   remark: 'הגיע באיחור',
@@ -26,7 +26,13 @@ const HOMEWORK_ROW = {
 };
 
 function makeHarness(
-  options: { behavior?: unknown[]; homework?: unknown[]; activities?: unknown[] } = {},
+  options: {
+    behavior?: unknown[];
+    homework?: unknown[];
+    activities?: unknown[];
+    board?: unknown[];
+    boardFindMany?: jest.Mock;
+  } = {},
 ) {
   const prisma = {
     student: {
@@ -46,6 +52,9 @@ function makeHarness(
     },
     releaseRequest: {
       findMany: jest.fn().mockResolvedValue([]),
+    },
+    messageBoardItem: {
+      findMany: options.boardFindMany ?? jest.fn().mockResolvedValue(options.board ?? []),
     },
   } as unknown as PrismaService;
 
@@ -224,5 +233,50 @@ describe('normalizeGender', () => {
       harness.prisma as unknown as { schoolActivity: { findMany: jest.Mock } }
     ).schoolActivity.findMany.mock.calls[0] as [{ where: Record<string, unknown> }];
     expect(args.where.endAnswerDate).toEqual({ not: null });
+  });
+});
+
+describe('DigestCollectorService message board', () => {
+  it('strips the markup the sync task kept, so the chat gets plain text', async () => {
+    // MessageBoardTask sanitizes eventText but keeps <a>, <p>, <br> and
+    // <strong>, so the stored value is still HTML.
+    const harness = makeHarness({
+      board: [
+        {
+          eventId: 4211,
+          eventText: '<p>יום ספורט</p><p>נא להביא בגדי ספורט</p>',
+          expirationDate: new Date('2026-11-30T00:00:00Z'),
+        },
+      ],
+    });
+
+    const payload = await harness.service.collect({
+      studentGuid: 'stu-1',
+      candidates: [candidate({ itemType: 'message_board', itemId: '4211' })],
+      reportFor: REPORT_FOR,
+      userId: 'user-1',
+    });
+
+    expect(payload.board).toEqual([
+      {
+        id: '4211',
+        text: 'יום ספורט\nנא להביא בגדי ספורט',
+        expirationDate: new Date('2026-11-30T00:00:00Z'),
+      },
+    ]);
+  });
+
+  it('issues no board query when nothing on the board was claimed', async () => {
+    const boardFindMany = jest.fn();
+    const harness = makeHarness({ boardFindMany });
+
+    await harness.service.collect({
+      studentGuid: 'stu-1',
+      candidates: [],
+      reportFor: REPORT_FOR,
+      userId: 'user-1',
+    });
+
+    expect(boardFindMany).not.toHaveBeenCalled();
   });
 });

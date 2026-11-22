@@ -196,10 +196,26 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `DIGEST_DUE_LOOKBACK_DAYS` | how far back to look for homework that may be needed tomorrow | `14` |
 | `DIGEST_NEW_LOOKBACK_DAYS` | how far back to look for homework to report as newly assigned | `3` |
 | `DIGEST_ACTIVITY_WINDOW_DAYS` | how far ahead an unanswered consent deadline is worth mentioning | `7` |
+| `DIGEST_BOARD_LOOKBACK_DAYS` | how recently a message-board notice must have been first seen to count as news | `2` |
+| `DIGEST_MUTED_BEHAVIOR_CODES` | behaviour event codes never reported. `18` is נוכחות — a presence row per lesson per day, which tells a parent nothing. Set to empty to mute nothing | `18` |
 | `DIGEST_LLM_MODEL` | model that writes the Hebrew prose | `claude-sonnet-5-5` |
 | `DIGEST_LLM_EFFORT` | how hard it thinks first — `low`/`medium`/`high`/`xhigh`/`max` | `low` |
 | `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |
+| `PUBLIC_BASE_URL` | origin Telegram messages link back to — must be the origin the frontend is served from, e.g. `https://mashov.mitya.dev`. Unset renders no link line at all. Only `https://`, or `http://localhost` for a dev stack | unset |
 | `ANTHROPIC_API_KEY` | **secret.** Omit it and the digest still sends, using the deterministic renderer | unset |
+| `INBOX_NOTIFY_ENABLED` | master switch for the ten-minute inbox notification cron | `false` |
+| `INBOX_NOTIFY_DRY_RUN` | renders and logs the message, sends nothing, claims nothing | `true` |
+| `INBOX_NOTIFY_QUIET_FROM` / `_TO` | the window the notifier stays silent. Mail arriving inside it is **held over**, not dropped | `21:00` / `07:00` |
+| `INBOX_NOTIFY_LOOKBACK_HOURS` | how far back a run looks for mail it has not sent — also the carry-over window for the quiet hours | `24` |
+| `INBOX_NOTIFY_MAX_PER_RUN` | above this, one summary message goes out instead of a burst | `5` |
+| `INBOX_NOTIFY_BODY_CHARS` | how much of a mail body goes in the chat before it is cut | `700` |
+| `TELEGRAM_MEDIA_ENABLED` | forwards Mashov attachments into the chat. Defaults **on** — the digest's own switches still gate every caller | `true` |
+| `MEDIA_MAX_FILES_PER_MESSAGE` | files one message will carry; the overflow becomes a line in the text | `3` |
+| `MEDIA_TOTAL_BYTES_PER_RUN` | byte budget for one batch of downloads; a bound on the host, not on Telegram | `52428800` |
+| `MEDIA_SEND_DELAY_MS` | pause between uploads — Telegram allows about one message a second per chat | `1100` |
+| `TELEGRAM_MEDIA_MAX_BYTES` | largest attachment forwarded into a chat; above it the parent gets a link instead | `20971520` |
+| `TELEGRAM_PHOTO_MAX_BYTES` | above this a jpeg/png is sent as a document — `sendPhoto` re-encodes and downscales | `5242880` |
+| `MEDIA_DOWNLOAD_TIMEOUT_MS` | per-download override of `MASHOV_TIMEOUT_MS` for attachment bytes | `45000` |
 | `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather. Also the master switch for the link wizard: without it the mint route answers `503` and the poller never starts | unset |
 | `TELEGRAM_LINK_CODE_TTL_MINUTES` | how long a one-time link code stays valid | `15` |
 | `TELEGRAM_POLL_TIMEOUT_SECONDS` | how long each `getUpdates` long poll waits | `30` |

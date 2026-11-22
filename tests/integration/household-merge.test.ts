@@ -138,6 +138,27 @@ describe('Household merge — adding a school another household already owns', (
    * its own.
    */
   async function cleanup(): Promise<void> {
+    // `sync_run` rows FIRST, and this suite is the one that had been missing
+    // them.
+    //
+    // The school-link flow here runs the real HomeworkTask and BehaviorTask
+    // against CHILD_B, and on a host with no route to Mashov -- which is every
+    // CI runner -- each one fails and records
+    // `every connection failed for hm-guid-b (tried N)` on a `sync_run` row.
+    // Deleting the child, the connections and the users leaves those rows
+    // behind, and `getSourceHealth` admits a run whose child it can no longer
+    // resolve -- so `source-health-connection-scope.test.ts`, which runs later
+    // in the same database and asserts no source shows an error, read this
+    // suite's failure as its own. Every other suite that records sync runs
+    // already clears them; this one did not.
+    await prisma.syncRun.deleteMany({
+      where: {
+        OR: [
+          { source: { contains: CHILD_B } },
+          { householdConnectionId: { in: [CONN_A, CONN_B, 'hm-conn-b2'] } },
+        ],
+      },
+    });
     await prisma.appSession.deleteMany({ where: { userId: { in: ALL_USERS } } });
     await prisma.userItemState.deleteMany({ where: { userId: { in: ALL_USERS } } });
     await prisma.digestRecipient.deleteMany({ where: { userId: { in: ALL_USERS } } });

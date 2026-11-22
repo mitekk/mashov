@@ -45,6 +45,30 @@ const DEFAULT_NEW_LOOKBACK_DAYS = 3;
  */
 const DEFAULT_ACTIVITY_WINDOW_DAYS = 7;
 
+/**
+ * Behaviour event codes the digest never reports.
+ *
+ * `18` is נוכחות -- a presence row Mashov writes for every lesson of every
+ * day. It is the single largest source of behaviour rows in the table and
+ * tells a parent nothing they did not assume: the child was at school.
+ *
+ * Filtered by event CODE and not by `classification`. 18 is not in
+ * `DEFAULT_CLASSIFICATION_MAP` (behavior-classifier.service.ts:11), so it is
+ * `neutral` only through the fallback -- which is also what every *unknown*
+ * code gets. Filtering on the bucket would therefore swallow, silently and
+ * permanently, every code a school adds after this was written.
+ */
+const DEFAULT_MUTED_BEHAVIOR_CODES = [18];
+
+/**
+ * How far back a message-board notice still counts as new.
+ *
+ * Measured from `firstSeenAt`, which exists because Mashov's payload carries
+ * no creation date and `updatedAt` churns on every 06:00 upsert. Two days
+ * covers the gap between the board sync and the evening runs, plus a weekend.
+ */
+const DEFAULT_BOARD_LOOKBACK_DAYS = 2;
+
 export interface DigestCheckInput {
   studentGuid: string;
   schoolYear: number;
@@ -101,6 +125,13 @@ interface ActivityCandidateRow {
   endAnswerDate: Date | null;
 }
 
+interface BoardCandidateRow {
+  eventId: number;
+  eventText: string;
+  expirationDate: Date;
+  firstSeenAt: Date;
+}
+
 interface HomeworkCandidateRow {
   id: string;
   groupId: number;
@@ -119,6 +150,12 @@ interface HomeworkCandidateRow {
  */
 @Injectable()
 export class DigestCheckerService {
+  /**
+   * Parsed once. A per-query parse would re-split the same string seven times
+   * a day per child, and the value cannot change without a restart anyway.
+   */
+  private mutedBehaviorCodes?: number[];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -143,6 +180,7 @@ export class DigestCheckerService {
       )),
       ...(await this.releasesSoon(studentGuid, yearScope, todayStart, tomorrowStart)),
       ...(await this.activitiesAwaitingAnswer(userId, yearScope, todayStart)),
+      ...(await this.boardNoticesRecently(studentGuid, yearScope, now, todayStart)),
       // activeFrom is a timestamp (now() when the recipient was created) while
       // lessonDate is a date at UTC midnight. Comparing them directly
       // suppressed every homework item on the sign-up day while still
@@ -182,6 +220,13 @@ export class DigestCheckerService {
       where: {
         studentGuid,
         ...yearScope,
+        // Excluded in the QUERY, not after it. A row the checker returns is a
+        // row the run claims, and a claim with nothing in the payload behind
+        // it is released by settleUnsent and re-claimed on the next run --
+        // seven times a day, forever -- while summaryFor still spends a model
+        // call on it and renders a message with no sections. Excluded here, an
+        // attendance-only day is a genuinely quiet day.
+        eventCode: { notIn: this.readMutedBehaviorCodes() },
         OR: [
           { lessonDate: { gte: todayStart, lt: tomorrowStart } },
           { eventAt: { gte: todayStart, lt: tomorrowStart } },
@@ -368,6 +413,50 @@ export class DigestCheckerService {
       }));
   }
 
+  /**
+   * Notices that appeared on this child's board in the last few days.
+   *
+   * Three conditions, and all three matter. `firstSeenAt` is the only column
+   * that can mean "new" (see DEFAULT_BOARD_LOOKBACK_DAYS). `expirationDate`
+   * keeps a notice about last week's event out of today's message even if the
+   * sync only just reached it. And the year scope keeps a historical backfill
+   * from announcing September's board in November.
+   */
+  private async boardNoticesRecently(
+    studentGuid: string,
+    yearScope: ReturnType<typeof schoolYearScope>,
+    now: Date,
+    todayStart: Date,
+  ): Promise<InternalCandidate[]> {
+    const seenSince = new Date(
+      now.getTime() -
+        this.readDays('DIGEST_BOARD_LOOKBACK_DAYS', DEFAULT_BOARD_LOOKBACK_DAYS) *
+          24 *
+          60 *
+          60 *
+          1000,
+    );
+
+    const rows = (await this.prisma.messageBoardItem.findMany({
+      where: {
+        studentGuid,
+        ...yearScope,
+        firstSeenAt: { gte: seenSince },
+        expirationDate: { gte: todayStart },
+      },
+      select: { eventId: true, eventText: true, expirationDate: true, firstSeenAt: true },
+    })) as BoardCandidateRow[];
+
+    return rows.map((row) => ({
+      itemType: 'message_board' as DigestItemType,
+      itemId: String(row.eventId),
+      // The text is in the hash, so a school editing a notice re-reports it --
+      // the same contract every other input here has.
+      contentHash: hashFields('message_board', [String(row.eventId), row.eventText]),
+      itemDate: row.firstSeenAt,
+    }));
+  }
+
   private async homeworkDueTomorrow(
     studentGuid: string,
     schoolYear: number,
@@ -489,6 +578,35 @@ export class DigestCheckerService {
   private readDays(key: string, fallback: number): number {
     const parsed = Number(this.config.get<string | number>(key));
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  /**
+   * `DIGEST_MUTED_BEHAVIOR_CODES` as a comma-separated list of event codes.
+   *
+   * Unset means the default. Set-but-empty means mute nothing, which is the
+   * kill switch: an operator who needs the raw stream back should not have to
+   * find a code that means "none". Non-numeric entries are dropped rather
+   * than failing the run -- a typo must not take the digest down.
+   */
+  private readMutedBehaviorCodes(): number[] {
+    if (this.mutedBehaviorCodes !== undefined) return this.mutedBehaviorCodes;
+
+    const raw = this.config.get<string>('DIGEST_MUTED_BEHAVIOR_CODES');
+    if (raw === undefined || raw === null) {
+      this.mutedBehaviorCodes = DEFAULT_MUTED_BEHAVIOR_CODES;
+      return this.mutedBehaviorCodes;
+    }
+
+    this.mutedBehaviorCodes = String(raw)
+      .split(',')
+      .map((part) => part.trim())
+      // Before Number(), not after: Number('') is 0, so an empty entry would
+      // mute event code 0 rather than nothing -- which is the opposite of what
+      // an operator setting the var to empty asked for.
+      .filter((part) => part.length > 0)
+      .map((part) => Number(part))
+      .filter((code) => Number.isInteger(code));
+    return this.mutedBehaviorCodes;
   }
 }
 

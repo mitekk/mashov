@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { deterministicLines, formatSchoolDate } from './digest-report.template';
 import {
   DigestBehaviorFact,
+  DigestBoardFact,
   DigestDeadlineResolution,
   DigestHomeworkFact,
   DigestLines,
@@ -49,17 +50,24 @@ export const OUTPUT_SCHEMA = {
   required: [
     'headline',
     'behaviorLine',
+    'positiveLine',
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
+    'boardLine',
     'deadlineResolutions',
   ],
   properties: {
     headline: { type: 'string', description: 'שורה אחת קצרה בעברית' },
-    behaviorLine: { type: 'string', description: 'משפט או שניים בעברית על ההתנהגות' },
+    behaviorLine: {
+      type: 'string',
+      description: 'משפט או שניים בעברית על אירועי התנהגות ונוכחות שדורשים תשומת לב',
+    },
+    positiveLine: { type: 'string', description: 'משפט בעברית על חיזוקים חיוביים' },
     homeworkLine: { type: 'string', description: 'משפט או שניים בעברית על המטלות החדשות' },
     dueTomorrowLine: { type: 'string', description: 'משפט או שניים בעברית על מה שצפוי מחר' },
     releaseLine: { type: 'string', description: 'משפט בעברית על שחרור מוקדם שכבר אושר' },
+    boardLine: { type: 'string', description: 'משפט או שניים בעברית על הודעות מלוח המודעות' },
     deadlineResolutions: {
       type: 'array',
       description:
@@ -95,6 +103,13 @@ const SYSTEM_PROMPT = [
   'אם אין מה לומר בסעיף מסוים, החזר מחרוזת ריקה לאותו שדה.',
   'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
   'שחרור מוקדם הוא בקשה שההורה עצמו הגיש ואושרה: כתוב עליו כתזכורת, לא כחדשות.',
+  // The board's own words are the content; a notice summarized into "there is
+  // a notice" tells a parent nothing they can act on.
+  'הודעות מלוח המודעות הן הודעות של בית הספר: מסור את תוכן ההודעה עצמה, לא רק שקיימת הודעה.',
+  // The two behaviour sections are rendered separately, so a sentence that
+  // blends praise into an absence lands under a heading that contradicts it.
+  'הפרד בין אירועים שדורשים תשומת לב ובין חיזוקים חיוביים: behaviorLine לראשונים, positiveLine לשניים.',
+  'אל תכתוב על חיזוק חיובי ב-behaviorLine ואל תכתוב על חיסור או איחור ב-positiveLine.',
   // Nothing about consent forms: the model is handed none. That section is
   // the one input that belongs to the parent rather than to the child, and the
   // prose is shared between the parents of one child (ADR-0035), so it is
@@ -127,10 +142,18 @@ export function buildPrompt(payload: DigestPayload): string {
     sections.unshift(`מין הילד/ה: ${payload.childGender === 'female' ? 'נקבה' : 'זכר'}`);
   }
 
-  if (payload.behavior.length > 0) {
-    sections.push(
-      ['אירועי התנהגות ונוכחות:', ...payload.behavior.map(behaviorForPrompt)].join('\n'),
-    );
+  // Two blocks, matching the two rendered sections: handing the model one
+  // list and asking for two lines is how praise ends up in a sentence about
+  // an absence.
+  const attention = payload.behavior.filter((fact) => fact.classification !== 'positive');
+  const positive = payload.behavior.filter((fact) => fact.classification === 'positive');
+
+  if (attention.length > 0) {
+    sections.push(['אירועי התנהגות ונוכחות:', ...attention.map(behaviorForPrompt)].join('\n'));
+  }
+
+  if (positive.length > 0) {
+    sections.push(['חיזוקים חיוביים:', ...positive.map(behaviorForPrompt)].join('\n'));
   }
 
   if (payload.homeworkNew.length > 0) {
@@ -154,12 +177,27 @@ export function buildPrompt(payload: DigestPayload): string {
     );
   }
 
+  if (payload.board.length > 0) {
+    sections.push(['הודעות מלוח המודעות:', ...payload.board.map(boardForPrompt)].join('\n'));
+  }
+
   // `payload.activities` is deliberately not rendered. The orchestrator
   // already passes an empty list, and this function is the PII boundary, so
   // the guarantee belongs here too: a consent form's title names a trip, a
   // theatre and sometimes a class, and it need never leave the host.
 
   return sections.join('\n\n');
+}
+
+/**
+ * The notice text, and deliberately not its expiry.
+ *
+ * `expirationDate` is when the school takes the notice down, not the date the
+ * notice is about, and a model handed it as a field will write it as a
+ * deadline.
+ */
+function boardForPrompt(fact: DigestBoardFact): string {
+  return `- ${fact.text.trim().replace(/\s*\n\s*/g, ' ')}`;
 }
 
 function behaviorForPrompt(fact: DigestBehaviorFact): string {
@@ -342,9 +380,11 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
   const lineKeys = [
     'headline',
     'behaviorLine',
+    'positiveLine',
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
+    'boardLine',
   ] as const;
   if (!lineKeys.every((key) => typeof candidate[key] === 'string')) return null;
 
@@ -356,9 +396,11 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
     lines: {
       headline: candidate.headline as string,
       behaviorLine: candidate.behaviorLine as string,
+      positiveLine: candidate.positiveLine as string,
       homeworkLine: candidate.homeworkLine as string,
       dueTomorrowLine: candidate.dueTomorrowLine as string,
       releaseLine: candidate.releaseLine as string,
+      boardLine: candidate.boardLine as string,
       // Not asked for and not accepted: `linesFor` replaces it with the
       // deterministic line whatever arrives here.
       activityLine: '',

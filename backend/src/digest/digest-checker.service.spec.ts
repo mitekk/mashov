@@ -20,7 +20,7 @@ function behaviorRow(overrides: Record<string, unknown> = {}) {
     id: 'beh-1',
     eventCode: 11,
     achvaName: 'איחור',
-    classification: 'negative',
+    classification: 'attention',
     justifiable: true,
     subject: 'מתמטיקה',
     remark: null,
@@ -51,6 +51,9 @@ interface MockOptions {
   releases?: Record<string, unknown>[];
   activities?: Record<string, unknown>[];
   userId?: string | null;
+  mutedCodes?: string;
+  board?: Record<string, unknown>[];
+  boardLookbackDays?: string;
 }
 
 function makeHarness(options: MockOptions = {}) {
@@ -76,7 +79,17 @@ function makeHarness(options: MockOptions = {}) {
 
   const prisma = {
     behaviorItem: {
-      findMany: jest.fn().mockResolvedValue(options.behavior ?? []),
+      // Honours `where.eventCode.notIn`, as Postgres would. A mock that
+      // ignored it would report the attendance mute as working while every
+      // row still came back.
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          (options.behavior ?? []).filter((row) => {
+            const excluded = (where?.eventCode?.notIn ?? []) as number[];
+            return !excluded.includes(row.eventCode as number);
+          }),
+        ),
+      ),
     },
     homeworkItem: { findMany: homeworkFindMany },
     digestReportedItem: {
@@ -111,6 +124,20 @@ function makeHarness(options: MockOptions = {}) {
         ),
       ),
     },
+    // Honours the firstSeenAt floor and the expiry cutoff, as Postgres would.
+    messageBoardItem: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          (options.board ?? []).filter((row) => {
+            const seen = where?.firstSeenAt?.gte as Date | undefined;
+            const expiry = where?.expirationDate?.gte as Date | undefined;
+            if (seen && (row.firstSeenAt as Date) < seen) return false;
+            if (expiry && (row.expirationDate as Date) < expiry) return false;
+            return true;
+          }),
+        ),
+      ),
+    },
     schoolActivity: {
       findMany: jest.fn().mockImplementation(({ where }) =>
         Promise.resolve(
@@ -130,6 +157,8 @@ function makeHarness(options: MockOptions = {}) {
     get: jest.fn((key: string) => {
       if (key === 'DIGEST_TIMEZONE') return 'Asia/Jerusalem';
       if (key === 'DIGEST_DUE_LOOKBACK_DAYS') return '14';
+      if (key === 'DIGEST_MUTED_BEHAVIOR_CODES') return options.mutedCodes;
+      if (key === 'DIGEST_BOARD_LOOKBACK_DAYS') return options.boardLookbackDays;
       return undefined;
     }),
   } as unknown as ConfigService;
@@ -651,5 +680,186 @@ describe('DigestCheckerService school activities', () => {
       .find((where) => where.studentGuid === undefined);
     expect(activityQuery).toBeDefined();
     expect(activityQuery.userId).toBe('user-1');
+  });
+});
+
+describe('DigestCheckerService behaviour code muting', () => {
+  it('leaves plain attendance out of the report', async () => {
+    // eventCode 18 is נוכחות -- a presence row written for every lesson of
+    // every day. It is the single largest source of behaviour rows and tells
+    // a parent nothing: the child was at school, as expected.
+    const harness = makeHarness({
+      behavior: [
+        behaviorRow({ id: 'beh-attendance', eventCode: 18, achvaName: 'נוכחות' }),
+        behaviorRow({ id: 'beh-late', eventCode: 1, achvaName: 'איחור' }),
+      ],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates.map((candidate) => candidate.itemId)).toEqual(['beh-late']);
+  });
+
+  it('treats a day of nothing but attendance as a genuinely quiet day', async () => {
+    // Load-bearing: the muting has to happen here rather than in the collector
+    // or the template. A row the checker returns is a row the run CLAIMS, and
+    // a claim the payload has nothing for is released by settleUnsent and
+    // re-claimed on the next run -- seven times a day, forever -- while
+    // summaryFor still spends a Sonnet call on it and sends a message with no
+    // sections in it.
+    const harness = makeHarness({
+      behavior: [
+        behaviorRow({ id: 'a', eventCode: 18 }),
+        behaviorRow({ id: 'b', eventCode: 18, lessonDate: TODAY }),
+      ],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('still reports a behaviour code the classifier has never seen', async () => {
+    // Why the filter keys on eventCode and not on `classification`: an unmapped
+    // code falls through to `neutral`, exactly like 18, so filtering on the
+    // bucket would silently swallow every code a school adds later.
+    const harness = makeHarness({
+      behavior: [behaviorRow({ id: 'beh-new', eventCode: 99, classification: 'neutral' })],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates.map((candidate) => candidate.itemId)).toEqual(['beh-new']);
+  });
+
+  it('reports an absence and a positive note', async () => {
+    const harness = makeHarness({
+      behavior: [
+        behaviorRow({ id: 'beh-absent', eventCode: 2, classification: 'attention' }),
+        behaviorRow({ id: 'beh-praise', eventCode: 4, classification: 'positive' }),
+      ],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates.map((candidate) => candidate.itemId).sort()).toEqual([
+      'beh-absent',
+      'beh-praise',
+    ]);
+  });
+
+  it('mutes the codes named in DIGEST_MUTED_BEHAVIOR_CODES instead of the default', async () => {
+    const harness = makeHarness({
+      mutedCodes: ' 1 , 2 ',
+      behavior: [
+        behaviorRow({ id: 'beh-late', eventCode: 1 }),
+        behaviorRow({ id: 'beh-absent', eventCode: 2 }),
+        behaviorRow({ id: 'beh-attendance', eventCode: 18 }),
+      ],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates.map((candidate) => candidate.itemId)).toEqual(['beh-attendance']);
+  });
+
+  it('mutes nothing when DIGEST_MUTED_BEHAVIOR_CODES is set to empty', async () => {
+    // An explicit kill switch: an operator who needs to see the raw stream
+    // back should not have to find a code that means "none".
+    const harness = makeHarness({
+      mutedCodes: '',
+      behavior: [behaviorRow({ id: 'beh-attendance', eventCode: 18 })],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates.map((candidate) => candidate.itemId)).toEqual(['beh-attendance']);
+  });
+
+  it('mutes nothing rather than event code 0 for an empty setting', async () => {
+    // Number('') is 0, so a naive parse of "" mutes code 0 instead of nothing.
+    const harness = makeHarness({
+      mutedCodes: '',
+      behavior: [behaviorRow({ id: 'beh-zero', eventCode: 0 })],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates.map((candidate) => candidate.itemId)).toEqual(['beh-zero']);
+  });
+
+  it('drops a typo from the list rather than failing the run', async () => {
+    const harness = makeHarness({
+      mutedCodes: '18, oops',
+      behavior: [
+        behaviorRow({ id: 'beh-attendance', eventCode: 18 }),
+        behaviorRow({ id: 'beh-late', eventCode: 1 }),
+      ],
+    });
+
+    const result = await check(harness);
+
+    expect(result.candidates.map((candidate) => candidate.itemId)).toEqual(['beh-late']);
+  });
+});
+
+function boardRow(overrides: Record<string, unknown> = {}) {
+  return {
+    eventId: 4211,
+    eventText: '<p>ביום חמישי יום ספורט</p>',
+    expirationDate: new Date('2026-11-30T00:00:00Z'),
+    firstSeenAt: new Date('2026-11-17T06:00:00Z'),
+    ...overrides,
+  };
+}
+
+describe('DigestCheckerService message board', () => {
+  it('reports a notice first seen inside the lookback', async () => {
+    const harness = makeHarness({ behavior: [], board: [boardRow()] });
+
+    const result = await check(harness);
+
+    expect(result.candidates).toEqual([
+      expect.objectContaining({ itemType: 'message_board', itemId: '4211' }),
+    ]);
+  });
+
+  it('ignores a notice that has been on the board for weeks', async () => {
+    // Mashov sends no creation date and `updatedAt` churns on every 06:00
+    // upsert, so firstSeenAt is the only thing here that can mean "new".
+    const harness = makeHarness({
+      behavior: [],
+      board: [boardRow({ firstSeenAt: new Date('2026-10-01T06:00:00Z') })],
+    });
+
+    expect((await check(harness)).candidates).toEqual([]);
+  });
+
+  it('ignores a notice that has already expired', async () => {
+    const harness = makeHarness({
+      behavior: [],
+      board: [boardRow({ expirationDate: new Date('2026-11-01T00:00:00Z') })],
+    });
+
+    expect((await check(harness)).candidates).toEqual([]);
+  });
+
+  it('honours DIGEST_BOARD_LOOKBACK_DAYS', async () => {
+    const old = boardRow({ firstSeenAt: new Date('2026-11-10T06:00:00Z') });
+
+    expect((await check(makeHarness({ behavior: [], board: [old] }))).candidates).toEqual([]);
+    expect(
+      (await check(makeHarness({ behavior: [], board: [old], boardLookbackDays: '30' })))
+        .candidates,
+    ).toHaveLength(1);
+  });
+
+  it('hashes the notice text, so an edited notice is reported again', async () => {
+    const first = await check(makeHarness({ behavior: [], board: [boardRow()] }));
+    const edited = await check(
+      makeHarness({ behavior: [], board: [boardRow({ eventText: 'שונה' })] }),
+    );
+
+    expect(first.candidates[0].contentHash).not.toBe(edited.candidates[0].contentHash);
   });
 });

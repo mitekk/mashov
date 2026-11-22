@@ -6,6 +6,8 @@ const REPORT_FOR = new Date('2026-11-17T00:00:00Z');
 const LINES: DigestLines = {
   headline: 'יום רגוע עם הערה אחת',
   behaviorLine: 'היה איחור אחד בשיעור מתמטיקה.',
+  positiveLine: 'קיבל חיזוק חיובי בספרות.',
+  boardLine: 'יש הודעה חדשה על לוח המודעות.',
   homeworkLine: 'ניתנה מטלה אחת בחשבון.',
   dueTomorrowLine: 'מטלה אחת צפויה להיבדק מחר.',
   releaseLine: 'שחרור מוקדם מחר.',
@@ -22,14 +24,43 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     homeworkDueTomorrow: [],
     releases: [],
     activities: [],
+    board: [],
     ...overrides,
   };
 }
 
+const NOTICE = {
+  id: '4211',
+  text: 'ביום חמישי יום ספורט',
+  expirationDate: new Date('2026-11-30T00:00:00Z'),
+};
+
+const PRAISE = {
+  id: 'beh-praise',
+  achvaName: 'חיזוק חיובי',
+  classification: 'positive',
+  justifiable: true,
+  subject: 'ספרות',
+  remark: 'השתתפות יוצאת דופן',
+  lessonDate: REPORT_FOR,
+  eventAt: new Date('2026-11-17T09:00:00Z'),
+};
+
+const ABSENCE = {
+  id: 'beh-absent',
+  achvaName: 'חיסור',
+  classification: 'attention',
+  justifiable: false,
+  subject: 'מתמטיקה',
+  remark: null,
+  lessonDate: REPORT_FOR,
+  eventAt: new Date('2026-11-17T08:00:00Z'),
+};
+
 const BEHAVIOR = {
   id: 'beh-1',
   achvaName: 'איחור',
-  classification: 'negative',
+  classification: 'attention',
   justifiable: true,
   subject: 'מתמטיקה',
   remark: 'הגיע באיחור של 10 דקות',
@@ -160,11 +191,131 @@ describe('renderReport', () => {
     expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/); // no guid
     expect(text).not.toContain('reporter');
   });
+
+  it('gives a positive note its own section, away from what needs attention', () => {
+    // The single section read the same for both: "נרשם חיזוק חיובי" and
+    // "נרשם חיסור" sat side by side under one neutral heading.
+    const text = renderReport(makePayload({ behavior: [PRAISE] }), LINES);
+
+    expect(text).toContain('חיזוק חיובי');
+    expect(text).toContain('קיבל חיזוק חיובי בספרות.');
+    expect(text).not.toContain('התנהגות ונוכחות');
+  });
+
+  it('keeps an event needing attention out of the positive section', () => {
+    const text = renderReport(makePayload({ behavior: [ABSENCE] }), LINES);
+
+    expect(text).toContain('התנהגות ונוכחות');
+    expect(text).not.toContain('חיזוק חיובי\n');
+  });
+
+  it('renders both sections on a day that had both', () => {
+    const text = renderReport(makePayload({ behavior: [ABSENCE, PRAISE] }), LINES);
+
+    expect(text).toContain('התנהגות ונוכחות');
+    expect(text).toContain('חיזוק חיובי');
+    expect(text.indexOf('התנהגות ונוכחות')).toBeLessThan(text.indexOf('חיזוק חיובי'));
+  });
+
+  it('marks an unexcused event, so it does not read like an excused one', () => {
+    // The marker is the template's, not the model's -- the same reasoning as
+    // the צפי label: a structural fact must not depend on the prose.
+    const text = renderReport(makePayload({ behavior: [ABSENCE] }), LINES);
+
+    expect(text).toContain('לא מוצדק');
+    expect(text).toContain('חיסור');
+  });
+
+  it('does not mark an event the school counts as excusing itself', () => {
+    const excused = { ...ABSENCE, justifiable: true };
+
+    const text = renderReport(makePayload({ behavior: [excused] }), LINES);
+
+    expect(text).not.toContain('לא מוצדק');
+  });
+
+  it('gives the message board its own section', () => {
+    const text = renderReport(makePayload({ board: [NOTICE] }), LINES);
+
+    expect(text).toContain('הודעות מלוח המודעות');
+    expect(text).toContain('יש הודעה חדשה על לוח המודעות.');
+  });
+
+  it('shows no board section on a day with no new notice', () => {
+    const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES);
+
+    expect(text).not.toContain('הודעות מלוח המודעות');
+  });
+
+  it('keeps the link last, below the board section', () => {
+    const text = renderReport(makePayload({ board: [NOTICE] }), LINES, {
+      publicBaseUrl: 'https://mashov.mitya.dev',
+    });
+
+    expect(text.indexOf('הודעות מלוח המודעות')).toBeLessThan(text.indexOf('/home'));
+  });
+
+  it('closes with a link to the site when a base URL is configured', () => {
+    const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES, {
+      publicBaseUrl: 'https://mashov.mitya.dev',
+    });
+
+    // Last, so the facts are what shows in the chat list preview.
+    expect(text.trim().split('\n').pop()).toBe('https://mashov.mitya.dev/home');
+  });
+
+  it('links to an identifier-free page, never to the child', () => {
+    // A Telegram chat is a shared, forwardable artifact: a guid in someone
+    // else's hands outlives the message it arrived in.
+    const text = renderReport(
+      makePayload({ behavior: [BEHAVIOR], homeworkNew: [HOMEWORK] }),
+      LINES,
+      { publicBaseUrl: 'https://mashov.mitya.dev' },
+    );
+
+    expect(text).toContain('/home');
+    expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+    expect(text).not.toContain('stu-');
+  });
+
+  it('renders no link line at all when no base URL is configured', () => {
+    // Fail closed: "undefined/home" in a parent's chat is worse than no link.
+    for (const options of [undefined, {}, { publicBaseUrl: null }, { publicBaseUrl: '' }]) {
+      const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES, options);
+
+      expect(text).not.toContain('undefined');
+      expect(text).not.toMatch(/https?:\/\//);
+    }
+  });
 });
 
 describe('deterministicLines', () => {
   // The fallback when the LLM times out, refuses, or returns malformed output.
   // A parent getting a plainer message beats a parent getting nothing.
+  it('states the notice itself, since the prose is the only place it appears', () => {
+    const lines = deterministicLines(makePayload({ board: [NOTICE] }));
+
+    expect(lines.boardLine).toContain('ביום חמישי יום ספורט');
+  });
+
+  it('leaves boardLine empty when the board had nothing new', () => {
+    expect(deterministicLines(makePayload()).boardLine).toBe('');
+  });
+
+  it('writes a positive note into positiveLine and leaves behaviorLine empty', () => {
+    const lines = deterministicLines(makePayload({ behavior: [PRAISE] }));
+
+    expect(lines.positiveLine).toContain('חיזוק חיובי');
+    expect(lines.behaviorLine).toBe('');
+  });
+
+  it('writes an attention event into behaviorLine and leaves positiveLine empty', () => {
+    const lines = deterministicLines(makePayload({ behavior: [ABSENCE] }));
+
+    expect(lines.behaviorLine).toContain('חיסור');
+    expect(lines.positiveLine).toBe('');
+  });
+
   it('describes a behavior event in Hebrew without the model', () => {
     const lines = deterministicLines(makePayload({ behavior: [BEHAVIOR] }));
 
