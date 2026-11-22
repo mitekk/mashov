@@ -392,9 +392,16 @@ describe('ConnectionService', () => {
         where: { studentGuid: { in: ['guid-own'] } },
       });
       for (const { model, where } of deletedWheres()) {
-        const guids = (where as { studentGuid?: { in?: string[] } } | undefined)?.studentGuid
-          ?.in;
-        if (guids) {
+        const scoped = where as
+          | { studentGuid?: { in?: string[] }; userId?: string }
+          | undefined;
+        const guids = scoped?.studentGuid?.in;
+        // The per-user digest deletes are the exception, and have to be: a
+        // parent who disconnects their school must stop receiving the shared
+        // child too, so those cover every child this connection listed --
+        // scoped to the unlinking user, which is what leaves the other
+        // parent's subscription intact.
+        if (guids && scoped?.userId === undefined) {
           expect(guids).toEqual(['guid-own']);
           expect(model).not.toBe('__never__');
         }
@@ -594,6 +601,53 @@ describe('ConnectionService', () => {
       ]) {
         expect(mock).toHaveBeenCalledWith({ where: { studentGuid: { in: ['guid-a'] } } });
       }
+    });
+
+    it('stops the unlinking parent’s digests for a shared child too', async () => {
+      // The delete was keyed on "children no remaining connection lists", so a
+      // parent who disconnected their school kept receiving a shared child's
+      // behaviour remarks forever -- the subscription outlived the connection
+      // that justified it. Scoped to the unlinking user, over every child this
+      // connection listed.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-own' }, { studentGuid: 'guid-shared' }])
+        .mockResolvedValueOnce([{ studentGuid: 'guid-shared' }]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      for (const mock of [
+        mockPrisma.digestRecipient.deleteMany,
+        mockPrisma.digestReportedItem.deleteMany,
+        mockPrisma.digestDelivery.deleteMany,
+      ]) {
+        expect(mock).toHaveBeenCalledWith({
+          where: { userId: 'user-1', studentGuid: { in: ['guid-own', 'guid-shared'] } },
+        });
+      }
+    });
+
+    it('leaves the other parent’s digests for a shared child running', async () => {
+      // The mirror image of the same bug: the by-guid delete took BOTH
+      // parents' rows whenever the child was not shared, and would take the
+      // other parent's rows for a shared child if it were widened. The only
+      // unscoped digest delete is the one for children whose `Student` row is
+      // going too.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-shared' }])
+        .mockResolvedValueOnce([{ studentGuid: 'guid-shared' }]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      const unscoped = mockPrisma.digestRecipient.deleteMany.mock.calls
+        .map((call) => call[0].where)
+        .filter((where: { userId?: string }) => where.userId === undefined);
+      expect(unscoped).toEqual([{ studentGuid: { in: [] } }]);
     });
 
     it('deletes the student rows rather than orphaning them', async () => {

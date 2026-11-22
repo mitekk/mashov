@@ -266,7 +266,8 @@ export class ConnectionService {
     // the log read back, and nothing here is slow enough to want interleaving.
     const operations: Prisma.PrismaPromise<unknown>[] = [];
     for (const connection of connections) {
-      operations.push(...(await this.prepareConnectionDeletion(connection, deletingIds)));
+      operations.push(
+        ...(await this.prepareConnectionDeletion(userId, connection, deletingIds)));
     }
 
     // B2's reversibility half. A household merge sets `mergedIntoUserId` on
@@ -326,6 +327,7 @@ export class ConnectionService {
    * at all.
    */
   private async prepareConnectionDeletion(
+    userId: string,
     connection: {
       id: string;
       schoolCode: number;
@@ -456,6 +458,35 @@ export class ConnectionService {
         where: { studentGuid: { in: studentGuids } },
       }),
       this.prisma.digestDelivery.deleteMany({ where: { studentGuid: { in: studentGuids } } }),
+      // And this user's own digest rows for every child this connection
+      // listed, shared ones included. The deletes above only reach children
+      // whose `Student` row is going too, so a parent who disconnected their
+      // school kept receiving a shared child's behaviour remarks forever: the
+      // subscription outlived the connection that justified it, and nothing
+      // downstream re-checks why it existed.
+      //
+      // Scoped to `userId` -- which `deleteConnection` has already verified
+      // owns the connection -- so the other parent of a shared child keeps
+      // theirs. That scope is also the fix for the mirror image: keyed on
+      // studentGuid alone, the deletes above took BOTH parents' rows whenever
+      // the child was not shared.
+      //
+      // The ledger goes with the subscription, for the reason already given
+      // just above: a re-link must not resurrect a dedup ledger that would
+      // silently suppress everything it had already reported.
+      //
+      // `TelegramLinkCode` is deliberately left alone. It is link history
+      // rather than a subscription -- nothing delivers off it -- the codes
+      // expire in fifteen minutes, and they are pruned after seven days.
+      this.prisma.digestRecipient.deleteMany({
+        where: { userId, studentGuid: { in: listedGuids } },
+      }),
+      this.prisma.digestReportedItem.deleteMany({
+        where: { userId, studentGuid: { in: listedGuids } },
+      }),
+      this.prisma.digestDelivery.deleteMany({
+        where: { userId, studentGuid: { in: listedGuids } },
+      }),
       ...(sharesSchool === 0
         ? [
             this.prisma.behaviorTypeReference.deleteMany({
