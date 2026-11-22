@@ -16,6 +16,7 @@ import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
 import { jerusalemDayBounds } from './digest-deadline.service';
 import { isPermanentTelegramFailure } from '../telegram/telegram-http';
+import { resolvePublicBaseUrl } from '../telegram/public-base-url';
 import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
 
@@ -319,7 +320,9 @@ export class DigestService {
       }
 
       const lines = linesFor(summary, payload, narrowed);
-      const message = renderReport(narrowed, lines);
+      const message = renderReport(narrowed, lines, {
+        publicBaseUrl: resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL')),
+      });
 
       const enabled = await this.prisma.digestRecipient.findMany({
         where: { userId, studentGuid, enabled: true },

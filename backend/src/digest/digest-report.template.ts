@@ -38,7 +38,21 @@ export function formatTimeOfDay(raw: string): string {
   return `${match[1].padStart(2, '0')}:${match[2]}`;
 }
 
-export function renderReport(payload: DigestPayload, lines: DigestLines): string {
+/** What the template needs that is neither a fact nor prose. */
+export interface RenderReportOptions {
+  /**
+   * Already validated by `resolvePublicBaseUrl`. Null or absent renders no
+   * link line at all, which is the point: a base of `undefined` would put
+   * "undefined/home" in a parent's chat.
+   */
+  publicBaseUrl?: string | null;
+}
+
+export function renderReport(
+  payload: DigestPayload,
+  lines: DigestLines,
+  options: RenderReportOptions = {},
+): string {
   // Who and when first: this is what a parent scans for in a list of Telegram
   // chats, and it is the only place the child's name appears.
   const blocks: string[] = [
@@ -75,6 +89,20 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
     const estimate = payload.homeworkDueTomorrow[0].estimatedDueDate;
     const label = estimate ? `צפי הגשה: ${formatSchoolDate(estimate)}` : 'צפי הגשה: מחר';
     blocks.push(section('צפי הגשה למחר', `${lines.dueTomorrowLine.trim()} (${label})`.trim()));
+  }
+
+  // Last, and a block of its own.
+  //
+  // Identifier-free on purpose. A Telegram chat is a shared, forwardable
+  // artifact, and a studentGuid in someone else's hands outlives the message
+  // it arrived in -- so the link goes to the home page and the parent picks
+  // the child there, rather than carrying the child in the URL.
+  //
+  // At the end rather than under the header so the facts are what shows in the
+  // chat list preview. `disable_web_page_preview` is already set on every
+  // send, so this cannot grow a card.
+  if (options.publicBaseUrl) {
+    blocks.push(`${options.publicBaseUrl}/home`);
   }
 
   return blocks.filter((block) => block.length > 0).join('\n\n');

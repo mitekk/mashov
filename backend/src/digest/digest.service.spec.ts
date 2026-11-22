@@ -77,6 +77,7 @@ interface HarnessOptions {
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
   dueTomorrowLine?: string;
   sendImpl?: jest.Mock;
+  publicBaseUrl?: string;
   checkImpl?: jest.Mock;
   dryRunEnv?: string;
 }
@@ -172,6 +173,7 @@ function makeHarness(options: HarnessOptions = {}) {
     get: jest.fn((key: string) => ({
       DIGEST_TIMEZONE: 'Asia/Jerusalem',
       DIGEST_DRY_RUN: options.dryRunEnv ?? 'false',
+      PUBLIC_BASE_URL: options.publicBaseUrl,
     })[key]),
   } as unknown as ConfigService;
 
@@ -276,6 +278,23 @@ describe('DigestService.runAll', () => {
     // and a null resolvedDueDate is what distinguishes it from a deferral.
     expect(confirmCalls(harness.updateMany)).toHaveLength(1);
     expect(confirmCalls(harness.updateMany)[0][0].where.contentHash.in).toEqual(['hash-beh']);
+  });
+
+  it('puts the configured site link in the message it sends', async () => {
+    const harness = makeHarness({ publicBaseUrl: 'https://mashov.mitya.dev' });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).toContain('https://mashov.mitya.dev/home');
+  });
+
+  it('sends no link when PUBLIC_BASE_URL is unset', async () => {
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).not.toContain('undefined');
+    expect(harness.send.mock.calls[0][1]).not.toMatch(/https?:\/\//);
   });
 
   it('retires a chat Telegram says will never accept another message', async () => {

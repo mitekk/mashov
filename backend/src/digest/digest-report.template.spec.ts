@@ -160,6 +160,39 @@ describe('renderReport', () => {
     expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/); // no guid
     expect(text).not.toContain('reporter');
   });
+
+  it('closes with a link to the site when a base URL is configured', () => {
+    const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES, {
+      publicBaseUrl: 'https://mashov.mitya.dev',
+    });
+
+    // Last, so the facts are what shows in the chat list preview.
+    expect(text.trim().split('\n').pop()).toBe('https://mashov.mitya.dev/home');
+  });
+
+  it('links to an identifier-free page, never to the child', () => {
+    // A Telegram chat is a shared, forwardable artifact: a guid in someone
+    // else's hands outlives the message it arrived in.
+    const text = renderReport(
+      makePayload({ behavior: [BEHAVIOR], homeworkNew: [HOMEWORK] }),
+      LINES,
+      { publicBaseUrl: 'https://mashov.mitya.dev' },
+    );
+
+    expect(text).toContain('/home');
+    expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+    expect(text).not.toContain('stu-');
+  });
+
+  it('renders no link line at all when no base URL is configured', () => {
+    // Fail closed: "undefined/home" in a parent's chat is worse than no link.
+    for (const options of [undefined, {}, { publicBaseUrl: null }, { publicBaseUrl: '' }]) {
+      const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES, options);
+
+      expect(text).not.toContain('undefined');
+      expect(text).not.toMatch(/https?:\/\//);
+    }
+  });
 });
 
 describe('deterministicLines', () => {
