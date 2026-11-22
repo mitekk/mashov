@@ -12,6 +12,8 @@ const TODAY = new Date('2026-11-17T00:00:00Z');
 const TOMORROW = new Date('2026-11-18T00:00:00Z');
 /** Long before anything in these fixtures, so activeFrom excludes nothing. */
 const ACTIVE_FROM = new Date('2026-09-01T00:00:00Z');
+/** Who a `reported` fixture row belongs to unless it says otherwise. */
+const LEDGER_OWNER = 'user-1';
 
 function behaviorRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -78,7 +80,19 @@ function makeHarness(options: MockOptions = {}) {
     },
     homeworkItem: { findMany: homeworkFindMany },
     digestReportedItem: {
-      findMany: jest.fn().mockResolvedValue(options.reported ?? []),
+      // Honours `where.userId`, as Postgres would. The ledger is per
+      // (child, subscribing parent), so a mock that answers every user's rows
+      // to every query would report the isolation as working while one
+      // parent's confirmed row silently suppressed the other's item.
+      findMany: jest.fn().mockImplementation(({ where }: { where?: { userId?: string } } = {}) =>
+        Promise.resolve(
+          (options.reported ?? []).filter(
+            (row) =>
+              where?.userId === undefined ||
+              (row.userId ?? LEDGER_OWNER) === where.userId,
+          ),
+        ),
+      ),
     },
     timetableEntry: {
       findMany: jest
@@ -130,16 +144,13 @@ function makeHarness(options: MockOptions = {}) {
   return { service, prisma };
 }
 
-function check(
-  harness: ReturnType<typeof makeHarness>,
-  overrides: { userId?: string | null } = {},
-) {
+function check(harness: ReturnType<typeof makeHarness>, overrides: { userId?: string } = {}) {
   return harness.service.check({
     studentGuid: 'stu-1',
     schoolYear: 2027,
     now: NOW,
     activeFrom: ACTIVE_FROM,
-    userId: overrides.userId === undefined ? 'user-1' : overrides.userId,
+    userId: overrides.userId === undefined ? LEDGER_OWNER : overrides.userId,
   });
 }
 
@@ -337,6 +348,7 @@ describe('DigestCheckerService.check', () => {
       schoolYear: 2027,
       now: NOW,
       activeFrom: new Date('2026-11-18T00:00:00Z'),
+      userId: LEDGER_OWNER,
     });
 
     expect(result.candidates).toEqual([]);
@@ -449,6 +461,7 @@ describe('DigestCheckerService.check', () => {
       schoolYear: 2027,
       now: NOW,
       activeFrom: new Date('2026-11-17T06:00:00Z'),
+      userId: LEDGER_OWNER,
     });
 
     expect(result.candidates).toHaveLength(1);
@@ -539,11 +552,13 @@ describe('DigestCheckerService school activities', () => {
     expect(result.candidates).toEqual([]);
   });
 
-  it('does not look for activities at all when the child has no owning user', async () => {
-    // Activities are household-scoped; with no userId there is no list to read.
+  it('does not look for activities at all when the subscriber is unknown', async () => {
+    // Activities are user-scoped; with no userId there is no list to read. The
+    // only way to get here now is a ledger row left at the schema default by
+    // the migration, which matches no user's forms.
     const harness = makeHarness({ activities: [activityRow()] });
 
-    const result = await check(harness, { userId: null });
+    const result = await check(harness, { userId: '' });
 
     expect(harness.prisma.schoolActivity.findMany).not.toHaveBeenCalled();
     expect(result.candidates).toEqual([]);
@@ -569,5 +584,72 @@ describe('DigestCheckerService school activities', () => {
     const result = await check(second, { userId: 'user-1' });
 
     expect(result.candidates).toEqual([]);
+  });
+
+  it('does not let one parent’s report suppress the other parent’s item', async () => {
+    // Both parents of a shared child are told the same per-child news, each
+    // from their own ledger. A single ledger meant whichever run went first
+    // reported the behaviour event and the second parent never heard about it.
+    const first = await check(makeHarness({ behavior: [behaviorRow()] }));
+    const hash = first.candidates[0].contentHash;
+
+    const other = await check(
+      makeHarness({
+        behavior: [behaviorRow()],
+        reported: [
+          {
+            userId: 'user-1',
+            contentHash: hash,
+            confirmedAt: new Date('2026-11-17T12:30:00Z'),
+            claimedAt: new Date('2026-11-17T12:30:00Z'),
+            resolvedDueDate: null,
+          },
+        ],
+      }),
+      { userId: 'user-2' },
+    );
+
+    expect(other.candidates.map((candidate) => candidate.contentHash)).toEqual([hash]);
+  });
+
+  it('does not treat another parent’s in-flight claim as its own', async () => {
+    // An unconfirmed claim inside the staleness window means "a run is working
+    // on this". That run is sending to the other parent, which says nothing
+    // about whether this parent has been told.
+    const first = await check(makeHarness({ behavior: [behaviorRow()] }));
+    const hash = first.candidates[0].contentHash;
+
+    const mine = await check(
+      makeHarness({
+        behavior: [behaviorRow()],
+        reported: [
+          {
+            userId: 'user-2',
+            contentHash: hash,
+            confirmedAt: null,
+            claimedAt: new Date('2026-11-17T12:59:00Z'),
+            resolvedDueDate: null,
+          },
+        ],
+      }),
+      { userId: 'user-1' },
+    );
+
+    expect(mine.candidates.map((candidate) => candidate.contentHash)).toEqual([hash]);
+  });
+
+  it('dedups forms across siblings but never across parents', async () => {
+    // The activity arm omits studentGuid on purpose -- one letter, one mention,
+    // whichever child's run gets there first -- and must still be scoped to the
+    // parent whose unanswered form it is.
+    const harness = makeHarness({ activities: [activityRow()] });
+
+    await check(harness, { userId: 'user-1' });
+
+    const activityQuery = (harness.prisma.digestReportedItem.findMany as jest.Mock).mock.calls
+      .map((call) => call[0].where)
+      .find((where) => where.studentGuid === undefined);
+    expect(activityQuery).toBeDefined();
+    expect(activityQuery.userId).toBe('user-1');
   });
 });

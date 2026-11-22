@@ -15,8 +15,12 @@ export interface DigestCollectInput {
   /** The candidates this run has claimed. Nothing outside them is reported. */
   candidates: DigestCandidate[];
   reportFor: Date;
-  /** Needed for consent forms, which are keyed by household, not by child. */
-  userId?: string | null;
+  /**
+   * The subscribing parent this payload is for. Needed for consent forms,
+   * which are keyed by parent rather than by child, and required because the
+   * run that asks is always one (child, user) pair.
+   */
+  userId: string;
 }
 
 /**

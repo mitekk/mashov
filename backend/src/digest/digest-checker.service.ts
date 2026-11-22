@@ -56,12 +56,15 @@ export interface DigestCheckInput {
    */
   activeFrom: Date;
   /**
-   * The household this child's digest belongs to, for the one input class that
-   * is not per child: consent forms. `/api/schoolActivities/permitted` takes no
-   * studentGuid and `isAnswered` belongs to a parent, so activities are keyed
-   * by user. Null means no owning user is known and activities are skipped.
+   * The subscribing parent this run reports to. Required: the dedup ledger is
+   * per (child, user), so a check that does not know whose it is cannot ask
+   * whether *they* have been told. It is also what keys the one input class
+   * that is not per child -- consent forms, where
+   * `/api/schoolActivities/permitted` takes no studentGuid and `isAnswered`
+   * belongs to a parent. Empty means no owning user is known (a ledger row
+   * left at the schema default) and activities are skipped.
    */
-  userId?: string | null;
+  userId: string;
 }
 
 export interface DigestCheckResult {
@@ -139,7 +142,7 @@ export class DigestCheckerService {
         tomorrowStart,
       )),
       ...(await this.releasesSoon(studentGuid, yearScope, todayStart, tomorrowStart)),
-      ...(await this.activitiesAwaitingAnswer(userId ?? null, yearScope, todayStart)),
+      ...(await this.activitiesAwaitingAnswer(userId, yearScope, todayStart)),
       // activeFrom is a timestamp (now() when the recipient was created) while
       // lessonDate is a date at UTC midnight. Comparing them directly
       // suppressed every homework item on the sign-up day while still
@@ -149,6 +152,7 @@ export class DigestCheckerService {
     );
 
     const unreported = await this.dropAlreadyReported(
+      userId,
       studentGuid,
       candidates,
       now,
@@ -308,7 +312,7 @@ export class DigestCheckerService {
    * to them.
    */
   private async activitiesAwaitingAnswer(
-    userId: string | null,
+    userId: string,
     yearScope: ReturnType<typeof schoolYearScope>,
     todayStart: Date,
   ): Promise<InternalCandidate[]> {
@@ -428,6 +432,7 @@ export class DigestCheckerService {
    * run that owned it died before sending and the item has to come back.
    */
   private async dropAlreadyReported(
+    userId: string,
     studentGuid: string,
     candidates: InternalCandidate[],
     now: Date,
@@ -442,11 +447,15 @@ export class DigestCheckerService {
       resolvedDueDate: true,
     } as const;
 
-    // Per-child inputs are deduped per child. Consent forms belong to the
-    // household, so theirs is looked up across children: the form was already
-    // sent to this parent if *any* of their children's runs reported it, and
-    // the userId inside the hash is what keeps that from reaching across
-    // households.
+    // Both arms are scoped to this subscribing parent: the ledger is per
+    // (child, user), so another parent having been told something says nothing
+    // about whether this one has.
+    //
+    // Per-child inputs are then deduped per child. Consent forms belong to the
+    // parent rather than the child, so theirs is looked up across children: the
+    // form was already sent to them if *any* of their children's runs reported
+    // it. That is why the activity arm omits `studentGuid` -- and why it needs
+    // the `[userId, contentHash]` index to stay cheap.
     const childHashes = candidates
       .filter((candidate) => candidate.itemType !== 'activity')
       .map((candidate) => candidate.contentHash);
@@ -457,13 +466,13 @@ export class DigestCheckerService {
     const rows = [
       ...(childHashes.length > 0
         ? await this.prisma.digestReportedItem.findMany({
-            where: { studentGuid, contentHash: { in: childHashes } },
+            where: { userId, studentGuid, contentHash: { in: childHashes } },
             select: SELECT,
           })
         : []),
       ...(householdHashes.length > 0
         ? await this.prisma.digestReportedItem.findMany({
-            where: { contentHash: { in: householdHashes } },
+            where: { userId, contentHash: { in: householdHashes } },
             select: SELECT,
           })
         : []),

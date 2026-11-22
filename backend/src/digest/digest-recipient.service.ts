@@ -2,11 +2,16 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { DigestDelivery, DigestRecipient } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { ownsStudentForDelivery } from '../common/student-links';
+import {
+  activeConnectionIdsFor,
+  linksForStudents,
+  ownsStudentForDelivery,
+} from '../common/student-links';
 
 /** Channels a sender exists for. A row for anything else could never deliver. */
 const SUPPORTED_CHANNELS = ['telegram', 'log'];
@@ -23,24 +28,28 @@ export interface UpdateRecipientInput {
   displayName?: string;
 }
 
-/** One child the cron should produce a digest for. */
+/**
+ * One (child, subscribing parent) the cron should produce a digest for.
+ *
+ * Per user, not per child. Collapsing to one target per child meant one run,
+ * one dedup ledger and one rendered message for a child two parents both
+ * subscribe to -- and since consent forms are keyed by user, that single
+ * message told the second parent that forms were awaiting their answer which
+ * belonged to the first. See ADR-0035.
+ */
 export interface DigestDeliveryTarget {
   studentGuid: string;
   /**
-   * The earliest `activeFrom` among the child's enabled recipients. Items dated
-   * before it are never reported.
+   * The earliest `activeFrom` among *this user's* enabled recipients for the
+   * child. Items dated before it are never reported, which is what stops the
+   * first run after they sign up blasting the whole school year -- so it has to
+   * be their own cutoff, not the household's earliest.
    */
   activeFrom: Date;
+  /** This user's enabled recipient rows for the child. */
   recipientCount: number;
-  /**
-   * The household whose consent forms this child's digest reports. Taken from
-   * the recipient row that set `activeFrom` -- the first parent to opt in. In
-   * a two-parent household each parent has their own `/permitted` list and
-   * their own `isAnswered`, so one of them has to own that section; picking the
-   * earliest keeps it stable rather than dependent on row order. Null only if
-   * the row somehow has no user.
-   */
-  userId: string | null;
+  /** The subscribing parent: whose ledger, whose forms, whose delivery log. */
+  userId: string;
 }
 
 /**
@@ -63,6 +72,8 @@ export interface DigestDeliveryTarget {
  */
 @Injectable()
 export class DigestRecipientService {
+  private readonly logger = new Logger(DigestRecipientService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async create(userId: string, input: CreateRecipientInput): Promise<DigestRecipient> {
@@ -177,12 +188,14 @@ export class DigestRecipientService {
   }
 
   /**
-   * Delivery history for the children this user actually receives digests for.
+   * This user's own delivery history.
    *
-   * Scoped deliberately, even though the app's child model is otherwise global:
-   * a delivery row carries `messageText`, the rendered behavior remarks that
-   * were sent to a parent, and that is a new class of content to expose. An
-   * authenticated user from another household has no business reading it.
+   * Scoped to the runs made *for them*, not to the children they subscribe to.
+   * A delivery row carries `messageText` -- the rendered behaviour remarks and
+   * the caller's own unanswered consent forms -- so scoping by child let the
+   * second parent of a shared child read the first parent's message. Now that
+   * every run belongs to one (child, user), the row says whose it was and the
+   * scope is that. An authenticated user from another household never matches.
    */
   async listDeliveries(
     userId: string,
@@ -194,21 +207,10 @@ export class DigestRecipientService {
     const page = options.page ?? 1;
     const limit = options.limit ?? 20;
 
-    const own = await this.prisma.digestRecipient.findMany({
-      where: { userId },
-      select: { studentGuid: true },
-      distinct: ['studentGuid'],
-    });
-    let guids = own.map((row) => row.studentGuid);
-    if (options.studentGuid) {
-      guids = guids.filter((guid) => guid === options.studentGuid);
-    }
-
-    if (guids.length === 0) {
-      return { data: [], pagination: { page, limit, total: 0, totalPages: 0 } };
-    }
-
-    const where = { studentGuid: { in: guids } };
+    const where = {
+      userId,
+      ...(options.studentGuid ? { studentGuid: options.studentGuid } : {}),
+    };
     const [data, total] = await Promise.all([
       this.prisma.digestDelivery.findMany({
         where,
@@ -239,11 +241,12 @@ export class DigestRecipientService {
       select: { studentGuid: true, activeFrom: true, userId: true },
     });
 
-    const byChild = new Map<string, DigestDeliveryTarget>();
+    const byUserAndChild = new Map<string, DigestDeliveryTarget>();
     for (const row of rows) {
-      const existing = byChild.get(row.studentGuid);
+      const key = `${row.userId}\u0000${row.studentGuid}`;
+      const existing = byUserAndChild.get(key);
       if (!existing) {
-        byChild.set(row.studentGuid, {
+        byUserAndChild.set(key, {
           studentGuid: row.studentGuid,
           activeFrom: row.activeFrom,
           recipientCount: 1,
@@ -252,16 +255,81 @@ export class DigestRecipientService {
         continue;
       }
       existing.recipientCount += 1;
-      // The earliest activeFrom wins: a parent who opted in first should not
-      // lose items because a second recipient was added later. The consent-form
-      // owner moves with it, so both come from the same recipient row.
-      if (row.activeFrom < existing.activeFrom) {
-        existing.activeFrom = row.activeFrom;
-        existing.userId = row.userId;
-      }
+      // The earliest activeFrom among this user's own rows wins: a parent who
+      // opted in first should not lose items because they added a second chat
+      // later.
+      if (row.activeFrom < existing.activeFrom) existing.activeFrom = row.activeFrom;
     }
 
-    return [...byChild.values()];
+    return this.stillDeliverable([...byUserAndChild.values()]);
+  }
+
+  /**
+   * Re-checks, at send time, that each target's user may still be sent that
+   * child -- the question `create` asked when the row was written.
+   *
+   * A recipient row is not standing proof of anything. The adoption path
+   * repoints a `HouseholdConnection` to a different `AppUser` and leaves the
+   * old owner's subscriptions behind; `RosterPresenceService` retires a child
+   * who stops appearing in any login roster; and rows written before
+   * `ownsStudentForDelivery` existed were never checked at all. Any of those
+   * keeps a child's behaviour remarks flowing to somebody who is no longer
+   * entitled to them.
+   *
+   * Checked here rather than in the orchestrator so the cron and the
+   * manual-run endpoint both get it, and it mutates nothing: revocation is the
+   * unlink path's job (ADR-0035), and a transient roster gap must not delete a
+   * parent's subscription.
+   *
+   * Batched, not two queries per target: the cron runs seven times a day over
+   * every opted-in child.
+   */
+  private async stillDeliverable(
+    targets: DigestDeliveryTarget[],
+  ): Promise<DigestDeliveryTarget[]> {
+    if (targets.length === 0) return [];
+
+    const guids = [...new Set(targets.map((target) => target.studentGuid))];
+
+    const active = new Set(
+      (
+        await this.prisma.student.findMany({
+          where: { studentGuid: { in: guids }, isActive: true },
+          select: { studentGuid: true },
+        })
+      ).map((row) => row.studentGuid),
+    );
+
+    const linksByGuid = await linksForStudents(this.prisma, guids);
+
+    const connectionsByUser = new Map<string, Set<string>>();
+    for (const userId of new Set(targets.map((target) => target.userId))) {
+      connectionsByUser.set(userId, new Set(await activeConnectionIdsFor(this.prisma, userId)));
+    }
+
+    const deliverable: DigestDeliveryTarget[] = [];
+    for (const target of targets) {
+      if (!active.has(target.studentGuid)) {
+        this.logger.warn(
+          `Digest target skipped: child ${target.studentGuid} is no longer on an active roster.`,
+        );
+        continue;
+      }
+      const links = linksByGuid.get(target.studentGuid) ?? [];
+      const mine = connectionsByUser.get(target.userId) ?? new Set<string>();
+      // Empty `links` is a refusal, matching ownsStudentForDelivery rather than
+      // the read-side canSeeStudent: an unattributed child belongs to nobody
+      // until a roster refresh says otherwise.
+      if (!links.some((connectionId) => mine.has(connectionId))) {
+        this.logger.warn(
+          `Digest target skipped: userId=${target.userId} no longer owns child ${target.studentGuid}.`,
+        );
+        continue;
+      }
+      deliverable.push(target);
+    }
+
+    return deliverable;
   }
 
   /**

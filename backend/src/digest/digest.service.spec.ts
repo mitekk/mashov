@@ -56,8 +56,12 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
   };
 }
 
+/** The subscribing parent every default fixture belongs to. */
+const USER_A = 'user-a';
+const USER_B = 'user-b';
+
 interface HarnessOptions {
-  targets?: { studentGuid: string; activeFrom: Date; recipientCount: number }[];
+  targets?: { studentGuid: string; activeFrom: Date; recipientCount: number; userId: string }[];
   candidates?: DigestCandidate[];
   payload?: DigestPayload;
   claimCount?: number;
@@ -65,7 +69,7 @@ interface HarnessOptions {
   ownedHashes?: string[];
   latestSyncAt?: Date;
   syncRuns?: { source: string; endedAt: Date; startedAt: Date }[];
-  recipients?: { channel: string; address: string; enabled: boolean }[];
+  recipients?: { channel: string; address: string; enabled: boolean; userId?: string }[];
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
   dueTomorrowLine?: string;
   sendImpl?: jest.Mock;
@@ -75,7 +79,12 @@ interface HarnessOptions {
 
 function makeHarness(options: HarnessOptions = {}) {
   const targets = options.targets ?? [
-    { studentGuid: 'stu-1', activeFrom: new Date('2026-09-01T00:00:00Z'), recipientCount: 1 },
+    {
+      studentGuid: 'stu-1',
+      activeFrom: new Date('2026-09-01T00:00:00Z'),
+      recipientCount: 1,
+      userId: USER_A,
+    },
   ];
   const candidates = options.candidates ?? [BEHAVIOR_CANDIDATE];
 
@@ -123,12 +132,19 @@ function makeHarness(options: HarnessOptions = {}) {
     digestDelivery: { create: deliveryCreate },
     digestRecipient: {
       // Honours the where-clause, as Postgres would: the service relies on
-      // `where: { enabled: true }` rather than filtering again in code.
+      // `where: { enabled: true, userId }` rather than filtering again in
+      // code. The userId arm matters most -- a mock that answered every
+      // household's chats to every run would report the per-user isolation as
+      // working while the run sent one parent's message to the other's chat.
       findMany: jest.fn().mockImplementation(({ where }) => {
         const all = options.recipients ?? [
-          { channel: 'telegram', address: '12345', enabled: true },
+          { channel: 'telegram', address: '12345', enabled: true, userId: USER_A },
         ];
-        return all.filter((r) => (where?.enabled === undefined ? true : r.enabled === where.enabled));
+        return all.filter(
+          (r) =>
+            (where?.enabled === undefined || r.enabled === where.enabled) &&
+            (where?.userId === undefined || (r.userId ?? USER_A) === where.userId),
+        );
       }),
     },
   } as unknown as PrismaService;
@@ -280,8 +296,8 @@ describe('DigestService.runAll', () => {
   it('keeps one child failing from stopping the others', async () => {
     const harness = makeHarness({
       targets: [
-        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1 },
-        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1 },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
       ],
       checkImpl: jest
         .fn()
@@ -454,8 +470,8 @@ describe('DigestService.runAll', () => {
   it('runs only the requested child when one is named', async () => {
     const harness = makeHarness({
       targets: [
-        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1 },
-        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1 },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
       ],
     });
 
@@ -468,7 +484,7 @@ describe('DigestService.runAll', () => {
   it('passes the recipients activeFrom cutoff to the checker', async () => {
     const activeFrom = new Date('2026-11-01T00:00:00Z');
     const harness = makeHarness({
-      targets: [{ studentGuid: 'stu-1', activeFrom, recipientCount: 1 }],
+      targets: [{ studentGuid: 'stu-1', activeFrom, recipientCount: 1, userId: USER_A }],
     });
 
     await harness.service.runAll({ now: NOW });
@@ -712,7 +728,14 @@ describe('DigestService.runAll', () => {
     const long_ago = new Date(NOW.getTime() - 9 * 60 * 60 * 1000);
     const harness = makeHarness({
       candidates: [],
-      targets: [{ studentGuid: 'stu-2', activeFrom: new Date('2026-09-01T00:00:00Z'), recipientCount: 1 }],
+      targets: [
+        {
+          studentGuid: 'stu-2',
+          activeFrom: new Date('2026-09-01T00:00:00Z'),
+          recipientCount: 1,
+          userId: USER_A,
+        },
+      ],
       syncRuns: [
         { source: 'homework:stu-1', endedAt: long_ago, startedAt: long_ago },
         { source: 'behavior:stu-1', endedAt: long_ago, startedAt: long_ago },
@@ -843,6 +866,130 @@ describe('DigestService.runAll', () => {
 
     const sent = harness.send.mock.calls[0][1] as string;
     expect(sent).toContain('התנהגות');
+  });
+
+  it('runs once per subscribing parent for a child they share', async () => {
+    // One run per child meant one message, rendered from one parent's consent
+    // forms, sent to both chats -- and one dedup ledger, so whichever run went
+    // first silenced the item for the other parent.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results).toHaveLength(2);
+    expect(results.map((result) => result.userId)).toEqual([USER_A, USER_B]);
+    // Each parent's own chat, once -- not both chats twice.
+    expect(harness.send.mock.calls.map((call) => call[0])).toEqual(['111', '222']);
+    expect(
+      (harness.checker.check as jest.Mock).mock.calls.map((call) => call[0].userId),
+    ).toEqual([USER_A, USER_B]);
+  });
+
+  it('reads back only its own recipients, not the other parent’s chat', async () => {
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '999', enabled: true, userId: USER_B },
+      ],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls.map((call) => call[0])).toEqual(['111']);
+    expect(
+      (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,
+    ).toMatchObject({ studentGuid: 'stu-1', enabled: true, userId: USER_A });
+  });
+
+  it('claims, confirms and releases under its own userId', async () => {
+    const harness = makeHarness({
+      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.createMany.mock.calls[0][0].data[0].userId).toBe(USER_A);
+    expect(harness.deleteMany.mock.calls[0][0].where.userId).toBe(USER_A);
+  });
+
+  it('confirms only its own rows', async () => {
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(confirmCalls(harness.updateMany)[0][0].where.userId).toBe(USER_A);
+  });
+
+  it('does not restamp another parent’s rows when taking over a stale claim', async () => {
+    // The takeover is the only write not already scoped by `claimedBy`.
+    // Unscoped, user A's run restamps user B's rows -- claimedBy=A,
+    // confirmedAt=null -- so B's own confirm matches nothing and B is told the
+    // same thing again half an hour later.
+    const harness = makeHarness({ claimCount: 0, takeoverCount: 1, ownedHashes: ['hash-beh'] });
+
+    await harness.service.runAll({ now: NOW });
+
+    const takeover = harness.updateMany.mock.calls[0][0];
+    expect(takeover.where.userId).toBe(USER_A);
+  });
+
+  it('defers a deadline only on its own row', async () => {
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', null)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-11-19' }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(deferralCalls(harness.updateMany)[0][0].where.userId).toBe(USER_A);
+  });
+
+  it('records whose run each delivery row was', async () => {
+    // GET /digest/deliveries scopes on this: the row holds the message text,
+    // which now contains that parent's own consent forms.
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.deliveryCreate.mock.calls[0][0].data.userId).toBe(USER_A);
+  });
+
+  it('records the userId on a quiet day too', async () => {
+    const harness = makeHarness({ candidates: [] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.deliveryCreate.mock.calls[0][0].data.userId).toBe(USER_A);
+  });
+
+  it('asks about a child’s sync freshness once, not once per subscribing parent', async () => {
+    // Staleness depends on the child alone, and the query is two rows per
+    // child. Two parents of three children would otherwise be twelve.
+    const harness = makeHarness({
+      candidates: [],
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      latestSyncAt: new Date(NOW.getTime() - 9 * 60 * 60 * 1000),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results.map((result) => result.status)).toEqual(['skipped_stale', 'skipped_stale']);
+    expect(harness.prisma.syncRun.findFirst).toHaveBeenCalledTimes(2);
   });
 
   it('marks the delivery as not having used the model when it fell back', async () => {
