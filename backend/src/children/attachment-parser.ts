@@ -21,9 +21,36 @@ export interface AttachmentMeta {
   lessonId?: number;
 }
 
-const ID_KEYS = ['fileId', 'id', 'guid', 'attachmentId'];
-const NAME_KEYS = ['fileName', 'name', 'title', 'originalFileName'];
-const URL_KEYS = ['url', 'link', 'downloadUrl', 'href'];
+/**
+ * The union of what the two readers used to look for.
+ *
+ * MailService's lists were strict supersets of ChildrenService's -- mail
+ * endpoints send `fileGuid`, `nameWithExtension` and `downloadPath` where the
+ * student endpoints send `id`, `name` and `url`. Unified rather than kept
+ * apart: the extra aliases only fire when none of the primary keys is present,
+ * where the narrower list returned null and DROPPED the attachment. An
+ * attachment listed instead of dropped is the better failure.
+ */
+const ID_KEYS = ['fileId', 'id', 'guid', 'attachmentId', 'fileGuid', 'attachmentGuid'];
+const NAME_KEYS = [
+  'fileName',
+  'name',
+  'title',
+  'originalFileName',
+  'originalName',
+  'nameWithExtension',
+  'displayName',
+];
+const URL_KEYS = [
+  'url',
+  'link',
+  'downloadUrl',
+  'href',
+  'fileUrl',
+  'downloadPath',
+  'path',
+  'uri',
+];
 
 /**
  * One attachment's metadata, or null when there is no id to fetch it by.
@@ -76,18 +103,27 @@ export function extractBehaviorFiles(
     .filter((entry): entry is AttachmentMeta => entry !== null);
 }
 
-/** A homework item's attachments, from its own `files` column. */
-export function extractHomeworkFiles(files: unknown): AttachmentMeta[] {
+/**
+ * The attachments in a `files` JSON column -- `homework_item.files` or
+ * `mail_message.files`. Both hold the same shape of list.
+ */
+export function parseAttachmentList(files: unknown): AttachmentMeta[] {
   if (!Array.isArray(files)) return [];
   return files
     .map((entry) => parseAttachmentMeta(entry))
     .filter((entry): entry is AttachmentMeta => entry !== null);
 }
 
+/** Named for its caller; `homework_item.files` is a plain attachment list. */
+export const extractHomeworkFiles = parseAttachmentList;
+
 function pickFirstString(record: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+    // Mashov sends a numeric id on some endpoints, which the mail reader
+    // already accepted and the student one silently dropped.
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   }
   return null;
 }

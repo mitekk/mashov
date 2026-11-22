@@ -19,6 +19,12 @@ export const DEFAULT_BODY_CHARS = 700;
 export interface InboxLinkOptions {
   /** Already validated by `resolvePublicBaseUrl`. Absent renders no link. */
   publicBaseUrl?: string | null;
+  /**
+   * Files named in the text because they are NOT being uploaded -- too large,
+   * or past the per-message cap. The parent has to be told they exist, or the
+   * message is quietly less than the mail it describes.
+   */
+  unsentFileNames?: string[];
 }
 
 /** The fields of a MailMessage the notification is allowed to use. */
@@ -136,9 +142,20 @@ export function renderInboxMessage(
     body,
   ];
 
-  if (options.publicBaseUrl) {
-    blocks.push(`${options.publicBaseUrl}/inbox/${message.conversationId}`);
+  const link = options.publicBaseUrl
+    ? `${options.publicBaseUrl}/inbox/${message.conversationId}`
+    : null;
+
+  // Named before the link, so the link reads as the answer to it.
+  for (const fileName of options.unsentFileNames ?? []) {
+    blocks.push(
+      link
+        ? `קובץ גדול מדי לשליחה: ${fileName} — ניתן לפתוח באתר: ${link}`
+        : `קובץ גדול מדי לשליחה: ${fileName}`,
+    );
   }
+
+  if (link) blocks.push(link);
 
   return blocks.filter((block) => block.trim().length > 0).join('\n\n');
 }

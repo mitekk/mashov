@@ -208,6 +208,10 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `INBOX_NOTIFY_LOOKBACK_HOURS` | how far back a run looks for mail it has not sent — also the carry-over window for the quiet hours | `24` |
 | `INBOX_NOTIFY_MAX_PER_RUN` | above this, one summary message goes out instead of a burst | `5` |
 | `INBOX_NOTIFY_BODY_CHARS` | how much of a mail body goes in the chat before it is cut | `700` |
+| `TELEGRAM_MEDIA_ENABLED` | forwards Mashov attachments into the chat. Defaults **on** — the digest's own switches still gate every caller | `true` |
+| `MEDIA_MAX_FILES_PER_MESSAGE` | files one message will carry; the overflow becomes a line in the text | `3` |
+| `MEDIA_TOTAL_BYTES_PER_RUN` | byte budget for one batch of downloads; a bound on the host, not on Telegram | `52428800` |
+| `MEDIA_SEND_DELAY_MS` | pause between uploads — Telegram allows about one message a second per chat | `1100` |
 | `TELEGRAM_MEDIA_MAX_BYTES` | largest attachment forwarded into a chat; above it the parent gets a link instead | `20971520` |
 | `TELEGRAM_PHOTO_MAX_BYTES` | above this a jpeg/png is sent as a document — `sendPhoto` re-encodes and downscales | `5242880` |
 | `MEDIA_DOWNLOAD_TIMEOUT_MS` | per-download override of `MASHOV_TIMEOUT_MS` for attachment bytes | `45000` |

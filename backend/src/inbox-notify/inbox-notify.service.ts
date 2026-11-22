@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { householdMailScope } from '../common/mail-scope';
@@ -9,6 +9,14 @@ import { DigestSender } from '../digest/senders/digest-sender.interface';
 import { TelegramSender } from '../digest/senders/telegram.sender';
 import { isPermanentTelegramFailure } from '../telegram/telegram-http';
 import { resolvePublicBaseUrl } from '../telegram/public-base-url';
+import {
+  FetchedMedia,
+  MEDIA_DELIVERY,
+  MediaAttachmentRef,
+  MediaDelivery,
+  NO_MEDIA_DELIVERY,
+} from '../telegram-media/media-delivery.interface';
+import { parseAttachmentList } from '../children/attachment-parser';
 import { isWithinQuietHours } from './quiet-hours';
 import {
   DEFAULT_BODY_CHARS,
@@ -66,6 +74,8 @@ export interface InboxNotifyRunOptions {
 /** A candidate message plus the conversation fields the filters need. */
 interface Candidate extends InboxNotifiableMessage {
   contentHash: string;
+  /** The message's attachments, as the enumeration read them. */
+  attachments: MediaAttachmentRef[];
 }
 
 /**
@@ -95,11 +105,19 @@ export class InboxNotifyService {
   /** In-process guard, as in DigestService: a slow run must not overlap itself. */
   private running = false;
 
+  private readonly media: MediaDelivery;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     @Inject(TelegramSender) private readonly telegram: DigestSender,
-  ) {}
+    // `@Optional()` so this module compiles without the global media module --
+    // which is how the module spec proves MashovSessionModule is not in this
+    // graph. See telegram-media.module.ts.
+    @Optional() @Inject(MEDIA_DELIVERY) media?: MediaDelivery,
+  ) {
+    this.media = media ?? NO_MEDIA_DELIVERY;
+  }
 
   async notifyAll(options: InboxNotifyRunOptions = {}): Promise<InboxNotifyResult[]> {
     if (this.running) {
@@ -252,6 +270,9 @@ export class InboxNotifyService {
         sendTime: true,
         isNew: true,
         householdConnectionId: true,
+        // Metadata only. The bytes are fetched later, per message, and only
+        // when a chat is actually being written to.
+        files: true,
       },
       orderBy: { sendTime: 'asc' },
     });
@@ -295,6 +316,19 @@ export class InboxNotifyService {
         bodyTextPreview: message.bodyTextPreview,
         sendTime: message.sendTime,
         contentHash: mailContentHash(message),
+        attachments: this.media.enabled
+          ? parseAttachmentList(message.files).map((file) => ({
+              kind: 'mail' as const,
+              ownerId: message.conversationId,
+              itemId: message.messageId,
+              fileId: file.fileId,
+              fileName: file.fileName,
+              // One line, and the subject rather than the body: a caption
+              // cannot be chunked, and "which mail is this file from" is the
+              // only thing it has to answer.
+              caption: `${file.fileName} — ${message.subject}`,
+            }))
+          : [],
       }));
   }
 
@@ -349,15 +383,39 @@ export class InboxNotifyService {
     }
 
     const ownedHashes = new Set(owned);
-    const sending = summarize
-      ? texts
-      : candidates.filter((c) => ownedHashes.has(c.contentHash)).map((message) =>
-          renderInboxMessage(message, { publicBaseUrl }, bodyChars),
-        );
+    const sendingMessages = candidates.filter((c) => ownedHashes.has(c.contentHash));
+    const mediaNotes: string[] = [];
 
     try {
-      for (const text of sending) {
-        await this.telegram.send(chat.address, text);
+      if (summarize) {
+        // No media under a summary: it stands in for N messages, and uploading
+        // every one of their files would defeat the point of summarizing.
+        for (const text of texts) {
+          await this.telegram.send(chat.address, text);
+        }
+      } else {
+        let budget = this.media.budgetBytes();
+        for (const message of sendingMessages) {
+          // Downloaded BEFORE the text is rendered, because no size is known
+          // until the bytes arrive and the text has to name what it is not
+          // sending. Then text, then media: the text is the only thing gating
+          // ledger confirmation, so it goes out before anything that can fail.
+          const fetched = await this.fetchMedia(userId, message, budget);
+          budget = fetched.remainingBytes;
+          mediaNotes.push(...noteOf(fetched.items));
+
+          await this.telegram.send(
+            chat.address,
+            renderInboxMessage(
+              message,
+              { publicBaseUrl, unsentFileNames: unsentNames(fetched.items) },
+              bodyChars,
+            ),
+          );
+
+          const result = await this.media.send(chat.address, fetched.items);
+          mediaNotes.push(...result.notes);
+        }
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -377,8 +435,35 @@ export class InboxNotifyService {
     }
 
     await this.confirm(userId, chat, runId, now);
-    await this.record(userId, chat, reportFor, 'sent', owned.length, texts.join('\n\n'));
+    // The media notes ride on errorMessage, the way the digest's partial-send
+    // notes do: the row says sent, and here is the asterisk.
+    await this.record(
+      userId,
+      chat,
+      reportFor,
+      'sent',
+      owned.length,
+      texts.join('\n\n'),
+      mediaNotes.length > 0 ? mediaNotes.join('; ') : undefined,
+    );
     return { ...base, status: 'sent' };
+  }
+
+  /**
+   * This message's attachments, downloaded within the run's byte budget.
+   *
+   * Never throws -- the media layer turns every failure into a note -- so an
+   * unreadable attachment can neither fail nor re-queue the text message.
+   */
+  private async fetchMedia(
+    userId: string,
+    message: Candidate,
+    remainingBytes: number,
+  ): Promise<{ items: FetchedMedia[]; remainingBytes: number }> {
+    if (!this.media.enabled || message.attachments.length === 0) {
+      return { items: [], remainingBytes };
+    }
+    return this.media.fetch(userId, message.attachments, remainingBytes);
   }
 
   /**
@@ -580,4 +665,16 @@ export function mailContentHash(message: {
       ].join('\u0000'),
     )
     .digest('hex');
+}
+
+/** The names the text has to mention because the bytes are not going out. */
+function unsentNames(items: FetchedMedia[]): string[] {
+  return items.filter((item) => item.tooLarge).map((item) => item.ref.fileName);
+}
+
+/** Every reason a file is absent, for the delivery row. */
+function noteOf(items: FetchedMedia[]): string[] {
+  return items
+    .map((item) => item.note)
+    .filter((note): note is string => typeof note === 'string' && note.length > 0);
 }

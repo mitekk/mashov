@@ -1,4 +1,8 @@
-import { extractBehaviorFiles, extractHomeworkFiles, parseAttachmentMeta } from './attachment-parser';
+import {
+  extractBehaviorFiles,
+  parseAttachmentList,
+  parseAttachmentMeta,
+} from './attachment-parser';
 
 describe('parseAttachmentMeta', () => {
   it.each([null, undefined, 'a string', 42, []])('refuses %p, which is not an attachment', (value) => {
@@ -9,11 +13,26 @@ describe('parseAttachmentMeta', () => {
     expect(parseAttachmentMeta({ fileName: 'אישור.pdf' })).toBeNull();
   });
 
-  it.each(['fileId', 'id', 'guid', 'attachmentId'])('reads the identifier from %s', (key) => {
-    expect(parseAttachmentMeta({ [key]: 'file-7' })?.fileId).toBe('file-7');
+  it.each(['fileId', 'id', 'guid', 'attachmentId', 'fileGuid', 'attachmentGuid'])(
+    'reads the identifier from %s',
+    (key) => {
+      expect(parseAttachmentMeta({ [key]: 'file-7' })?.fileId).toBe('file-7');
+    },
+  );
+
+  it('accepts a numeric identifier, which some endpoints send', () => {
+    expect(parseAttachmentMeta({ id: 4213 })?.fileId).toBe('4213');
   });
 
-  it.each(['fileName', 'name', 'title', 'originalFileName'])('reads the name from %s', (key) => {
+  it.each([
+    'fileName',
+    'name',
+    'title',
+    'originalFileName',
+    'originalName',
+    'nameWithExtension',
+    'displayName',
+  ])('reads the name from %s', (key) => {
     expect(parseAttachmentMeta({ id: 'file-7', [key]: 'אישור.pdf' })?.fileName).toBe('אישור.pdf');
   });
 
@@ -21,9 +40,12 @@ describe('parseAttachmentMeta', () => {
     expect(parseAttachmentMeta({ id: 'file-7' })?.fileName).toBe('file-7');
   });
 
-  it.each(['url', 'link', 'downloadUrl', 'href'])('reads the url from %s', (key) => {
-    expect(parseAttachmentMeta({ id: 'f', [key]: '/api/files/f' })?.url).toBe('/api/files/f');
-  });
+  it.each(['url', 'link', 'downloadUrl', 'href', 'fileUrl', 'downloadPath', 'path', 'uri'])(
+    'reads the url from %s',
+    (key) => {
+      expect(parseAttachmentMeta({ id: 'f', [key]: '/api/files/f' })?.url).toBe('/api/files/f');
+    },
+  );
 
   it('omits the url rather than carrying an empty one', () => {
     expect(parseAttachmentMeta({ id: 'f', url: '   ' })).not.toHaveProperty('url');
@@ -76,14 +98,14 @@ describe('extractBehaviorFiles', () => {
   });
 });
 
-describe('extractHomeworkFiles', () => {
-  it('reads the homework_item.files column', () => {
-    expect(extractHomeworkFiles([{ fileId: 'f1', fileName: 'דף.pdf' }])).toEqual([
+describe('parseAttachmentList', () => {
+  it('reads a files column', () => {
+    expect(parseAttachmentList([{ fileId: 'f1', fileName: 'דף.pdf' }])).toEqual([
       { fileId: 'f1', fileName: 'דף.pdf' },
     ]);
   });
 
   it.each([null, undefined, {}, 'nope'])('returns nothing for %p', (value) => {
-    expect(extractHomeworkFiles(value)).toEqual([]);
+    expect(parseAttachmentList(value)).toEqual([]);
   });
 });

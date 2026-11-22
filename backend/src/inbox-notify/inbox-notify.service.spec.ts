@@ -3,6 +3,7 @@ import { STALE_CLAIM_MS } from '../digest/digest-checker.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ConfigService } from '@nestjs/config';
 import type { DigestSender } from '../digest/senders/digest-sender.interface';
+import type { MediaDelivery } from '../telegram-media/media-delivery.interface';
 
 /** 15:00 Jerusalem on 2026-11-17, well outside the quiet window. */
 const NOW = new Date('2026-11-17T13:00:00Z');
@@ -37,6 +38,7 @@ function messageRow(overrides: Record<string, unknown> = {}) {
     sendTime: AN_HOUR_AGO,
     isNew: true,
     householdConnectionId: 'conn-1',
+    files: [] as unknown[],
     ...overrides,
   };
 }
@@ -57,6 +59,7 @@ interface HarnessOptions {
   ownedMessageIds?: string[];
   sendImpl?: jest.Mock;
   env?: Record<string, string>;
+  media?: Partial<MediaDelivery>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -161,9 +164,24 @@ function makeHarness(options: HarnessOptions = {}) {
   const send = options.sendImpl ?? jest.fn().mockResolvedValue(undefined);
   const telegram = { channel: 'telegram', send } as unknown as DigestSender;
 
+  const mediaFetch = jest.fn().mockImplementation((_userId, refs) => ({
+    items: refs.map((ref: unknown) => ({ ref, file: { fileName: 'f', buffer: Buffer.alloc(4), contentType: null } })),
+    remainingBytes: 1000,
+  }));
+  const mediaSend = jest.fn().mockResolvedValue({ sent: 1, notes: [] });
+  const media = {
+    enabled: true,
+    budgetBytes: () => 50 * 1024 * 1024,
+    fetch: mediaFetch,
+    send: mediaSend,
+    ...options.media,
+  } as unknown as MediaDelivery;
+
   return {
-    service: new InboxNotifyService(prisma, config, telegram),
+    service: new InboxNotifyService(prisma, config, telegram, media),
     send,
+    mediaFetch,
+    mediaSend,
     createMany,
     notifiedUpdateMany,
     notifiedDeleteMany,
@@ -597,5 +615,115 @@ describe('InboxNotifyService.notifyAll', () => {
     await harness.service.notifyAll({ now: NOW, userId: USER_A });
 
     expect(harness.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('InboxNotifyService media', () => {
+  const withFile = () =>
+    messageRow({ files: [{ fileId: 'file-1', fileName: 'אישור הורים.pdf' }] });
+
+  it('sends the text first and the file after it', async () => {
+    // The text message is the only thing gating ledger confirmation, so it
+    // goes out before anything that might fail.
+    const harness = makeHarness({ messages: [withFile()] });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    expect(harness.mediaSend).toHaveBeenCalledTimes(1);
+    expect(harness.send.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.mediaSend.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('asks for the file as the subscribing parent, through the media token', async () => {
+    const harness = makeHarness({ messages: [withFile()] });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.mediaFetch).toHaveBeenCalledWith(
+      USER_A,
+      [
+        {
+          kind: 'mail',
+          ownerId: 'conv-1',
+          itemId: 'msg-1',
+          fileId: 'file-1',
+          fileName: 'אישור הורים.pdf',
+          caption: 'אישור הורים.pdf — יום ספורט ביום חמישי',
+        },
+      ],
+      expect.any(Number),
+    );
+  });
+
+  it('names a file it could not send in the text, before sending the text', async () => {
+    const harness = makeHarness({
+      messages: [withFile()],
+      media: {
+        fetch: jest.fn().mockResolvedValue({
+          items: [
+            {
+              ref: { fileName: 'אישור הורים.pdf' },
+              tooLarge: true,
+              note: 'file too large to send',
+            },
+          ],
+          remainingBytes: 0,
+        }),
+      },
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).toContain('קובץ גדול מדי לשליחה: אישור הורים.pdf');
+  });
+
+  it('records a media failure as a note on the delivery row, not as a failure', async () => {
+    const harness = makeHarness({
+      messages: [withFile()],
+      media: { send: jest.fn().mockResolvedValue({ sent: 0, notes: ['אישור הורים.pdf: HTTP 500'] }) },
+    });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    expect(harness.deliveryCreate.mock.calls[0][0].data.errorMessage).toContain('HTTP 500');
+  });
+
+  it('does not touch the attachments when the media binding is disabled', async () => {
+    const harness = makeHarness({
+      messages: [withFile()],
+      media: { enabled: false, fetch: jest.fn(), send: jest.fn() },
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    expect(harness.mediaFetch).not.toHaveBeenCalled();
+  });
+
+  it('sends no media at all with a summary message', async () => {
+    // A summary stands in for nine messages; uploading nine files under it
+    // would defeat the point of summarizing.
+    const messages = Array.from({ length: 9 }, (_, i) =>
+      messageRow({ messageId: `msg-${i}`, files: [{ fileId: `f${i}`, fileName: `a${i}.pdf` }] }),
+    );
+    const harness = makeHarness({ messages });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.mediaSend).not.toHaveBeenCalled();
+  });
+
+  it('skips the media when the send of the text failed', async () => {
+    const harness = makeHarness({
+      messages: [withFile()],
+      sendImpl: jest.fn().mockRejectedValue(new Error('Telegram send failed: HTTP 502')),
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.mediaSend).not.toHaveBeenCalled();
   });
 });

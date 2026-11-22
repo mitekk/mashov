@@ -131,6 +131,15 @@ services:
       # Per-download override of MASHOV_TIMEOUT_MS. 10s is right for a JSON
       # read and wrong for a multi-megabyte PDF over the residential hop.
       MEDIA_DOWNLOAD_TIMEOUT_MS: ${MEDIA_DOWNLOAD_TIMEOUT_MS:-45000}
+      # Defaults to TRUE, unlike the digest's own switches: the feature was
+      # asked for, and DIGEST_ENABLED / INBOX_NOTIFY_ENABLED still gate
+      # everything that calls it. Only an explicit `false` turns it off.
+      TELEGRAM_MEDIA_ENABLED: ${TELEGRAM_MEDIA_ENABLED:-true}
+      MEDIA_MAX_FILES_PER_MESSAGE: ${MEDIA_MAX_FILES_PER_MESSAGE:-3}
+      MEDIA_TOTAL_BYTES_PER_RUN: ${MEDIA_TOTAL_BYTES_PER_RUN:-52428800}
+      # Telegram allows roughly one message per second per chat, tighter in
+      # groups, so the uploads are paced rather than burst.
+      MEDIA_SEND_DELAY_MS: ${MEDIA_SEND_DELAY_MS:-1100}
       # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
       # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
       # it starts, and the mint route answers 503.

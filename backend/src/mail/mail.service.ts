@@ -40,6 +40,7 @@ interface UpstreamConversationDetail {
 }
 
 import { DownloadOptions, downloadTimeoutConfig } from '../children/download-options';
+import { parseAttachmentList, parseAttachmentMeta } from '../children/attachment-parser';
 
 interface MailAttachment {
   fileId: string;
@@ -820,66 +821,17 @@ export class MailService {
     });
   }
 
+  /**
+   * Delegates to the shared parser. The key lists moved there when the digest
+   * and the inbox notifier gained a need for the same reading; two copies is
+   * how the two readers would drift apart on the next field Mashov renames.
+   */
   private normalizeMessageFiles(value: unknown): MailAttachment[] {
-    if (!Array.isArray(value)) return [];
-
-    return value
-      .map((entry) => this.normalizeAttachmentMeta(entry))
-      .filter((entry): entry is MailAttachment => Boolean(entry));
+    return parseAttachmentList(value);
   }
 
   private normalizeAttachmentMeta(value: unknown): MailAttachment | null {
-    if (!value || typeof value !== 'object') return null;
-
-    const record = value as Record<string, unknown>;
-    const fileId = this.pickFirstString(record, [
-      'fileId',
-      'id',
-      'guid',
-      'attachmentId',
-      'fileGuid',
-      'attachmentGuid',
-    ]);
-    if (!fileId) return null;
-
-    const fileName = this.pickFirstString(record, [
-      'fileName',
-      'name',
-      'title',
-      'originalFileName',
-      'originalName',
-      'nameWithExtension',
-      'displayName',
-    ]) ?? fileId;
-    const url = this.pickFirstString(record, [
-      'url',
-      'link',
-      'downloadUrl',
-      'href',
-      'fileUrl',
-      'downloadPath',
-      'path',
-      'uri',
-    ]);
-
-    return {
-      fileId,
-      fileName,
-      ...(url ? { url } : {}),
-    };
-  }
-
-  private pickFirstString(record: Record<string, unknown>, keys: string[]): string | null {
-    for (const key of keys) {
-      const value = record[key];
-      if (typeof value === 'string' && value.trim().length > 0) {
-        return value.trim();
-      }
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return String(value);
-      }
-    }
-    return null;
+    return parseAttachmentMeta(value);
   }
 
   private hasMessageAttachments(value: unknown): boolean {

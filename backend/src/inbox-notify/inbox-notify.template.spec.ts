@@ -123,6 +123,24 @@ describe('renderInboxMessage', () => {
     expect(text).not.toMatch(/https?:\/\//);
   });
 
+  it('names a file it is not sending, with the link to open it', () => {
+    // Silence would make the message quietly less than the mail it describes.
+    const text = renderInboxMessage(makeMessage(), {
+      publicBaseUrl: 'https://mashov.mitya.dev',
+      unsentFileNames: ['אישור הורים.pdf'],
+    });
+
+    expect(text).toContain('קובץ גדול מדי לשליחה: אישור הורים.pdf');
+    expect(text).toContain('https://mashov.mitya.dev/inbox/conv-1');
+  });
+
+  it('still names the file when there is no site to link to', () => {
+    const text = renderInboxMessage(makeMessage(), { unsentFileNames: ['אישור.pdf'] });
+
+    expect(text).toContain('קובץ גדול מדי לשליחה: אישור.pdf');
+    expect(text).not.toMatch(/https?:\/\//);
+  });
+
   it('never includes the recipients list', () => {
     // A school mail's recipients name every other parent in the class.
     const text = renderInboxMessage(makeMessage(), {});
