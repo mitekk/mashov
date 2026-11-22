@@ -763,6 +763,49 @@ model DataBackfill {
 /// against a hardcoded TOTAL_SYNC_SOURCES, so digest rows there would silently skew
 /// the freshness percentage the dashboard shows. Every run writes a row, including
 /// `skipped_empty` - it is the only way to tell a quiet day from a broken job.
+/// One row per (mail message, chat) already notified about.
+///
+/// A dedicated model rather than a `DigestReportedItem` with a sentinel guid.
+/// `DigestReportedItem.studentGuid` is required with no default, and its
+/// consent-form dedup arm queries `{userId, contentHash}` with NO studentGuid
+/// at all -- household-wide on purpose -- so any sentinel value would collide
+/// with that arm and suppress real forms.
+///
+/// Keyed per `address` as well as per user: a chat linked after some mail
+/// arrived must not be silenced by another chat's history. The cost is one row
+/// per message per linked chat, which the retention sweep bounds.
+model MailNotifiedMessage {
+  id             String    @id @default(cuid())
+  /// The subscribing parent. Mail is household-scoped, so this is who the
+  /// `householdMailScope` read was run as.
+  userId         String
+  /// Matches DigestRecipient.channel / .address.
+  channel        String
+  address        String
+  /// MailMessage.messageId -- Mashov's own id, not our cuid.
+  messageId      String
+  /// Carried so the ledger can be read without joining mail_message, and so a
+  /// summary message can claim a run's rows by conversation.
+  conversationId String
+  /// sha256 over the fields the parent will see. In the unique key for the
+  /// same reason as DigestReportedItem's: an edited subject or body is a new
+  /// hash, hence a new row, hence a legitimate re-notification.
+  contentHash    String
+  /// The Jerusalem calendar day the notification covered -- retention and audit.
+  notifiedFor    DateTime  @db.Date
+  claimedAt      DateTime  @default(now())
+  /// Which run owns this claim; see DigestReportedItem.claimedBy for why a
+  /// createMany count cannot answer that.
+  claimedBy      String?
+  /// Set only after a successful send. Unconfirmed past STALE_CLAIM_MS means
+  /// the run that held it died before sending, and the message comes back.
+  confirmedAt    DateTime?
+
+  @@unique([userId, channel, address, messageId, contentHash], map: "mail_notified_message_dedup_key")
+  @@index([userId, claimedAt])
+  @@map("mail_notified_message")
+}
+
 model DigestDelivery {
   id String @id @default(cuid())
   /// Whose run this was. `GET /digest/deliveries` scopes on it: the row holds
@@ -770,11 +813,21 @@ model DigestDelivery {
   /// forms, so scoping by child let the other parent of a shared child read
   /// it. Defaulted for the same `db push` reason as DigestReportedItem.userId.
   userId         String   @default("")
-  studentGuid    String
+  /// Null for a run that is not about one child. Household mail is the first
+  /// such run: it is scoped to the parent's whole inbox, so there is no child
+  /// to name, and a sentinel would be read as a real guid by every query here.
+  /// Relaxed rather than split into a second table so one history answers
+  /// "what have you sent me", which is what this table is for.
+  studentGuid    String?
   reportFor      DateTime @db.Date
   runAt          DateTime @default(now())
   /// 'sent' | 'skipped_empty' | 'failed' | 'dry_run'
   status         String
+  /// Which feature wrote the row: 'digest' (the per-child daily report) or
+  /// 'inbox' (a household mail notification). Defaulted so `prisma db push`
+  /// can add it to the populated production table, and so every row already
+  /// there reads as what it is.
+  kind           String   @default("digest")
   itemCount      Int      @default(0)
   recipientCount Int      @default(0)
   channel        String?
