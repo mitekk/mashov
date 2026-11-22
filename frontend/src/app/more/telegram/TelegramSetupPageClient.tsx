@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, BellRing, CheckCircle2, Loader2, Send, TriangleAlert } from 'lucide-react';
 import { useChildren } from '@/hooks/useChildren';
-import { useDigestRecipients } from '@/hooks/useDigestRecipients';
+import { DIGEST_RECIPIENTS_KEY, useDigestRecipients } from '@/hooks/useDigestRecipients';
 import { useCreateTelegramLink, useTelegramLinkState } from '@/hooks/useTelegramLink';
 import { ApiError } from '@/api/client';
 import { LoadingState } from '@/components/ui/LoadingState';
@@ -69,6 +70,7 @@ function mintErrorMessage(error: unknown): string {
  */
 export default function TelegramSetupPageClient() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { data: childrenResponse, isLoading, isError } = useChildren();
   // useChildren resolves the envelope, not the array.
   const children = childrenResponse?.data;
@@ -115,9 +117,19 @@ export default function TelegramSetupPageClient() {
   }, [chosen, children, recipients, recipientsLoading]);
 
   // The step-3 wait resolves itself: no "I pressed it" button to get wrong.
+  //
+  // The invalidation is not housekeeping. These recipient rows were created
+  // server-side, by the poller reading the parent's START, so no client
+  // mutation ever ran and nothing marked the list stale -- and the list has a
+  // 60s staleTime. Without this, a parent who finishes the wizard and taps
+  // "back to settings" is told they are not connected, seconds after
+  // connecting.
   useEffect(() => {
-    if (step === 'start' && linkState?.status === 'linked') setStep('done');
-  }, [step, linkState?.status]);
+    if (step === 'start' && linkState?.status === 'linked') {
+      setStep('done');
+      void queryClient.invalidateQueries({ queryKey: DIGEST_RECIPIENTS_KEY });
+    }
+  }, [step, linkState?.status, queryClient]);
 
   // A module-level constant, not a fresh `[]`: an inline literal would be a new
   // array identity every render and so defeat the useMemo below it.

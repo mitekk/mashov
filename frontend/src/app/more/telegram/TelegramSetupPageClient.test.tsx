@@ -302,6 +302,27 @@ describe('TelegramSetupPageClient', () => {
       await screen.findByTestId('telegram-step-done');
     });
 
+    it('refetches the subscriptions once the chat is bound', async () => {
+      // The link is created server-side, by the poller reading the START --
+      // there is no client mutation to hang an invalidation off. Without this,
+      // `useDigestRecipients`' 60s staleTime means a parent who finishes the
+      // wizard and taps "back to settings" is told they are not connected,
+      // seconds after connecting. Found by the e2e journey, which walks back
+      // to /more and reads the card.
+      fetchTelegramLinkState.mockResolvedValue(
+        linkState({ status: 'linked', confirmationSent: true, recipientCount: 1 }),
+      );
+      await reachChildStep();
+      const before = fetchDigestRecipients.mock.calls.length;
+      fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
+
+      await screen.findByTestId('telegram-step-done');
+
+      await waitFor(() =>
+        expect(fetchDigestRecipients.mock.calls.length).toBeGreaterThan(before),
+      );
+    });
+
     it('tells the parent to check the message actually arrived', async () => {
       fetchTelegramLinkState.mockResolvedValue(
         linkState({ status: 'linked', confirmationSent: true, recipientCount: 1 }),
