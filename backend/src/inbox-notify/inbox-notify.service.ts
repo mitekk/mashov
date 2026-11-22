@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { householdMailScope } from '../common/mail-scope';
+import { activeConnectionIdsFor } from '../common/student-links';
 import { STALE_CLAIM_MS } from '../digest/digest-checker.service';
 import { jerusalemDayBounds } from '../digest/digest-deadline.service';
 import { DigestSender } from '../digest/senders/digest-sender.interface';
@@ -15,6 +15,9 @@ import {
   MediaAttachmentRef,
   MediaDelivery,
   NO_MEDIA_DELIVERY,
+  NO_UPSTREAM_MAIL,
+  UPSTREAM_MAIL,
+  UpstreamMail,
 } from '../telegram-media/media-delivery.interface';
 import { parseAttachmentList } from '../children/attachment-parser';
 import { isWithinQuietHours } from './quiet-hours';
@@ -71,6 +74,51 @@ export interface InboxNotifyRunOptions {
   ignoreQuietHours?: boolean;
 }
 
+/** Exactly the message columns the notification is allowed to read. */
+const MESSAGE_SELECT = {
+  messageId: true,
+  conversationId: true,
+  senderId: true,
+  senderName: true,
+  subject: true,
+  bodyHtmlSanitized: true,
+  bodyTextPreview: true,
+  sendTime: true,
+  isNew: true,
+  householdConnectionId: true,
+  // Metadata only. The bytes are fetched later, per message, and only when a
+  // chat is actually being written to.
+  files: true,
+} as const;
+
+type MessageRow = {
+  messageId: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  subject: string;
+  bodyHtmlSanitized: string | null;
+  bodyTextPreview: string | null;
+  sendTime: Date;
+  isNew: boolean;
+  householdConnectionId: string | null;
+  files: unknown;
+};
+
+type ConversationRow = {
+  conversationId: string;
+  householdConnectionId: string | null;
+  locallyReadThroughAt: Date | null;
+};
+
+/** Whether this row already carries something the chat could show. */
+function hasBody(message: Pick<MessageRow, 'bodyHtmlSanitized' | 'bodyTextPreview'>): boolean {
+  return (
+    (message.bodyHtmlSanitized ?? '').trim().length > 0 ||
+    (message.bodyTextPreview ?? '').trim().length > 0
+  );
+}
+
 /** A candidate message plus the conversation fields the filters need. */
 interface Candidate extends InboxNotifiableMessage {
   contentHash: string;
@@ -107,6 +155,8 @@ export class InboxNotifyService {
 
   private readonly media: MediaDelivery;
 
+  private readonly upstreamMail: UpstreamMail;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -115,8 +165,10 @@ export class InboxNotifyService {
     // which is how the module spec proves MashovSessionModule is not in this
     // graph. See telegram-media.module.ts.
     @Optional() @Inject(MEDIA_DELIVERY) media?: MediaDelivery,
+    @Optional() @Inject(UPSTREAM_MAIL) upstreamMail?: UpstreamMail,
   ) {
     this.media = media ?? NO_MEDIA_DELIVERY;
+    this.upstreamMail = upstreamMail ?? NO_UPSTREAM_MAIL;
   }
 
   async notifyAll(options: InboxNotifyRunOptions = {}): Promise<InboxNotifyResult[]> {
@@ -143,7 +195,12 @@ export class InboxNotifyService {
 
       const results: InboxNotifyResult[] = [];
       for (const [userId, chats] of subscriptions) {
-        results.push(...(await this.notifyUser(userId, chats, now, timeZone, dryRun)));
+        // Per run, not per chat: two chats of one parent want the same
+        // conversation hydrated once.
+        const hydrated = new Set<string>();
+        results.push(
+          ...(await this.notifyUser(userId, chats, now, timeZone, dryRun, hydrated)),
+        );
       }
       return results;
     } finally {
@@ -191,6 +248,7 @@ export class InboxNotifyService {
     now: Date,
     timeZone: string,
     dryRun: boolean,
+    hydrated: Set<string>,
   ): Promise<InboxNotifyResult[]> {
     const { reportFor } = jerusalemDayBounds(now, timeZone);
     const lookbackFloor = new Date(now.getTime() - this.readLookbackHours() * 60 * 60 * 1000);
@@ -202,7 +260,7 @@ export class InboxNotifyService {
       const floor = chat.activeFrom > lookbackFloor ? chat.activeFrom : lookbackFloor;
 
       try {
-        const candidates = await this.candidatesFor(userId, floor);
+        const candidates = await this.candidatesFor(userId, floor, hydrated);
         const result = await this.notifyChat(userId, chat, candidates, reportFor, now, dryRun);
         if (result) results.push(result);
       } catch (error) {
@@ -228,17 +286,33 @@ export class InboxNotifyService {
   /**
    * The mail this parent has not been told about, oldest first.
    *
-   * The mailbox scope comes from `householdMailScope` rather than a query of
-   * its own. That helper exists because the identical six lines lived in both
-   * MailService and DashboardService, and two copies of the rule is how the
-   * badge came to disagree with the list beside it.
+   * **Stricter than `householdMailScope` on purpose, and this is the one place
+   * in the project that deviates from it.** That helper admits
+   * `householdConnectionId: null` to every caller, because NULL means
+   * "ownership unknown" rather than "nobody's" and hiding those rows would
+   * empty the inbox on a deployment that has not re-synced. That trade is
+   * right for a list view the parent chose to open, and wrong for outbound
+   * egress: two households both match a NULL-stamped row, so a family chat
+   * both parents linked receives the same mail twice, and in the worst case a
+   * stranger's conversation is pushed into a parent's Telegram -- which is
+   * forwardable and permanent in a way a list view is not.
+   *
+   * So the notifier reads only rows stamped to the parent's own connections.
+   * The cost is that a conversation the ownership backfill has not reached is
+   * never announced; the parent still sees it in the app, which is the safe
+   * direction for a push.
    */
-  private async candidatesFor(userId: string, floor: Date): Promise<Candidate[]> {
-    const scope = await householdMailScope(this.prisma, userId);
+  private async candidatesFor(
+    userId: string,
+    floor: Date,
+    hydrated: Set<string>,
+  ): Promise<Candidate[]> {
+    const ownConnectionIds = await activeConnectionIdsFor(this.prisma, userId);
+    if (ownConnectionIds.length === 0) return [];
 
     const conversations = await this.prisma.mailConversation.findMany({
       where: {
-        ...scope,
+        householdConnectionId: { in: ownConnectionIds },
         NOT: { labels: { array_contains: ['archived'] } },
         // `sendTime` on a conversation is its newest message's, so a
         // conversation below the floor cannot hold a message above it.
@@ -254,29 +328,67 @@ export class InboxNotifyService {
 
     const byConversation = new Map(conversations.map((row) => [row.conversationId, row]));
 
-    const messages = await this.prisma.mailMessage.findMany({
-      where: {
-        conversationId: { in: [...byConversation.keys()] },
-        sendTime: { gte: floor },
-      },
-      select: {
-        messageId: true,
-        conversationId: true,
-        senderId: true,
-        senderName: true,
-        subject: true,
-        bodyHtmlSanitized: true,
-        bodyTextPreview: true,
-        sendTime: true,
-        isNew: true,
-        householdConnectionId: true,
-        // Metadata only. The bytes are fetched later, per message, and only
-        // when a chat is actually being written to.
-        files: true,
-      },
-      orderBy: { sendTime: 'asc' },
-    });
+    const read = () =>
+      this.prisma.mailMessage.findMany({
+        where: {
+          conversationId: { in: [...byConversation.keys()] },
+          sendTime: { gte: floor },
+        },
+        select: MESSAGE_SELECT,
+        orderBy: { sendTime: 'asc' },
+      });
 
+    let messages = await read();
+
+    // MailInboxTask stores message METADATA ONLY -- the inbox list payload
+    // carries no `body` and no `files` at all, and both are written only when
+    // a parent opens the thread in the app. So a notification about mail
+    // nobody has opened -- which is every mail this feature exists to announce
+    // -- would be a header and a subject with nothing under it, and no
+    // attachment would ever be forwarded. The detail fetch has to happen
+    // before the text is rendered, and it cannot happen here: this module may
+    // not reach Mashov. Hence the UPSTREAM_MAIL token.
+    const needHydration = [
+      ...new Set(
+        messages
+          .filter((message) => !hasBody(message) && !hydrated.has(message.conversationId))
+          .map((message) => message.conversationId),
+      ),
+    ];
+
+    if (this.upstreamMail.enabled && needHydration.length > 0) {
+      for (const conversationId of needHydration) {
+        // Marked before the attempt, not after: a conversation whose fetch
+        // failed must not be retried once per chat in the same run.
+        hydrated.add(conversationId);
+        // Guarded here as well as in the implementation. The interface says
+        // "never throws" and the real one honours it, but the cost of being
+        // wrong is the whole notification rather than just its body -- the
+        // parent would not learn mail arrived at all.
+        await this.upstreamMail
+          .hydrateConversation(conversationId, userId)
+          .catch((error: unknown) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            this.logger.warn(`Hydrating conversation ${conversationId} failed: ${reason}`);
+          });
+      }
+      messages = await read();
+    }
+
+    return this.toCandidates(messages, byConversation, userId);
+  }
+
+  /**
+   * Applies the per-message filters and shapes the survivors.
+   *
+   * Split out of `candidatesFor` only because that function now reads the
+   * messages twice -- once to find out what needs hydrating, once after.
+   */
+  private async toCandidates(
+    messages: MessageRow[],
+    byConversation: Map<string, ConversationRow>,
+    userId: string,
+  ): Promise<Candidate[]> {
     // The parent's own upstream identity, per connection. A reply they sent
     // from this app comes back down the next inbox walk as a message in the
     // thread, and notifying them about their own words is noise at best.
@@ -345,73 +457,87 @@ export class InboxNotifyService {
 
     const publicBaseUrl = resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL'));
     const bodyChars = this.readBodyChars();
-    const summarize = candidates.length > this.readMaxPerRun();
-    const texts = summarize
-      ? [renderInboxSummary(candidates.length, { publicBaseUrl })]
-      : candidates.map((message) => renderInboxMessage(message, { publicBaseUrl }, bodyChars));
 
     const base = {
       userId,
       channel: chat.channel,
       address: chat.address,
       messageCount: candidates.length,
-      summarized: summarize,
+      summarized: false,
     };
 
     if (dryRun) {
       // Claims nothing, on purpose: a dry run that claimed would leave the
-      // first real run with nothing to say.
+      // first real run with nothing to say. The count is the candidate count
+      // because nothing was claimed, and that is what a real run would send.
+      const summarize = candidates.length > this.readMaxPerRun();
       this.logger.log(
         `[dry run] ${chat.channel}/${chat.address}: ${candidates.length} new mail message(s).`,
       );
-      await this.record(userId, chat, reportFor, 'dry_run', candidates.length, texts.join('\n\n'));
-      return { ...base, status: 'dry_run' };
+      const preview = summarize
+        ? renderInboxSummary(candidates.length, { publicBaseUrl })
+        : candidates
+            .map((message) => renderInboxMessage(message, { publicBaseUrl }, bodyChars))
+            .join('\n\n');
+      await this.record(userId, chat, reportFor, 'dry_run', candidates.length, preview);
+      return { ...base, status: 'dry_run', summarized: summarize };
     }
 
-    const { runId, ownedHashes: owned } = await this.claim(
-      userId,
-      chat,
-      candidates,
-      reportFor,
-      now,
-    );
-    if (owned.length === 0) {
+    const { runId, ownedHashes } = await this.claim(userId, chat, candidates, reportFor, now);
+    if (ownedHashes.length === 0) {
       this.logger.log(
         `Inbox notify ${chat.channel}/${chat.address}: every message is owned by another run or already sent.`,
       );
-      return { ...base, status: 'skipped_empty', messageCount: 0, summarized: false };
+      return { ...base, status: 'skipped_empty', messageCount: 0 };
     }
 
-    const ownedHashes = new Set(owned);
-    const sendingMessages = candidates.filter((c) => ownedHashes.has(c.contentHash));
+    // Everything below counts what this run OWNS, never what it saw. A
+    // concurrent run can have claimed some of the candidates, and deciding to
+    // summarize -- or telling the parent "6 new messages" -- from the
+    // candidate count states a number that is not what went out, and logs
+    // messageText that was never sent.
+    const ownedSet = new Set(ownedHashes);
+    const sendingMessages = candidates.filter((candidate) => ownedSet.has(candidate.contentHash));
+    const summarize = sendingMessages.length > this.readMaxPerRun();
+    const owned = { ...base, messageCount: sendingMessages.length, summarized: summarize };
+
     const mediaNotes: string[] = [];
+    const sentHashes: string[] = [];
+    const sentTexts: string[] = [];
 
     try {
       if (summarize) {
         // No media under a summary: it stands in for N messages, and uploading
         // every one of their files would defeat the point of summarizing.
-        for (const text of texts) {
-          await this.telegram.send(chat.address, text);
-        }
+        const text = renderInboxSummary(sendingMessages.length, { publicBaseUrl });
+        await this.telegram.send(chat.address, text);
+        sentTexts.push(text);
+        sentHashes.push(...ownedHashes);
       } else {
         let budget = this.media.budgetBytes();
         for (const message of sendingMessages) {
           // Downloaded BEFORE the text is rendered, because no size is known
           // until the bytes arrive and the text has to name what it is not
           // sending. Then text, then media: the text is the only thing gating
-          // ledger confirmation, so it goes out before anything that can fail.
+          // this message's ledger row, so it goes out before anything that
+          // can fail.
           const fetched = await this.fetchMedia(userId, message, budget);
           budget = fetched.remainingBytes;
           mediaNotes.push(...noteOf(fetched.items));
 
-          await this.telegram.send(
-            chat.address,
-            renderInboxMessage(
-              message,
-              { publicBaseUrl, unsentFileNames: unsentNames(fetched.items) },
-              bodyChars,
-            ),
+          const text = renderInboxMessage(
+            message,
+            { publicBaseUrl, unsentFileNames: unsentNames(fetched.items) },
+            bodyChars,
           );
+          await this.telegram.send(chat.address, text);
+
+          // Recorded as sent the moment it is sent, not after the loop. A
+          // failure on message 3 of 4 used to release the whole batch, so the
+          // next tick re-sent messages 1 and 2 -- every ten minutes, for as
+          // long as the failure lasted.
+          sentHashes.push(message.contentHash);
+          sentTexts.push(text);
 
           const result = await this.media.send(chat.address, fetched.items);
           mediaNotes.push(...result.notes);
@@ -422,19 +548,34 @@ export class InboxNotifyService {
       this.logger.warn(`Inbox notify to ${chat.channel}/${chat.address} failed: ${reason}`);
 
       if (isPermanentTelegramFailure(reason)) {
-        // Nowhere left to retry to. Confirming rather than releasing stops the
-        // same mail being re-claimed and re-sent on every ten-minute tick.
+        // Nowhere left to retry to. Confirming everything rather than
+        // releasing the undelivered rows stops the same mail being re-claimed
+        // and re-sent on every ten-minute tick.
         await this.retire(userId, chat, reason);
-        await this.confirm(userId, chat, runId, now);
+        await this.confirm(userId, chat, runId, ownedHashes, now);
       } else {
-        await this.release(userId, chat, runId);
+        await this.confirmSent(userId, chat, runId, sentHashes, now);
+        await this.release(
+          userId,
+          chat,
+          runId,
+          ownedHashes.filter((hash) => !sentHashes.includes(hash)),
+        );
       }
 
-      await this.record(userId, chat, reportFor, 'failed', 0, undefined, reason);
-      return { ...base, status: 'failed', error: reason };
+      await this.record(
+        userId,
+        chat,
+        reportFor,
+        sentHashes.length > 0 ? 'sent' : 'failed',
+        sentHashes.length,
+        sentTexts.length > 0 ? sentTexts.join('\n\n') : undefined,
+        [reason, ...mediaNotes].join('; '),
+      );
+      return { ...owned, status: sentHashes.length > 0 ? 'sent' : 'failed', error: reason };
     }
 
-    await this.confirm(userId, chat, runId, now);
+    await this.confirm(userId, chat, runId, ownedHashes, now);
     // The media notes ride on errorMessage, the way the digest's partial-send
     // notes do: the row says sent, and here is the asterisk.
     await this.record(
@@ -442,11 +583,11 @@ export class InboxNotifyService {
       chat,
       reportFor,
       'sent',
-      owned.length,
-      texts.join('\n\n'),
+      sentHashes.length,
+      sentTexts.join('\n\n'),
       mediaNotes.length > 0 ? mediaNotes.join('; ') : undefined,
     );
-    return { ...base, status: 'sent' };
+    return { ...owned, status: 'sent' };
   }
 
   /**
@@ -522,34 +663,55 @@ export class InboxNotifyService {
     return { runId, ownedHashes: owned.map((row) => row.contentHash) };
   }
 
+  /**
+   * Marks rows delivered. Scoped to `claimedBy` AND to an explicit hash list,
+   * so a partial success confirms only what actually arrived.
+   */
   private async confirm(
     userId: string,
     chat: { channel: string; address: string },
     runId: string,
+    hashes: string[],
     now: Date,
   ): Promise<void> {
+    if (hashes.length === 0) return;
     await this.prisma.mailNotifiedMessage.updateMany({
       where: {
         userId,
         channel: chat.channel,
         address: chat.address,
         claimedBy: runId,
+        contentHash: { in: hashes },
       },
       data: { confirmedAt: now, claimedBy: null },
     });
+  }
+
+  /** Alias at the call site that reads as what it does. */
+  private async confirmSent(
+    userId: string,
+    chat: { channel: string; address: string },
+    runId: string,
+    hashes: string[],
+    now: Date,
+  ): Promise<void> {
+    return this.confirm(userId, chat, runId, hashes, now);
   }
 
   private async release(
     userId: string,
     chat: { channel: string; address: string },
     runId: string,
+    hashes: string[],
   ): Promise<void> {
+    if (hashes.length === 0) return;
     await this.prisma.mailNotifiedMessage.deleteMany({
       where: {
         userId,
         channel: chat.channel,
         address: chat.address,
         claimedBy: runId,
+        contentHash: { in: hashes },
       },
     });
   }

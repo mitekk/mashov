@@ -60,6 +60,7 @@ interface HarnessOptions {
   sendImpl?: jest.Mock;
   env?: Record<string, string>;
   media?: Partial<MediaDelivery>;
+  hydrate?: jest.Mock;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -108,9 +109,11 @@ function makeHarness(options: HarnessOptions = {}) {
       findMany: jest.fn().mockImplementation(({ where }) =>
         Promise.resolve(
           conversations.filter((row) => {
-            const ownIds: string[] = where?.OR?.[0]?.householdConnectionId?.in ?? [];
+            // The notifier reads only rows stamped to the parent's own
+            // connections -- no NULL arm, unlike every other mail read.
+            const ownIds: string[] = where?.householdConnectionId?.in ?? [];
             const stamp = row.householdConnectionId as string | null;
-            if (stamp !== null && !ownIds.includes(stamp)) return false;
+            if (stamp === null || !ownIds.includes(stamp)) return false;
             const archived = (row.labels as string[]).includes('archived');
             if (where?.NOT && archived) return false;
             const floor = where?.sendTime?.gte as Date | undefined;
@@ -177,8 +180,12 @@ function makeHarness(options: HarnessOptions = {}) {
     ...options.media,
   } as unknown as MediaDelivery;
 
+  const hydrate = options.hydrate ?? jest.fn().mockResolvedValue(undefined);
+  const upstreamMail = { enabled: true, hydrateConversation: hydrate };
+
   return {
-    service: new InboxNotifyService(prisma, config, telegram, media),
+    service: new InboxNotifyService(prisma, config, telegram, media, upstreamMail),
+    hydrate,
     send,
     mediaFetch,
     mediaSend,
@@ -363,17 +370,34 @@ describe('InboxNotifyService.notifyAll', () => {
     expect(harness.send).not.toHaveBeenCalled();
   });
 
-  it('includes an unattributed conversation, as every other mail read does', async () => {
-    // NULL means "ownership unknown", not "nobody's"; excluding it would empty
-    // the inbox on a deployment that has not re-synced.
+  it('does not push an unattributed conversation into a chat', async () => {
+    // The read scope admits `householdConnectionId: null` to EVERY caller by
+    // design, because NULL means "ownership unknown" and hiding those rows
+    // would empty the inbox on a deployment that has not re-synced. That rule
+    // is right for a list view the parent chose to open. It is wrong for
+    // outbound egress: two households both see the row, so a shared chat gets
+    // the same mail twice, and in the worst case a stranger's mail is pushed
+    // into a parent's Telegram -- which is forwardable and permanent in a way
+    // a list view is not.
     const harness = makeHarness({
       conversations: [conversationRow({ householdConnectionId: null })],
       messages: [messageRow({ householdConnectionId: null })],
     });
 
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+    expect(results).toEqual([]);
+  });
+
+  it('reads only conversations stamped to the parent’s own connections', async () => {
+    const harness = makeHarness();
+
     await harness.service.notifyAll({ now: NOW });
 
-    expect(harness.send).toHaveBeenCalledTimes(1);
+    const where = (harness.prisma.mailConversation.findMany as jest.Mock).mock.calls[0][0].where;
+    expect(where.householdConnectionId).toEqual({ in: ['conn-1'] });
+    expect(JSON.stringify(where)).not.toContain('null');
   });
 
   it('claims before sending and confirms afterwards', async () => {
@@ -416,6 +440,81 @@ describe('InboxNotifyService.notifyAll', () => {
       ),
     ).toHaveLength(0);
     expect(results[0].status).toBe('failed');
+  });
+
+  it('keeps the messages it already delivered when a later one fails', async () => {
+    // The whole batch used to be released on any failure, so the next tick
+    // re-sent the ones that had already arrived -- every ten minutes, for as
+    // long as a sustained 429 or an upstream 5xx window lasted.
+    const messages = ['a', 'b', 'c', 'd'].map((id) => messageRow({ messageId: id }));
+    let calls = 0;
+    const harness = makeHarness({
+      messages,
+      sendImpl: jest.fn().mockImplementation(() => {
+        calls += 1;
+        if (calls === 3) throw new Error('Telegram send failed: HTTP 500');
+        return Promise.resolve();
+      }),
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    // Two arrived before the failure; both must stay confirmed.
+    const confirms = harness.notifiedUpdateMany.mock.calls.filter(
+      (call) => call[0].data.confirmedAt instanceof Date,
+    );
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0][0].where.contentHash.in).toHaveLength(2);
+    // Only the two that never arrived are released.
+    expect(harness.notifiedDeleteMany).toHaveBeenCalledTimes(1);
+    expect(harness.notifiedDeleteMany.mock.calls[0][0].where.contentHash.in).toHaveLength(2);
+  });
+
+  it('releases the whole batch when the very first send fails', async () => {
+    const messages = ['a', 'b'].map((id) => messageRow({ messageId: id }));
+    const harness = makeHarness({
+      messages,
+      sendImpl: jest.fn().mockRejectedValue(new Error('Telegram send failed: HTTP 502')),
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(
+      harness.notifiedUpdateMany.mock.calls.filter(
+        (call) => call[0].data.confirmedAt instanceof Date,
+      ),
+    ).toHaveLength(0);
+    expect(harness.notifiedDeleteMany.mock.calls[0][0].where.contentHash.in).toHaveLength(2);
+  });
+
+  it('counts the summary from what it owns, not from what it saw', async () => {
+    // Six candidates, three of them owned by a concurrent run: telling the
+    // parent "6 new messages" and logging text that was never sent is a
+    // factually wrong message and a misleading run log.
+    const messages = Array.from({ length: 6 }, (_, i) => messageRow({ messageId: `m${i}` }));
+    const harness = makeHarness({
+      messages,
+      ownedMessageIds: ['m0', 'm1', 'm2'],
+      env: { INBOX_NOTIFY_MAX_PER_RUN: '2' },
+    });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).toContain('3');
+    expect(harness.send.mock.calls[0][1]).not.toContain('6');
+    expect(results[0].messageCount).toBe(3);
+  });
+
+  it('sends the messages themselves when the owned count is under the ceiling', async () => {
+    // Six seen but three owned, with a ceiling of 5: summarizing on the seen
+    // count would replace three perfectly sendable messages with a summary.
+    const messages = Array.from({ length: 6 }, (_, i) => messageRow({ messageId: `m${i}` }));
+    const harness = makeHarness({ messages, ownedMessageIds: ['m0', 'm1', 'm2'] });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(results[0].summarized).toBe(false);
+    expect(harness.send).toHaveBeenCalledTimes(3);
   });
 
   it('retires a chat Telegram refused permanently instead of retrying forever', async () => {
@@ -725,5 +824,89 @@ describe('InboxNotifyService media', () => {
     await harness.service.notifyAll({ now: NOW });
 
     expect(harness.mediaSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('InboxNotifyService hydration', () => {
+  const metadataOnly = () =>
+    messageRow({ bodyHtmlSanitized: null, bodyTextPreview: null, files: [] });
+
+  it('fetches the conversation detail when the row has no body yet', async () => {
+    // MailInboxTask stores message METADATA ONLY -- the inbox list payload
+    // carries no `body` and no `files` at all
+    // (apis/get-api-mail-inbox-conversations.md). Bodies and attachments are
+    // written only when the parent opens the thread in the app. Without this,
+    // every notification about mail nobody has opened -- which is every mail
+    // this feature exists to announce -- is a header, a subject and nothing
+    // else, and no attachment is ever forwarded.
+    const harness = makeHarness({ messages: [metadataOnly()] });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.hydrate).toHaveBeenCalledWith('conv-1', USER_A);
+  });
+
+  it('re-reads the message after hydrating, so the body reaches the chat', async () => {
+    let hydrated = false;
+    const harness = makeHarness({
+      messages: [metadataOnly()],
+      hydrate: jest.fn().mockImplementation(() => {
+        hydrated = true;
+        return Promise.resolve();
+      }),
+    });
+    // The second read is what the service must do its rendering from.
+    (harness.prisma.mailMessage.findMany as jest.Mock).mockImplementation(() =>
+      Promise.resolve([
+        hydrated
+          ? messageRow({ bodyHtmlSanitized: '<p>נבקש להביא בגדי ספורט.</p>' })
+          : metadataOnly(),
+      ]),
+    );
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).toContain('נבקש להביא בגדי ספורט.');
+  });
+
+  it('asks only once for a conversation two chats both need', async () => {
+    const harness = makeHarness({
+      messages: [metadataOnly()],
+      recipients: ['111', '222'].map((address) => ({
+        userId: USER_A,
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address,
+        enabled: true,
+        activeFrom: new Date('2026-09-01T00:00:00Z'),
+      })),
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(2);
+    expect(harness.hydrate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not hydrate a message that already has a body', async () => {
+    const harness = makeHarness();
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.hydrate).not.toHaveBeenCalled();
+  });
+
+  it('still sends the header when hydration fails, rather than nothing', async () => {
+    // Upstream being down must not cost the parent the notification; they at
+    // least learn mail arrived, from whom, about what.
+    const harness = makeHarness({
+      messages: [metadataOnly()],
+      hydrate: jest.fn().mockRejectedValue(new Error('403 from Mashov')),
+    });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    expect(harness.send.mock.calls[0][1]).toContain('יום ספורט ביום חמישי');
   });
 });

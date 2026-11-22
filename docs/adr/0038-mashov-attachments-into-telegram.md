@@ -30,7 +30,7 @@ proved they control (ADR-0033), the feature is gated behind the same master swit
 `digest_delivery.messageText` records what text went out. There is no content inspection and
 none is planned.
 
-**Its own module, `backend/src/telegram-media/`, behind an interface token.**
+**Its own module, `backend/src/telegram-media/`, behind interface tokens.**
 
 A class that downloads from Mashov *and* sends to Telegram would import `MashovSessionModule`,
 which `DigestModule`'s docblock and ADR-0026 forbid in that graph: ADR-0023's egress hop is a

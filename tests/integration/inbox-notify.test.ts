@@ -329,6 +329,52 @@ describe('Inbox notifications', () => {
     expect(second.sent).toHaveLength(0);
   });
 
+  it('keeps the messages it delivered when a later one fails, and sends only the rest next time', async () => {
+    // The Critical finding from review. The whole batch used to be released on
+    // any failure, so the next tick re-sent the ones that had already arrived
+    // -- every ten minutes, for as long as a 429 or a 5xx window lasted.
+    await addMessage('inbox-notify-msg-2', { subject: 'אסיפת הורים' });
+    await addMessage('inbox-notify-msg-3', { subject: 'טיול שנתי' });
+
+    let calls = 0;
+    const partial: DigestSender = {
+      channel: 'telegram',
+      send: async () => {
+        calls += 1;
+        if (calls === 3) throw new Error('Telegram send failed: HTTP 500');
+      },
+    };
+
+    await makeService(partial).notifyAll({ now: NOW });
+
+    // Two delivered, two confirmed; the third left for the next run.
+    const ledger = await prisma.mailNotifiedMessage.findMany({ where: { userId: USER_ID } });
+    expect(ledger).toHaveLength(2);
+    expect(ledger.every((row) => row.confirmedAt !== null)).toBe(true);
+
+    const retry = new CapturingSender();
+    await makeService(retry).notifyAll({ now: NOW });
+
+    expect(retry.sent).toHaveLength(1);
+    expect(await prisma.mailNotifiedMessage.count({ where: { userId: USER_ID } })).toBe(3);
+  });
+
+  it('does not notify about a conversation no connection owns', async () => {
+    // Stricter than householdMailScope on purpose: a NULL-stamped row matches
+    // every household, so pushing it would hand a shared chat the same mail
+    // twice and could put a stranger's mail in a parent's Telegram.
+    await prisma.mailConversation.update({
+      where: { conversationId: CONVERSATION_ID },
+      data: { householdConnectionId: null },
+    });
+
+    const sender = new CapturingSender();
+    const results = await makeService(sender).notifyAll({ now: NOW });
+
+    expect(sender.sent).toHaveLength(0);
+    expect(results).toEqual([]);
+  });
+
   it('sends once to a chat the parent linked for three children', async () => {
     for (const studentGuid of ['inbox-notify-child-2', 'inbox-notify-child-3']) {
       await prisma.digestRecipient.create({

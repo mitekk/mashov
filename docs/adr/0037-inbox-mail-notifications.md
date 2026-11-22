@@ -60,15 +60,53 @@ forms. The new table runs the same claim → send → confirm-or-release protoco
 `address` as well as per user, so a chat linked after some mail arrived is not silenced by
 another chat's history.
 
+**The conversation read is stricter than `householdMailScope`, and this is the one place in the
+project that deviates from it.**
+
+That helper admits `householdConnectionId: null` to every caller, because NULL means "ownership
+unknown" rather than "nobody's", and hiding those rows would empty the inbox on a deployment
+that has not re-synced. That trade is right for a list view a parent chose to open and wrong for
+outbound egress: two households both match a NULL-stamped row, so a family chat both parents
+linked receives the same mail twice — and in the worst case a stranger's conversation is pushed
+into a parent's Telegram, which is forwardable and permanent in a way a list view is not. The
+notifier therefore reads only rows stamped to the parent's own connections. The cost is that a
+conversation the ownership backfill has not reached is never announced; the parent still sees it
+in the app, which is the safe direction for a push.
+
+**The conversation detail is fetched before the text is rendered, behind a second token.**
+
+`MailInboxTask` stores message **metadata only** — `apis/get-api-mail-inbox-conversations.md`
+shows the inbox list payload carries no `body` and no `files` at all, and both are written only
+when a parent opens the thread. Without a fetch, every notification about mail nobody has opened
+— which is every mail this feature exists to announce — would be a header, a sender, a subject
+and nothing under it, and no attachment would ever be forwarded.
+
+The notifier cannot fetch it itself (it may not reach Mashov), so `UPSTREAM_MAIL` sits in the
+same global module as `MEDIA_DELIVERY` and calls `MailService.getConversationDetail` — the same
+method the HTTP route uses, which asserts visibility with the `userId`, fetches only when no
+message in the thread has a renderable body, and persists what it gets. No new upstream call
+pattern and no new authorization path; the existing one, reached from a cron with the
+subscribing parent's own id. A failure costs the parent the body of the notification, never the
+notification itself.
+
 **Recipients are the parent's `digest_recipient` rows, deduped per (channel, address).**
 
 A parent who linked one family group chat for three children has three rows and one inbox; three
 copies of the same mail is what they would read as the feature being broken.
 
-**Failure handling is per address, not per run.** The digest is all-or-nothing per child; here
-one blocked chat out of three must not cost the other two their confirmation. A permanent
-refusal confirms the rows anyway and disables the recipient, because retrying has no destination
-left.
+**Failure handling is per address *and* per message.** The digest is all-or-nothing per child;
+here one blocked chat out of three must not cost the other two their confirmation — and within
+one chat, a message that was delivered must stay confirmed when a later one fails. Releasing the
+whole batch would re-send the ones that already arrived on every ten-minute tick for as long as
+a sustained 429 or an upstream 5xx window lasted, which is the digest's old
+retry-forever failure in a shape the digest could never have: one digest run is one send. A
+permanent refusal confirms everything and disables the recipient, because retrying has no
+destination left.
+
+**Everything is counted from what the run OWNS, never from what it saw.** A concurrent run can
+have claimed some of the candidates, so deciding whether to summarize — or telling the parent
+"6 new messages" — from the candidate count states a number that is not what went out, and logs
+`messageText` that was never sent.
 
 **A run-log row is written only when a chat had something to be told.** The cron fires 144 times
 a day; a row per quiet tick per parent would bury `digest_delivery` long before the retention

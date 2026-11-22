@@ -4,10 +4,14 @@ import { MailModule } from '../mail/mail.module';
 import { ChildrenModule } from '../children/children.module';
 import { TelegramMediaSender } from '../telegram/telegram-media.sender';
 import { TelegramMediaService } from './telegram-media.service';
+import { UpstreamMailService } from './upstream-mail.service';
 import {
   MEDIA_DELIVERY,
   MediaDelivery,
   NO_MEDIA_DELIVERY,
+  NO_UPSTREAM_MAIL,
+  UPSTREAM_MAIL,
+  UpstreamMail,
 } from './media-delivery.interface';
 
 /**
@@ -26,6 +30,11 @@ import {
  * TELEGRAM_MEDIA_ENABLED defaults to TRUE, unlike the digest's own switches:
  * the feature was asked for, and DIGEST_ENABLED / INBOX_NOTIFY_ENABLED still
  * gate everything that would call it.
+ *
+ * It holds two tokens, not one: MEDIA_DELIVERY for attachment bytes, and
+ * UPSTREAM_MAIL for a mail conversation's detail. Both are here for the same
+ * reason -- they are the Mashov-touching work the push features need, and the
+ * push features may not reach Mashov themselves.
  */
 @Global()
 @Module({
@@ -33,6 +42,17 @@ import {
   providers: [
     TelegramMediaSender,
     TelegramMediaService,
+    UpstreamMailService,
+    {
+      // Gated by the same switch as the media itself: both exist to put a
+      // school's actual attachment in front of a parent, and a body fetched
+      // for a notification nobody can receive an attachment from is work for
+      // nothing.
+      provide: UPSTREAM_MAIL,
+      inject: [ConfigService, UpstreamMailService],
+      useFactory: (config: ConfigService, upstream: UpstreamMailService): UpstreamMail =>
+        isMediaEnabled(config) ? upstream : NO_UPSTREAM_MAIL,
+    },
     {
       provide: MEDIA_DELIVERY,
       inject: [ConfigService, TelegramMediaService],
@@ -40,7 +60,7 @@ import {
         isMediaEnabled(config) ? media : NO_MEDIA_DELIVERY,
     },
   ],
-  exports: [MEDIA_DELIVERY],
+  exports: [MEDIA_DELIVERY, UPSTREAM_MAIL],
 })
 export class TelegramMediaModule {}
 

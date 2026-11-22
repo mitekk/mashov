@@ -374,13 +374,19 @@ export class DigestService {
 
       await this.retireRecipients(userId, studentGuid, retired);
 
-      // `retired.length > 0` is what keeps this from throwing when every chat
-      // was refused permanently. Throwing releases the claims, which is right
-      // for a transient failure and wrong here: the items would come back on
-      // every run, with a fresh model call each time, for chats that have just
-      // been disabled. So the run falls through to confirm them instead, and
-      // records `failed` because nothing reached a parent.
-      if (delivered === 0 && enabled.length > 0 && retired.length === 0) {
+      // The throw is suppressed only when EVERY failure was permanent.
+      //
+      // Throwing releases the claims, which is right for a transient failure
+      // and wrong for a permanent one: the items would come back on every run,
+      // with a fresh model call each time, for chats that have just been
+      // disabled. But `retired.length > 0` was the wrong test. With one
+      // blocked chat and one chat answering 502, it confirmed the claims and
+      // buried the day's news for the chat that was merely flaky -- and
+      // permanently, because nothing ever re-reports an item already in the
+      // ledger. Comparing the counts makes a mixed outcome retry, which is
+      // what the live chat needs.
+      const everyFailurePermanent = retired.length > 0 && retired.length === failures.length;
+      if (delivered === 0 && enabled.length > 0 && !everyFailurePermanent) {
         throw new Error(`no recipient could be reached (${failures.join('; ')})`);
       }
 

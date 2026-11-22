@@ -388,6 +388,35 @@ describe('DigestService.runAll', () => {
     expect(confirmCalls(harness.updateMany)).toHaveLength(1);
   });
 
+  it('retries when one chat was retired and another failed transiently', async () => {
+    // The guard used to be `retired.length === 0`, which suppressed the throw
+    // as soon as ANY chat refused permanently -- so the live chat's claims were
+    // confirmed and the day's news was buried for it permanently, since
+    // nothing ever re-reports an item already in the ledger.
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: 'blocked', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: 'flaky', enabled: true, userId: USER_A },
+      ],
+      sendImpl: jest.fn().mockImplementation((address: string) => {
+        throw new Error(
+          address === 'blocked'
+            ? 'Telegram send failed: Forbidden: bot was blocked by the user'
+            : 'Telegram send failed: HTTP 502',
+        );
+      }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('failed');
+    // The blocked chat is still retired -- that much was right.
+    expect(harness.recipientUpdateMany.mock.calls[0][0].where.address).toBe('blocked');
+    // But nothing is confirmed, so the next hourly run tries the live chat.
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+  });
+
   it('records a quiet day without calling the model or sending anything', async () => {
     const harness = makeHarness({ candidates: [] });
 

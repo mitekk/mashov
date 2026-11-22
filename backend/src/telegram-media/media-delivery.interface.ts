@@ -98,3 +98,39 @@ export const NO_MEDIA_DELIVERY: MediaDelivery = {
   }),
   send: async () => ({ sent: 0, notes: [] }),
 };
+
+/**
+ * Fetching a mail conversation's detail from Mashov.
+ *
+ * A second token in the same module, and for the same boundary reason as
+ * MEDIA_DELIVERY: the notifier must not be able to reach
+ * `MashovSessionModule`, because ADR-0023's egress hop is a residential
+ * tinyproxy meant only for Mashov and `HTTPS_PROXY` is process-wide.
+ *
+ * It exists because `MailInboxTask` stores message METADATA ONLY --
+ * `apis/get-api-mail-inbox-conversations.md` shows the inbox list payload
+ * carries no `body` and no `files` at all, and both are written only when a
+ * parent opens the thread in the app. Without this, every notification about
+ * mail nobody has opened -- which is every mail the feature exists to
+ * announce -- is a header, a sender, a subject and nothing else, and no
+ * attachment is ever forwarded.
+ */
+export const UPSTREAM_MAIL = 'UPSTREAM_MAIL';
+
+export interface UpstreamMail {
+  /** False for the no-op binding, so a caller can skip the work entirely. */
+  readonly enabled: boolean;
+
+  /**
+   * Fetches and persists a conversation's bodies and attachment metadata, as
+   * `userId`. Never throws: upstream being down must not cost the parent the
+   * notification, only its body.
+   */
+  hydrateConversation(conversationId: string, userId: string): Promise<void>;
+}
+
+/** Used when media is disabled, and when a module is compiled on its own. */
+export const NO_UPSTREAM_MAIL: UpstreamMail = {
+  enabled: false,
+  hydrateConversation: async () => undefined,
+};
