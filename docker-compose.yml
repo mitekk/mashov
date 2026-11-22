@@ -118,6 +118,16 @@ services:
       # Above this, one summary message goes out instead of a burst.
       INBOX_NOTIFY_MAX_PER_RUN: ${INBOX_NOTIFY_MAX_PER_RUN:-5}
       INBOX_NOTIFY_BODY_CHARS: ${INBOX_NOTIFY_BODY_CHARS:-700}
+      # Mashov attachments forwarded into Telegram. Bounds, not switches: the
+      # bytes are buffered in memory between the download and the upload, and
+      # this cron is the one thing here that can move the process's memory
+      # profile. Telegram's own ceilings are 50 MB for a document and 10 MB for
+      # a photo upload; these sit well inside them. See ADR-0038.
+      TELEGRAM_MEDIA_MAX_BYTES: ${TELEGRAM_MEDIA_MAX_BYTES:-20971520}
+      # Above this a jpeg or png goes as a document instead of a photo:
+      # sendPhoto re-encodes and downscales, so a scanned slip becomes
+      # unreadable.
+      TELEGRAM_PHOTO_MAX_BYTES: ${TELEGRAM_PHOTO_MAX_BYTES:-5242880}
       # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
       # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
       # it starts, and the mint route answers 503.

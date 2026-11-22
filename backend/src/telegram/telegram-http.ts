@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 
 export const TELEGRAM_API_ROOT = 'https://api.telegram.org';
 
@@ -28,11 +28,17 @@ export interface TelegramEnvelope<T> {
  * (see `botPath`). An axios error carries `config.url`, which ends up in logs
  * and error trackers; a token in the base URL would be in every one of them.
  */
-export function createTelegramHttp(options: { timeoutMs?: number } = {}): AxiosInstance {
+export function createTelegramHttp(
+  options: { timeoutMs?: number } & Pick<AxiosRequestConfig, 'maxBodyLength' | 'maxContentLength'> = {},
+): AxiosInstance {
+  const { timeoutMs, ...rest } = options;
   return axios.create({
     baseURL: TELEGRAM_API_ROOT,
-    timeout: options.timeoutMs ?? TELEGRAM_DEFAULT_TIMEOUT_MS,
+    timeout: timeoutMs ?? TELEGRAM_DEFAULT_TIMEOUT_MS,
     proxy: false,
+    // The media sender needs both at Infinity: axios defaults them to 10 MB
+    // and refuses a larger body LOCALLY, before any request is made.
+    ...rest,
   });
 }
 
