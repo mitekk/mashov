@@ -6,7 +6,7 @@ import {
   currentSchoolYearForStudent,
   currentYearScope,
   historyScope,
-  historyScopeForStudents,
+  isPastSchoolYear,
   schoolYearByConnection,
   schoolYearWindowFor,
   schoolYearWindowsFor,
@@ -100,6 +100,27 @@ describe('school-year scope', () => {
       expect(currentYearScope(2027)).toEqual({
         schoolYear: { in: [2027, UNSCOPED_SCHOOL_YEAR] },
       });
+    });
+  });
+
+  describe('isPastSchoolYear', () => {
+    it('calls a year the student has already left past', () => {
+      expect(isPastSchoolYear(2026, 2027)).toBe(true);
+    });
+
+    it('does not call the current year past', () => {
+      expect(isPastSchoolYear(2027, 2027)).toBe(false);
+    });
+
+    it('does not call a future year past', () => {
+      expect(isPastSchoolYear(2028, 2027)).toBe(false);
+    });
+
+    it('treats the unscoped year as unknown rather than past', () => {
+      // `schoolYear = 0` is a pre-migration row, which `currentYearScope`
+      // deliberately admits. Reading it as "last year" would archive every
+      // row in a half-migrated database.
+      expect(isPastSchoolYear(UNSCOPED_SCHOOL_YEAR, 2027)).toBe(false);
     });
   });
 
@@ -266,21 +287,6 @@ describe('school-year scope', () => {
       expect(scope.OR).toHaveLength(2);
     });
 
-    it('gives each school its own history window', async () => {
-      const scope = await historyScopeForStudents(
-        makeMultiPrisma([CONN_A, CONN_B], TWO_SCHOOLS),
-        makeConfig(2025),
-      );
-
-      expect(scope).toEqual({
-        OR: [
-          { schoolYear: UNSCOPED_SCHOOL_YEAR },
-          { studentGuid: { in: ['a1', 'a2'] }, schoolYear: { gte: 2025, lte: 2026 } },
-          { studentGuid: { in: ['b1'] }, schoolYear: { gte: 2025, lte: 2027 } },
-        ],
-      });
-    });
-
     it('clamps each window independently', async () => {
       const windows = await schoolYearWindowsFor(
         makeMultiPrisma([CONN_A, CONN_B], TWO_SCHOOLS),
@@ -337,19 +343,6 @@ describe('school-year scope', () => {
         expect(orphanBranch.schoolYear.in).toEqual(
           expect.arrayContaining([2026, 2027, UNSCOPED_SCHOOL_YEAR]),
         );
-      });
-
-      it('spans the window for an unstamped child in the history scope too', async () => {
-        const scope = await historyScopeForStudents(
-          makeMultiPrisma([CONN_A, CONN_B], WITH_ORPHAN),
-          makeConfig(2025),
-        );
-
-        const orphanBranch = scope.OR.find(
-          (clause) =>
-            'studentGuid' in clause && clause.studentGuid.in.includes('orphan'),
-        );
-        expect(orphanBranch).toBeDefined();
       });
 
       it('still admits pre-migration rows for a stamped child', async () => {

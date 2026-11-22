@@ -18,6 +18,7 @@ import { SettingsModule } from "../../backend/src/settings/settings.module";
 import { PrismaModule } from "../../backend/src/prisma/prisma.module";
 import { SessionModule } from "../../backend/src/session/session.module";
 import { DashboardModule } from "../../backend/src/dashboard/dashboard.module";
+import { FeedModule } from "../../backend/src/feed/feed.module";
 import { MashovHttpClient } from "../../backend/src/session/mashov-http.client";
 import { EncryptionService } from "../../backend/src/session/encryption.service";
 import { HttpExceptionFilter } from "../../backend/src/common/filters/http-exception.filter";
@@ -59,6 +60,17 @@ describe("API Integration Tests (isNew refactor contract)", () => {
   let encryption: EncryptionService;
 
   beforeAll(async () => {
+    // Pin the history window rather than inheriting it.
+    //
+    // `ConfigModule` loads `.env` from the working directory, which inside the
+    // integration container is the mounted repo -- so a developer's local
+    // `MASHOV_YEAR` reached these tests while CI, which has no `.env`, ran a
+    // one-year window. The archive tab is the only read left that consumes the
+    // variable (ADR-0036), and it needs two years to have anything to span.
+    // Set before the module is built: dotenv does not overwrite an existing
+    // value, so this wins in both environments.
+    process.env.MASHOV_YEAR = '2026';
+
     prisma = new PrismaClient({
       datasources: { db: { url: process.env.DATABASE_URL } },
     });
@@ -79,6 +91,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
         SyncModule,
         SettingsModule,
         DashboardModule,
+        FeedModule,
       ],
     })
       .overrideProvider(MashovHttpClient)
@@ -113,6 +126,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
   });
 
   afterAll(async () => {
+    delete process.env.MASHOV_YEAR;
     await app.close();
     await prisma.$disconnect();
   });
@@ -194,10 +208,11 @@ describe("API Integration Tests (isNew refactor contract)", () => {
         recentHomeworkCount: expect.any(Number),
         recentBehaviorCount: expect.any(Number),
         positiveBehaviorCount: expect.any(Number),
+        neutralBehaviorCount: expect.any(Number),
         subjectCount: expect.any(Number),
         totalWeeklyHours: expect.any(Number),
-        attentionBehaviorCount: expect.any(Number),
       });
+      expect(res.body.summary).not.toHaveProperty("attentionBehaviorCount");
     });
 
     it("GET subjects/notices return {data} envelope", async () => {
@@ -478,6 +493,81 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       );
       expect(res.status).toBe(200);
       expect(res.body.data).toHaveLength(2);
+    });
+
+    it("scopes the list tabs per year: unread is this year, archive spans the window", async () => {
+      // ADR-0036. One 2026 row and one 2027 row, no `user_item_state` at all:
+      // the prior-year row is archived by derivation, so `לא נקרא` holds the
+      // current year alone and `ארכיון` is where last year lives.
+      await seedConnection();
+      await seedStudent(prisma);
+
+      await prisma.homeworkItem.createMany({
+        data: [
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            schoolYear: 2027,
+            lessonId: 11,
+            groupId: 1,
+            lessonDate: new Date("2026-11-10T00:00:00Z"),
+            lesson: 2,
+            subjectName: "Math",
+            homeworkText: "This year",
+            rawPayload: {},
+          },
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            schoolYear: 2026,
+            lessonId: 12,
+            groupId: 1,
+            lessonDate: new Date("2026-05-02T00:00:00Z"),
+            lesson: 1,
+            subjectName: "History",
+            homeworkText: "Last year",
+            rawPayload: {},
+          },
+        ],
+      });
+
+      const newRes = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=new`,
+      );
+      expect(newRes.status).toBe(200);
+      expect(newRes.body.pagination.total).toBe(1);
+      expect(newRes.body.data[0]).toMatchObject({
+        homeworkText: "This year",
+        isPastYear: false,
+        isArchived: false,
+      });
+
+      const archivedRes = await request(app.getHttpServer()).get(
+        `/api/v1/children/${TEST_STUDENT_GUID}/homework?status=archived`,
+      );
+      expect(archivedRes.status).toBe(200);
+      expect(archivedRes.body.pagination.total).toBe(1);
+      expect(archivedRes.body.data[0]).toMatchObject({
+        homeworkText: "Last year",
+        isArchived: true,
+        isNew: false,
+        isPastYear: true,
+      });
+
+      // And the two default feeds carry the current year only.
+      const feedRes = await request(app.getHttpServer()).get("/api/v1/feed");
+      expect(feedRes.status).toBe(200);
+      expect(
+        feedRes.body.data
+          .filter((item: { studentGuid: string | null }) => item.studentGuid === TEST_STUDENT_GUID)
+          .map((item: { summary: string }) => item.summary),
+      ).toEqual(["This year"]);
+
+      const dashboardRes = await request(app.getHttpServer()).get("/api/v1/dashboard");
+      expect(dashboardRes.status).toBe(200);
+      expect(
+        dashboardRes.body.feed
+          .filter((item: { sourceType: string }) => item.sourceType === "homework")
+          .map((item: { summary: string }) => item.summary),
+      ).toEqual(["This year"]);
     });
 
     it("GET behavior with ?status=all returns all items (none archived without userId)", async () => {
@@ -1237,7 +1327,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       expect(res.body.summary).not.toHaveProperty("unreadConversations");
     });
 
-    it("GET /api/v1/dashboard children cards include positiveBehaviorCount and 7-day split", async () => {
+    it("GET /api/v1/dashboard children cards split unread behaviour into attention/positive/neutral", async () => {
       await seedStudent(prisma);
 
       const now = new Date();
@@ -1246,7 +1336,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
 
       await prisma.homeworkItem.createMany({
         data: [
-          // counts: recent
+          // counts: unread this school year
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 1,
@@ -1257,7 +1347,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             homeworkText: "Unread recent",
             rawPayload: {},
           },
-          // counts: recent
+          // counts: unread this school year
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 2,
@@ -1268,7 +1358,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             homeworkText: "Read recent",
             rawPayload: {},
           },
-          // counts: recent
+          // counts: unread this school year
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 3,
@@ -1279,7 +1369,9 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             homeworkText: "Archived",
             rawPayload: {},
           },
-          // excluded: older than 7 days
+          // counted too: unread this school year, with no date floor
+          // (ADR-0034). A rolling window made a school that logs weekly
+          // indistinguishable from a broken sync.
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 4,
@@ -1295,7 +1387,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
 
       await prisma.behaviorItem.createMany({
         data: [
-          // counts: recent + non-positive
+          // counts: unread `attention`
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 1,
@@ -1311,7 +1403,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             eventAt: threeDaysAgo,
             rawPayload: {},
           },
-          // counts: recent + non-positive
+          // counts: unread `attention`
           {
             studentGuid: TEST_STUDENT_GUID,
             lessonId: 2,
@@ -1343,6 +1435,23 @@ describe("API Integration Tests (isNew refactor contract)", () => {
             eventAt: threeDaysAgo,
             rawPayload: {},
           },
+          // counted in neutralBehaviorCount, NOT in recentBehaviorCount:
+          // school-authorised attendance is not a negative event.
+          {
+            studentGuid: TEST_STUDENT_GUID,
+            lessonId: 4,
+            groupId: 1,
+            eventCode: 11,
+            achvaCode: 11,
+            achvaName: "School activity",
+            classification: "neutral",
+            lessonDate: tenDaysAgo,
+            lesson: 1,
+            subject: "Math",
+            reporter: "Teacher",
+            eventAt: tenDaysAgo,
+            rawPayload: {},
+          },
         ],
       });
 
@@ -1353,9 +1462,11 @@ describe("API Integration Tests (isNew refactor contract)", () => {
         (c: { studentGuid: string }) => c.studentGuid === TEST_STUDENT_GUID,
       );
       expect(child).toBeDefined();
-      expect(child.recentHomeworkCount).toBe(3);
+      // 4, not 3: the ten-day-old row counts now.
+      expect(child.recentHomeworkCount).toBe(4);
       expect(child.recentBehaviorCount).toBe(2);
       expect(child.positiveBehaviorCount).toBe(1);
+      expect(child.neutralBehaviorCount).toBe(1);
     });
 
     it("GET /api/v1/dashboard feed includes archived homework/behavior/mail items", async () => {

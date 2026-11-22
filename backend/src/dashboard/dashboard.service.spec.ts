@@ -1,5 +1,4 @@
 import { DashboardService } from './dashboard.service';
-import type { ConfigService } from '@nestjs/config';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { FreshnessService } from '../sync/freshness.service';
 import type { MashovSessionService } from '../session/mashov-session.service';
@@ -34,7 +33,6 @@ interface Overrides {
   mailUnattributedCount?: jest.Mock;
   connectionFindFirst?: jest.Mock;
   connectionAggregate?: jest.Mock;
-  startYear?: string;
 }
 
 function makeService(overrides: Overrides = {}) {
@@ -119,11 +117,7 @@ function makeService(overrides: Overrides = {}) {
     getStateBatch: jest.fn().mockResolvedValue(new Map()),
   } as unknown as UserItemStateService;
 
-  const config = {
-    get: jest.fn((key: string) => (key === 'MASHOV_YEAR' ? overrides.startYear : undefined)),
-  } as unknown as ConfigService;
-
-  const service = new DashboardService(prisma, freshness, session, itemState, config);
+  const service = new DashboardService(prisma, freshness, session, itemState);
   return {
     service,
     homeworkFindMany,
@@ -147,22 +141,12 @@ function mailScope(own = ['conn-1']) {
   };
 }
 
-/** The window predicate a history-spanning read is expected to issue. */
 /**
- * The window predicate a cross-child read issues: each school's children at
- * that school's window, rather than one window for the household.
+ * The year predicate a cross-child read issues: each school's children at
+ * that school's current year, rather than one year for the household.
+ *
+ * Scoped to the household's own children; see `unscopedBranch`.
  */
-function windowWhere(start: number, current: number, guids = ['student-1']) {
-  return {
-    OR: [
-      // Scoped to the household's own children; see unscopedBranch.
-      { studentGuid: { in: guids }, schoolYear: { in: [0] } },
-      { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
-    ],
-  };
-}
-
-/** The same, for a cross-child current-year read. */
 function yearWhere(year: number, guids = ['student-1']) {
   return {
     OR: [
@@ -246,7 +230,7 @@ describe('DashboardService', () => {
       // Asserted as an absent KEY: a falsy check would also pass against the
       // field still being there and empty, which is what it answered for a
       // parent with no connection.
-      const { service } = makeService({ startYear: '2026' });
+      const { service } = makeService();
 
       const result = await service.getDashboard('user-1');
 
@@ -258,36 +242,53 @@ describe('DashboardService', () => {
       ]);
     });
 
-    it('includes a prior-year item in the latest-20 lists once the window is open', async () => {
-      const { service, homeworkFindMany } = makeService({
-        startYear: '2026',
-        homeworkFindMany: jest.fn().mockResolvedValue([PRIOR_YEAR_HOMEWORK]),
-      });
+    it('keeps the latest-20 homework list on the current year', async () => {
+      // The inverse of ADR-0025's assertion here. A year the student has
+      // already left is history, not the top of the home page: it lives
+      // behind `ארכיון` on the child's own list now (ADR-0036).
+      const { service, homeworkFindMany } = makeService();
 
-      const result = await service.getDashboard('user-1');
+      await service.getDashboard('user-1');
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2026, 2027), take: 20 }),
+        expect.objectContaining({ where: yearWhere(2027), take: 20 }),
       );
-      expect(result.feed[0].id).toBe('hw-last-year');
     });
 
-    it('spans the window on the behaviour list too', async () => {
-      const { service, behaviorFindMany } = makeService({ startYear: '2026' });
+    it('keeps the latest-20 behaviour list on the current year too', async () => {
+      const { service, behaviorFindMany } = makeService();
 
       await service.getDashboard('user-1');
 
       expect(behaviorFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2026, 2027), take: 20 }),
+        expect.objectContaining({ where: yearWhere(2027), take: 20 }),
       );
+    });
+
+    it('leaves a prior-year item out of the feed', async () => {
+      // The scope keeps it out in SQL; the mock answers the way the database
+      // would, so the assertion is on the scope AND on the payload.
+      const { service, homeworkFindMany } = makeService({
+        homeworkFindMany: jest.fn(
+          (args?: { where?: { OR?: Array<{ schoolYear?: { in?: number[] } }> } }) => {
+            const years = (args?.where?.OR ?? []).flatMap(
+              (clause) => clause.schoolYear?.in ?? [],
+            );
+            return Promise.resolve(years.includes(2026) ? [PRIOR_YEAR_HOMEWORK] : []);
+          },
+        ),
+      });
+
+      const result = await service.getDashboard('user-1');
+
+      expect(result.feed).toHaveLength(0);
+      expect(JSON.stringify(homeworkFindMany.mock.calls[0][0].where)).not.toContain('gte');
     });
 
     it('keeps latestUpdateAt on the current year alone, so a quiet year still reads quiet', async () => {
       // This is PR #8's only detection mechanism. Widening it would let last
       // June's homework report as this year's latest update.
-      const { service, homeworkFindFirst, behaviorFindFirst } = makeService({
-        startYear: '2026',
-      });
+      const { service, homeworkFindFirst, behaviorFindFirst } = makeService();
 
       const result = await service.getDashboard('user-1');
 
@@ -301,13 +302,13 @@ describe('DashboardService', () => {
       expect(result.children[0].latestUpdateAt).toBeNull();
     });
 
-    it('keeps the window one year wide when MASHOV_YEAR is unset', async () => {
+    it('reads the same scope whether or not MASHOV_YEAR is set', async () => {
       const { service, homeworkFindMany } = makeService();
 
       await service.getDashboard('user-1');
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2027, 2027) }),
+        expect.objectContaining({ where: yearWhere(2027) }),
       );
     });
   });

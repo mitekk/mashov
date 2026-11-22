@@ -30,6 +30,7 @@ function makeHomeworkRow(overrides: object = {}) {
   return {
     id: 'hw-1',
     studentGuid: TEST_GUID,
+    schoolYear: 2027,
     lessonId: 1,
     groupId: 2,
     lessonDate: new Date('2026-03-10T00:00:00Z'),
@@ -47,6 +48,7 @@ function makeBehaviorRow(overrides: object = {}) {
   return {
     id: 'beh-1',
     studentGuid: TEST_GUID,
+    schoolYear: 2027,
     lessonId: 1,
     groupId: 2,
     eventCode: 2,
@@ -318,8 +320,72 @@ describe('ChildrenService', () => {
       const result = await service.getChildren('user-1');
       expect(result.data[0]).toMatchObject({
         recentHomeworkCount: 0,
-        recentBehaviorCount: 1,
+        // beh-1 is read and beh-2 archived, so only the neutral beh-3 is
+        // visible -- and a neutral row is not an attention row.
+        recentBehaviorCount: 0,
         positiveBehaviorCount: 0,
+        neutralBehaviorCount: 1,
+      });
+    });
+
+    it('counts an unread item whose lessonDate is a month old', async () => {
+      // The chips sit directly above lists that span the whole year, so a
+      // rolling date floor made a school that logs weekly look unsynced. The
+      // floor is gone: these rows are counted on read state and year alone.
+      const homeworkFindMany = jest.fn().mockResolvedValue([{ id: 'hw-old' }]);
+      const behaviorFindMany = jest.fn().mockResolvedValue([
+        { id: 'beh-old', classification: 'attention' },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany, behaviorFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+      );
+
+      const result = await service.getChildren('user-1');
+
+      expect(result.data[0]).toMatchObject({
+        recentHomeworkCount: 1,
+        recentBehaviorCount: 1,
+      });
+      // No `lessonDate` predicate on either count query.
+      for (const call of [homeworkFindMany, behaviorFindMany]) {
+        expect(call).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.not.objectContaining({ lessonDate: expect.anything() }),
+          }),
+        );
+      }
+    });
+
+    it('splits behaviour into attention, positive and neutral buckets', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          behaviorFindMany: jest.fn().mockResolvedValue([
+            { id: 'beh-1', classification: 'attention' },
+            { id: 'beh-2', classification: 'attention' },
+            { id: 'beh-3', classification: 'positive' },
+            { id: 'beh-4', classification: 'neutral' },
+            { id: 'beh-5', classification: 'neutral' },
+            { id: 'beh-6', classification: 'neutral' },
+          ]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+      );
+
+      const result = await service.getChildren('user-1');
+
+      expect(result.data[0]).toMatchObject({
+        recentBehaviorCount: 2,
+        positiveBehaviorCount: 1,
+        neutralBehaviorCount: 3,
       });
     });
   });
@@ -357,9 +423,9 @@ describe('ChildrenService', () => {
         recentHomeworkCount: 3,
         recentBehaviorCount: 2,
         positiveBehaviorCount: 1,
+        neutralBehaviorCount: 0,
         subjectCount: 4,
         totalWeeklyHours: 9,
-        attentionBehaviorCount: 2,
       });
       expect(result.lastSyncAt).toBe('2026-03-12T14:00:00.000Z');
     });
@@ -1580,14 +1646,43 @@ describe('ChildrenService', () => {
       });
     });
 
-    it('spans the history window on the homework list', async () => {
+    // -----------------------------------------------------------------------
+    // Per-tab year scope (ADR-0036).
+    //
+    // `לא נקרא` and `הכל` are the default view, so they hold the current year
+    // alone; `ארכיון` keeps the whole `MASHOV_YEAR` window, which makes it the
+    // one place last year is still reachable. These assertions are the inverse
+    // of the ones ADR-0025 added, deliberately.
+    // -----------------------------------------------------------------------
+
+    it('keeps the unread homework tab on the current year', async () => {
       const homeworkFindMany = jest.fn().mockResolvedValue([]);
       const service = new ChildrenService(
         makeMockPrisma({ homeworkFindMany }),
         makeMockSession(),
         makeMockMashovClient(),
         makeMockUserItemStateService(),
-        makeMockConfig(),
+        makeMockConfig('2026'),
+        makeMockScope(),
+      );
+
+      await service.getHomework(TEST_GUID, 1, 20, 'new', 'user-1');
+
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+    });
+
+    it('keeps the "all" homework tab on the current year', async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
         makeMockScope(),
       );
 
@@ -1595,22 +1690,38 @@ describe('ChildrenService', () => {
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: expect.objectContaining(windowWhere(2027, 2027)),
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
         }),
       );
     });
 
-    it('returns a prior-year homework item once the window is open', async () => {
+    it('spans the history window on the homework archive tab', async () => {
+      const homeworkFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
+        makeMockScope(),
+      );
+
+      await service.getHomework(TEST_GUID, 1, 20, 'archived', 'user-1');
+
+      expect(homeworkFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining(windowWhere(2026, 2027)),
+        }),
+      );
+    });
+
+    it('archives a prior-year homework row that has no state row at all', async () => {
+      // No `user_item_state` row means "never opened", which used to read as
+      // unread. A year the student has left is history, so the derivation
+      // outranks the absent row -- with no backfill and nothing written at
+      // rollover.
       const homeworkFindMany = jest.fn().mockResolvedValue([
-        {
-          id: 'hw-last-year',
-          studentGuid: TEST_GUID,
-          subjectName: 'History',
-          homeworkText: 'Chapter 4',
-          lessonDate: new Date('2026-05-02T08:00:00Z'),
-          updatedAt: new Date('2026-05-02T08:30:00Z'),
-          files: [],
-        },
+        makeHomeworkRow({ id: 'hw-last-year', schoolYear: 2026 }),
       ]);
       const service = new ChildrenService(
         makeMockPrisma({ homeworkFindMany }),
@@ -1621,18 +1732,76 @@ describe('ChildrenService', () => {
         makeMockScope(),
       );
 
-      const result = await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
+      const archived = await service.getHomework(TEST_GUID, 1, 20, 'archived', 'user-1');
+      expect(archived.pagination.total).toBe(1);
+      expect(archived.data[0]).toMatchObject({
+        id: 'hw-last-year',
+        isArchived: true,
+        isNew: false,
+        isPastYear: true,
+      });
 
-      expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining(windowWhere(2026, 2027)) }),
-      );
-      expect(result.data[0].id).toBe('hw-last-year');
-      expect(result.pagination.total).toBe(1);
+      const unread = await service.getHomework(TEST_GUID, 1, 20, 'new', 'user-1');
+      expect(unread.pagination.total).toBe(0);
+
+      const all = await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
+      expect(all.pagination.total).toBe(0);
     });
 
-    it('spans the history window on the behaviour list', async () => {
-      // Without this the widening of getBehavior is asserted nowhere: the
-      // whole suite stayed green with it on currentYearScope.
+    it('does not treat a pre-migration homework row as a past year', async () => {
+      // `schoolYear = 0` is "unknown", and `currentYearScope` admits it. Read
+      // as last year it would archive every row in a half-migrated database.
+      const homeworkFindMany = jest.fn().mockResolvedValue([
+        makeHomeworkRow({ id: 'hw-legacy', schoolYear: 0 }),
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
+        makeMockScope(),
+      );
+
+      const unread = await service.getHomework(TEST_GUID, 1, 20, 'new', 'user-1');
+      expect(unread.pagination.total).toBe(1);
+      expect(unread.data[0]).toMatchObject({ isPastYear: false, isArchived: false });
+    });
+
+    it('matches the header chip: the unread total equals unreadHomeworkCount', async () => {
+      // The invariant this whole change exists to buy. One prior-year row and
+      // two current-year ones: the chip counts the current year, so the `לא
+      // נקרא` total has to as well.
+      const rows = [
+        makeHomeworkRow({ id: 'hw-a', schoolYear: 2027 }),
+        makeHomeworkRow({ id: 'hw-b', schoolYear: 2027 }),
+        makeHomeworkRow({ id: 'hw-old', schoolYear: 2026 }),
+      ];
+      // The chip's read is current-year-scoped in SQL, so the prior-year row
+      // never reaches it; the list's `new` tab is scoped the same way.
+      const homeworkFindMany = jest.fn((args?: { where?: { schoolYear?: { in?: number[] } } }) => {
+        const years = args?.where?.schoolYear?.in;
+        return Promise.resolve(
+          years ? rows.filter((row) => years.includes(row.schoolYear)) : rows,
+        );
+      });
+      const service = new ChildrenService(
+        makeMockPrisma({ homeworkFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
+        makeMockScope(),
+      );
+
+      const list = await service.getHomework(TEST_GUID, 1, 20, 'new', 'user-1');
+      const workspace = await service.getChildWorkspace(TEST_GUID, 'user-1');
+
+      expect(list.pagination.total).toBe(2);
+      expect(workspace.summary.recentHomeworkCount).toBe(list.pagination.total);
+    });
+
+    it('keeps the unread behaviour tab on the current year', async () => {
       const behaviorFindMany = jest.fn().mockResolvedValue([]);
       const service = new ChildrenService(
         makeMockPrisma({ behaviorFindMany }),
@@ -1643,7 +1812,27 @@ describe('ChildrenService', () => {
         makeMockScope(),
       );
 
-      await service.getBehavior(TEST_GUID, 1, 20, 'all', 'all', 'user-1');
+      await service.getBehavior(TEST_GUID, 1, 20, 'all', 'new', 'user-1');
+
+      expect(behaviorFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+    });
+
+    it('spans the history window on the behaviour archive tab', async () => {
+      const behaviorFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ behaviorFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig('2026'),
+        makeMockScope(),
+      );
+
+      await service.getBehavior(TEST_GUID, 1, 20, 'all', 'archived', 'user-1');
 
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1652,20 +1841,9 @@ describe('ChildrenService', () => {
       );
     });
 
-    it('returns a prior-year behaviour item once the window is open', async () => {
+    it('archives a prior-year behaviour row that has no state row at all', async () => {
       const behaviorFindMany = jest.fn().mockResolvedValue([
-        {
-          id: 'beh-last-year',
-          studentGuid: TEST_GUID,
-          achvaName: 'Late arrival',
-          remark: null,
-          classification: 'attention',
-          achvaCode: 1,
-          eventAt: new Date('2026-05-02T09:00:00Z'),
-          lessonDate: new Date('2026-05-02T09:00:00Z'),
-          updatedAt: new Date('2026-05-02T09:10:00Z'),
-          rawPayload: {},
-        },
+        makeBehaviorRow({ id: 'beh-last-year', schoolYear: 2026 }),
       ]);
       const service = new ChildrenService(
         makeMockPrisma({ behaviorFindMany }),
@@ -1676,10 +1854,16 @@ describe('ChildrenService', () => {
         makeMockScope(),
       );
 
-      const result = await service.getBehavior(TEST_GUID, 1, 20, 'all', 'all', 'user-1');
+      const archived = await service.getBehavior(TEST_GUID, 1, 20, 'all', 'archived', 'user-1');
+      expect(archived.data[0]).toMatchObject({
+        id: 'beh-last-year',
+        isArchived: true,
+        isNew: false,
+        isPastYear: true,
+      });
 
-      expect(result.data[0].id).toBe('beh-last-year');
-      expect(result.pagination.total).toBe(1);
+      const unread = await service.getBehavior(TEST_GUID, 1, 20, 'all', 'new', 'user-1');
+      expect(unread.pagination.total).toBe(0);
     });
 
     it('keeps the timetable on the current year alone even with the window open', async () => {

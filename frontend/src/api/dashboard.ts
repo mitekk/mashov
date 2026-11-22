@@ -9,6 +9,7 @@ export async function fetchDashboard(): Promise<DashboardResponse> {
       ? response.children.map((child) => ({
           ...child,
           positiveBehaviorCount: Number(child.positiveBehaviorCount ?? 0),
+          neutralBehaviorCount: Number(child.neutralBehaviorCount ?? 0),
         }))
       : [],
   };

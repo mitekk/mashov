@@ -2,9 +2,10 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { BookOpen, AlertTriangle, ThumbsUp, ChevronLeft } from 'lucide-react';
+import { BookOpen, AlertTriangle, ThumbsUp, Info, ChevronLeft } from 'lucide-react';
 import type { ChildListItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
+import { getBucketLabel } from '@/lib/behavior';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
@@ -22,6 +23,7 @@ export function ChildCard({ child }: ChildCardProps) {
   );
 
   const positiveBehaviorCount = child.positiveBehaviorCount ?? 0;
+  const neutralBehaviorCount = child.neutralBehaviorCount ?? 0;
 
   const content = (
     <>
@@ -65,7 +67,7 @@ export function ChildCard({ child }: ChildCardProps) {
             )}
           >
             <AlertTriangle className="w-3.5 h-3.5" />
-            {child.recentBehaviorCount} אירועים
+            {child.recentBehaviorCount} {getBucketLabel('attention')}
           </span>
           <span
             data-testid={`child-list-positive-count-${child.studentGuid}`}
@@ -76,6 +78,14 @@ export function ChildCard({ child }: ChildCardProps) {
           >
             <ThumbsUp className="w-3.5 h-3.5" />
             {positiveBehaviorCount} חיוביים
+          </span>
+          {/* Attendance: its own muted count, not part of the amber one. */}
+          <span
+            data-testid={`child-list-neutral-count-${child.studentGuid}`}
+            className="flex items-center gap-1 text-muted-foreground"
+          >
+            <Info className="w-3.5 h-3.5" />
+            {neutralBehaviorCount} {getBucketLabel('neutral')}
           </span>
         </div>
         {child.latestUpdateAt && (

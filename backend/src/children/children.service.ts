@@ -10,11 +10,12 @@ import {
   schoolYearForConnection,
   currentYearScope,
   historyScope,
+  isPastSchoolYear,
   schoolYearWindowForStudent,
   yearScopeForStudents,
-  type YearScope,
 } from '../common/school-year/school-year.scope';
 import { canSeeStudent, visibleStudentWhere } from '../common/student-links';
+import { unreadChildActivityCounts } from '../common/child-activity-counts';
 import { buildStudentSchoolMap } from '../common/student-school-map';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
@@ -85,7 +86,6 @@ export class ChildrenService {
     // does not own with all three labels `null`. One helper, one answer.
     const schoolByStudent = await buildStudentSchoolMap(this.prisma, students, userId);
 
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // Current year only: these are activity counts and staleness signals, and
     // the subject count would double for a groupId that recurs yearly.
     //
@@ -104,9 +104,10 @@ export class ChildrenService {
           latestBehavior,
         ] =
           await Promise.all([
-            this.getUnreadChildActivityCounts(
+            unreadChildActivityCounts(
+              this.prisma,
+              this.userItemStateService,
               student.studentGuid,
-              sevenDaysAgo,
               yearScope,
               userId,
             ),
@@ -150,9 +151,12 @@ export class ChildrenService {
           schoolName: schoolByStudent.get(student.studentGuid)?.schoolName ?? null,
           schoolShortLabel: schoolByStudent.get(student.studentGuid)?.shortLabel ?? null,
           semel: schoolByStudent.get(student.studentGuid)?.semel ?? null,
-          recentHomeworkCount: activityCounts.recentHomeworkCount,
-          recentBehaviorCount: activityCounts.recentBehaviorCount,
-          positiveBehaviorCount: activityCounts.positiveBehaviorCount,
+          // Wire names kept; the meaning is "unread this school year", not
+          // "the last seven days" -- see `unreadChildActivityCounts`.
+          recentHomeworkCount: activityCounts.unreadHomeworkCount,
+          recentBehaviorCount: activityCounts.attentionCount,
+          positiveBehaviorCount: activityCounts.positiveCount,
+          neutralBehaviorCount: activityCounts.neutralCount,
           subjectCount,
           latestUpdateAt,
         };
@@ -164,7 +168,6 @@ export class ChildrenService {
 
   async getChildWorkspace(studentGuid: string, userId?: string) {
     const student = await this.getStudentOrThrow(studentGuid, userId);
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // Current year only: counts, the subject total and the weekly-hours sum.
     // One child, so one year -- that child's own school's.
     const yearScope = currentYearScope(
@@ -177,7 +180,13 @@ export class ChildrenService {
       totalWeeklyHours,
       lastSync,
     ] = await Promise.all([
-      this.getUnreadChildActivityCounts(studentGuid, sevenDaysAgo, yearScope, userId),
+      unreadChildActivityCounts(
+        this.prisma,
+        this.userItemStateService,
+        studentGuid,
+        yearScope,
+        userId,
+      ),
       this.prisma.subjectEnrollment.count({
         where: { studentGuid, ...yearScope },
       }),
@@ -215,12 +224,15 @@ export class ChildrenService {
         isActive: student.isActive,
       },
       summary: {
-        recentHomeworkCount: activityCounts.recentHomeworkCount,
-        recentBehaviorCount: activityCounts.recentBehaviorCount,
-        positiveBehaviorCount: activityCounts.positiveBehaviorCount,
+        // Wire names kept; the meaning is "unread this school year", which
+        // is the "לא נקרא" total of the list beneath each chip -- restricted
+        // to the current year, where the list spans `MASHOV_YEAR` back.
+        recentHomeworkCount: activityCounts.unreadHomeworkCount,
+        recentBehaviorCount: activityCounts.attentionCount,
+        positiveBehaviorCount: activityCounts.positiveCount,
+        neutralBehaviorCount: activityCounts.neutralCount,
         subjectCount,
         totalWeeklyHours: totalWeeklyHours._sum.weeklyHours ?? 0,
-        attentionBehaviorCount: activityCounts.attentionBehaviorCount,
       },
       lastSyncAt: lastSync?.endedAt?.toISOString() ?? null,
     };
@@ -235,20 +247,20 @@ export class ChildrenService {
   ) {
     const student = await this.requireStudent(studentGuid, userId);
 
-    // Fetch all non-filtered items for state-based filtering
-    // A list, so it spans the configured history window; `pagination.total`
-    // grows with it by design.
+    // Per-tab year scope (ADR-0036). `לא נקרא` and `הכל` are the default
+    // view, so they hold the current year alone -- which is what makes the
+    // `לא נקרא` total equal the header chip. `ארכיון` keeps the configured
+    // history window, so last year stays reachable in exactly one place.
+    const window = await schoolYearWindowForStudent(
+      this.prisma,
+      this.configService,
+      student.householdConnectionId,
+    );
+    const yearWhere =
+      status === 'archived' ? historyScope(window) : currentYearScope(window.current);
+
     const allItems = await this.prisma.homeworkItem.findMany({
-      where: {
-        studentGuid,
-        ...historyScope(
-          await schoolYearWindowForStudent(
-            this.prisma,
-            this.configService,
-            student.householdConnectionId,
-          ),
-        ),
-      },
+      where: { studentGuid, ...yearWhere },
       orderBy: { lessonDate: 'desc' },
     });
 
@@ -257,10 +269,11 @@ export class ChildrenService {
       ? await this.userItemStateService.getStateBatch(userId, 'homework', allIds)
       : new Map<string, { isNew: boolean; isArchived: boolean }>();
 
-    const defaultState = { isNew: true, isArchived: false };
+    const effectiveState = (item: { id: string; schoolYear: number }) =>
+      this.effectiveItemState(stateMap.get(item.id), item.schoolYear, window.current);
 
     const filtered = allItems.filter((item) => {
-      const state = stateMap.get(item.id) ?? defaultState;
+      const state = effectiveState(item);
       if (status === 'archived') return state.isArchived;
       if (status === 'new') return state.isNew && !state.isArchived;
       return !state.isArchived; // 'all' excludes archived
@@ -271,8 +284,8 @@ export class ChildrenService {
 
     return {
       data: paged.map((item) => {
-        const state = stateMap.get(item.id) ?? defaultState;
-        return this.mapHomeworkItem(item, state.isNew, state.isArchived);
+        const state = effectiveState(item);
+        return this.mapHomeworkItem(item, state.isNew, state.isArchived, state.isPastYear);
       }),
       pagination: {
         page,
@@ -284,7 +297,7 @@ export class ChildrenService {
   }
 
   async getHomeworkDetail(studentGuid: string, homeworkId: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.homeworkItem.findUnique({
       where: { id: homeworkId },
@@ -293,11 +306,19 @@ export class ChildrenService {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
 
-    const state = userId
+    // Deliberately unscoped by year: a link to a past-year item has to keep
+    // working. The derivation runs here too, so the detail page agrees with
+    // the list it was opened from.
+    const currentYear = await schoolYearForConnection(
+      this.prisma,
+      student.householdConnectionId,
+    );
+    const stored = userId
       ? await this.userItemStateService.getState(userId, 'homework', homeworkId)
-      : { isNew: true, isArchived: false };
+      : undefined;
+    const state = this.effectiveItemState(stored, item.schoolYear, currentYear);
 
-    return this.mapHomeworkItem(item, state.isNew, state.isArchived);
+    return this.mapHomeworkItem(item, state.isNew, state.isArchived, state.isPastYear);
   }
 
   async getBehavior(
@@ -310,17 +331,20 @@ export class ChildrenService {
   ) {
     const student = await this.requireStudent(studentGuid, userId);
 
+    // Per-tab year scope, exactly as `getHomework` -- see the note there.
+    const window = await schoolYearWindowForStudent(
+      this.prisma,
+      this.configService,
+      student.householdConnectionId,
+    );
+    const yearWhere =
+      status === 'archived' ? historyScope(window) : currentYearScope(window.current);
+
     const allItems = await this.prisma.behaviorItem.findMany({
       where: {
         studentGuid,
         ...(bucket !== 'all' ? { classification: bucket } : {}),
-        ...historyScope(
-          await schoolYearWindowForStudent(
-            this.prisma,
-            this.configService,
-            student.householdConnectionId,
-          ),
-        ),
+        ...yearWhere,
       },
       orderBy: { eventAt: 'desc' },
     });
@@ -330,10 +354,11 @@ export class ChildrenService {
       ? await this.userItemStateService.getStateBatch(userId, 'behavior', allIds)
       : new Map<string, { isNew: boolean; isArchived: boolean }>();
 
-    const defaultState = { isNew: true, isArchived: false };
+    const effectiveState = (item: { id: string; schoolYear: number }) =>
+      this.effectiveItemState(stateMap.get(item.id), item.schoolYear, window.current);
 
     const filtered = allItems.filter((item) => {
-      const state = stateMap.get(item.id) ?? defaultState;
+      const state = effectiveState(item);
       if (status === 'archived') return state.isArchived;
       if (status === 'new') return state.isNew && !state.isArchived;
       return !state.isArchived;
@@ -344,8 +369,8 @@ export class ChildrenService {
 
     return {
       data: paged.map((item) => {
-        const state = stateMap.get(item.id) ?? defaultState;
-        return this.mapBehaviorItem(item, state.isNew, state.isArchived);
+        const state = effectiveState(item);
+        return this.mapBehaviorItem(item, state.isNew, state.isArchived, state.isPastYear);
       }),
       pagination: {
         page,
@@ -357,7 +382,7 @@ export class ChildrenService {
   }
 
   async getBehaviorDetail(studentGuid: string, behaviorId: string, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.behaviorItem.findUnique({
       where: { id: behaviorId },
@@ -366,11 +391,17 @@ export class ChildrenService {
       throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
     }
 
-    const state = userId
+    // Unscoped by year for the same reason `getHomeworkDetail` is.
+    const currentYear = await schoolYearForConnection(
+      this.prisma,
+      student.householdConnectionId,
+    );
+    const stored = userId
       ? await this.userItemStateService.getState(userId, 'behavior', behaviorId)
-      : { isNew: true, isArchived: false };
+      : undefined;
+    const state = this.effectiveItemState(stored, item.schoolYear, currentYear);
 
-    return this.mapBehaviorItem(item, state.isNew, state.isArchived);
+    return this.mapBehaviorItem(item, state.isNew, state.isArchived, state.isPastYear);
   }
 
   async downloadHomeworkAttachment(
@@ -448,23 +479,33 @@ export class ChildrenService {
   }
 
   async setHomeworkIsNew(studentGuid: string, homeworkId: string, isNew: boolean, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
     if (!item || item.studentGuid !== studentGuid) {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
 
+    // The derivation runs on the way out of every mutation too. Without it the
+    // response would claim a past-year row is unarchived while the next read
+    // of the same row says otherwise.
+    const year = await schoolYearForConnection(this.prisma, student.householdConnectionId);
+    const effective = (stored?: { isNew: boolean; isArchived: boolean }) =>
+      this.effectiveItemState(stored, item.schoolYear, year);
+
     if (userId) {
       const currentState = await this.userItemStateService.getState(userId, 'homework', homeworkId);
       if (currentState.isArchived) {
-        return this.mapHomeworkItem(item, currentState.isNew, currentState.isArchived);
+        const state = effective(currentState);
+        return this.mapHomeworkItem(item, state.isNew, state.isArchived, state.isPastYear);
       }
       const newState = await this.userItemStateService.setState(userId, 'homework', homeworkId, isNew, undefined);
-      return this.mapHomeworkItem(item, newState.isNew, newState.isArchived);
+      const state = effective(newState);
+      return this.mapHomeworkItem(item, state.isNew, state.isArchived, state.isPastYear);
     }
 
-    return this.mapHomeworkItem(item, isNew, false);
+    const state = effective({ isNew, isArchived: false });
+    return this.mapHomeworkItem(item, state.isNew, state.isArchived, state.isPastYear);
   }
 
   async setHomeworkManyIsNew(studentGuid: string, homeworkIds: string[], isNew: boolean, userId?: string) {
@@ -480,12 +521,16 @@ export class ChildrenService {
   }
 
   async setHomeworkArchived(studentGuid: string, homeworkId: string, isArchived: boolean, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.homeworkItem.findUnique({ where: { id: homeworkId } });
     if (!item || item.studentGuid !== studentGuid) {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
+
+    const year = await schoolYearForConnection(this.prisma, student.householdConnectionId);
+    const effective = (stored?: { isNew: boolean; isArchived: boolean }) =>
+      this.effectiveItemState(stored, item.schoolYear, year);
 
     if (userId) {
       // Archive rules: archive=true forces isNew=false; unarchive=false forces isNew=true
@@ -494,10 +539,14 @@ export class ChildrenService {
         isArchived ? false : true,
         isArchived,
       );
-      return this.mapHomeworkItem(item, newState.isNew, newState.isArchived);
+      // A past-year row stays archived whatever was written, which is why the
+      // UI offers no restore control for one.
+      const state = effective(newState);
+      return this.mapHomeworkItem(item, state.isNew, state.isArchived, state.isPastYear);
     }
 
-    return this.mapHomeworkItem(item, !isArchived, isArchived);
+    const state = effective({ isNew: !isArchived, isArchived });
+    return this.mapHomeworkItem(item, state.isNew, state.isArchived, state.isPastYear);
   }
 
   async setHomeworkManyArchived(studentGuid: string, homeworkIds: string[], isArchived: boolean, userId?: string) {
@@ -517,23 +566,30 @@ export class ChildrenService {
   }
 
   async setBehaviorIsNew(studentGuid: string, behaviorId: string, isNew: boolean, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
     if (!item || item.studentGuid !== studentGuid) {
       throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
     }
 
+    const year = await schoolYearForConnection(this.prisma, student.householdConnectionId);
+    const effective = (stored?: { isNew: boolean; isArchived: boolean }) =>
+      this.effectiveItemState(stored, item.schoolYear, year);
+
     if (userId) {
       const currentState = await this.userItemStateService.getState(userId, 'behavior', behaviorId);
       if (currentState.isArchived) {
-        return this.mapBehaviorItem(item, currentState.isNew, currentState.isArchived);
+        const state = effective(currentState);
+        return this.mapBehaviorItem(item, state.isNew, state.isArchived, state.isPastYear);
       }
       const newState = await this.userItemStateService.setState(userId, 'behavior', behaviorId, isNew, undefined);
-      return this.mapBehaviorItem(item, newState.isNew, newState.isArchived);
+      const state = effective(newState);
+      return this.mapBehaviorItem(item, state.isNew, state.isArchived, state.isPastYear);
     }
 
-    return this.mapBehaviorItem(item, isNew, false);
+    const state = effective({ isNew, isArchived: false });
+    return this.mapBehaviorItem(item, state.isNew, state.isArchived, state.isPastYear);
   }
 
   async setBehaviorManyIsNew(studentGuid: string, behaviorIds: string[], isNew: boolean, userId?: string) {
@@ -549,12 +605,16 @@ export class ChildrenService {
   }
 
   async setBehaviorArchived(studentGuid: string, behaviorId: string, isArchived: boolean, userId?: string) {
-    await this.requireStudent(studentGuid, userId);
+    const student = await this.requireStudent(studentGuid, userId);
 
     const item = await this.prisma.behaviorItem.findUnique({ where: { id: behaviorId } });
     if (!item || item.studentGuid !== studentGuid) {
       throw new NotFoundException(`Behavior item not found: ${behaviorId}`);
     }
+
+    const year = await schoolYearForConnection(this.prisma, student.householdConnectionId);
+    const effective = (stored?: { isNew: boolean; isArchived: boolean }) =>
+      this.effectiveItemState(stored, item.schoolYear, year);
 
     if (userId) {
       const newState = await this.userItemStateService.setState(
@@ -562,10 +622,12 @@ export class ChildrenService {
         isArchived ? false : true,
         isArchived,
       );
-      return this.mapBehaviorItem(item, newState.isNew, newState.isArchived);
+      const state = effective(newState);
+      return this.mapBehaviorItem(item, state.isNew, state.isArchived, state.isPastYear);
     }
 
-    return this.mapBehaviorItem(item, !isArchived, isArchived);
+    const state = effective({ isNew: !isArchived, isArchived });
+    return this.mapBehaviorItem(item, state.isNew, state.isArchived, state.isPastYear);
   }
 
   async setBehaviorManyArchived(studentGuid: string, behaviorIds: string[], isArchived: boolean, userId?: string) {
@@ -767,6 +829,30 @@ export class ChildrenService {
     };
   }
 
+  /**
+   * The state a parent actually sees, which is the stored one widened by the
+   * year the row sits in.
+   *
+   * A row from a year the student has already left is archived whether or not
+   * anyone ever opened it, and it is not new -- mirroring the archive action,
+   * which forces `isNew = false`. Nothing is written to do this: the flag is
+   * derived on read, so it flips for the whole household the moment the
+   * connection's `schoolYear` advances (ADR-0036).
+   */
+  private effectiveItemState(
+    stored: { isNew: boolean; isArchived: boolean } | undefined,
+    rowYear: number,
+    currentYear: number,
+  ): { isNew: boolean; isArchived: boolean; isPastYear: boolean } {
+    const state = stored ?? { isNew: true, isArchived: false };
+    const isPastYear = isPastSchoolYear(rowYear, currentYear);
+    return {
+      isNew: state.isNew && !isPastYear,
+      isArchived: state.isArchived || isPastYear,
+      isPastYear,
+    };
+  }
+
   private mapHomeworkItem(
     item: {
       id: string;
@@ -783,6 +869,7 @@ export class ChildrenService {
     },
     isNew = true,
     isArchived = false,
+    isPastYear = false,
   ) {
     return {
       id: item.id,
@@ -797,6 +884,10 @@ export class ChildrenService {
       files: this.asArray(item.files),
       isNew,
       isArchived,
+      // The frontend hides the archive toggle on a past-year row: restoring
+      // it would write `isArchived = false` and move nothing, because the
+      // derived rule outranks the stored flag.
+      isPastYear,
       updatedAt: item.updatedAt.toISOString(),
     };
   }
@@ -824,6 +915,7 @@ export class ChildrenService {
     },
     isNew = true,
     isArchived = false,
+    isPastYear = false,
   ) {
     const mappedBucket = this.mapBehaviorBucket(item.classification);
     const priority = BEHAVIOR_PRIORITY_MAP[item.eventCode]
@@ -854,6 +946,7 @@ export class ChildrenService {
       eventAt: item.eventAt.toISOString(),
       isNew,
       isArchived,
+      isPastYear,
       updatedAt: item.updatedAt.toISOString(),
     };
   }
@@ -868,75 +961,6 @@ export class ChildrenService {
    */
   private async requireStudent(studentGuid: string, userId?: string) {
     return this.getStudentOrThrow(studentGuid, userId);
-  }
-
-  private async getUnreadChildActivityCounts(
-    studentGuid: string,
-    since: Date,
-    yearScope: YearScope,
-    userId?: string,
-  ): Promise<{
-    recentHomeworkCount: number;
-    recentBehaviorCount: number;
-    positiveBehaviorCount: number;
-    attentionBehaviorCount: number;
-  }> {
-    const [homeworkRows, behaviorRows] = await Promise.all([
-      this.prisma.homeworkItem.findMany({
-        where: {
-          studentGuid,
-          lessonDate: { gte: since },
-          ...yearScope,
-        },
-        select: { id: true },
-      }),
-      this.prisma.behaviorItem.findMany({
-        where: {
-          studentGuid,
-          lessonDate: { gte: since },
-          ...yearScope,
-        },
-        select: { id: true, classification: true },
-      }),
-    ]);
-
-    const homeworkIds = homeworkRows.map((row) => row.id);
-    const behaviorIds = behaviorRows.map((row) => row.id);
-
-    const [homeworkStateMap, behaviorStateMap] = userId
-      ? await Promise.all([
-          this.userItemStateService.getStateBatch(userId, 'homework', homeworkIds),
-          this.userItemStateService.getStateBatch(userId, 'behavior', behaviorIds),
-        ])
-      : [
-          new Map<string, { isNew: boolean; isArchived: boolean }>(),
-          new Map<string, { isNew: boolean; isArchived: boolean }>(),
-        ];
-
-    const recentHomeworkCount = homeworkRows.filter((row) =>
-      this.isUnreadAndNotArchived(homeworkStateMap.get(row.id)),
-    ).length;
-
-    const visibleBehaviorRows = behaviorRows.filter((row) =>
-      this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
-    );
-
-    const recentBehaviorCount = visibleBehaviorRows.filter(
-      (row) => row.classification !== 'positive',
-    ).length;
-    const positiveBehaviorCount = visibleBehaviorRows.filter(
-      (row) => row.classification === 'positive',
-    ).length;
-    const attentionBehaviorCount = visibleBehaviorRows.filter(
-      (row) => row.classification === 'attention',
-    ).length;
-
-    return {
-      recentHomeworkCount,
-      recentBehaviorCount,
-      positiveBehaviorCount,
-      attentionBehaviorCount,
-    };
   }
 
   private async getStudentOrThrow(studentGuid: string, userId?: string) {
@@ -1184,12 +1208,5 @@ export class ChildrenService {
 
   private asArray(value: unknown): unknown[] {
     return Array.isArray(value) ? value : [];
-  }
-
-  private isUnreadAndNotArchived(
-    state: { isNew: boolean; isArchived: boolean } | undefined,
-  ): boolean {
-    const effectiveState = state ?? { isNew: true, isArchived: false };
-    return effectiveState.isNew && !effectiveState.isArchived;
   }
 }

@@ -35,8 +35,14 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
     () => filteredItems.filter((item) => selectedHomeworkIds.includes(item.id)),
     [filteredItems, selectedHomeworkIds],
   );
+  // Restorable only. A past-year item is archived by derivation, so sending
+  // it to the unarchive endpoint would write a flag the API overrules and
+  // move nothing (ADR-0036); with only such rows selected the button is gone.
   const selectedArchivedIds = useMemo(
-    () => selectedItems.filter((item) => item.isArchived).map((item) => item.id),
+    () =>
+      selectedItems
+        .filter((item) => item.isArchived && !item.isPastYear)
+        .map((item) => item.id),
     [selectedItems],
   );
   const selectedNonArchivedIds = useMemo(

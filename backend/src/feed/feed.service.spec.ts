@@ -1,6 +1,5 @@
 import { FeedService } from './feed.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type { ConfigService } from '@nestjs/config';
 
 function makeMockPrisma(overrides: Partial<{
   studentFindMany: jest.Mock;
@@ -33,24 +32,16 @@ function makeMockPrisma(overrides: Partial<{
   } as unknown as jest.Mocked<PrismaService>;
 }
 
-function makeConfig(startYear?: string): ConfigService {
-  return {
-    get: jest.fn((key: string) => (key === 'MASHOV_YEAR' ? startYear : undefined)),
-  } as unknown as ConfigService;
+function makeFeedService(prisma: PrismaService): FeedService {
+  return new FeedService(prisma);
 }
 
-function makeFeedService(prisma: PrismaService, startYear?: string): FeedService {
-  return new FeedService(prisma, makeConfig(startYear));
-}
-
-/** The window predicate the feed is expected to issue. */
 /**
- * The window predicate a cross-child read issues: each school's children at
- * that school's window, rather than one window for the household. With a
+ * The year predicate a cross-child read issues: each school's children at
+ * that school's current year, rather than one year for the household. With a
  * single connection it selects exactly the rows the flat form used to.
  */
-function windowWhere(
-  start: number,
+function yearWhere(
   current: number,
   guids = ['student-1'],
   /**
@@ -67,7 +58,7 @@ function windowWhere(
       scoped
         ? { studentGuid: { in: guids }, schoolYear: { in: [0] } }
         : { schoolYear: 0 },
-      { studentGuid: { in: guids }, schoolYear: { gte: start, lte: current } },
+      { studentGuid: { in: guids }, schoolYear: { in: [current] } },
     ],
   };
 }
@@ -179,7 +170,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(homeworkFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: windowWhere(2027, 2027, ['student-1'], false),
+          where: yearWhere(2027, ['student-1'], false),
           orderBy: { lessonDate: 'desc' },
         }),
       );
@@ -194,7 +185,7 @@ describe('FeedService', () => {
       await service.getFeed(1, 20);
       expect(behaviorFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: windowWhere(2027, 2027, ['student-1'], false),
+          where: yearWhere(2027, ['student-1'], false),
           orderBy: { eventAt: 'desc' },
         }),
       );
@@ -493,49 +484,50 @@ describe('FeedService', () => {
       expect(result.data[0].isHandled).toBe(false);
     });
 
-    it('spans the configured history window rather than the current year alone', async () => {
-      const homeworkFindMany = jest.fn().mockResolvedValue([
-        {
-          id: 'hw-last-year',
-          studentGuid: 'student-1',
-          subjectName: 'History',
-          homeworkText: 'Chapter 4',
-          lessonDate: new Date('2026-05-02T08:00:00Z'),
-          updatedAt: new Date('2026-05-02T08:30:00Z'),
-        },
-      ]);
-      const service = makeFeedService(makeMockPrisma({ homeworkFindMany }), '2026');
-
-      const result = await service.getFeed(1, 20);
-
-      expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2026, 2027, ['student-1'], false) }),
-      );
-      expect(result.data[0].id).toBe('hw-last-year');
-    });
-
-    it('excludes a year earlier than the configured start year', async () => {
-      const homeworkFindMany = jest.fn().mockResolvedValue([]);
-      const service = makeFeedService(makeMockPrisma({ homeworkFindMany }), '2026');
-
-      await service.getFeed(1, 20);
-
-      const where = homeworkFindMany.mock.calls[0][0].where;
-      expect(where.OR[1].schoolYear.gte).toBe(2026);
-      expect(where.OR).not.toContainEqual(
-        expect.objectContaining({ schoolYear: expect.objectContaining({ gte: 2025 }) }),
-      );
-    });
-
-    it('keeps the window one year wide when MASHOV_YEAR is unset', async () => {
+    it('holds the current year alone, whatever MASHOV_YEAR reaches back to', async () => {
+      // The inverse of what ADR-0025 asserted here. `MASHOV_YEAR` still
+      // governs what the backfill FETCHES; it no longer governs what the feed
+      // SHOWS, because the feed is the page a parent lands on (ADR-0036).
       const homeworkFindMany = jest.fn().mockResolvedValue([]);
       const service = makeFeedService(makeMockPrisma({ homeworkFindMany }));
 
       await service.getFeed(1, 20);
 
       expect(homeworkFindMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: windowWhere(2027, 2027, ['student-1'], false) }),
+        expect.objectContaining({ where: yearWhere(2027, ['student-1'], false) }),
       );
+      expect(JSON.stringify(homeworkFindMany.mock.calls[0][0].where)).not.toContain('gte');
+    });
+
+    it('leaves a prior-year item out of the feed entirely', async () => {
+      // The SQL scope keeps it out, so the mock answers the way the database
+      // would: nothing for a year the predicate does not name.
+      const homeworkFindMany = jest.fn(
+        (args?: { where?: { OR?: Array<{ schoolYear?: { in?: number[] } }> } }) => {
+          const years = (args?.where?.OR ?? []).flatMap(
+            (clause) => clause.schoolYear?.in ?? [],
+          );
+          return Promise.resolve(
+            years.includes(2026)
+              ? [
+                  {
+                    id: 'hw-last-year',
+                    studentGuid: 'student-1',
+                    subjectName: 'History',
+                    homeworkText: 'Chapter 4',
+                    lessonDate: new Date('2026-05-02T08:00:00Z'),
+                    updatedAt: new Date('2026-05-02T08:30:00Z'),
+                  },
+                ]
+              : [],
+          );
+        },
+      );
+      const service = makeFeedService(makeMockPrisma({ homeworkFindMany }));
+
+      const result = await service.getFeed(1, 20);
+
+      expect(result.data).toHaveLength(0);
     });
 
     it('applies pagination correctly', async () => {

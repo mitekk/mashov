@@ -281,6 +281,7 @@ function normalizeChildListItem(item: UnknownRecord): ChildListItem {
     recentHomeworkCount: Number(item.recentHomeworkCount ?? 0),
     recentBehaviorCount: Number(item.recentBehaviorCount ?? 0),
     positiveBehaviorCount: Number(item.positiveBehaviorCount ?? 0),
+    neutralBehaviorCount: Number(item.neutralBehaviorCount ?? 0),
     subjectCount: Number(item.subjectCount ?? 0),
     latestUpdateAt:
       typeof item.latestUpdateAt === 'string' ? item.latestUpdateAt : null,
@@ -320,9 +321,9 @@ function normalizeChildWorkspace(response: UnknownRecord): ChildWorkspaceRespons
         summaryRaw.recentBehaviorCount ?? behavior.length ?? 0,
       ),
       positiveBehaviorCount: Number(summaryRaw.positiveBehaviorCount ?? 0),
+      neutralBehaviorCount: Number(summaryRaw.neutralBehaviorCount ?? 0),
       subjectCount: Number(summaryRaw.subjectCount ?? subjects.length ?? 0),
       totalWeeklyHours: Number(summaryRaw.totalWeeklyHours ?? 0),
-      attentionBehaviorCount: Number(summaryRaw.attentionBehaviorCount ?? 0),
     },
     lastSyncAt: typeof response.lastSyncAt === 'string' ? response.lastSyncAt : null,
   };
@@ -346,6 +347,9 @@ function normalizeHomework(item: UnknownRecord) {
     files: Array.isArray(item.files) ? item.files : [],
     isNew: Boolean(item.isNew),
     isArchived: Boolean(item.isArchived),
+    // Absent on a response from a backend that predates the derivation, which
+    // reads as "this year" -- the behaviour the UI had before it existed.
+    isPastYear: Boolean(item.isPastYear),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }
@@ -395,6 +399,7 @@ function normalizeBehavior(item: UnknownRecord) {
     eventAt: String(item.eventAt ?? ''),
     isNew: Boolean(item.isNew),
     isArchived: Boolean(item.isArchived),
+    isPastYear: Boolean(item.isPastYear),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }

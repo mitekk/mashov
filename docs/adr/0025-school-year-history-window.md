@@ -1,7 +1,7 @@
 # ADR-0025: `MASHOV_YEAR` Means the Earliest Year to Fetch, Never the Year in Scope
 
 - **Date**: 2026-11-17
-- **Status**: Accepted
+- **Status**: Partially superseded by [ADR-0036](0036-current-year-lists-and-derived-past-year-archive.md). Still in force: `MASHOV_YEAR` is the earliest year to *fetch*, never the year in scope, and the backfill and staleness-signal rules below. No longer in force: the lists and feeds do not span the window by default; `לא נקרא` and `הכל` show the current year, and only `ארכיון` spans the window.
 - **Deciders**: Backend agent, Planner
 - **Supersedes**: the `MASHOV_YEAR` decision in [ADR-0024](0024-school-year-resolution-and-rollover.md)
 

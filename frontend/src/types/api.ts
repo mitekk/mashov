@@ -82,9 +82,13 @@ export interface DashboardChildCard {
   fullName: string;
   classCode: string;
   classNum: number;
+  /** Unread this school year, not a rolling window (ADR-0034). */
   recentHomeworkCount: number;
+  /** Unread `attention` events this school year. */
   recentBehaviorCount: number;
   positiveBehaviorCount: number;
+  /** Attendance and anything unmapped: shown, but not as negative. */
+  neutralBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
   /** `null` for a child with no ownership stamp: the UI shows no badge. */
@@ -114,9 +118,13 @@ export interface ChildListItem {
   classNum: number;
   gender: string;
   isActive: boolean;
+  /** Unread this school year, not a rolling window (ADR-0034). */
   recentHomeworkCount: number;
+  /** Unread `attention` events this school year. */
   recentBehaviorCount: number;
   positiveBehaviorCount: number;
+  /** Attendance and anything unmapped: shown, but not as negative. */
+  neutralBehaviorCount: number;
   subjectCount: number;
   latestUpdateAt: string | null;
   /** `null` for a child with no ownership stamp: the UI shows no badge. */
@@ -142,12 +150,15 @@ export interface ChildStudent {
 }
 
 export interface ChildSummary {
+  /** Unread this school year, not a rolling window (ADR-0034). */
   recentHomeworkCount: number;
+  /** Unread `attention` events this school year. */
   recentBehaviorCount: number;
   positiveBehaviorCount: number;
+  /** Attendance and anything unmapped: shown, but not as negative. */
+  neutralBehaviorCount: number;
   subjectCount: number;
   totalWeeklyHours: number;
-  attentionBehaviorCount: number;
 }
 
 export interface ChildWorkspaceResponse {
@@ -215,6 +226,13 @@ export interface HomeworkItem {
   files: HomeworkFile[];
   isNew: boolean;
   isArchived: boolean;
+  /**
+   * The item belongs to a school year the student has already left, which the
+   * API derives rather than stores. Such an item is always archived and can
+   * never be restored, so the UI shows a `שנה קודמת` badge where the archive
+   * toggle would be (ADR-0036).
+   */
+  isPastYear: boolean;
   updatedAt: string;
 }
 
@@ -248,6 +266,8 @@ export interface BehaviorItem {
   eventAt: string;
   isNew: boolean;
   isArchived: boolean;
+  /** See `HomeworkItem.isPastYear`. */
+  isPastYear: boolean;
   updatedAt: string;
 }
 

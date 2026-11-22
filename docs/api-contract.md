@@ -341,8 +341,8 @@ a household never outgrowing the default page.
   };
   summary: {
     unreadConversations: number;         // from mail_conversation.isUnread count
-    recentHomeworkCount: number;         // homework_item in last 7 days
-    recentBehaviorCount: number;         // behavior_item in last 7 days
+    recentHomeworkCount: number;         // household-wide homework_item in last 7 days
+    recentBehaviorCount: number;         // household-wide non-positive behavior_item in last 7 days
     childrenCount: number;               // active student count
   };
   feed: Array<{                          // max 20 items; full feed via GET /api/v1/feed
@@ -369,8 +369,10 @@ a household never outgrowing the default page.
     fullName: string;
     classCode: string;
     classNum: number;
-    recentHomeworkCount: number;
-    recentBehaviorCount: number;
+    recentHomeworkCount: number;         // unread homework this school year
+    recentBehaviorCount: number;         // unread "attention" behaviour this school year
+    positiveBehaviorCount: number;       // unread "positive" behaviour this school year
+    neutralBehaviorCount: number;        // unread "neutral" (attendance) this school year
     latestUpdateAt: string | null;       // ISO 8601
     oneLineStatus: string;               // e.g. "3 homework items, 1 behavior event"
   }>;
@@ -424,8 +426,10 @@ a household never outgrowing the default page.
     classNum: number;
     gender: string;                      // "נ" | "ז"
     isActive: boolean;
-    recentHomeworkCount: number;         // last 7 days
-    recentBehaviorCount: number;         // last 7 days
+    recentHomeworkCount: number;         // unread homework this school year
+    recentBehaviorCount: number;         // unread "attention" behaviour this school year
+    positiveBehaviorCount: number;       // unread "positive" behaviour this school year
+    neutralBehaviorCount: number;        // unread "neutral" (attendance) this school year
     subjectCount: number;
     latestUpdateAt: string | null;       // ISO 8601
   }>;
@@ -447,11 +451,12 @@ a household never outgrowing the default page.
     isActive: boolean;
   };
   summary: {
-    recentHomeworkCount: number;         // last 7 days
-    recentBehaviorCount: number;         // last 7 days
+    recentHomeworkCount: number;         // unread homework this school year
+    recentBehaviorCount: number;         // unread "attention" behaviour this school year
+    positiveBehaviorCount: number;       // unread "positive" behaviour this school year
+    neutralBehaviorCount: number;        // unread "neutral" (attendance) this school year
     subjectCount: number;
     totalWeeklyHours: number;            // sum of subject_enrollment.weeklyHours
-    attentionBehaviorCount: number;      // behavior items in Attention bucket, last 7 days
   };
   lastSyncAt: string | null;            // ISO 8601, latest sync_run.endedAt for this child's sources
 }
@@ -463,6 +468,8 @@ Query param semantics for `status`:
 - `new` → `isNew=true` and `isArchived=false`
 - `all` → all non-archived items (`isArchived=false`), regardless of `isNew`
 - `archived` → archived items only (`isArchived=true`)
+
+Year scope is per tab: `new` and `all` return the **current school year** only; `archived` spans the full `MASHOV_YEAR` window (earliest year fetched through the current year). A past-year item (`schoolYear` below the student's current year; `schoolYear = 0` is "unknown" and never counts as past) is **derived archived**: it is returned with `isArchived: true`, `isNew: false`, `isPastYear: true` regardless of the stored per-user state, and appears only under `status=archived`. The derived flag outranks the stored one: `PUT .../archive` with `isArchived: false` and `PUT .../is-new` both still succeed and still write the per-user row, but the response and every later read re-derive the flags, so the item stays `isArchived: true, isNew: false`. The UI therefore offers no restore or read toggle on such an item — it renders a `שנה קודמת` badge instead. See ADR-0036.
 
 ```typescript
 {
@@ -481,7 +488,8 @@ Query param semantics for `status`:
       fileName: string;
     }>;
     isNew: boolean;                      // true until explicitly dismissed
-    isArchived: boolean;                 // soft-archived by the parent
+    isArchived: boolean;                 // soft-archived by the parent, or derived from isPastYear
+    isPastYear: boolean;                 // item's school year is before the student's current year
     updatedAt: string;                   // ISO 8601
   }>;
   pagination: {
@@ -510,7 +518,8 @@ Used in both list and mutation responses:
   remark: string | null;
   files: Array<{ fileId: string; fileName: string; }>;
   isNew: boolean;
-  isArchived: boolean;
+  isArchived: boolean;                   // stored flag OR isPastYear
+  isPastYear: boolean;                   // true => archived by derivation; not restorable
   updatedAt: string;
 }
 ```
@@ -552,6 +561,8 @@ Query param semantics for `status`:
 - `all` → all non-archived items (`isArchived=false`), regardless of `isNew`
 - `archived` → archived items only (`isArchived=true`)
 
+Year scope is per tab: `new` and `all` return the **current school year** only; `archived` spans the full `MASHOV_YEAR` window (earliest year fetched through the current year). A past-year item (`schoolYear` below the student's current year; `schoolYear = 0` is "unknown" and never counts as past) is **derived archived**: it is returned with `isArchived: true`, `isNew: false`, `isPastYear: true` regardless of the stored per-user state, and appears only under `status=archived`. The derived flag outranks the stored one: `PUT .../archive` with `isArchived: false` and `PUT .../is-new` both still succeed and still write the per-user row, but the response and every later read re-derive the flags, so the item stays `isArchived: true, isNew: false`. The UI therefore offers no restore or read toggle on such an item — it renders a `שנה קודמת` badge instead. See ADR-0036.
+
 ```typescript
 {
   data: Array<{
@@ -573,7 +584,8 @@ Query param semantics for `status`:
     justification: string | null;        // null if "ללא הערות" or empty
     eventAt: string;                     // ISO 8601
     isNew: boolean;                      // true until explicitly dismissed
-    isArchived: boolean;                 // soft-archived by the parent
+    isArchived: boolean;                 // soft-archived by the parent, or derived from isPastYear
+    isPastYear: boolean;                 // item's school year is before the student's current year
     updatedAt: string;                   // ISO 8601
   }>;
   pagination: {
@@ -609,7 +621,8 @@ Used in both list and mutation responses:
   justification: string | null;
   eventAt: string;
   isNew: boolean;
-  isArchived: boolean;
+  isArchived: boolean;                   // stored flag OR isPastYear
+  isPastYear: boolean;                   // true => archived by derivation; not restorable
   updatedAt: string;
 }
 ```

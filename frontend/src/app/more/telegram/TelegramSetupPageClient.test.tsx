@@ -41,6 +41,7 @@ function child(overrides: Partial<ChildListItem> & Pick<ChildListItem, 'studentG
     recentHomeworkCount: 0,
     recentBehaviorCount: 0,
     positiveBehaviorCount: 0,
+    neutralBehaviorCount: 0,
     subjectCount: 0,
     latestUpdateAt: null,
     schoolId: 'conn-1',

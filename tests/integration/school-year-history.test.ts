@@ -103,6 +103,17 @@ describe('School-year history window', () => {
       },
     });
     connectionId = connection.id;
+    // The per-child reads resolve their year from the child's own connection.
+    // Unstamped, they fall back to the highest active year in a database that
+    // other suites also write to -- so the stamp is what makes them stable.
+    await prisma.student.update({
+      where: { studentGuid: STUDENT_GUID },
+      data: { householdConnectionId: connectionId },
+    });
+    await prisma.studentConnection.deleteMany({ where: { studentGuid: STUDENT_GUID } });
+    await prisma.studentConnection.create({
+      data: { studentGuid: STUDENT_GUID, householdConnectionId: connectionId },
+    });
   });
 
   async function seedHomeworkYears(years: number[]): Promise<void> {
@@ -123,18 +134,43 @@ describe('School-year history window', () => {
     }
   }
 
-  function feedService(startYear?: string): FeedService {
-    return new FeedService(prisma as unknown as PrismaService, config(startYear));
+  function feedService(): FeedService {
+    return new FeedService(prisma as unknown as PrismaService);
   }
 
-  it('returns all three years of a three-year window, newest first', async () => {
+  function childrenService(startYear?: string): ChildrenService {
+    return new ChildrenService(
+      prisma as unknown as PrismaService,
+      { ensureStudentsAvailable: jest.fn() } as unknown as MashovSessionService,
+      {} as unknown as MashovHttpClient,
+      // No userId is passed to the reads below, so no state rows are read:
+      // every row's state is the default, widened by the year derivation.
+      {} as unknown as UserItemStateService,
+      config(startYear),
+      {} as unknown as ConnectionScopeService,
+    );
+  }
+
+  async function archivedHomework(startYear?: string): Promise<string[]> {
+    const result = await childrenService(startYear).getHomework(
+      STUDENT_GUID,
+      1,
+      50,
+      'archived',
+    );
+    return result.data.map((item) => item.homeworkText);
+  }
+
+  // ---------------------------------------------------------------------
+  // The window reaches back exactly as far as it always did -- but behind
+  // `ארכיון` now, not on the default view (ADR-0036). These three tests are
+  // the ADR-0025 feed assertions, moved to the surface that still spans it.
+  // ---------------------------------------------------------------------
+
+  it('returns all three years of a three-year window in the archive, newest first', async () => {
     await seedHomeworkYears([2025, 2026, 2027]);
 
-    const result = await feedService('2025').getFeed(1, 20);
-
-    const mine = result.data.filter((item) => item.studentGuid === STUDENT_GUID);
-    expect(mine.map((item) => item.summary)).toEqual([
-      'homework for 2027',
+    expect(await archivedHomework('2025')).toEqual([
       'homework for 2026',
       'homework for 2025',
     ]);
@@ -143,19 +179,30 @@ describe('School-year history window', () => {
   it('excludes the third year back when MASHOV_YEAR reaches further than the cap', async () => {
     await seedHomeworkYears([2024, 2025, 2026, 2027]);
 
-    const result = await feedService('2019').getFeed(1, 20);
-
-    const mine = result.data.filter((item) => item.studentGuid === STUDENT_GUID);
-    expect(mine.map((item) => item.summary)).toEqual([
-      'homework for 2027',
-      'homework for 2026',
-      'homework for 2025',
-    ]);
-    expect(mine.map((item) => item.summary)).not.toContain('homework for 2024');
+    const texts = await archivedHomework('2019');
+    expect(texts).toEqual(['homework for 2026', 'homework for 2025']);
+    expect(texts).not.toContain('homework for 2024');
   });
 
-  it('returns only the current year when MASHOV_YEAR is unset', async () => {
+  it('leaves the archive empty when MASHOV_YEAR is unset and nothing was archived', async () => {
     await seedHomeworkYears([2025, 2026, 2027]);
+
+    // One year wide, and the current year's rows are not past-year rows, so
+    // nothing is archived by derivation.
+    expect(await archivedHomework()).toEqual([]);
+  });
+
+  it('shows the current year alone on the unread tab, whatever the window spans', async () => {
+    await seedHomeworkYears([2025, 2026, 2027]);
+
+    const result = await childrenService('2025').getHomework(STUDENT_GUID, 1, 50, 'new');
+
+    expect(result.data.map((item) => item.homeworkText)).toEqual(['homework for 2027']);
+    expect(result.pagination.total).toBe(1);
+  });
+
+  it('keeps a prior year out of the feed entirely', async () => {
+    await seedHomeworkYears([2026, 2027]);
 
     const result = await feedService().getFeed(1, 20);
 

@@ -24,6 +24,7 @@ function makeHomeworkItem(overrides: object = {}) {
     files: [],
     isNew: true,
     isArchived: false,
+    isPastYear: false,
     updatedAt: new Date().toISOString(),
     ...overrides,
   };
@@ -51,6 +52,7 @@ function makeBehaviorItem(overrides: object = {}) {
     eventAt: new Date().toISOString(),
     isNew: true,
     isArchived: false,
+    isPastYear: false,
     updatedAt: new Date().toISOString(),
     ...overrides,
   };
@@ -332,6 +334,7 @@ test.describe('Children page', () => {
               recentHomeworkCount: 2,
               recentBehaviorCount: 0,
               positiveBehaviorCount: 0,
+              neutralBehaviorCount: 0,
               subjectCount: 0,
               latestUpdateAt: new Date().toISOString(),
             },
@@ -347,6 +350,7 @@ test.describe('Children page', () => {
               recentHomeworkCount: 1,
               recentBehaviorCount: 1,
               positiveBehaviorCount: 2,
+              neutralBehaviorCount: 3,
               subjectCount: 0,
               latestUpdateAt: new Date().toISOString(),
             },
@@ -364,6 +368,50 @@ test.describe('Children page', () => {
     await expect(
       page.getByTestId('child-list-positive-count-student-indicators-1').locator('svg.lucide-thumbs-up'),
     ).toBeVisible();
+    // `neutral` (attendance marked by the school) has its own muted chip: it
+    // used to be added to the amber one and read as a negative event.
+    await expect(page.getByTestId('child-list-neutral-count-student-indicators-1')).toContainText('0');
+    await expect(page.getByTestId('child-list-neutral-count-student-indicators-2')).toContainText('3');
+  });
+
+  test('a child whose only items are three weeks old still shows non-zero counts', async ({ page }) => {
+    // The counts are "unread this school year", so a school that logs
+    // fortnightly is no longer indistinguishable from a broken sync.
+    const threeWeeksAgo = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString();
+    await page.route('**/api/v1/children', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            {
+              studentGuid: 'student-quiet-term-1',
+              privateName: 'Quiet',
+              familyName: 'Kid',
+              fullName: 'Quiet Kid',
+              classCode: 'ג',
+              classNum: 3,
+              gender: 'F',
+              isActive: true,
+              recentHomeworkCount: 52,
+              recentBehaviorCount: 12,
+              positiveBehaviorCount: 8,
+              neutralBehaviorCount: 1,
+              subjectCount: 15,
+              latestUpdateAt: threeWeeksAgo,
+            },
+          ],
+        }),
+      });
+    });
+
+    const childrenPage = new ChildrenPage(page);
+    await childrenPage.navigate();
+
+    await expect(page.getByTestId('child-list-homework-count-student-quiet-term-1')).toContainText('52');
+    await expect(page.getByTestId('child-list-negative-count-student-quiet-term-1')).toContainText('12');
+    await expect(page.getByTestId('child-list-positive-count-student-quiet-term-1')).toContainText('8');
+    await expect(page.getByTestId('child-list-neutral-count-student-quiet-term-1')).toContainText('1');
   });
 });
 
@@ -409,9 +457,9 @@ test.describe('Child workspace page', () => {
             recentHomeworkCount: 1,
             recentBehaviorCount: 1,
             positiveBehaviorCount: 1,
+            neutralBehaviorCount: 2,
             subjectCount: 1,
             totalWeeklyHours: 6,
-            attentionBehaviorCount: 1,
           },
           lastSyncAt: new Date().toISOString(),
         }),
@@ -448,10 +496,13 @@ test.describe('Child workspace page', () => {
 
     await expect(page.getByTestId('child-header-homework-count')).toContainText('1');
     await expect(page.getByTestId('child-header-negative-count')).toContainText('1');
+    await expect(page.getByTestId('child-header-negative-count')).toContainText('תשומת לב');
     await expect(page.getByTestId('child-header-positive-count')).toContainText('1');
     await expect(
       page.getByTestId('child-header-positive-count').locator('svg.lucide-thumbs-up'),
     ).toBeVisible();
+    await expect(page.getByTestId('child-header-neutral-count')).toContainText('2');
+    await expect(page.getByTestId('child-header-neutral-count')).toContainText('אחר');
   });
 
   test('workspace header shows releases button and opens releases dialog', async ({ page }) => {
@@ -1210,6 +1261,87 @@ test.describe('Child workspace page', () => {
     await expect(page.getByTestId('homework-item-link-hw-active-tab')).toHaveCount(0);
     await expect(page.getByTestId('homework-mark-new-hw-archived-tab')).toHaveCount(0);
     await expect(page.getByTestId('homework-archive-hw-archived-tab')).toBeVisible();
+  });
+
+  test('archive holds last year with a שנה קודמת badge and no archive toggle', async ({ page }) => {
+    // ADR-0036: `לא נקרא` is this school year, so its total equals the header
+    // chip -- the invariant the per-tab scoping exists to buy. Last year sits
+    // in `ארכיון`, archived by derivation, with nothing to restore it with.
+    await page.route(`**/api/v1/children/${STUDENT_GUID}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          student: {
+            studentGuid: STUDENT_GUID,
+            privateName: 'Test',
+            familyName: 'Student',
+            fullName: 'Test Student',
+            classCode: 'א',
+            classNum: 1,
+            gender: 'M',
+            isActive: true,
+          },
+          summary: {
+            recentHomeworkCount: 2,
+            recentBehaviorCount: 0,
+            positiveBehaviorCount: 0,
+            neutralBehaviorCount: 0,
+            subjectCount: 1,
+            totalWeeklyHours: 6,
+          },
+          lastSyncAt: new Date().toISOString(),
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      const status = new URL(route.request().url()).searchParams.get('status');
+      const body =
+        status === 'archived'
+          ? {
+              data: [
+                makeHomeworkItem({
+                  id: 'hw-past-year',
+                  isNew: false,
+                  isArchived: true,
+                  isPastYear: true,
+                  subjectName: 'History',
+                }),
+              ],
+              pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+            }
+          : {
+              data: [
+                makeHomeworkItem({ id: 'hw-now-1' }),
+                makeHomeworkItem({ id: 'hw-now-2', subjectName: 'Science' }),
+              ],
+              pagination: { page: 1, limit: 50, total: 2, totalPages: 1 },
+            };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'homework', 'all');
+
+    // The chip and the `לא נקרא` list agree: two items, chip reads 2.
+    await expect(page.getByTestId('child-header-homework-count')).toContainText('2');
+    await expect(page.getByTestId('homework-item-link-hw-now-1')).toBeVisible();
+    await expect(page.getByTestId('homework-item-link-hw-now-2')).toBeVisible();
+    await expect(page.getByTestId('homework-item-link-hw-past-year')).toHaveCount(0);
+
+    await page.getByTestId('homework-filter-archived').click();
+
+    await expect(page.getByTestId('homework-item-link-hw-past-year')).toBeVisible();
+    await expect(page.getByTestId('homework-past-year-hw-past-year')).toHaveText('שנה קודמת');
+    // Neither the archive toggle nor the read toggle: there is nothing either
+    // of them could change on a row the API archives by derivation.
+    await expect(page.getByTestId('homework-archive-hw-past-year')).toHaveCount(0);
+    await expect(page.getByTestId('homework-mark-new-hw-past-year')).toHaveCount(0);
   });
 
   test('homework new-tab bulk actions call is-new and archive endpoints', async ({ page }) => {

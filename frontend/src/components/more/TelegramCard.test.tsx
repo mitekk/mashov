@@ -17,6 +17,7 @@ function child(
     recentHomeworkCount: 0,
     recentBehaviorCount: 0,
     positiveBehaviorCount: 0,
+    neutralBehaviorCount: 0,
     subjectCount: 0,
     latestUpdateAt: null,
     schoolId: 'conn-1',

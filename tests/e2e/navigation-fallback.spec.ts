@@ -114,9 +114,10 @@ async function mockBaseRoutes(page: Page) {
       summary: {
         recentHomeworkCount: 1,
         recentBehaviorCount: 1,
+        positiveBehaviorCount: 1,
+        neutralBehaviorCount: 1,
         subjectCount: 1,
         totalWeeklyHours: 5,
-        attentionBehaviorCount: 1,
       },
       lastSyncAt: new Date().toISOString(),
     }),

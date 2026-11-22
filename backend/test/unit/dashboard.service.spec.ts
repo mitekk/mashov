@@ -4,7 +4,6 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { FreshnessService } from '../../src/sync/freshness.service';
 import { MashovSessionService } from '../../src/session/mashov-session.service';
 import { UserItemStateService } from '../../src/common/user-item-state.service';
-import { ConfigService } from '@nestjs/config';
 
 const mockPrisma = {
   mailConversation: {
@@ -63,9 +62,6 @@ describe('DashboardService', () => {
         { provide: FreshnessService, useValue: mockFreshness },
         { provide: MashovSessionService, useValue: mockSession },
         { provide: UserItemStateService, useValue: mockUserItemState },
-        // MASHOV_YEAR unset: the history window is one year wide, so these
-        // expectations are unchanged by the window's introduction.
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
       ],
     }).compile();
 
@@ -193,6 +189,49 @@ describe('DashboardService', () => {
       });
     });
 
+    it('scopes the feed to the current year, so a prior-year item never reaches it', async () => {
+      // ADR-0035. The feed is the page a parent lands on, so last year lives
+      // behind `ארכיון` instead; the backfill's window still fetches it.
+      seedEmptyState();
+      mockPrisma.student.findMany.mockResolvedValue([
+        { studentGuid: 'sg-1', fullName: 'Test Child', privateName: 'Test', familyName: 'Child' },
+      ]);
+      mockPrisma.householdConnection.findMany.mockResolvedValue([
+        { id: 'conn-1', schoolYear: 2027 },
+      ]);
+      mockPrisma.studentConnection.findMany.mockResolvedValue([
+        { studentGuid: 'sg-1', householdConnectionId: 'conn-1' },
+      ]);
+      // Answers the way the database would: nothing for a year the predicate
+      // does not name.
+      mockPrisma.homeworkItem.findMany.mockImplementation(
+        async (args: { select?: object; where?: { OR?: Array<{ schoolYear?: { in?: number[] } }> } }) => {
+          if (args?.select) return [];
+          const years = (args?.where?.OR ?? []).flatMap((clause) => clause.schoolYear?.in ?? []);
+          return years.includes(2026)
+            ? [
+                {
+                  id: 'hw-last-year',
+                  studentGuid: 'sg-1',
+                  subjectName: 'History',
+                  homeworkText: 'Chapter 4',
+                  lessonDate: new Date('2026-05-02T08:00:00Z'),
+                  updatedAt: new Date('2026-05-02T08:30:00Z'),
+                },
+              ]
+            : [];
+        },
+      );
+
+      const result = await service.getDashboard('user-1');
+
+      expect(result.feed).toHaveLength(0);
+      const listCall = mockPrisma.homeworkItem.findMany.mock.calls
+        .map((call: [{ select?: object; where?: unknown }]) => call[0])
+        .find((args: { select?: object }) => !args?.select);
+      expect(JSON.stringify(listCall?.where)).not.toContain('gte');
+    });
+
     it('returns children cards with unread homework/negative behavior/positive behavior counts', async () => {
       const now = new Date('2026-03-12T10:00:00Z');
       seedEmptyState();
@@ -240,8 +279,104 @@ describe('DashboardService', () => {
         recentHomeworkCount: 2,
         recentBehaviorCount: 1,
         positiveBehaviorCount: 1,
+        neutralBehaviorCount: 0,
       });
       expect(typeof result.children[0].oneLineStatus).toBe('string');
+    });
+
+    it('counts a month-old unread item on the child card, with no date floor', async () => {
+      // Same shared counter as GET /children, so the home card and the
+      // children card can never disagree about the same child again.
+      const now = new Date('2026-03-12T10:00:00Z');
+      seedEmptyState();
+      mockPrisma.student.count.mockResolvedValue(1);
+      mockPrisma.student.findMany.mockResolvedValue([
+        {
+          studentGuid: 'sg-1',
+          privateName: 'Test',
+          familyName: 'Child',
+          fullName: 'Test Child',
+          classCode: '10A',
+          classNum: 10,
+          updatedAt: now,
+        },
+      ]);
+      mockPrisma.homeworkItem.findMany.mockImplementation(
+        async (args: { select?: object }) => (args?.select ? [{ id: 'hw-old' }] : []),
+      );
+      mockPrisma.behaviorItem.findMany.mockImplementation(
+        async (args: { select?: object }) =>
+          args?.select
+            ? [
+                { id: 'beh-attention', classification: 'attention' },
+                { id: 'beh-neutral', classification: 'neutral' },
+                { id: 'beh-positive', classification: 'positive' },
+              ]
+            : [],
+      );
+
+      const result = await service.getDashboard();
+
+      expect(result.children[0]).toMatchObject({
+        recentHomeworkCount: 1,
+        // The neutral row is its own bucket now, not a negative event.
+        recentBehaviorCount: 1,
+        positiveBehaviorCount: 1,
+        neutralBehaviorCount: 1,
+      });
+      const countQueries = mockPrisma.behaviorItem.findMany.mock.calls
+        .map(([args]: [{ select?: object; where?: object }]) => args)
+        .filter((args) => args?.select);
+      expect(countQueries).toHaveLength(1);
+      expect(countQueries[0].where).toEqual(
+        expect.not.objectContaining({ lessonDate: expect.anything() }),
+      );
+    });
+
+    it('excludes read and archived items from the child card counts', async () => {
+      const now = new Date('2026-03-12T10:00:00Z');
+      seedEmptyState();
+      mockPrisma.student.count.mockResolvedValue(1);
+      mockPrisma.student.findMany.mockResolvedValue([
+        {
+          studentGuid: 'sg-1',
+          privateName: 'Test',
+          familyName: 'Child',
+          fullName: 'Test Child',
+          classCode: '10A',
+          classNum: 10,
+          updatedAt: now,
+        },
+      ]);
+      mockPrisma.homeworkItem.findMany.mockImplementation(
+        async (args: { select?: object }) =>
+          args?.select ? [{ id: 'hw-read' }, { id: 'hw-unread' }] : [],
+      );
+      mockPrisma.behaviorItem.findMany.mockImplementation(
+        async (args: { select?: object }) =>
+          args?.select
+            ? [
+                { id: 'beh-archived', classification: 'attention' },
+                { id: 'beh-unread', classification: 'attention' },
+              ]
+            : [],
+      );
+      mockUserItemState.getStateBatch.mockImplementation(
+        async (_userId: string, itemType: string) =>
+          itemType === 'homework'
+            ? new Map([['hw-read', { isNew: false, isArchived: false }]])
+            : new Map([['beh-archived', { isNew: true, isArchived: true }]]),
+      );
+
+      const result = await service.getDashboard('user-1');
+
+      expect(result.children[0]).toMatchObject({
+        recentHomeworkCount: 1,
+        recentBehaviorCount: 1,
+      });
+
+      // `clearAllMocks` keeps implementations, so this one is handed back.
+      mockUserItemState.getStateBatch.mockResolvedValue(new Map());
     });
   });
 

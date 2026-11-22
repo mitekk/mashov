@@ -110,7 +110,7 @@ export function BehaviorItem({
         </Link>
       ) : content}
       <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
-        {!item.isArchived && (
+        {!item.isArchived && !item.isPastYear && (
           <button
             data-testid={`behavior-mark-new-${item.id}`}
             onClick={() => mutateMarkNew(!item.isNew)}
@@ -125,15 +125,26 @@ export function BehaviorItem({
             )}
           </button>
         )}
-        <button
-          data-testid={`behavior-archive-${item.id}`}
-          onClick={() => mutateArchive(!item.isArchived)}
-          disabled={isArchivePending}
-          aria-label={item.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
-          className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
-        >
-          <Archive className={cn('w-4 h-4', item.isArchived && 'text-primary')} />
-        </button>
+        {item.isPastYear ? (
+          // See HomeworkItem: archived by derivation, so there is nothing a
+          // restore control could do.
+          <span
+            data-testid={`behavior-past-year-${item.id}`}
+            className="text-[10px] leading-tight text-muted-foreground whitespace-nowrap px-1"
+          >
+            שנה קודמת
+          </span>
+        ) : (
+          <button
+            data-testid={`behavior-archive-${item.id}`}
+            onClick={() => mutateArchive(!item.isArchived)}
+            disabled={isArchivePending}
+            aria-label={item.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
+            className="text-muted-foreground hover:text-primary transition-colors tap-target flex items-center justify-center"
+          >
+            <Archive className={cn('w-4 h-4', item.isArchived && 'text-primary')} />
+          </button>
+        )}
       </div>
     </div>
   );
