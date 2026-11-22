@@ -60,6 +60,17 @@ describe("API Integration Tests (isNew refactor contract)", () => {
   let encryption: EncryptionService;
 
   beforeAll(async () => {
+    // Pin the history window rather than inheriting it.
+    //
+    // `ConfigModule` loads `.env` from the working directory, which inside the
+    // integration container is the mounted repo -- so a developer's local
+    // `MASHOV_YEAR` reached these tests while CI, which has no `.env`, ran a
+    // one-year window. The archive tab is the only read left that consumes the
+    // variable (ADR-0036), and it needs two years to have anything to span.
+    // Set before the module is built: dotenv does not overwrite an existing
+    // value, so this wins in both environments.
+    process.env.MASHOV_YEAR = '2026';
+
     prisma = new PrismaClient({
       datasources: { db: { url: process.env.DATABASE_URL } },
     });
@@ -115,6 +126,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
   });
 
   afterAll(async () => {
+    delete process.env.MASHOV_YEAR;
     await app.close();
     await prisma.$disconnect();
   });
