@@ -5,6 +5,7 @@ import { DigestService } from './digest.service';
 import { DigestCheckerService } from './digest-checker.service';
 import { DigestCollectorService } from './digest-collector.service';
 import { DigestDeadlineService } from './digest-deadline.service';
+import { DigestDismissalService } from './digest-dismissal.service';
 import { DigestSummarizerService } from './digest-summarizer.service';
 import { DigestRecipientService } from './digest-recipient.service';
 import { DigestRetentionService } from './digest-retention.service';
@@ -36,6 +37,7 @@ import { DigestController } from './digest.controller';
     DigestCheckerService,
     DigestCollectorService,
     DigestDeadlineService,
+    DigestDismissalService,
     DigestSummarizerService,
     DigestRecipientService,
     DigestRetentionService,

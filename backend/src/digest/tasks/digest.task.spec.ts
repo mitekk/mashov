@@ -47,7 +47,7 @@ describe('DigestTask', () => {
     expect(runAll).toHaveBeenCalledTimes(1);
   });
 
-  it('fires hourly from 13:00 to 19:00 in Asia/Jerusalem', () => {
+  it('fires hourly from 11:00 to 19:00 in Asia/Jerusalem', () => {
     // No other cron in this repo sets timeZone, and the process zone is pinned to
     // UTC (backend/Dockerfile, src/common/process-zone.ts), so without an explicit
     // timeZone the job would run 10:00-16:00 Israel time in winter and drift with
@@ -57,12 +57,16 @@ describe('DigestTask', () => {
     expect(options).toMatchObject({ timeZone: 'Asia/Jerusalem' });
   });
 
-  it('is scheduled on the hour across the afternoon window', () => {
+  it('is scheduled on the hour from 11:00, the outer bound the per-child gate works inside', () => {
+    // 11:00 rather than 13:00: DigestDismissalService decides per child now,
+    // so the cron only has to be awake early enough for the shortest school
+    // day. A first-grader dismissed at 11:20 is reported at ~12:00 rather than
+    // waiting for 13:00 (ADR-0038).
     const metadata = Reflect.getMetadataKeys(DigestTask.prototype.run)
       .map((key) => ({ key, value: Reflect.getMetadata(key, DigestTask.prototype.run) }))
       .find((entry) => typeof entry.value === 'object' && entry.value !== null && 'cronTime' in entry.value);
 
-    expect(metadata?.value).toMatchObject({ cronTime: '0 13-19 * * *' });
+    expect(metadata?.value).toMatchObject({ cronTime: '0 11-19 * * *' });
   });
 
   it('prunes history even when the digest itself is disabled', () => {

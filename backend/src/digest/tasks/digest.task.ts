@@ -5,9 +5,21 @@ import { DigestService } from '../digest.service';
 import { DigestRetentionService } from '../digest-retention.service';
 
 /**
- * The hourly afternoon trigger. A shell only -- all logic lives in
- * DigestService, which is also where the 80% coverage gate applies
- * (backend/package.json's collectCoverageFrom excludes task directories).
+ * The outer bound of the digest's day, and nothing more. A shell only -- all
+ * logic lives in DigestService, which is also where the 80% coverage gate
+ * applies (backend/package.json's collectCoverageFrom excludes task
+ * directories).
+ *
+ * The window used to be the decision: 13:00-19:00 was a guess at when an
+ * Israeli school day is over, and it meant a child still in class at 13:00
+ * produced a message, then another at 14:00, each a partial picture of a day
+ * the teachers had not finished recording. DigestDismissalService now decides
+ * per child, from that child's own last lesson and their school's bell
+ * schedule, so the cron's only job is to be awake early enough for the
+ * shortest school day -- hence 11:00 rather than 13:00, which gets a
+ * first-grader dismissed at 11:20 reported at around 12:00. The 19:00 end
+ * stays: a child dismissed at the latest period the default schedule knows
+ * about still has four ticks. See ADR-0038.
  *
  * `timeZone` is load-bearing and new ground: no existing cron in this repo
  * passes one, and there is no TZ env anywhere, so without it the job would
@@ -29,14 +41,14 @@ export class DigestTask {
     private readonly config: ConfigService,
   ) {}
 
-  @Cron('0 13-19 * * *', { timeZone: 'Asia/Jerusalem' })
+  @Cron('0 11-19 * * *', { timeZone: 'Asia/Jerusalem' })
   async run(): Promise<void> {
     if (!this.isEnabled()) return;
 
     // runForChild isolates per-child failures, but runAll's own preamble --
     // listing targets, resolving the school year -- is outside that guard, and
     // a rejection out of a cron callback is an unhandled rejection, which Node
-    // treats as fatal by default. One transient database blip at 13:00 would
+    // treats as fatal by default. One transient database blip at 11:00 would
     // take the whole process down with it.
     try {
       const results = await this.digest.runAll();

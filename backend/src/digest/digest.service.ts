@@ -14,7 +14,8 @@ import {
 import { DigestSender } from './senders/digest-sender.interface';
 import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
-import { jerusalemDayBounds } from './digest-deadline.service';
+import { jerusalemClockMinutes, jerusalemDayBounds } from './digest-deadline.service';
+import { DigestDismissalService, DismissalGate } from './digest-dismissal.service';
 import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
 
@@ -67,6 +68,12 @@ export type DigestRunStatus =
   | 'sent'
   | 'skipped_empty'
   | 'skipped_stale'
+  /**
+   * The child is still at school: held until their last lesson has ended plus
+   * the grace period (ADR-0038). A hold claims nothing and writes no delivery
+   * row, so the next tick reports everything this one would have.
+   */
+  | 'skipped_before_dismissal'
   /** The send-time ownership guard refused the (child, parent) pair. */
   | 'skipped_unowned'
   | 'failed'
@@ -95,6 +102,13 @@ export interface DigestRunOptions {
    * against and a run both spends model tokens and sends real messages.
    */
   userId?: string;
+  /**
+   * Sends without waiting for the child's last bell. Set by the manual-run
+   * endpoint: a parent pressing the button is asking for the digest now, and
+   * the gate exists to stop unattended noise rather than to refuse an explicit
+   * request.
+   */
+  ignoreDismissalGate?: boolean;
 }
 
 /**
@@ -132,6 +146,7 @@ export class DigestService {
     private readonly collector: DigestCollectorService,
     private readonly summarizer: DigestSummarizerService,
     private readonly recipients: DigestRecipientService,
+    private readonly dismissal: DigestDismissalService,
     // Typed as the interface, injected by concrete class: the channel is meant
     // to be a configuration detail, and the orchestrator should not know how
     // either sender works.
@@ -191,6 +206,17 @@ export class DigestService {
       // tomorrow.
       const alreadySent = new Set<string>();
 
+      // One clock reading for the whole tick, so every child in a run is
+      // judged against the same minute -- a run that takes four minutes must
+      // not release the last child on a later clock than the first.
+      const nowMinutes = jerusalemClockMinutes(now, this.timeZone());
+
+      // When each child may be sent, memoized like `staleness` and for the
+      // same reason: two parents of one child ask the same question. Per run
+      // rather than between runs, so a timetable sync that lands mid-morning
+      // is picked up by the next tick.
+      const gates = new Map<string, DismissalGate>();
+
       // One model call per child per run, as before this became per-parent.
       // Keyed on the child and the non-activity content hashes it claimed:
       // those hashes are userId-independent by construction, so an equal key
@@ -216,8 +242,11 @@ export class DigestService {
             target,
             schoolYear,
             now,
+            nowMinutes,
             dryRun,
+            options,
             staleness,
+            gates,
             alreadySent,
             summaries,
           ),
@@ -233,8 +262,11 @@ export class DigestService {
     target: DigestDeliveryTarget,
     schoolYear: number,
     now: Date,
+    nowMinutes: number,
     dryRun: boolean,
+    options: DigestRunOptions,
     staleness: Map<string, Date | null>,
+    gates: Map<string, DismissalGate>,
     alreadySent: Set<string>,
     summaries: Map<string, DigestSummary>,
   ): Promise<DigestRunResult> {
@@ -245,6 +277,29 @@ export class DigestService {
     let claimed: DigestCandidate[] = [];
 
     try {
+      // Before the checker, and above all before `claim()`. A held tick must
+      // consume nothing: if it claimed, the items would be marked reported and
+      // the post-dismissal tick would find a quiet day, turning a delay into
+      // permanent suppression. It also writes no digest_delivery row -- the
+      // hold is a scheduling decision, not an outcome (ADR-0038).
+      if (!options.ignoreDismissalGate) {
+        const gate = await this.dismissalGate(studentGuid, schoolYear, defaultReportFor, gates);
+        if (gate.releaseAtMinutes !== null && nowMinutes < gate.releaseAtMinutes) {
+          this.logger.debug(
+            `Digest ${studentGuid}: holding until ${formatClock(gate.releaseAtMinutes)} ` +
+              `(last lesson ${gate.lastLesson} ends ${gate.lastLessonEnd}, ${gate.source} schedule).`,
+          );
+          return {
+            studentGuid,
+            userId,
+            status: 'skipped_before_dismissal',
+            itemCount: 0,
+            recipientCount: 0,
+            usedLlm: false,
+          };
+        }
+      }
+
       const check = await this.checker.check({
         studentGuid,
         schoolYear,
@@ -410,6 +465,21 @@ export class DigestService {
         errorMessage: message,
       });
     }
+  }
+
+  /** The child's release time, asked once per child per run. */
+  private async dismissalGate(
+    studentGuid: string,
+    schoolYear: number,
+    todayStart: Date,
+    gates: Map<string, DismissalGate>,
+  ): Promise<DismissalGate> {
+    const memoed = gates.get(studentGuid);
+    if (memoed) return memoed;
+
+    const gate = await this.dismissal.gateFor(studentGuid, schoolYear, todayStart);
+    gates.set(studentGuid, gate);
+    return gate;
   }
 
   /**
@@ -873,6 +943,12 @@ export class DigestService {
     if (raw === undefined || raw === null || raw === '') return true;
     return String(raw).trim().toLowerCase() !== 'false';
   }
+}
+
+/** Minutes since midnight as a wall clock, for the hold's debug line. */
+function formatClock(minutes: number): string {
+  const hours = Math.floor(minutes / 60) % 24;
+  return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
 /**
