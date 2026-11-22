@@ -46,6 +46,12 @@ export interface RenderReportOptions {
    * "undefined/home" in a parent's chat.
    */
   publicBaseUrl?: string | null;
+  /**
+   * Files named in the text because they are NOT being uploaded -- too large,
+   * or past the per-message cap. Silence would make the report quietly less
+   * than the day it describes.
+   */
+  unsentFileNames?: string[];
 }
 
 export function renderReport(
@@ -115,9 +121,17 @@ export function renderReport(
   // At the end rather than under the header so the facts are what shows in the
   // chat list preview. `disable_web_page_preview` is already set on every
   // send, so this cannot grow a card.
-  if (options.publicBaseUrl) {
-    blocks.push(`${options.publicBaseUrl}/home`);
+  const link = options.publicBaseUrl ? `${options.publicBaseUrl}/home` : null;
+
+  for (const fileName of options.unsentFileNames ?? []) {
+    blocks.push(
+      link
+        ? `קובץ גדול מדי לשליחה: ${fileName} — ניתן לפתוח באתר: ${link}`
+        : `קובץ גדול מדי לשליחה: ${fileName}`,
+    );
   }
+
+  if (link) blocks.push(link);
 
   return blocks.filter((block) => block.length > 0).join('\n\n');
 }

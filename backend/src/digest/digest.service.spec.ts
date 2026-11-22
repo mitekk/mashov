@@ -7,6 +7,8 @@ import type { DigestCollectorService } from './digest-collector.service';
 import type { DigestSummarizerService } from './digest-summarizer.service';
 import type { DigestRecipientService } from './digest-recipient.service';
 import type { DigestSender } from './senders/digest-sender.interface';
+import type { DigestAttachmentResolver } from './digest-attachment.resolver';
+import type { MediaDelivery } from '../telegram-media/media-delivery.interface';
 import type { DigestCandidate, DigestPayload } from './digest.types';
 
 const NOW = new Date('2026-11-17T13:00:00Z');
@@ -80,6 +82,8 @@ interface HarnessOptions {
   publicBaseUrl?: string;
   checkImpl?: jest.Mock;
   dryRunEnv?: string;
+  attachments?: { itemType: 'homework' | 'behavior'; itemId: string; fileId: string; fileName: string }[];
+  media?: Partial<MediaDelivery>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -215,6 +219,27 @@ function makeHarness(options: HarnessOptions = {}) {
     currentSchoolYearFor: jest.fn().mockResolvedValue(2027),
   } as unknown as SchoolYearService;
 
+  const resolveAttachments = jest.fn().mockResolvedValue(
+    (options.attachments ?? []).map((row) => ({ ...row, studentGuid: 'stu-1' })),
+  );
+  const attachments = { resolve: resolveAttachments } as unknown as DigestAttachmentResolver;
+
+  const mediaFetch = jest.fn().mockImplementation((_userId, refs) => ({
+    items: refs.map((ref: unknown) => ({
+      ref,
+      file: { fileName: 'f', buffer: Buffer.alloc(4), contentType: null },
+    })),
+    remainingBytes: 1000,
+  }));
+  const mediaSend = jest.fn().mockResolvedValue({ sent: 1, notes: [] });
+  const media = {
+    enabled: true,
+    budgetBytes: () => 50 * 1024 * 1024,
+    fetch: mediaFetch,
+    send: mediaSend,
+    ...options.media,
+  } as unknown as MediaDelivery;
+
   const service = new DigestService(
     prisma,
     config,
@@ -225,6 +250,8 @@ function makeHarness(options: HarnessOptions = {}) {
     recipients,
     telegram,
     logSender,
+    attachments,
+    media,
   );
 
   return {
@@ -242,6 +269,9 @@ function makeHarness(options: HarnessOptions = {}) {
     deliveryCreate,
     reportedFindMany,
     recipientUpdateMany,
+    resolveAttachments,
+    mediaFetch,
+    mediaSend,
   };
 }
 
@@ -1456,5 +1486,138 @@ describe('DigestService.runAll', () => {
     await harness.service.runAll({ now: NOW });
 
     expect(harness.deliveryCreate.mock.calls[0][0].data.usedLlm).toBe(false);
+  });
+});
+
+describe('DigestService media', () => {
+  const FILE = {
+    itemType: 'homework' as const,
+    itemId: 'hw-1',
+    fileId: 'f1',
+    fileName: 'דף עבודה.pdf',
+  };
+
+  it('sends the report text first and the files after it', async () => {
+    // The text is the only thing gating ledger confirmation, so it goes out
+    // before anything that can fail.
+    const harness = makeHarness({ attachments: [FILE] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    expect(harness.mediaSend).toHaveBeenCalledTimes(1);
+    expect(harness.send.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.mediaSend.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('resolves attachments only for the items it actually claimed', async () => {
+    const harness = makeHarness({ attachments: [FILE] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.resolveAttachments).toHaveBeenCalledWith('stu-1', [BEHAVIOR_CANDIDATE]);
+  });
+
+  it('downloads as the subscribing parent, with a caption naming the item', async () => {
+    const harness = makeHarness({ attachments: [FILE] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaFetch).toHaveBeenCalledWith(
+      USER_A,
+      [
+        {
+          kind: 'homework',
+          ownerId: 'stu-1',
+          itemId: 'hw-1',
+          fileId: 'f1',
+          fileName: 'דף עבודה.pdf',
+          caption: 'דף עבודה.pdf',
+        },
+      ],
+      expect.any(Number),
+    );
+  });
+
+  it('names a file it could not send in the report text', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      media: {
+        fetch: jest.fn().mockResolvedValue({
+          items: [{ ref: { fileName: 'דף עבודה.pdf' }, tooLarge: true, note: 'too large' }],
+          remainingBytes: 0,
+        }),
+      },
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).toContain('קובץ גדול מדי לשליחה: דף עבודה.pdf');
+  });
+
+  it('records a media failure as a note on the delivery row, not as a failed run', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      media: { send: jest.fn().mockResolvedValue({ sent: 0, notes: ['דף עבודה.pdf: HTTP 500'] }) },
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+    expect(harness.deliveryCreate.mock.calls[0][0].data.errorMessage).toContain('HTTP 500');
+  });
+
+  it('sends the files to every chat that received the text', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_A },
+      ],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaSend.mock.calls.map((call) => call[0]).sort()).toEqual(['111', '222']);
+  });
+
+  it('sends no files to a chat whose text failed', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      recipients: [
+        { channel: 'telegram', address: 'dead', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: 'live', enabled: true, userId: USER_A },
+      ],
+      sendImpl: jest.fn().mockImplementation((address: string) => {
+        if (address === 'dead') throw new Error('Telegram send failed: HTTP 502');
+        return Promise.resolve();
+      }),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaSend.mock.calls.map((call) => call[0])).toEqual(['live']);
+  });
+
+  it('touches no attachment on a dry run', async () => {
+    const harness = makeHarness({ attachments: [FILE], dryRunEnv: 'true' });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaSend).not.toHaveBeenCalled();
+  });
+
+  it('resolves nothing when the media binding is disabled', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      media: { enabled: false, fetch: jest.fn(), send: jest.fn() },
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.resolveAttachments).not.toHaveBeenCalled();
+    expect(harness.send).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
@@ -19,6 +19,14 @@ import { isPermanentTelegramFailure } from '../telegram/telegram-http';
 import { resolvePublicBaseUrl } from '../telegram/public-base-url';
 import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
+import { DigestAttachment, DigestAttachmentResolver } from './digest-attachment.resolver';
+import {
+  FetchedMedia,
+  MEDIA_DELIVERY,
+  MediaAttachmentRef,
+  MediaDelivery,
+  NO_MEDIA_DELIVERY,
+} from '../telegram-media/media-delivery.interface';
 
 /**
  * The claimed hashes a child's prose is written from, sorted.
@@ -139,9 +147,17 @@ export class DigestService {
     // either sender works.
     @Inject(TelegramSender) telegram: DigestSender,
     @Inject(LogSender) private readonly logSender: DigestSender,
+    private readonly attachments: DigestAttachmentResolver,
+    // `@Optional()` so DigestModule still compiles on its own, which is how
+    // digest.module.spec.ts proves the Mashov client is unreachable from this
+    // graph. See src/telegram-media/telegram-media.module.ts.
+    @Optional() @Inject(MEDIA_DELIVERY) media?: MediaDelivery,
   ) {
     this.senders = [telegram, logSender];
+    this.media = media ?? NO_MEDIA_DELIVERY;
   }
+
+  private readonly media: MediaDelivery;
 
   async runAll(options: DigestRunOptions = {}): Promise<DigestRunResult[]> {
     if (this.running) {
@@ -320,9 +336,6 @@ export class DigestService {
       }
 
       const lines = linesFor(summary, payload, narrowed);
-      const message = renderReport(narrowed, lines, {
-        publicBaseUrl: resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL')),
-      });
 
       const enabled = await this.prisma.digestRecipient.findMany({
         where: { userId, studentGuid, enabled: true },
@@ -340,7 +353,18 @@ export class DigestService {
         return await this.recordEmpty(userId, studentGuid, reportFor, 'no enabled recipient left');
       }
 
-      const { delivered, failures, suppressed, retired } = await this.deliver(
+      // Downloaded BEFORE the text is rendered, because no size is known
+      // anywhere until the bytes arrive and the text has to name what it is
+      // not sending. Skipped entirely on a dry run and when the media binding
+      // is the no-op, so neither pays for the reads.
+      const media = dryRun ? NO_FETCH : await this.fetchMedia(userId, studentGuid, surviving, claimed);
+
+      const message = renderReport(narrowed, lines, {
+        publicBaseUrl: resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL')),
+        unsentFileNames: media.items.filter((item) => item.tooLarge).map((item) => item.ref.fileName),
+      });
+
+      const { delivered, failures, suppressed, retired, reached } = await this.deliver(
         studentGuid,
         enabled,
         message,
@@ -376,6 +400,16 @@ export class DigestService {
         });
       }
 
+      // After the text, and only to the chats the text actually reached. A
+      // failed upload is a note and never a throw, so it can neither fail nor
+      // re-queue the report -- the text remains the only thing gating the
+      // ledger.
+      const mediaNotes = [...media.notes];
+      for (const address of reached) {
+        const result = await this.media.send(address, media.items);
+        mediaNotes.push(...result.notes);
+      }
+
       await this.settleUnsent(
         userId,
         studentGuid,
@@ -402,7 +436,7 @@ export class DigestService {
         // A partial failure is recorded but does not undo a real delivery.
         // The suppression note rides on the same field, so support can tell
         // "sent" from "the other parent's run sent this exact text already".
-        errorMessage: deliveryNote(failures, suppressed),
+        errorMessage: deliveryNote(failures, suppressed, mediaNotes),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -581,11 +615,17 @@ export class DigestService {
     suppressed: number;
     /** Chats Telegram says will never accept another message. */
     retired: { channel: string; address: string; reason: string }[];
+    /**
+     * The addresses the text actually reached, so the files follow it to
+     * exactly those chats -- a chat whose text failed must get no files.
+     */
+    reached: string[];
   }> {
     let delivered = 0;
     let suppressed = 0;
     const failures: string[] = [];
     const retired: { channel: string; address: string; reason: string }[] = [];
+    const reached: string[] = [];
     const digest = createHash('sha256').update(message).digest('hex');
 
     for (const recipient of recipients) {
@@ -610,6 +650,7 @@ export class DigestService {
         const sender = dryRun ? this.logSender : this.senderFor(recipient.channel);
         await sender.send(recipient.address, message);
         delivered += 1;
+        if (!dryRun) reached.push(recipient.address);
         alreadySent.add(fingerprint);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -624,7 +665,40 @@ export class DigestService {
       }
     }
 
-    return { delivered, failures, suppressed, retired };
+    return { delivered, failures, suppressed, retired, reached };
+  }
+
+  /**
+   * The files on the items this run is about to report, downloaded.
+   *
+   * Only the SURVIVING claims: an item narrowing removed is not in the
+   * message, so its attachment has nothing to be a caption for. The
+   * attachment metadata reaches this through DigestAttachmentResolver rather
+   * than through DigestPayload -- that object feeds buildPrompt, and a
+   * behaviour row's rawPayload carries the reporter's name and the child's
+   * guid. See ADR-0026 and ADR-0038.
+   */
+  private async fetchMedia(
+    userId: string,
+    studentGuid: string,
+    surviving: Set<string>,
+    claimed: DigestCandidate[],
+  ): Promise<{ items: FetchedMedia[]; notes: string[] }> {
+    if (!this.media.enabled) return NO_FETCH;
+
+    const sent = claimed.filter((candidate) => surviving.has(candidate.contentHash));
+    if (sent.length === 0) return NO_FETCH;
+
+    const refs = (await this.attachments.resolve(studentGuid, sent)).map(mediaRefFor);
+    if (refs.length === 0) return NO_FETCH;
+
+    const fetched = await this.media.fetch(userId, refs, this.media.budgetBytes());
+    return {
+      items: fetched.items,
+      notes: fetched.items
+        .map((item) => item.note)
+        .filter((note): note is string => typeof note === 'string' && note.length > 0),
+    };
   }
 
   /**
@@ -1076,12 +1150,38 @@ function countItems(payload: DigestPayload): number {
  * Partial send failures and suppressions share the column because both are
  * "the row says sent, and here is the asterisk".
  */
-function deliveryNote(failures: string[], suppressed: number): string | undefined {
-  const notes = [...failures];
+function deliveryNote(
+  failures: string[],
+  suppressed: number,
+  mediaNotes: string[] = [],
+): string | undefined {
+  const notes = [...failures, ...mediaNotes];
   if (suppressed > 0) {
     notes.push(
       `suppressed ${suppressed} duplicate send(s): an identical message had already gone to that chat in this run`,
     );
   }
   return notes.length > 0 ? notes.join('; ') : undefined;
+}
+
+/** Nothing fetched, nothing to say about it. */
+const NO_FETCH: { items: FetchedMedia[]; notes: string[] } = { items: [], notes: [] };
+
+/**
+ * One attachment as the media layer wants it.
+ *
+ * The caption is the file name alone. It could carry the subject, but the
+ * report is already headed by the child and the date, the caption cannot be
+ * chunked, and a name is what tells a parent which of three files they are
+ * looking at.
+ */
+function mediaRefFor(attachment: DigestAttachment): MediaAttachmentRef {
+  return {
+    kind: attachment.itemType,
+    ownerId: attachment.studentGuid,
+    itemId: attachment.itemId,
+    fileId: attachment.fileId,
+    fileName: attachment.fileName,
+    caption: attachment.fileName,
+  };
 }
