@@ -182,9 +182,13 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 
 ### Daily digest to Telegram
 
-A per-child Hebrew briefing, pushed hourly from 13:00 to 19:00 Asia/Jerusalem — but only when
-that child has something unreported. Nothing new means no model call, no message, no cost.
-Delivery is opt-in per child: a child gets a digest only if an enabled recipient row exists for
+A per-child Hebrew briefing, pushed hourly until 19:00 Asia/Jerusalem — but only when that
+child has something unreported, and never before that child's own school day is over. The cron
+is awake from 11:00; each child is then held until their last lesson for the day ends plus
+`DIGEST_POST_DISMISSAL_GRACE_MINUTES`, read from their timetable and their school's bell
+schedule (ADR-0038). A held hour claims nothing, so nothing is ever lost by waiting — and a
+child with no timetable for today is not held at all. Nothing new means no model call, no
+message, no cost. Delivery is opt-in per child: a child gets a digest only if an enabled recipient row exists for
 it. A parent creates those rows themselves, in `עוד` → `עדכונים בטלגרם` — see
 **Connecting a parent's Telegram** below.
 
@@ -196,6 +200,7 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `DIGEST_DUE_LOOKBACK_DAYS` | how far back to look for homework that may be needed tomorrow | `14` |
 | `DIGEST_NEW_LOOKBACK_DAYS` | how far back to look for homework to report as newly assigned | `3` |
 | `DIGEST_ACTIVITY_WINDOW_DAYS` | how far ahead an unanswered consent deadline is worth mentioning | `7` |
+| `DIGEST_POST_DISMISSAL_GRACE_MINUTES` | how long after a child's last bell to wait before sending, so the register is filled in. `0` gates on the bell itself | `30` |
 | `DIGEST_LLM_MODEL` | model that writes the Hebrew prose | `claude-sonnet-5-5` |
 | `DIGEST_LLM_EFFORT` | how hard it thinks first — `low`/`medium`/`high`/`xhigh`/`max` | `low` |
 | `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |

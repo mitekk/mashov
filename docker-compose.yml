@@ -87,6 +87,9 @@ services:
       DIGEST_DUE_LOOKBACK_DAYS: ${DIGEST_DUE_LOOKBACK_DAYS:-14}
       DIGEST_NEW_LOOKBACK_DAYS: ${DIGEST_NEW_LOOKBACK_DAYS:-3}
       DIGEST_ACTIVITY_WINDOW_DAYS: ${DIGEST_ACTIVITY_WINDOW_DAYS:-7}
+      # How long after a child's last lesson ends the register has plausibly
+      # been filled in. `0` gates on the bell itself. See ADR-0038.
+      DIGEST_POST_DISMISSAL_GRACE_MINUTES: ${DIGEST_POST_DISMISSAL_GRACE_MINUTES:-30}
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
