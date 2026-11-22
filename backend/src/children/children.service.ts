@@ -17,6 +17,7 @@ import {
 import { canSeeStudent, visibleStudentWhere } from '../common/student-links';
 import { unreadChildActivityCounts } from '../common/child-activity-counts';
 import { buildStudentSchoolMap } from '../common/student-school-map';
+import { bellScheduleForConnection } from '../common/bells/bells.service';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -659,7 +660,17 @@ export class ChildrenService {
       orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
     });
 
+    // A sibling field rather than a time on every entry: the grid puts the
+    // range in the row header once, so per-entry duplication would be eight
+    // copies of one fact. Breaks are derived from the FULL schedule -- the
+    // client decides which of them to render from the rows it is showing.
+    const schedule = await bellScheduleForConnection(
+      this.prisma,
+      student.householdConnectionId,
+    );
+
     return {
+      schedule,
       data: entries.map((e) => ({
         id: e.id,
         studentGuid: e.studentGuid,

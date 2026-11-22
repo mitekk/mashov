@@ -27,6 +27,7 @@ import { OutBehaveTask } from './tasks/out-behave.task';
 import { ReleasesTask } from './tasks/releases.task';
 import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
+import { BellsTask } from './tasks/bells.task';
 import { StudentsTask } from './tasks/students.task';
 import { SchoolYearRolloverTask } from './tasks/school-year-rollover.task';
 import { HistoryBackfillTask } from './tasks/history-backfill.task';
@@ -61,6 +62,7 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
     ReleasesTask,
     SchoolActivitiesTask,
     TimetableTask,
+    BellsTask,
     StudentsTask,
     SchoolYearRolloverTask,
     HistoryBackfillTask,

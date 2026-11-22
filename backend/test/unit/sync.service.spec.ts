@@ -15,6 +15,7 @@ import { OutBehaveTask } from '../../src/sync/tasks/out-behave.task';
 import { ReleasesTask } from '../../src/sync/tasks/releases.task';
 import { SchoolActivitiesTask } from '../../src/sync/tasks/school-activities.task';
 import { TimetableTask } from '../../src/sync/tasks/timetable.task';
+import { BellsTask } from '../../src/sync/tasks/bells.task';
 import { StudentsTask } from '../../src/sync/tasks/students.task';
 import { RefreshProgressService } from '../../src/sync/refresh-progress.service';
 
@@ -32,7 +33,7 @@ const createMockTask = () => ({
 });
 
 describe('SyncService', () => {
-  const EXPECTED_TASK_COUNT = 16;
+  const EXPECTED_TASK_COUNT = 17;
 
   let service: SyncService;
   let notificationsTask: ReturnType<typeof createMockTask>;
@@ -50,6 +51,7 @@ describe('SyncService', () => {
   let dailyBehaveTask: ReturnType<typeof createMockTask>;
   let outBehaveTask: ReturnType<typeof createMockTask>;
   let timetableTask: ReturnType<typeof createMockTask>;
+  let bellsTask: ReturnType<typeof createMockTask>;
   let studentsTask: ReturnType<typeof createMockTask>;
 
   beforeEach(async () => {
@@ -68,6 +70,7 @@ describe('SyncService', () => {
     releasesTask = createMockTask();
     schoolActivitiesTask = createMockTask();
     timetableTask = createMockTask();
+    bellsTask = createMockTask();
     studentsTask = createMockTask();
 
     const module: TestingModule = await Test.createTestingModule({
@@ -88,6 +91,7 @@ describe('SyncService', () => {
         { provide: ReleasesTask, useValue: releasesTask },
         { provide: SchoolActivitiesTask, useValue: schoolActivitiesTask },
         { provide: TimetableTask, useValue: timetableTask },
+        { provide: BellsTask, useValue: bellsTask },
         { provide: StudentsTask, useValue: studentsTask },
         // Progress reporting is exercised in src/sync/sync.service.spec.ts;
         // here it only has to exist so the refresh can run.
@@ -118,6 +122,7 @@ describe('SyncService', () => {
       expect(dailyBehaveTask.execute).toHaveBeenCalledTimes(1);
       expect(outBehaveTask.execute).toHaveBeenCalledTimes(1);
       expect(timetableTask.execute).toHaveBeenCalledTimes(1);
+      expect(bellsTask.execute).toHaveBeenCalledTimes(1);
       expect(studentsTask.execute).toHaveBeenCalledTimes(1);
     });
 
@@ -162,6 +167,7 @@ describe('SyncService', () => {
       dailyBehaveTask.execute.mockRejectedValue(error);
       outBehaveTask.execute.mockRejectedValue(error);
       timetableTask.execute.mockRejectedValue(error);
+      bellsTask.execute.mockRejectedValue(error);
       studentsTask.execute.mockRejectedValue(error);
       releasesTask.execute.mockRejectedValue(error);
       schoolActivitiesTask.execute.mockRejectedValue(error);
