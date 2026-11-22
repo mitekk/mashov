@@ -200,6 +200,7 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `DIGEST_LLM_MODEL` | model that writes the Hebrew prose | `claude-sonnet-5-5` |
 | `DIGEST_LLM_EFFORT` | how hard it thinks first — `low`/`medium`/`high`/`xhigh`/`max` | `low` |
 | `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |
+| `PUBLIC_BASE_URL` | origin Telegram messages link back to — must be the origin the frontend is served from, e.g. `https://mashov.mitya.dev`. Unset renders no link line at all. Only `https://`, or `http://localhost` for a dev stack | unset |
 | `ANTHROPIC_API_KEY` | **secret.** Omit it and the digest still sends, using the deterministic renderer | unset |
 | `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather. Also the master switch for the link wizard: without it the mint route answers `503` and the poller never starts | unset |
 | `TELEGRAM_LINK_CODE_TTL_MINUTES` | how long a one-time link code stays valid | `15` |

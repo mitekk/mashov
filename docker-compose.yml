@@ -96,6 +96,14 @@ services:
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
+      # The origin Telegram messages link back to. Must be the same origin the
+      # frontend is served from, because the links are deep links into it
+      # (e.g. https://mashov.mitya.dev). Deliberately NOT named NEXT_PUBLIC_*:
+      # that prefix means "inlined into the browser bundle" in Next, and this
+      # is read by the backend only. Unset -- the default -- means no link line
+      # is rendered at all, which is the right failure: a base of `undefined`
+      # would put "undefined/inbox/<id>" in a parent's chat.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
       # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
       # it starts, and the mint route answers 503.
