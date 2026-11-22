@@ -174,10 +174,17 @@ describe('Per-user digest isolation', () => {
   });
 
   afterAll(async () => {
+    // Torn down, not just set up. The suites share one database and the cron
+    // deliberately runs every opted-in child, so a recipient row left behind
+    // here makes the NEXT suite's unscoped `runAll` send this fixture's
+    // messages and fail on the count.
+    await wipe();
     await prisma.$disconnect();
   });
 
-  beforeEach(async () => {
+  beforeEach(wipe);
+
+  async function wipe(): Promise<void> {
     await prisma.digestReportedItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.digestDelivery.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.digestRecipient.deleteMany({ where: { studentGuid: { in: GUIDS } } });
@@ -190,7 +197,9 @@ describe('Per-user digest isolation', () => {
       where: { id: { in: [CONN_MUM, CONN_DAD] } },
     });
     await prisma.appUser.deleteMany({ where: { id: { in: USER_IDS } } });
+  }
 
+  beforeEach(async () => {
     let index = 0;
     for (const userId of USER_IDS) {
       index += 1;
