@@ -202,6 +202,12 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |
 | `PUBLIC_BASE_URL` | origin Telegram messages link back to — must be the origin the frontend is served from, e.g. `https://mashov.mitya.dev`. Unset renders no link line at all. Only `https://`, or `http://localhost` for a dev stack | unset |
 | `ANTHROPIC_API_KEY` | **secret.** Omit it and the digest still sends, using the deterministic renderer | unset |
+| `INBOX_NOTIFY_ENABLED` | master switch for the ten-minute inbox notification cron | `false` |
+| `INBOX_NOTIFY_DRY_RUN` | renders and logs the message, sends nothing, claims nothing | `true` |
+| `INBOX_NOTIFY_QUIET_FROM` / `_TO` | the window the notifier stays silent. Mail arriving inside it is **held over**, not dropped | `21:00` / `07:00` |
+| `INBOX_NOTIFY_LOOKBACK_HOURS` | how far back a run looks for mail it has not sent — also the carry-over window for the quiet hours | `24` |
+| `INBOX_NOTIFY_MAX_PER_RUN` | above this, one summary message goes out instead of a burst | `5` |
+| `INBOX_NOTIFY_BODY_CHARS` | how much of a mail body goes in the chat before it is cut | `700` |
 | `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather. Also the master switch for the link wizard: without it the mint route answers `503` and the poller never starts | unset |
 | `TELEGRAM_LINK_CODE_TTL_MINUTES` | how long a one-time link code stays valid | `15` |
 | `TELEGRAM_POLL_TIMEOUT_SECONDS` | how long each `getUpdates` long poll waits | `30` |

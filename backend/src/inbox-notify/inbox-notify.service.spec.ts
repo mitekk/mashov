@@ -1,0 +1,601 @@
+import { InboxNotifyService } from './inbox-notify.service';
+import { STALE_CLAIM_MS } from '../digest/digest-checker.service';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { ConfigService } from '@nestjs/config';
+import type { DigestSender } from '../digest/senders/digest-sender.interface';
+
+/** 15:00 Jerusalem on 2026-11-17, well outside the quiet window. */
+const NOW = new Date('2026-11-17T13:00:00Z');
+const TODAY = new Date('2026-11-17T00:00:00Z');
+const AN_HOUR_AGO = new Date('2026-11-17T12:00:00Z');
+const LAST_WEEK = new Date('2026-11-10T09:00:00Z');
+
+const USER_A = 'user-a';
+const CONNECTION = { id: 'conn-1', upstreamUserId: 'parent-upstream' };
+
+function conversationRow(overrides: Record<string, unknown> = {}) {
+  return {
+    conversationId: 'conv-1',
+    subject: 'יום ספורט ביום חמישי',
+    householdConnectionId: 'conn-1',
+    labels: [] as string[],
+    locallyReadThroughAt: null as Date | null,
+    sendTime: AN_HOUR_AGO,
+    ...overrides,
+  };
+}
+
+function messageRow(overrides: Record<string, unknown> = {}) {
+  return {
+    messageId: 'msg-1',
+    conversationId: 'conv-1',
+    senderId: 'school-secretary',
+    senderName: 'מזכירות בית הספר',
+    subject: 'יום ספורט ביום חמישי',
+    bodyHtmlSanitized: '<p>נבקש להביא בגדי ספורט.</p>',
+    bodyTextPreview: null as string | null,
+    sendTime: AN_HOUR_AGO,
+    isNew: true,
+    householdConnectionId: 'conn-1',
+    ...overrides,
+  };
+}
+
+interface HarnessOptions {
+  conversations?: Record<string, unknown>[];
+  messages?: Record<string, unknown>[];
+  connections?: { id: string; upstreamUserId: string | null }[];
+  recipients?: {
+    userId: string;
+    studentGuid: string;
+    channel: string;
+    address: string;
+    enabled: boolean;
+    activeFrom: Date;
+  }[];
+  /** Which claimed rows the read-back says this run owns. */
+  ownedMessageIds?: string[];
+  sendImpl?: jest.Mock;
+  env?: Record<string, string>;
+}
+
+function makeHarness(options: HarnessOptions = {}) {
+  const recipients = options.recipients ?? [
+    {
+      userId: USER_A,
+      studentGuid: 'stu-1',
+      channel: 'telegram',
+      address: '12345',
+      enabled: true,
+      activeFrom: new Date('2026-09-01T00:00:00Z'),
+    },
+  ];
+  const conversations = options.conversations ?? [conversationRow()];
+  const messages = options.messages ?? [messageRow()];
+  const connections = options.connections ?? [CONNECTION];
+
+  // The ledger stands in for Postgres: createMany records what was claimed,
+  // and the read-back answers with the rows this run owns -- carrying the real
+  // content hashes the service computed, because those are what it filters on.
+  let claimed: { messageId: string; contentHash: string }[] = [];
+  const createMany = jest.fn().mockImplementation(({ data }) => {
+    claimed = data as { messageId: string; contentHash: string }[];
+    return Promise.resolve({ count: data.length });
+  });
+  const notifiedUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
+  const notifiedDeleteMany = jest.fn().mockResolvedValue({ count: 0 });
+  const owned = options.ownedMessageIds ?? messages.map((m) => m.messageId as string);
+  const notifiedFindMany = jest
+    .fn()
+    .mockImplementation(() => claimed.filter((row) => owned.includes(row.messageId)));
+
+  const deliveryCreate = jest.fn().mockImplementation(({ data }) => ({ id: 'del-1', ...data }));
+  const recipientUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+
+  const prisma = {
+    householdConnection: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(where?.userId === undefined || where.userId === USER_A ? connections : []),
+      ),
+    },
+    // Honours the scope, the archived label and the sendTime floor, as
+    // Postgres would: a mock that ignored them would report the selection
+    // rules as working while every row came back regardless.
+    mailConversation: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          conversations.filter((row) => {
+            const ownIds: string[] = where?.OR?.[0]?.householdConnectionId?.in ?? [];
+            const stamp = row.householdConnectionId as string | null;
+            if (stamp !== null && !ownIds.includes(stamp)) return false;
+            const archived = (row.labels as string[]).includes('archived');
+            if (where?.NOT && archived) return false;
+            const floor = where?.sendTime?.gte as Date | undefined;
+            if (floor && (row.sendTime as Date) < floor) return false;
+            return true;
+          }),
+        ),
+      ),
+    },
+    mailMessage: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          messages.filter((row) => {
+            const ids: string[] = where?.conversationId?.in ?? [];
+            if (!ids.includes(row.conversationId as string)) return false;
+            const floor = where?.sendTime?.gte as Date | undefined;
+            return !floor || (row.sendTime as Date) >= floor;
+          }),
+        ),
+      ),
+    },
+    mailNotifiedMessage: {
+      createMany,
+      updateMany: notifiedUpdateMany,
+      deleteMany: notifiedDeleteMany,
+      findMany: notifiedFindMany,
+    },
+    digestRecipient: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          recipients.filter(
+            (row) =>
+              (where?.enabled === undefined || row.enabled === where.enabled) &&
+              (where?.userId === undefined || row.userId === where.userId),
+          ),
+        ),
+      ),
+      updateMany: recipientUpdateMany,
+    },
+    digestDelivery: { create: deliveryCreate },
+  } as unknown as PrismaService;
+
+  const config = {
+    get: jest.fn((key: string) => ({
+      DIGEST_TIMEZONE: 'Asia/Jerusalem',
+      INBOX_NOTIFY_DRY_RUN: 'false',
+      ...options.env,
+    })[key]),
+  } as unknown as ConfigService;
+
+  const send = options.sendImpl ?? jest.fn().mockResolvedValue(undefined);
+  const telegram = { channel: 'telegram', send } as unknown as DigestSender;
+
+  return {
+    service: new InboxNotifyService(prisma, config, telegram),
+    send,
+    createMany,
+    notifiedUpdateMany,
+    notifiedDeleteMany,
+    notifiedFindMany,
+    deliveryCreate,
+    recipientUpdateMany,
+    prisma,
+  };
+}
+
+describe('InboxNotifyService.notifyAll', () => {
+  it('sends one Telegram message per new mail message', async () => {
+    const harness = makeHarness();
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    const [address, text] = harness.send.mock.calls[0];
+    expect(address).toBe('12345');
+    expect(text).toContain('דואר חדש מבית הספר');
+    expect(text).toContain('יום ספורט ביום חמישי');
+    expect(results[0]).toMatchObject({ status: 'sent', messageCount: 1, address: '12345' });
+  });
+
+  it('sends once to a chat a parent linked for three children', async () => {
+    // Mail is household-scoped: three subscriptions to one chat is still one
+    // inbox, and three copies of the same message is what a parent reads as
+    // the feature being broken.
+    const harness = makeHarness({
+      recipients: ['stu-1', 'stu-2', 'stu-3'].map((studentGuid) => ({
+        userId: USER_A,
+        studentGuid,
+        channel: 'telegram',
+        address: '12345',
+        enabled: true,
+        activeFrom: new Date('2026-09-01T00:00:00Z'),
+      })),
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends to every chat the parent has linked', async () => {
+    const harness = makeHarness({
+      recipients: ['12345', '67890'].map((address) => ({
+        userId: USER_A,
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address,
+        enabled: true,
+        activeFrom: new Date('2026-09-01T00:00:00Z'),
+      })),
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send.mock.calls.map((call) => call[0]).sort()).toEqual(['12345', '67890']);
+  });
+
+  it('ignores a disabled subscription', async () => {
+    const harness = makeHarness({
+      recipients: [
+        {
+          userId: USER_A,
+          studentGuid: 'stu-1',
+          channel: 'telegram',
+          address: '12345',
+          enabled: false,
+          activeFrom: new Date('2026-09-01T00:00:00Z'),
+        },
+      ],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('ignores mail older than the lookback window', async () => {
+    const harness = makeHarness({
+      conversations: [conversationRow({ sendTime: LAST_WEEK })],
+      messages: [messageRow({ sendTime: LAST_WEEK })],
+    });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+    expect(results).toEqual([]);
+  });
+
+  it('ignores mail that predates the subscription, so signing up sends no backlog', async () => {
+    const harness = makeHarness({
+      env: { INBOX_NOTIFY_LOOKBACK_HOURS: '720' },
+      recipients: [
+        {
+          userId: USER_A,
+          studentGuid: 'stu-1',
+          channel: 'telegram',
+          address: '12345',
+          enabled: true,
+          // Linked ten minutes ago; the message arrived an hour ago.
+          activeFrom: new Date('2026-11-17T12:50:00Z'),
+        },
+      ],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('does not notify about a conversation already read in the app', async () => {
+    const harness = makeHarness({
+      conversations: [conversationRow({ locallyReadThroughAt: NOW })],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('notifies when mail arrived after the parent marked the thread read', async () => {
+    const harness = makeHarness({
+      conversations: [
+        conversationRow({ locallyReadThroughAt: new Date('2026-11-17T10:00:00Z') }),
+      ],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not notify about an archived conversation', async () => {
+    const harness = makeHarness({
+      conversations: [conversationRow({ labels: ['archived'] })],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('does not notify a parent about their own reply', async () => {
+    const harness = makeHarness({
+      messages: [messageRow({ senderId: CONNECTION.upstreamUserId })],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('falls back to isNew when the connection has no upstream user id', async () => {
+    const quiet = makeHarness({
+      connections: [{ id: 'conn-1', upstreamUserId: null }],
+      messages: [messageRow({ isNew: false })],
+    });
+    await quiet.service.notifyAll({ now: NOW });
+    expect(quiet.send).not.toHaveBeenCalled();
+
+    const loud = makeHarness({
+      connections: [{ id: 'conn-1', upstreamUserId: null }],
+      messages: [messageRow({ isNew: true })],
+    });
+    await loud.service.notifyAll({ now: NOW });
+    expect(loud.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads only the mailboxes the parent owns', async () => {
+    const harness = makeHarness({
+      conversations: [conversationRow({ householdConnectionId: 'someone-elses' })],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('includes an unattributed conversation, as every other mail read does', async () => {
+    // NULL means "ownership unknown", not "nobody's"; excluding it would empty
+    // the inbox on a deployment that has not re-synced.
+    const harness = makeHarness({
+      conversations: [conversationRow({ householdConnectionId: null })],
+      messages: [messageRow({ householdConnectionId: null })],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims before sending and confirms afterwards', async () => {
+    const harness = makeHarness();
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.createMany).toHaveBeenCalledTimes(1);
+    const claimed = harness.createMany.mock.calls[0][0];
+    expect(claimed.skipDuplicates).toBe(true);
+    expect(claimed.data[0]).toMatchObject({
+      userId: USER_A,
+      channel: 'telegram',
+      address: '12345',
+      messageId: 'msg-1',
+      conversationId: 'conv-1',
+      notifiedFor: TODAY,
+    });
+    expect(claimed.data[0].contentHash).toEqual(expect.any(String));
+
+    const confirms = harness.notifiedUpdateMany.mock.calls.filter(
+      (call) => call[0].data.confirmedAt instanceof Date,
+    );
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0][0].where).toMatchObject({ userId: USER_A, address: '12345' });
+    expect(confirms[0][0].data.claimedBy).toBeNull();
+  });
+
+  it('releases the claim when the send fails, so the next run retries', async () => {
+    const harness = makeHarness({
+      sendImpl: jest.fn().mockRejectedValue(new Error('Telegram send failed: HTTP 502')),
+    });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.notifiedDeleteMany).toHaveBeenCalledTimes(1);
+    expect(
+      harness.notifiedUpdateMany.mock.calls.filter(
+        (call) => call[0].data.confirmedAt instanceof Date,
+      ),
+    ).toHaveLength(0);
+    expect(results[0].status).toBe('failed');
+  });
+
+  it('retires a chat Telegram refused permanently instead of retrying forever', async () => {
+    const harness = makeHarness({
+      sendImpl: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('Telegram send failed: Forbidden: bot was blocked by the user'),
+        ),
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.recipientUpdateMany).toHaveBeenCalledWith({
+      where: { userId: USER_A, channel: 'telegram', address: '12345' },
+      data: { enabled: false },
+    });
+    // Confirmed, not released: there is nowhere left to retry to.
+    expect(
+      harness.notifiedUpdateMany.mock.calls.filter(
+        (call) => call[0].data.confirmedAt instanceof Date,
+      ),
+    ).toHaveLength(1);
+    expect(harness.notifiedDeleteMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps one refused chat from undoing the chat that did receive it', async () => {
+    const harness = makeHarness({
+      recipients: ['dead', 'live'].map((address) => ({
+        userId: USER_A,
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address,
+        enabled: true,
+        activeFrom: new Date('2026-09-01T00:00:00Z'),
+      })),
+      sendImpl: jest.fn().mockImplementation((address: string) => {
+        if (address === 'dead') throw new Error('Telegram send failed: HTTP 502');
+        return Promise.resolve();
+      }),
+    });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    // The digest is all-or-nothing per child; this is per address, which is
+    // what lets the surviving chat keep its confirmation.
+    expect(results.find((r) => r.address === 'live')?.status).toBe('sent');
+    expect(results.find((r) => r.address === 'dead')?.status).toBe('failed');
+    expect(harness.notifiedDeleteMany.mock.calls[0][0].where.address).toBe('dead');
+    const confirms = harness.notifiedUpdateMany.mock.calls.filter(
+      (call) => call[0].data.confirmedAt instanceof Date,
+    );
+    expect(confirms).toHaveLength(1);
+    expect(confirms[0][0].where.address).toBe('live');
+  });
+
+  it('takes over only a claim that has gone stale', async () => {
+    const harness = makeHarness();
+
+    await harness.service.notifyAll({ now: NOW });
+
+    const takeover = harness.notifiedUpdateMany.mock.calls.find(
+      (call) => call[0].data.confirmedAt === null,
+    );
+    expect(takeover).toBeDefined();
+    expect(takeover?.[0].where).toMatchObject({
+      userId: USER_A,
+      channel: 'telegram',
+      address: '12345',
+      confirmedAt: null,
+    });
+    // A run still working on its claim must not have it stolen.
+    expect((takeover?.[0].where.claimedAt.lt as Date).getTime()).toBe(
+      NOW.getTime() - STALE_CLAIM_MS,
+    );
+  });
+
+  it('sends nothing the run does not own, even after claiming', async () => {
+    // The createMany count says how many rows were won, never which.
+    const harness = makeHarness({ ownedMessageIds: [] });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).not.toHaveBeenCalled();
+    expect(results[0]?.status ?? 'skipped_empty').toBe('skipped_empty');
+  });
+
+  it('stays silent during quiet hours and holds the mail over', async () => {
+    const harness = makeHarness();
+
+    // 02:00 Jerusalem.
+    const results = await harness.service.notifyAll({ now: new Date('2026-11-17T00:00:00Z') });
+
+    expect(harness.send).not.toHaveBeenCalled();
+    expect(harness.createMany).not.toHaveBeenCalled();
+    expect(results).toEqual([]);
+  });
+
+  it('sends the held-over mail once the quiet window closes', async () => {
+    const harness = makeHarness({
+      conversations: [conversationRow({ sendTime: new Date('2026-11-17T00:00:00Z') })],
+      messages: [messageRow({ sendTime: new Date('2026-11-17T00:00:00Z') })],
+    });
+
+    // 08:00 Jerusalem, six hours after the mail arrived at 02:00.
+    await harness.service.notifyAll({ now: new Date('2026-11-17T06:00:00Z') });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims nothing on a dry run', async () => {
+    // A dry run that claimed would make the first real run find nothing to say.
+    const harness = makeHarness({ env: { INBOX_NOTIFY_DRY_RUN: 'true' } });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.createMany).not.toHaveBeenCalled();
+    expect(harness.send).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({ status: 'dry_run', messageCount: 1 });
+  });
+
+  it('defaults to a dry run, so a first deploy messages nobody by accident', async () => {
+    const harness = makeHarness({ env: { INBOX_NOTIFY_DRY_RUN: undefined as unknown as string } });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(results[0].status).toBe('dry_run');
+  });
+
+  it('sends one summary instead of a burst when a run finds too much', async () => {
+    const messages = Array.from({ length: 9 }, (_, i) =>
+      messageRow({ messageId: `msg-${i}`, subject: `הודעה ${i}` }),
+    );
+    const harness = makeHarness({ messages });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    expect(harness.send.mock.calls[0][1]).toContain('9');
+    expect(harness.send.mock.calls[0][1]).toContain('הודעות חדשות');
+    expect(results[0]).toMatchObject({ summarized: true, messageCount: 9 });
+    // The whole batch is claimed, so the next run does not re-send it one by one.
+    expect(harness.createMany.mock.calls[0][0].data).toHaveLength(9);
+  });
+
+  it('honours INBOX_NOTIFY_MAX_PER_RUN', async () => {
+    const messages = Array.from({ length: 2 }, (_, i) => messageRow({ messageId: `msg-${i}` }));
+    const harness = makeHarness({ messages, env: { INBOX_NOTIFY_MAX_PER_RUN: '1' } });
+
+    const results = await harness.service.notifyAll({ now: NOW });
+
+    expect(results[0].summarized).toBe(true);
+  });
+
+  it('writes a run-log row naming no child', async () => {
+    const harness = makeHarness();
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.deliveryCreate).toHaveBeenCalledTimes(1);
+    expect(harness.deliveryCreate.mock.calls[0][0].data).toMatchObject({
+      userId: USER_A,
+      studentGuid: null,
+      kind: 'inbox',
+      status: 'sent',
+      itemCount: 1,
+      recipientCount: 1,
+      channel: 'telegram',
+      reportFor: TODAY,
+    });
+  });
+
+  it('writes no run-log row when there is nothing new', async () => {
+    // The cron fires 144 times a day. A row per quiet tick per parent would
+    // bury the history this table exists to make readable.
+    const harness = makeHarness({ messages: [] });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.deliveryCreate).not.toHaveBeenCalled();
+  });
+
+  it('runs only the parent the caller named', async () => {
+    const harness = makeHarness({
+      recipients: [
+        {
+          userId: 'user-b',
+          studentGuid: 'stu-9',
+          channel: 'telegram',
+          address: '99999',
+          enabled: true,
+          activeFrom: new Date('2026-09-01T00:00:00Z'),
+        },
+      ],
+    });
+
+    await harness.service.notifyAll({ now: NOW, userId: USER_A });
+
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+});

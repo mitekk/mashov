@@ -115,7 +115,11 @@ class CapturingSender implements DigestSender {
 
   async send(address: string, text: string): Promise<void> {
     if (this.failFor === address) {
-      throw new Error('Telegram send failed: bot was blocked by the user');
+      // Transient on purpose. A permanent refusal ("bot was blocked by the
+      // user", "chat not found") confirms the claims and disables the
+      // recipient instead of releasing, so it would prove the opposite of
+      // what the retry test below is about.
+      throw new Error('Telegram send failed: HTTP 502');
     }
     this.sent.push({ address, text });
   }

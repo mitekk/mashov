@@ -104,6 +104,20 @@ services:
       # is rendered at all, which is the right failure: a base of `undefined`
       # would put "undefined/inbox/<id>" in a parent's chat.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # Household mail -> Telegram, as its own message. Off by default and
+      # silent even when on, exactly like the digest. The cron fires every ten
+      # minutes; the quiet window HOLDS mail over rather than dropping it, so
+      # a letter that arrives at 02:00 goes out at 07:00. See ADR-0037.
+      INBOX_NOTIFY_ENABLED: ${INBOX_NOTIFY_ENABLED:-false}
+      INBOX_NOTIFY_DRY_RUN: ${INBOX_NOTIFY_DRY_RUN:-true}
+      INBOX_NOTIFY_QUIET_FROM: ${INBOX_NOTIFY_QUIET_FROM:-21:00}
+      INBOX_NOTIFY_QUIET_TO: ${INBOX_NOTIFY_QUIET_TO:-07:00}
+      # Also the carry-over window: shorter than the quiet hours are long would
+      # lose the mail it is meant to hold.
+      INBOX_NOTIFY_LOOKBACK_HOURS: ${INBOX_NOTIFY_LOOKBACK_HOURS:-24}
+      # Above this, one summary message goes out instead of a burst.
+      INBOX_NOTIFY_MAX_PER_RUN: ${INBOX_NOTIFY_MAX_PER_RUN:-5}
+      INBOX_NOTIFY_BODY_CHARS: ${INBOX_NOTIFY_BODY_CHARS:-700}
       # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
       # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
       # it starts, and the mint route answers 503.

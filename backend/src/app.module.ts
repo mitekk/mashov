@@ -12,6 +12,7 @@ import { ConnectionModule } from "./connection/connection.module";
 import { SchoolLinksModule } from "./school-links/school-links.module";
 import { SyncModule } from "./sync/sync.module";
 import { DigestModule } from "./digest/digest.module";
+import { InboxNotifyModule } from "./inbox-notify/inbox-notify.module";
 import { TelegramModule } from "./telegram/telegram.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { FeedModule } from "./feed/feed.module";
@@ -35,6 +36,7 @@ import { AppSessionGuard } from "./app-session/app-session.guard";
     SchoolLinksModule,
     SyncModule,
     DigestModule,
+    InboxNotifyModule,
     TelegramModule,
     DashboardModule,
     FeedModule,
