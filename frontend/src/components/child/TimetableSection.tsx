@@ -14,6 +14,9 @@ import type {
   TimetableEntry,
   LessonPlan,
   LessonHistoryEntry,
+  BellPeriod,
+  BellBreak,
+  TimetableSchedule,
 } from '@/types/api';
 
 interface TimetableSectionProps {
@@ -196,6 +199,76 @@ function buildGrid(entries: TimetableEntry[]): GridModel {
   };
 }
 
+/**
+ * The clock, indexed the way the grid reads it.
+ *
+ * Both maps span the WHOLE bell schedule, not the rows on screen: the grid
+ * shows only the periods the child has a lesson in, and which break to draw is
+ * decided per rendered row below.
+ */
+interface ScheduleIndex {
+  periodsByLesson: Map<number, BellPeriod>;
+  breaksAfterLesson: Map<number, BellBreak>;
+}
+
+function buildScheduleIndex(schedule: TimetableSchedule | undefined): ScheduleIndex {
+  const periodsByLesson = new Map<number, BellPeriod>();
+  const breaksAfterLesson = new Map<number, BellBreak>();
+
+  for (const period of schedule?.periods ?? []) periodsByLesson.set(period.lesson, period);
+  for (const item of schedule?.breaks ?? []) breaksAfterLesson.set(item.afterLesson, item);
+
+  return { periodsByLesson, breaksAfterLesson };
+}
+
+function breakLabel(item: BellBreak): string {
+  const kindLabel = item.kind === 'lunch' ? 'הפסקת אוכל' : 'הפסקה';
+  return `${kindLabel} · ${item.minutes} דק׳`;
+}
+
+interface ClockRangeProps {
+  startTime: string;
+  endTime: string;
+  className?: string;
+  testId?: string;
+}
+
+/**
+ * A time range, forced LTR.
+ *
+ * Without `dir="ltr"` the surrounding RTL layout reorders the two clock
+ * readings around the dash, so a lesson from 08:15 to 09:00 renders as
+ * "09:00–08:15".
+ */
+function ClockRange({ startTime, endTime, className, testId }: ClockRangeProps) {
+  return (
+    <span dir="ltr" data-testid={testId} className={`tabular-nums ${className ?? ''}`}>
+      {startTime}–{endTime}
+    </span>
+  );
+}
+
+interface BreakRowProps {
+  item: BellBreak;
+  columnCount: number;
+}
+
+function BreakRow({ item, columnCount }: BreakRowProps) {
+  return (
+    <tr
+      data-testid="timetable-break-row"
+      className="border-b border-border bg-muted/40 last:border-0"
+    >
+      <td colSpan={columnCount} className="px-3 py-1.5 text-center">
+        <span className="inline-flex flex-wrap items-center justify-center gap-x-2 text-[11px] text-muted-foreground">
+          <span>{breakLabel(item)}</span>
+          <ClockRange startTime={item.startTime} endTime={item.endTime} />
+        </span>
+      </td>
+    </tr>
+  );
+}
+
 interface LessonDetailsProps {
   label: string;
   text: string;
@@ -296,6 +369,11 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
     return buildGrid(timetableData.data);
   }, [timetableData]);
 
+  const scheduleIndex = React.useMemo(
+    () => buildScheduleIndex(timetableData?.schedule),
+    [timetableData?.schedule],
+  );
+
   const planIndex = React.useMemo(
     () => buildPlanIndex(plansData?.data ?? []),
     [plansData?.data],
@@ -326,6 +404,14 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
   return (
     <section data-testid="timetable-section" className="section-stack py-1">
       <h2 className="text-lg font-semibold text-foreground">לוח שיעורים</h2>
+      {gridModel && timetableData?.schedule?.source === 'default' && (
+        <p
+          data-testid="timetable-schedule-approximate"
+          className="text-xs text-muted-foreground"
+        >
+          השעות מוצגות לפי לוח זמנים ברירת מחדל ועשויות לא להתאים לבית הספר
+        </p>
+      )}
       {isLoading && <TableSkeleton rows={8} />}
       {isError && (
         <ErrorState
@@ -346,7 +432,7 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
               <thead>
                 <tr className="border-b border-border bg-muted/55">
                   <th
-                    className="px-3 py-2.5 text-xs font-semibold text-muted-foreground text-center w-14"
+                    className="px-3 py-2.5 text-xs font-semibold text-muted-foreground text-center w-20"
                     scope="col"
                   >
                     שיעור
@@ -382,31 +468,59 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
                 </tr>
               </thead>
               <tbody>
-                {gridModel.lessons.map((lesson) => (
-                  <tr key={lesson} className="border-b border-border last:border-0">
-                    <td className="px-3 py-2 text-center align-top w-14 font-medium text-muted-foreground text-xs">
-                      {lesson}
-                    </td>
-                    {gridModel.days.map((day) => {
-                      const entry = gridModel.grid.get(lesson)?.get(day);
-                      if (!entry) return <EmptyCell key={day} isToday={day === todaySchoolDay} />;
+                {gridModel.lessons.map((lesson, lessonIndex) => {
+                  const period = scheduleIndex.periodsByLesson.get(lesson);
+                  // A break only belongs between two rows that are both on
+                  // screen: the last rendered period's trailing gap is the end
+                  // of the child's day, not a recess they stay at school for.
+                  const isLastRenderedLesson = lessonIndex === gridModel.lessons.length - 1;
+                  const breakAfter = isLastRenderedLesson
+                    ? undefined
+                    : scheduleIndex.breaksAfterLesson.get(lesson);
 
-                      const plan = resolvePlan(planIndex, entry);
-                      const history = resolveHistory(historyIndex, entry);
+                  return (
+                    <React.Fragment key={lesson}>
+                      <tr className="border-b border-border last:border-0">
+                        <td className="px-3 py-2 text-center align-top w-20 font-medium text-muted-foreground text-xs">
+                          <span className="flex flex-col items-center gap-0.5">
+                            <span>{lesson}</span>
+                            {period && (
+                              <ClockRange
+                                testId="timetable-lesson-time"
+                                startTime={period.startTime}
+                                endTime={period.endTime}
+                                className="text-[10px] font-normal text-muted-foreground whitespace-nowrap"
+                              />
+                            )}
+                          </span>
+                        </td>
+                        {gridModel.days.map((day) => {
+                          const entry = gridModel.grid.get(lesson)?.get(day);
+                          if (!entry) {
+                            return <EmptyCell key={day} isToday={day === todaySchoolDay} />;
+                          }
 
-                      return (
-                        <LessonCell
-                          key={day}
-                          entry={entry}
-                          isToday={day === todaySchoolDay}
-                          plan={plan}
-                          remark={history?.remark}
-                          homeWork={history?.homeWork}
-                        />
-                      );
-                    })}
-                  </tr>
-                ))}
+                          const plan = resolvePlan(planIndex, entry);
+                          const history = resolveHistory(historyIndex, entry);
+
+                          return (
+                            <LessonCell
+                              key={day}
+                              entry={entry}
+                              isToday={day === todaySchoolDay}
+                              plan={plan}
+                              remark={history?.remark}
+                              homeWork={history?.homeWork}
+                            />
+                          );
+                        })}
+                      </tr>
+                      {breakAfter && (
+                        <BreakRow item={breakAfter} columnCount={gridModel.days.length + 1} />
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

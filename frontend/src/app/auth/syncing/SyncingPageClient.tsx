@@ -61,6 +61,7 @@ const TASK_LABELS: Record<string, string> = {
   releases: 'אישורי יציאה',
   schoolActivities: 'פעילויות בית הספר',
   timetable: 'מערכת שעות',
+  bells: 'לוח זמנים',
 };
 
 function statusOf(error: unknown): number | null {

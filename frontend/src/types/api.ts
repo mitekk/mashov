@@ -563,7 +563,42 @@ export interface TimetableEntry {
   updatedAt: string;
 }
 
-export type TimetableResponse = { data: TimetableEntry[] };
+/** One lesson period's clock window, both ends as "HH:MM". */
+export interface BellPeriod {
+  lesson: number;
+  startTime: string;
+  endTime: string;
+}
+
+/**
+ * A gap between two periods. Derived server-side from the bell schedule, not
+ * fetched: the upstream serves period rows only (ADR-0037).
+ */
+export interface BellBreak {
+  afterLesson: number;
+  startTime: string;
+  endTime: string;
+  minutes: number;
+  kind: 'recess' | 'lunch';
+}
+
+/**
+ * The school day's clock, and where it came from.
+ *
+ * `source: 'default'` means these are the bundled approximate times, not the
+ * school's own — anything that renders them has to say so.
+ */
+export interface TimetableSchedule {
+  source: 'school' | 'default';
+  periods: BellPeriod[];
+  breaks: BellBreak[];
+}
+
+/**
+ * `schedule` is optional on purpose: a backend older than the bell schedule
+ * answers without it, and the grid still has to render.
+ */
+export type TimetableResponse = { data: TimetableEntry[]; schedule?: TimetableSchedule };
 
 // ─── Lesson Plans ───────────────────────────────────────────────────────────
 

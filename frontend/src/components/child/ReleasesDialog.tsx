@@ -26,17 +26,6 @@ interface ReleasesDialogProps {
 
 type ReleaseStatusVariant = 'info' | 'positive' | 'attention' | 'neutral';
 
-const LESSON_TIMES: Record<number, string> = {
-  1: '08:00',
-  2: '08:50',
-  3: '09:45',
-  4: '10:35',
-  5: '11:45',
-  6: '12:35',
-  7: '13:25',
-  8: '14:15',
-};
-
 const RELEASE_TIME_INPUT_CLASS =
   'w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/50';
 
@@ -80,6 +69,16 @@ interface LessonTimePickerProps {
   value: string;
   onChange: (time: string) => void;
   timetable: TimetableEntry[];
+  /**
+   * Period start times, from the school's bell schedule on the timetable
+   * query this dialog already consumes (ADR-0037).
+   *
+   * This used to be a hardcoded, school-agnostic map in this file — a second
+   * period-time table that could, and did, diverge from the one the timetable
+   * grid shows. Empty here (an older backend, or a school whose periods are
+   * all in the past) falls back to the free `<input type="time">` below.
+   */
+  lessonStartTimes: Map<number, string>;
   disabled?: boolean;
   fieldId?: string;
   name?: string;
@@ -92,6 +91,7 @@ function LessonTimePicker({
   value,
   onChange,
   timetable,
+  lessonStartTimes,
   disabled = false,
   fieldId,
   name,
@@ -102,30 +102,30 @@ function LessonTimePicker({
   const dayLessons = useMemo(() => {
     if (dayOfWeek === null) return [];
     return timetable
-      .filter((entry) => entry.day === dayOfWeek && Boolean(LESSON_TIMES[entry.lesson]))
+      .filter((entry) => entry.day === dayOfWeek && Boolean(lessonStartTimes.get(entry.lesson)))
       .sort((left, right) => {
         if (left.lesson !== right.lesson) return left.lesson - right.lesson;
         return left.subjectName.localeCompare(right.subjectName, 'he');
       });
-  }, [dayOfWeek, timetable]);
+  }, [dayOfWeek, lessonStartTimes, timetable]);
 
   const futureLessons = useMemo(() => {
     const now = new Date();
     const isToday = dateValue === todayStr;
     return dayLessons.filter((entry) => {
       if (!isToday) return true;
-      const [hour, minute] = (LESSON_TIMES[entry.lesson] ?? '00:00')
+      const [hour, minute] = (lessonStartTimes.get(entry.lesson) ?? '00:00')
         .split(':')
         .map(Number);
       const lessonMinutes = hour * 60 + (minute ?? 0);
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
       return lessonMinutes > nowMinutes;
     });
-  }, [dateValue, dayLessons, todayStr]);
+  }, [dateValue, dayLessons, lessonStartTimes, todayStr]);
 
   const slotTimes = useMemo(
-    () => futureLessons.map((entry) => LESSON_TIMES[entry.lesson] ?? ''),
-    [futureLessons],
+    () => futureLessons.map((entry) => lessonStartTimes.get(entry.lesson) ?? ''),
+    [futureLessons, lessonStartTimes],
   );
 
   useEffect(() => {
@@ -180,7 +180,7 @@ function LessonTimePicker({
     >
       <option value="">בחר שעה</option>
       {futureLessons.map((entry) => {
-        const lessonTime = LESSON_TIMES[entry.lesson];
+        const lessonTime = lessonStartTimes.get(entry.lesson);
         const teachersLabel = formatTeachers(entry.teachers);
         const label = teachersLabel.length > 0
           ? `שיעור ${entry.lesson} — ${entry.subjectName} — ${teachersLabel} (${lessonTime})`
@@ -250,6 +250,13 @@ export function ReleasesDialog({
 
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const timetable = timetableData?.data ?? [];
+  const lessonStartTimes = useMemo(() => {
+    const byLesson = new Map<number, string>();
+    for (const period of timetableData?.schedule?.periods ?? []) {
+      byLesson.set(period.lesson, period.startTime);
+    }
+    return byLesson;
+  }, [timetableData?.schedule]);
 
   const createMutation = useMutation({
     mutationFn: () => {
@@ -392,6 +399,7 @@ export function ReleasesDialog({
                       value={createTime}
                       onChange={setCreateTime}
                       timetable={timetable}
+                      lessonStartTimes={lessonStartTimes}
                       disabled={isBusy}
                       fieldId="release-create-time"
                       name="release-create-time"
@@ -500,6 +508,7 @@ export function ReleasesDialog({
                                 value={editTime}
                                 onChange={setEditTime}
                                 timetable={timetable}
+                                lessonStartTimes={lessonStartTimes}
                                 disabled={isBusy}
                                 fieldId={`release-time-${release.id}`}
                                 name={`release-time-${release.id}`}
