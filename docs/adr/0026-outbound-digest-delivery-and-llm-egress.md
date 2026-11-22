@@ -207,14 +207,35 @@ receives a child's behavior record. There is no verification handshake. `DIGEST_
 the `digest_delivery.messageText` audit trail are the only guards, and a nonce handshake before
 a recipient goes live would be a worthwhile follow-up.
 
-**Volume.** Seven runs a day per child, each capable of sending. Nothing caps messages per day,
+**Volume.** Seven runs a day per child, each capable of sending — and since ADR-0038, N+1
+messages per child per run when the day's items carry attachments. Nothing caps messages per day,
 and a parent who finds the bot noisy will mute it, which costs more than a missed digest. A
 minimum item age and a daily cap are the obvious next refinement. One specific failure here was
 closed during review: a single unreachable recipient used to fail the whole run and release its
 claims, so the *working* recipient was re-sent the same digest every hour indefinitely.
-Delivery is now per-recipient. What is still missing is a permanent-vs-transient distinction —
-a `403 bot was blocked` is retried on the same cadence as a `503`, forever, with no
-consecutive-failure counter and no auto-disable.
+Delivery is now per-recipient.
+
+**The permanent-vs-transient distinction, since closed.** A `403 bot was blocked` used to be
+retried on the same cadence as a `503`, forever, with a fresh model call each time and no
+auto-disable. `isPermanentTelegramFailure` now matches four Bot API descriptions as a closed
+list — deliberately a list and not a heuristic, because an unknown code costs one wasted retry
+per run while a wrongly-permanent one stops a parent's digest with no error anyone sees. On a
+permanent refusal the ledger rows are confirmed anyway and the `digest_recipient` row is
+disabled. A message over the Bot API's 4096-character limit used to fail the same way; it is now
+chunked.
+
+**Two content changes, worth naming here because they change what the message says.** Behaviour
+event code 18 (נוכחות) is no longer reported: it is a presence row per lesson per day and told a
+parent nothing they had not assumed. It is filtered by event CODE in the CHECKER, not by
+`classification` and not downstream — by code because 18 reads `neutral` only through the
+classifier's fallback, which is also what every unknown code gets, so filtering on the bucket
+would have swallowed every code a school adds later; and in the checker because a claimed item
+with nothing behind it in the payload is released and re-claimed on all seven daily runs
+forever, after spending a model call. And the report now closes with an **identifier-free** link
+(`<PUBLIC_BASE_URL>/home`), never a per-child URL: a Telegram chat is a shared, forwardable
+artifact, and a studentGuid in someone else's hands outlives the message it arrived in. With
+`PUBLIC_BASE_URL` unset — the default — no link line is rendered at all, because a base of
+`undefined` would put the literal string "undefined/home" in a parent's chat.
 
 **Ownership, tightened — and since closed.** Recipient mutations and delivery history are
 scoped by the creating `userId`, because a `digest_delivery` row carries `messageText` — the
