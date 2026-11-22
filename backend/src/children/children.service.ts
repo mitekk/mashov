@@ -23,6 +23,7 @@ import {
   extractHomeworkFiles,
   parseAttachmentMeta,
 } from './attachment-parser';
+import { DownloadOptions, downloadTimeoutConfig } from './download-options';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -408,6 +409,7 @@ export class ChildrenService {
     homeworkId: string,
     fileId: string,
     userId?: string,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     await this.requireStudent(studentGuid, userId);
 
@@ -435,6 +437,7 @@ export class ChildrenService {
       `https://web.mashov.info/students/main/students/${studentGuid}/homework`,
       file.fileName,
       await this.scope.targetForStudent(studentGuid, userId),
+      options,
     );
   }
 
@@ -443,6 +446,7 @@ export class ChildrenService {
     behaviorId: string,
     fileId: string,
     userId?: string,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     await this.requireStudent(studentGuid, userId);
 
@@ -472,6 +476,7 @@ export class ChildrenService {
       `https://web.mashov.info/students/main/students/${studentGuid}/behave`,
       file.fileName,
       await this.scope.targetForStudent(studentGuid, userId),
+      options,
     );
   }
 
@@ -1024,6 +1029,7 @@ export class ChildrenService {
     referer: string,
     fallbackFileName: string,
     target: ConnectionTarget,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     const uniqueCandidates = Array.from(new Set(
       candidates
@@ -1038,6 +1044,7 @@ export class ChildrenService {
           referer,
           fallbackFileName,
           target,
+          options,
         );
       } catch {
         // Try next candidate URL.
@@ -1052,6 +1059,7 @@ export class ChildrenService {
     referer: string,
     fallbackFileName: string,
     target: ConnectionTarget,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     const response = await this.mashovClient.getResponseForTarget<ArrayBuffer>(
       pathOrUrl,
@@ -1061,6 +1069,10 @@ export class ChildrenService {
         headers: {
           Referer: referer,
         },
+        // A fresh AbortSignal per candidate URL, not per download: a signal
+        // that already fired on the first candidate would abort the retry
+        // before it left the process.
+        ...downloadTimeoutConfig(options),
       },
     );
 

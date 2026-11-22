@@ -2869,3 +2869,75 @@ describe('ChildrenService per-child reads and the connection router', () => {
     expect(targetForStudent).toHaveBeenCalledWith(OWNED_GUID, CALLER);
   });
 });
+
+describe('ChildrenService attachment timeout override', () => {
+  const okPdf = { data: new ArrayBuffer(8), headers: { 'content-type': 'application/pdf' } };
+
+  function makeService(getResponse: jest.Mock) {
+    return new ChildrenService(
+      makeMockPrisma({
+        homeworkFindUnique: jest.fn().mockResolvedValue(
+          makeHomeworkRow({ files: [{ fileId: 'hw-file-1', fileName: 'letter.pdf' }] }),
+        ),
+      }),
+      makeMockSession(),
+      makeMockMashovClient({ getResponse }),
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope(),
+    );
+  }
+
+  it('sets both the per-request timeout and an AbortSignal when given one', async () => {
+    // createMashovAxios bounds every request with `timeout: 10s` AND
+    // `signal ??= AbortSignal.timeout(10s)`, with no retry-on-abort.
+    // Overriding only `timeout` leaves the signal aborting at ten seconds.
+    const getResponse = jest.fn().mockResolvedValue(okPdf);
+
+    await makeService(getResponse).downloadHomeworkAttachment(
+      TEST_GUID,
+      'hw-1',
+      'hw-file-1',
+      undefined,
+      { timeoutMs: 45_000 },
+    );
+
+    const config = getResponse.mock.calls[0][2];
+    expect(config.timeout).toBe(45_000);
+    expect(config.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('leaves the instance bound alone when no override is given', async () => {
+    const getResponse = jest.fn().mockResolvedValue(okPdf);
+
+    await makeService(getResponse).downloadHomeworkAttachment(TEST_GUID, 'hw-1', 'hw-file-1');
+
+    const config = getResponse.mock.calls[0][2];
+    expect(config.timeout).toBeUndefined();
+    expect(config.signal).toBeUndefined();
+  });
+
+  it('threads the override through the behavior attachment path too', async () => {
+    const getResponse = jest.fn().mockResolvedValue(okPdf);
+    const service = new ChildrenService(
+      makeMockPrisma({
+        behaviorFindUnique: jest.fn().mockResolvedValue(
+          makeBehaviorRow({
+            rawPayload: { files: [{ fileId: 'beh-file-1', fileName: 'note.pdf' }] },
+          }),
+        ),
+      }),
+      makeMockSession(),
+      makeMockMashovClient({ getResponse }),
+      makeMockUserItemStateService(),
+      makeMockConfig(),
+      makeMockScope(),
+    );
+
+    await service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1', undefined, {
+      timeoutMs: 30_000,
+    });
+
+    expect(getResponse.mock.calls[0][2].timeout).toBe(30_000);
+  });
+});

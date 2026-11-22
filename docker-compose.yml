@@ -128,6 +128,9 @@ services:
       # sendPhoto re-encodes and downscales, so a scanned slip becomes
       # unreadable.
       TELEGRAM_PHOTO_MAX_BYTES: ${TELEGRAM_PHOTO_MAX_BYTES:-5242880}
+      # Per-download override of MASHOV_TIMEOUT_MS. 10s is right for a JSON
+      # read and wrong for a multi-megabyte PDF over the residential hop.
+      MEDIA_DOWNLOAD_TIMEOUT_MS: ${MEDIA_DOWNLOAD_TIMEOUT_MS:-45000}
       # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
       # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
       # it starts, and the mint route answers 503.

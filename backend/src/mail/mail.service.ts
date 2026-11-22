@@ -39,6 +39,8 @@ interface UpstreamConversationDetail {
   messages?: UpstreamMessage[];
 }
 
+import { DownloadOptions, downloadTimeoutConfig } from '../children/download-options';
+
 interface MailAttachment {
   fileId: string;
   fileName: string;
@@ -320,6 +322,7 @@ export class MailService {
     messageId: string,
     fileId: string,
     userId?: string,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     const conversation = await this.prisma.mailConversation.findUnique({
       where: { conversationId },
@@ -403,6 +406,7 @@ export class MailService {
         referer,
         attachment.fileName,
         target,
+        options,
       );
     } catch {
       // Attachment URLs may be short-lived; refresh from upstream and retry once.
@@ -424,6 +428,7 @@ export class MailService {
         referer,
         refreshedAttachment.fileName,
         target,
+        options,
       );
     }
   }
@@ -886,6 +891,7 @@ export class MailService {
     referer: string,
     fallbackFileName: string,
     target: ConnectionTarget,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     const uniqueCandidates = Array.from(new Set(
       candidates
@@ -901,6 +907,7 @@ export class MailService {
           referer,
           fallbackFileName,
           target,
+          options,
         );
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
@@ -919,6 +926,7 @@ export class MailService {
     referer: string,
     fallbackFileName: string,
     target: ConnectionTarget,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     const response = await this.mashovClient.getResponseForTarget<ArrayBuffer>(
       pathOrUrl,
@@ -928,6 +936,10 @@ export class MailService {
         headers: {
           Referer: referer,
         },
+        // A fresh AbortSignal per candidate URL, not per download: a signal
+        // that already fired on the first candidate would abort the retry
+        // before it left the process.
+        ...downloadTimeoutConfig(options),
       },
     );
 
