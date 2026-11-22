@@ -54,6 +54,7 @@ function makeHarness(
     digestRecipient: {
       create: jest.fn().mockResolvedValue(RECIPIENT),
       findMany: jest.fn().mockResolvedValue([RECIPIENT]),
+      count: jest.fn().mockResolvedValue(1),
       findUnique: jest.fn().mockResolvedValue(existing),
       update: jest.fn().mockResolvedValue({ ...RECIPIENT, enabled: false }),
       delete: jest.fn().mockResolvedValue(RECIPIENT),
@@ -165,7 +166,7 @@ describe('DigestRecipientService', () => {
 
     const listed = await harness.service.list({ userId: 'user-1', studentGuid: 'stu-1' });
 
-    expect(listed).toHaveLength(1);
+    expect(listed.data).toHaveLength(1);
     expect((harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where).toMatchObject(
       { studentGuid: 'stu-1', userId: 'user-1' },
     );
@@ -180,6 +181,39 @@ describe('DigestRecipientService', () => {
 
     const where = (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where;
     expect(where).toEqual({ userId: 'user-1' });
+  });
+
+  it('answers with the pagination envelope the API rules require', async () => {
+    // `.claude/rules/api.md`: a list route is always paginated and never
+    // returns an unbounded list. This one was the exception, and a household
+    // that accumulates recipient rows over years is exactly who pays for it.
+    const harness = makeHarness();
+    (harness.prisma.digestRecipient.count as jest.Mock).mockResolvedValue(43);
+
+    const listed = await harness.service.list({ userId: 'user-1' });
+
+    expect(listed.pagination).toEqual({ page: 1, limit: 20, total: 43, totalPages: 3 });
+  });
+
+  it('skips and takes the page it was asked for', async () => {
+    const harness = makeHarness();
+
+    await harness.service.list({ userId: 'user-1', page: 3, limit: 10 });
+
+    const args = (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0];
+    expect(args.skip).toBe(20);
+    expect(args.take).toBe(10);
+  });
+
+  it('counts only the caller’s own rows, not every household’s', async () => {
+    const harness = makeHarness();
+
+    await harness.service.list({ userId: 'user-1', studentGuid: 'stu-1' });
+
+    expect((harness.prisma.digestRecipient.count as jest.Mock).mock.calls[0][0].where).toEqual({
+      userId: 'user-1',
+      studentGuid: 'stu-1',
+    });
   });
 
   it('updates the enabled flag', async () => {

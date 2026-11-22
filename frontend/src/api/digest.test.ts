@@ -37,8 +37,25 @@ describe('fetchDigestRecipients', () => {
 
     const recipients = await fetchDigestRecipients();
 
-    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/digest/recipients');
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/digest/recipients?limit=100');
     expect(recipients).toEqual([RECIPIENT]);
+  });
+
+  it('asks for a page big enough to hold every row the route will return', async () => {
+    // The route is paginated per `.claude/rules/api.md`, and its default page
+    // is 20. The card is not a paged list -- it is "everything you are
+    // subscribed to" -- so a silent truncation at 20 would switch children off
+    // in the UI that are still receiving messages. 100 is the route's maximum.
+    const fetchMock = mockFetch({
+      data: [RECIPIENT],
+      pagination: { page: 1, limit: 100, total: 1, totalPages: 1 },
+    });
+
+    await fetchDigestRecipients('stu-1');
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      '/api/v1/digest/recipients?limit=100&studentGuid=stu-1',
+    );
   });
 });
 

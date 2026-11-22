@@ -21,6 +21,26 @@ const FALLBACK_MESSAGE = 'לא הצלחנו ליצור קישור כרגע. נס
 /** Stable empty identity for the not-yet-seeded choice. */
 const NO_CHILDREN: string[] = [];
 
+/**
+ * Which of the three things the page shows: exactly one of them, always.
+ *
+ * A pure function rather than four conditions in the JSX, because the rule it
+ * encodes is not obvious. The roster query gates the first two steps -- they
+ * cannot be drawn without it. Steps 3 and 4 are a wait on an external action,
+ * so once a link exists they stay on screen whatever the query is doing; the
+ * alternative is stranding a parent who has already pressed START. What is not
+ * acceptable either way is drawing a loader beside a step.
+ */
+export function wizardView(state: {
+  isLoading: boolean;
+  isError: boolean;
+  step: Step;
+}): 'loading' | 'error' | 'step' {
+  if (state.isError) return 'error';
+  if (state.isLoading && (state.step === 'intro' || state.step === 'children')) return 'loading';
+  return 'step';
+}
+
 function mintErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     const code = (error.body as { error?: { code?: string } })?.error?.code;
@@ -102,6 +122,7 @@ export default function TelegramSetupPageClient() {
   // A module-level constant, not a fresh `[]`: an inline literal would be a new
   // array identity every render and so defeat the useMemo below it.
   const ticked = chosen ?? NO_CHILDREN;
+  const view = wizardView({ isLoading, isError, step });
   const schoolCount = useMemo(() => countSchools(children), [children]);
   /**
    * The children the SERVER subscribed, not the ones the client ticked.
@@ -150,14 +171,14 @@ export default function TelegramSetupPageClient() {
           חזרה
         </button>
 
-        {isLoading && <LoadingState message="טוען..." />}
-        {isError && <ErrorState />}
+        {view === 'loading' && <LoadingState message="טוען..." />}
+        {view === 'error' && <ErrorState />}
 
-        {!isLoading && !isError && step === 'intro' && (
+        {view === 'step' && step === 'intro' && (
           <IntroStep onContinue={() => setStep('children')} />
         )}
 
-        {!isLoading && !isError && step === 'children' && (
+        {view === 'step' && step === 'children' && (
           <ChildrenStep
             items={children ?? []}
             ticked={ticked}
@@ -169,7 +190,7 @@ export default function TelegramSetupPageClient() {
           />
         )}
 
-        {!isError && step === 'start' && link && (
+        {view === 'step' && step === 'start' && link && (
           <StartStep
             link={link}
             expired={linkState?.status === 'expired'}
@@ -179,7 +200,7 @@ export default function TelegramSetupPageClient() {
           />
         )}
 
-        {!isError && step === 'done' && (
+        {view === 'step' && step === 'done' && (
           <DoneStep
             items={subscribedChildren}
             deliveryEnabled={linkState?.deliveryEnabled ?? false}

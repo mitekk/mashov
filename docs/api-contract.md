@@ -292,7 +292,7 @@ for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
 
 | Method | Path | Auth | Request Body | Response Body | Status | State |
 |--------|------|------|--------------|---------------|--------|-------|
-| GET | `/api/v1/digest/recipients?studentGuid=` | **Yes** | — | `{ data: DigestRecipient[] }` | 200, 400, 401 | changed |
+| GET | `/api/v1/digest/recipients?studentGuid=&page=&limit=` | **Yes** | — | Paginated `DigestRecipient[]` | 200, 400, 401 | changed |
 | POST | `/api/v1/digest/recipients` | **Yes** | `{ studentGuid, channel, address, displayName? }` | `{ data: DigestRecipient }` | 201, 400, 401, 403 | new |
 | PATCH | `/api/v1/digest/recipients/:id` | **Yes** | `{ enabled?, displayName? }` | `{ data: DigestRecipient }` | 200, 401, 404 | new |
 | DELETE | `/api/v1/digest/recipients/:id` | **Yes** | — | — | 204, 401, 403, 404 | new |
@@ -306,6 +306,11 @@ for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
 row the caller owns, which is what the `/more` Telegram card asks for: "what am I subscribed
 to". Child names, classes and school labels are joined client-side from the already-cached
 children list, so there is no new read route and no server-side join.
+
+The route is paginated like `GET /digest/deliveries` (default `page=1`, `limit=20`, max `limit=100`),
+because `.claude/rules/api.md` allows no unbounded list route. The `/more` card is not a paged
+list -- its question is "everything" -- so it sends `limit=100` explicitly rather than relying on
+a household never outgrowing the default page.
 
 ---
 

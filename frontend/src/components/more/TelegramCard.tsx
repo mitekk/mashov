@@ -31,6 +31,9 @@ interface TelegramCardProps {
  * `GET /digest/recipients` answers rows, the children list is already cached on
  * this screen, and a server-side join would be a new read route for a label.
  */
+/** A row outlives the roster entry it names; the switch still has to work. */
+const DEPARTED_CHILD_NAME = 'ילד שאינו מופיע ברשימה';
+
 export function TelegramCard(props: TelegramCardProps) {
   const { recipients, allChildren, onToggle, onDisconnect, pendingToggleId, toggleError } =
     props;
@@ -74,6 +77,9 @@ export function TelegramCard(props: TelegramCardProps) {
       {telegramRows.map((row) => {
         const item = byGuid.get(row.studentGuid);
         const inputId = `telegram-card-toggle-${row.studentGuid}`;
+        // One name for the row, used by the label and the switch alike: a
+        // studentGuid in an aria-label is 36 characters of nothing, spelled out.
+        const displayName = item?.fullName ?? DEPARTED_CHILD_NAME;
 
         return (
           <div
@@ -89,7 +95,7 @@ export function TelegramCard(props: TelegramCardProps) {
                 {/* A departed child's row survives the roster. Showing it with
                     a placeholder beats hiding the only switch that turns it
                     off. */}
-                {item?.fullName ?? 'ילד שאינו מופיע ברשימה'}
+                {displayName}
               </label>
               <p className="text-xs text-muted-foreground">
                 {item ? (
@@ -115,7 +121,7 @@ export function TelegramCard(props: TelegramCardProps) {
               data-testid={inputId}
               type="checkbox"
               role="switch"
-              aria-label={`עדכונים בטלגרם על ${item?.fullName ?? row.studentGuid}`}
+              aria-label={`עדכונים בטלגרם על ${displayName}`}
               checked={row.enabled}
               disabled={pendingToggleId === row.id}
               onChange={() => onToggle(row.id, !row.enabled)}

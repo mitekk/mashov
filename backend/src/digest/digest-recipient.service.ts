@@ -117,15 +117,40 @@ export class DigestRecipientService {
    * `studentGuid` is optional because the `/more` card asks "what am I
    * subscribed to" without naming a child, and joins names, classes and school
    * labels client-side from the already-cached children list.
+   *
+   * Paginated, like `listDeliveries` and for the same reason: `.claude/rules/
+   * api.md` allows no unbounded list route. A household has a handful of
+   * children today, but rows accumulate across years and re-links, and the
+   * `/more` card asks for a page large enough to hold them all explicitly
+   * rather than relying on the route to never grow.
    */
-  async list(options: { userId: string; studentGuid?: string }): Promise<DigestRecipient[]> {
-    return this.prisma.digestRecipient.findMany({
-      where: {
-        userId: options.userId,
-        ...(options.studentGuid ? { studentGuid: options.studentGuid } : {}),
-      },
-      orderBy: { createdAt: 'asc' },
-    });
+  async list(options: {
+    userId: string;
+    studentGuid?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    data: DigestRecipient[];
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }> {
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 20;
+    const where = {
+      userId: options.userId,
+      ...(options.studentGuid ? { studentGuid: options.studentGuid } : {}),
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.digestRecipient.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.digestRecipient.count({ where }),
+    ]);
+
+    return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
   async update(

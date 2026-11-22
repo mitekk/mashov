@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildListItem, TelegramLink, TelegramLinkState } from '@/types/api';
 import { ApiError } from '@/api/client';
-import TelegramSetupPageClient from './TelegramSetupPageClient';
+import TelegramSetupPageClient, { wizardView } from './TelegramSetupPageClient';
 
 const back = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -97,6 +97,31 @@ async function reachStartStep() {
   fireEvent.click(screen.getByTestId('telegram-children-continue-btn'));
   await screen.findByTestId('telegram-step-start');
 }
+
+describe('wizardView', () => {
+  it('shows the loader while the roster is still arriving on the first two steps', () => {
+    expect(wizardView({ isLoading: true, isError: false, step: 'intro' })).toBe('loading');
+    expect(wizardView({ isLoading: true, isError: false, step: 'children' })).toBe('loading');
+  });
+
+  it('keeps the step on screen once a link is in flight, loader or not', () => {
+    // Steps 3 and 4 are a wait on an external action. Replacing them with a
+    // spinner because the roster query happened to be refetching would strand
+    // a parent who has already pressed START -- and rendering both at once,
+    // which is what the step conditions used to do, is no better.
+    expect(wizardView({ isLoading: true, isError: false, step: 'start' })).toBe('step');
+    expect(wizardView({ isLoading: true, isError: false, step: 'done' })).toBe('step');
+  });
+
+  it('shows one thing at a time, never a loader beside a step', () => {
+    expect(wizardView({ isLoading: false, isError: false, step: 'children' })).toBe('step');
+  });
+
+  it('reports a roster failure on every step', () => {
+    expect(wizardView({ isLoading: false, isError: true, step: 'intro' })).toBe('error');
+    expect(wizardView({ isLoading: true, isError: true, step: 'done' })).toBe('error');
+  });
+});
 
 describe('TelegramSetupPageClient', () => {
   beforeEach(() => {

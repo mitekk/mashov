@@ -52,12 +52,22 @@ export function redact(text: string, token: string): string {
   return text.split(trimmed).join('[redacted]');
 }
 
-/** Telegram's own reason for a failure when it gave one, else the transport's. */
+/**
+ * Telegram's own reason for a failure when it gave one, else the transport's.
+ *
+ * A request that never got a response -- a timed-out long poll, a DNS failure
+ * -- has no status to report, and this string is not purely diagnostic: it
+ * lands in `confirmationError` and is shown to the parent on the wizard's last
+ * step. So the transport's own `code` and `message` are used there rather than
+ * the word "unknown", which told nobody anything.
+ */
 export function describeTelegramError(error: unknown): string {
   if (axios.isAxiosError(error)) {
     const description = (error.response?.data as TelegramEnvelope<unknown> | undefined)
       ?.description;
-    return description ?? `HTTP ${error.response?.status ?? 'unknown'}`;
+    if (description) return description;
+    if (error.response?.status) return `HTTP ${error.response.status}`;
+    return [error.code, error.message].filter(Boolean).join(': ') || 'request failed';
   }
   return error instanceof Error ? error.message : String(error);
 }

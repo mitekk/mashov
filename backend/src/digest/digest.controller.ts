@@ -66,6 +66,19 @@ class RecipientQueryDto {
   @IsString()
   @MinLength(1)
   studentGuid?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
 }
 
 class DeliveryQueryDto {
@@ -101,7 +114,12 @@ export class DigestController {
   @Get('recipients')
   async listRecipients(@Req() req: Request, @Query() query: RecipientQueryDto) {
     const userId = requireUserId(req);
-    return { data: await this.recipients.list({ userId, studentGuid: query.studentGuid }) };
+    return this.recipients.list({
+      userId,
+      studentGuid: query.studentGuid,
+      page: query.page,
+      limit: query.limit,
+    });
   }
 
   @Post('recipients')

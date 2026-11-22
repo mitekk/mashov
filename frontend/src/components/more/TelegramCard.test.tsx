@@ -184,6 +184,20 @@ describe('TelegramCard — connected', () => {
     expect(screen.getByTestId('telegram-card-toggle-gone')).toBeTruthy();
   });
 
+  it('names a departed child the same way to a screen reader as on screen', () => {
+    // The visible row already says "ילד שאינו מופיע ברשימה". The switch's
+    // aria-label read out the raw studentGuid instead -- a 36-character
+    // identifier spelled out character by character, naming nothing a parent
+    // has ever seen.
+    renderCard({
+      recipients: [recipient({ id: 'rec-1', studentGuid: 'gone' })],
+      allChildren: [child({ studentGuid: 'stu-1' })],
+    });
+
+    const label = screen.getByTestId('telegram-card-toggle-gone').getAttribute('aria-label');
+    expect(label).toBe('עדכונים בטלגרם על ילד שאינו מופיע ברשימה');
+  });
+
   it('disables the toggle that is mid-flight', () => {
     renderCard({ ...CONNECTED, pendingToggleId: 'rec-1' });
 

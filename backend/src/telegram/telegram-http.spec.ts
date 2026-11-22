@@ -84,6 +84,30 @@ describe('describeTelegramError', () => {
     expect(describeTelegramError({ response: { status: 502, data: {} } })).toBe('HTTP 502');
   });
 
+  it('names the transport failure when the request never got a response', () => {
+    // A long poll that times out, or a DNS failure, has no response at all.
+    // "HTTP unknown" is the one string in here a parent can actually be shown
+    // (it reaches confirmationError and then step 4), and it told them nothing
+    // while axios had the reason in error.code the whole time.
+    (mockedAxios.isAxiosError as unknown as jest.Mock).mockReturnValue(true);
+
+    expect(
+      describeTelegramError({ code: 'ECONNABORTED', message: 'timeout of 45000ms exceeded' }),
+    ).toBe('ECONNABORTED: timeout of 45000ms exceeded');
+  });
+
+  it('falls back to the message alone when there is no code either', () => {
+    (mockedAxios.isAxiosError as unknown as jest.Mock).mockReturnValue(true);
+
+    expect(describeTelegramError({ message: 'socket hang up' })).toBe('socket hang up');
+  });
+
+  it('still says something when an axios error carries neither', () => {
+    (mockedAxios.isAxiosError as unknown as jest.Mock).mockReturnValue(true);
+
+    expect(describeTelegramError({})).toBe('request failed');
+  });
+
   it('describes a non-axios failure by its message', () => {
     (mockedAxios.isAxiosError as unknown as jest.Mock).mockReturnValue(false);
 

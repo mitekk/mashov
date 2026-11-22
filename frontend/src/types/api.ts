@@ -697,6 +697,7 @@ export interface DigestRecipient {
 
 export interface DigestRecipientsResponse {
   data: DigestRecipient[];
+  pagination: { page: number; limit: number; total: number; totalPages: number };
 }
 
 export interface DigestRecipientResponse {

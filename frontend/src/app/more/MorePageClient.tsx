@@ -337,6 +337,8 @@ export default function MorePage() {
             )}
             <div className="flex gap-3 pt-1">
               <button
+                type="button"
+                data-testid="settings-unlink-cancel-btn"
                 onClick={() => showUnlink(null)}
                 className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
               >
@@ -384,6 +386,8 @@ export default function MorePage() {
             )}
             <div className="flex gap-3 pt-1">
               <button
+                type="button"
+                data-testid="telegram-disconnect-cancel-btn"
                 onClick={() => showTelegramDisconnect(false)}
                 className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent/50"
               >
@@ -438,6 +442,8 @@ export default function MorePage() {
             )}
             <div className="flex gap-3 pt-1">
               <button
+                type="button"
+                data-testid="settings-disconnect-cancel-btn"
                 onClick={() => showDisconnect(false)}
                 className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
               >
