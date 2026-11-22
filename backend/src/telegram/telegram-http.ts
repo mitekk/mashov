@@ -71,3 +71,71 @@ export function describeTelegramError(error: unknown): string {
   }
   return error instanceof Error ? error.message : String(error);
 }
+
+/**
+ * The Bot API's hard ceiling for `sendMessage.text`, in UTF-16 code units --
+ * which is what `String.length` counts, and what Telegram counts too.
+ */
+export const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+/**
+ * What this project actually splits at. Below the ceiling on purpose: the
+ * remaining headroom absorbs anything a caller appends after chunking (a link
+ * line, a part marker) without pushing a part back over the limit.
+ */
+export const TELEGRAM_CHUNK_LIMIT = 4000;
+
+/**
+ * Splits a message into parts Telegram will accept.
+ *
+ * Nothing in this project used to handle the limit at all: an over-long message
+ * failed, the digest's `deliver` threw, the claims were released, and the next
+ * hourly run built the same over-long message and failed identically -- forever.
+ * Mail bodies and a longer report make that reachable, so this is the backstop.
+ * Per-template truncation budgets stay, so reaching it should stay rare.
+ *
+ * Where it cuts, in order of preference: the last blank line inside the window,
+ * so a section is never split from its header; else the last newline; else a
+ * hard cut. A hard cut never lands between the halves of a surrogate pair --
+ * a lone surrogate renders as a replacement character in the parent's chat.
+ *
+ * Trailing whitespace is trimmed from each part and leading newlines from the
+ * next, so a run of blank lines at a boundary cannot produce an empty part --
+ * which Telegram rejects outright.
+ */
+export function chunkTelegramText(text: string, limit = TELEGRAM_CHUNK_LIMIT): string[] {
+  if (limit <= 0 || text.length <= limit) return [text];
+
+  const parts: string[] = [];
+  let rest = text;
+
+  while (rest.length > limit) {
+    const cut = cutPoint(rest, limit);
+    const head = rest.slice(0, cut).replace(/\s+$/, '');
+    if (head.length > 0) parts.push(head);
+    rest = rest.slice(cut).replace(/^\n+/, '');
+  }
+
+  const tail = rest.replace(/\s+$/, '');
+  if (tail.length > 0) parts.push(tail);
+
+  // Only reachable for input that is all whitespace past the limit, which has
+  // no visible content to carry -- return something rather than nothing, so a
+  // caller never silently sends zero messages and reports success.
+  return parts.length > 0 ? parts : [text.slice(0, limit)];
+}
+
+/** Always >= 1, so the loop above cannot fail to make progress. */
+function cutPoint(text: string, limit: number): number {
+  const window = text.slice(0, limit);
+
+  const blankLine = window.lastIndexOf('\n\n');
+  if (blankLine >= 0) return blankLine + 2;
+
+  const newline = window.lastIndexOf('\n');
+  if (newline >= 0) return newline + 1;
+
+  const code = text.charCodeAt(limit - 1);
+  const splitsAPair = code >= 0xd800 && code <= 0xdbff;
+  return splitsAPair && limit > 1 ? limit - 1 : limit;
+}

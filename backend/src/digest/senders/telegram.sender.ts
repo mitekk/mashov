@@ -4,6 +4,7 @@ import { AxiosInstance } from 'axios';
 import {
   TelegramEnvelope,
   botPath,
+  chunkTelegramText,
   createTelegramHttp,
   describeTelegramError,
   redact,
@@ -35,6 +36,16 @@ export class TelegramSender implements DigestSender {
       throw new Error('Cannot send a digest: TELEGRAM_BOT_TOKEN is not configured.');
     }
 
+    // Sequential, and it stops at the first refusal rather than pressing on.
+    // A part that failed is news the parent did not get, and the orchestrator
+    // reads a throw as "nothing was reported" and releases the claims -- so
+    // continuing past a failure would confirm items whose text never arrived.
+    for (const part of chunkTelegramText(text)) {
+      await this.sendOne(token, address, part);
+    }
+  }
+
+  private async sendOne(token: string, address: string, text: string): Promise<void> {
     // The transport call and the ok-check are deliberately not in the same
     // try: a `throw` for ok=false inside it would be caught by its own catch
     // and re-described as a transport failure, losing Telegram's reason.
