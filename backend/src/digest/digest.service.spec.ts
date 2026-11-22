@@ -1122,6 +1122,83 @@ describe('DigestService.runAll', () => {
     expect(sent).toContain('ממתינים לתשובתך');
   });
 
+  it('spends one model call on a child two parents subscribe to', async () => {
+    // The prose covers only per-child facts, which are identical for both
+    // parents -- the one input that is not, consent forms, is withheld from
+    // the model. So a second run for the same child and the same claimed
+    // items would pay Sonnet twice for the same paragraph.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).toHaveBeenCalledTimes(1);
+    // Both parents still get their message.
+    expect(results.map((result) => result.status)).toEqual(['sent', 'sent']);
+    expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not share one child’s summary with another child', async () => {
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+      ],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).toHaveBeenCalledTimes(2);
+  });
+
+  it('summarizes again when the two parents have claimed different items', async () => {
+    // One parent was already told about the behaviour event, so their payload
+    // is not the other parent's payload and the prose cannot be shared.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_B },
+      ],
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'homework_new', itemId: 'hw-1', contentHash: 'hash-hw' },
+      ],
+      payload: makePayload({
+        homeworkNew: [
+          {
+            id: 'hw-1',
+            subjectName: 'חשבון',
+            homeworkText: 'לפתור עמוד 42',
+            remark: null,
+            lessonDate: TODAY,
+            groupId: 55,
+            estimatedDueDate: null,
+          },
+        ],
+      }),
+    });
+    const owned = harness.reportedFindMany as jest.Mock;
+    owned
+      .mockImplementationOnce(() => [{ contentHash: 'hash-beh' }, { contentHash: 'hash-hw' }])
+      .mockImplementationOnce(() => [{ contentHash: 'hash-beh' }]);
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).toHaveBeenCalledTimes(2);
+  });
+
   it('marks the delivery as not having used the model when it fell back', async () => {
     const harness = makeHarness();
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({

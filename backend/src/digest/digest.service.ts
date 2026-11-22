@@ -14,6 +14,22 @@ import { jerusalemDayBounds } from './digest-deadline.service';
 import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
 
+/**
+ * The key a child's prose is memoized under for one run.
+ *
+ * Activity hashes are excluded because they embed the owning `userId`, so two
+ * parents' claims for the same form hash differently -- and the forms are not
+ * in the summarizer's payload anyway. Every other hash is derived from the
+ * child's own row, so an equal key means an equal payload.
+ */
+function summaryKeyFor(studentGuid: string, claimed: DigestCandidate[]): string {
+  const hashes = claimed
+    .filter((candidate) => candidate.itemType !== 'activity')
+    .map((candidate) => candidate.contentHash)
+    .sort();
+  return `${studentGuid}\u0000${hashes.join('|')}`;
+}
+
 const DEFAULT_TIMEZONE = 'Asia/Jerusalem';
 
 /**
@@ -154,6 +170,12 @@ export class DigestService {
       // tomorrow.
       const alreadySent = new Set<string>();
 
+      // One model call per child per run, as before this became per-parent.
+      // Keyed on the child and the non-activity content hashes it claimed:
+      // those hashes are userId-independent by construction, so an equal key
+      // means an equal payload. Per run, so a change between runs is seen.
+      const summaries = new Map<string, DigestSummary>();
+
       const results: DigestRunResult[] = [];
       // Strictly sequential, and not only for the per-child isolation
       // homework.task.ts wants. Consent-form dedup across a parent's children
@@ -162,7 +184,15 @@ export class DigestService {
       // form twice. See ADR-0035.
       for (const target of targets) {
         results.push(
-          await this.runForChild(target, schoolYear, now, dryRun, staleness, alreadySent),
+          await this.runForChild(
+            target,
+            schoolYear,
+            now,
+            dryRun,
+            staleness,
+            alreadySent,
+            summaries,
+          ),
         );
       }
       return results;
@@ -178,6 +208,7 @@ export class DigestService {
     dryRun: boolean,
     staleness: Map<string, Date | null>,
     alreadySent: Set<string>,
+    summaries: Map<string, DigestSummary>,
   ): Promise<DigestRunResult> {
     const { studentGuid, userId } = target;
     const { tomorrowStart, reportFor: defaultReportFor } = jerusalemDayBounds(now, this.timeZone());
@@ -226,7 +257,15 @@ export class DigestService {
       // the child, while everything else in the payload is the same for both
       // of a child's parents -- which is what lets one summary serve both
       // runs. The section is rendered from the deterministic line instead.
-      const summary = await this.summarizer.summarize({ ...payload, activities: [] });
+      //
+      // Shared, not re-requested: the summary is read-only downstream, so the
+      // other parent's run for the same child and the same claimed items gets
+      // the same object rather than a second Sonnet call.
+      const summaryKey = summaryKeyFor(studentGuid, claimed);
+      const memoed = summaries.get(summaryKey);
+      const summary =
+        memoed ?? (await this.summarizer.summarize({ ...payload, activities: [] }));
+      summaries.set(summaryKey, summary);
       const { payload: narrowed, resolutionByItemId } = narrowDueTomorrow(
         payload,
         summary,
