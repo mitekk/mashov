@@ -1,6 +1,7 @@
 import {
   DigestActivityFact,
   DigestBehaviorFact,
+  DigestBoardFact,
   DigestHomeworkFact,
   DigestLines,
   DigestPayload,
@@ -98,6 +99,10 @@ export function renderReport(
     blocks.push(section('אישורים שממתינים לך', lines.activityLine));
   }
 
+  if (payload.board.length > 0) {
+    blocks.push(section('הודעות מלוח המודעות', lines.boardLine));
+  }
+
   if (payload.homeworkDueTomorrow.length > 0) {
     // The one fact the model is not trusted to carry, and now the *only* thing
     // marking this date as derived: the explanatory caveat that used to follow
@@ -181,6 +186,7 @@ export function deterministicLines(payload: DigestPayload): DigestLines {
         ? ''
         : `מה שצפוי להידרש מחר: ${payload.homeworkDueTomorrow.map(homeworkSentence).join('; ')}.`,
     releaseLine: payload.releases.map(releaseSentence).join(' '),
+    boardLine: payload.board.map((fact) => boardSentence(fact)).join(' '),
     activityLine:
       payload.activities.length === 0
         ? ''
@@ -210,6 +216,20 @@ function unexcusedMarker(attention: DigestBehaviorFact[]): string {
     .map((fact) => [fact.achvaName, fact.subject].filter((part) => part && part.length > 0).join(' ב'))
     .join('; ');
   return `לא מוצדק: ${named}.`;
+}
+
+/**
+ * The notice's own words.
+ *
+ * Not a count and not a summary: the report has no item bullets, so this line
+ * is the only place the notice appears. The expiry date is not printed --
+ * `expirationDate` is when the school takes the notice down, which is rarely
+ * the date the notice is about, and printing it as a deadline would be a
+ * promise nobody made.
+ */
+function boardSentence(fact: DigestBoardFact): string {
+  const text = fact.text.trim().replace(/\s*\n\s*/g, ' ');
+  return text.endsWith('.') ? text : `${text}.`;
 }
 
 function behaviorSentence(fact: DigestBehaviorFact): string {

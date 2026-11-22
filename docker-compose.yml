@@ -93,6 +93,11 @@ services:
       # for an EMPTY value too, which would make "mute nothing" unreachable
       # from .env.
       DIGEST_MUTED_BEHAVIOR_CODES: ${DIGEST_MUTED_BEHAVIOR_CODES-18}
+      # How recently a message-board notice must have been seen for the first
+      # time to count as news. Measured from MessageBoardItem.firstSeenAt:
+      # Mashov sends no creation date and updatedAt churns on every 06:00
+      # upsert, so neither can mean "new".
+      DIGEST_BOARD_LOOKBACK_DAYS: ${DIGEST_BOARD_LOOKBACK_DAYS:-2}
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}

@@ -52,6 +52,8 @@ interface MockOptions {
   activities?: Record<string, unknown>[];
   userId?: string | null;
   mutedCodes?: string;
+  board?: Record<string, unknown>[];
+  boardLookbackDays?: string;
 }
 
 function makeHarness(options: MockOptions = {}) {
@@ -122,6 +124,20 @@ function makeHarness(options: MockOptions = {}) {
         ),
       ),
     },
+    // Honours the firstSeenAt floor and the expiry cutoff, as Postgres would.
+    messageBoardItem: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          (options.board ?? []).filter((row) => {
+            const seen = where?.firstSeenAt?.gte as Date | undefined;
+            const expiry = where?.expirationDate?.gte as Date | undefined;
+            if (seen && (row.firstSeenAt as Date) < seen) return false;
+            if (expiry && (row.expirationDate as Date) < expiry) return false;
+            return true;
+          }),
+        ),
+      ),
+    },
     schoolActivity: {
       findMany: jest.fn().mockImplementation(({ where }) =>
         Promise.resolve(
@@ -142,6 +158,7 @@ function makeHarness(options: MockOptions = {}) {
       if (key === 'DIGEST_TIMEZONE') return 'Asia/Jerusalem';
       if (key === 'DIGEST_DUE_LOOKBACK_DAYS') return '14';
       if (key === 'DIGEST_MUTED_BEHAVIOR_CODES') return options.mutedCodes;
+      if (key === 'DIGEST_BOARD_LOOKBACK_DAYS') return options.boardLookbackDays;
       return undefined;
     }),
   } as unknown as ConfigService;
@@ -783,5 +800,66 @@ describe('DigestCheckerService behaviour code muting', () => {
     const result = await check(harness);
 
     expect(result.candidates.map((candidate) => candidate.itemId)).toEqual(['beh-late']);
+  });
+});
+
+function boardRow(overrides: Record<string, unknown> = {}) {
+  return {
+    eventId: 4211,
+    eventText: '<p>ביום חמישי יום ספורט</p>',
+    expirationDate: new Date('2026-11-30T00:00:00Z'),
+    firstSeenAt: new Date('2026-11-17T06:00:00Z'),
+    ...overrides,
+  };
+}
+
+describe('DigestCheckerService message board', () => {
+  it('reports a notice first seen inside the lookback', async () => {
+    const harness = makeHarness({ behavior: [], board: [boardRow()] });
+
+    const result = await check(harness);
+
+    expect(result.candidates).toEqual([
+      expect.objectContaining({ itemType: 'message_board', itemId: '4211' }),
+    ]);
+  });
+
+  it('ignores a notice that has been on the board for weeks', async () => {
+    // Mashov sends no creation date and `updatedAt` churns on every 06:00
+    // upsert, so firstSeenAt is the only thing here that can mean "new".
+    const harness = makeHarness({
+      behavior: [],
+      board: [boardRow({ firstSeenAt: new Date('2026-10-01T06:00:00Z') })],
+    });
+
+    expect((await check(harness)).candidates).toEqual([]);
+  });
+
+  it('ignores a notice that has already expired', async () => {
+    const harness = makeHarness({
+      behavior: [],
+      board: [boardRow({ expirationDate: new Date('2026-11-01T00:00:00Z') })],
+    });
+
+    expect((await check(harness)).candidates).toEqual([]);
+  });
+
+  it('honours DIGEST_BOARD_LOOKBACK_DAYS', async () => {
+    const old = boardRow({ firstSeenAt: new Date('2026-11-10T06:00:00Z') });
+
+    expect((await check(makeHarness({ behavior: [], board: [old] }))).candidates).toEqual([]);
+    expect(
+      (await check(makeHarness({ behavior: [], board: [old], boardLookbackDays: '30' })))
+        .candidates,
+    ).toHaveLength(1);
+  });
+
+  it('hashes the notice text, so an edited notice is reported again', async () => {
+    const first = await check(makeHarness({ behavior: [], board: [boardRow()] }));
+    const edited = await check(
+      makeHarness({ behavior: [], board: [boardRow({ eventText: 'שונה' })] }),
+    );
+
+    expect(first.candidates[0].contentHash).not.toBe(edited.candidates[0].contentHash);
   });
 });

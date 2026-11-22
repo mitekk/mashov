@@ -440,9 +440,27 @@ model MessageBoardItem {
   inSite         Boolean  @default(false)
   rawPayload     Json?
   schoolYear     Int      @default(0)
+  /// When this row was first created locally -- the only thing here that can
+  /// mean "new".
+  ///
+  /// Mashov's message board payload carries no creation date at all, and
+  /// `updatedAt` churns on every 06:00 upsert, so neither can distinguish a
+  /// notice posted this morning from one that has been up since September.
+  /// Written only on create: the sync task's `update` branch must never touch
+  /// it, or every notice becomes new again daily.
+  ///
+  /// Defaulted so `prisma db push` can add it to the populated production
+  /// table -- which fills every existing row with the deploy timestamp, making
+  /// the whole current board look first-seen at once. The migration backfills
+  /// those from `updatedAt`, and the Dockerfile executes it, because
+  /// `db push` applies no data statement.
+  firstSeenAt    DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, eventId])
+  /// The digest checker's arm: this child's notices first seen in the last few
+  /// days, seven times a day.
+  @@index([studentGuid, schoolYear, firstSeenAt])
   @@map("message_board_item")
 }
 

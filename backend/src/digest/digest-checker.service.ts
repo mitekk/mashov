@@ -60,6 +60,15 @@ const DEFAULT_ACTIVITY_WINDOW_DAYS = 7;
  */
 const DEFAULT_MUTED_BEHAVIOR_CODES = [18];
 
+/**
+ * How far back a message-board notice still counts as new.
+ *
+ * Measured from `firstSeenAt`, which exists because Mashov's payload carries
+ * no creation date and `updatedAt` churns on every 06:00 upsert. Two days
+ * covers the gap between the board sync and the evening runs, plus a weekend.
+ */
+const DEFAULT_BOARD_LOOKBACK_DAYS = 2;
+
 export interface DigestCheckInput {
   studentGuid: string;
   schoolYear: number;
@@ -116,6 +125,13 @@ interface ActivityCandidateRow {
   endAnswerDate: Date | null;
 }
 
+interface BoardCandidateRow {
+  eventId: number;
+  eventText: string;
+  expirationDate: Date;
+  firstSeenAt: Date;
+}
+
 interface HomeworkCandidateRow {
   id: string;
   groupId: number;
@@ -164,6 +180,7 @@ export class DigestCheckerService {
       )),
       ...(await this.releasesSoon(studentGuid, yearScope, todayStart, tomorrowStart)),
       ...(await this.activitiesAwaitingAnswer(userId, yearScope, todayStart)),
+      ...(await this.boardNoticesRecently(studentGuid, yearScope, now, todayStart)),
       // activeFrom is a timestamp (now() when the recipient was created) while
       // lessonDate is a date at UTC midnight. Comparing them directly
       // suppressed every homework item on the sign-up day while still
@@ -394,6 +411,50 @@ export class DigestCheckerService {
         // form -- which is right: a deadline is a deadline whenever you signed up.
         itemDate: row.endAnswerDate,
       }));
+  }
+
+  /**
+   * Notices that appeared on this child's board in the last few days.
+   *
+   * Three conditions, and all three matter. `firstSeenAt` is the only column
+   * that can mean "new" (see DEFAULT_BOARD_LOOKBACK_DAYS). `expirationDate`
+   * keeps a notice about last week's event out of today's message even if the
+   * sync only just reached it. And the year scope keeps a historical backfill
+   * from announcing September's board in November.
+   */
+  private async boardNoticesRecently(
+    studentGuid: string,
+    yearScope: ReturnType<typeof schoolYearScope>,
+    now: Date,
+    todayStart: Date,
+  ): Promise<InternalCandidate[]> {
+    const seenSince = new Date(
+      now.getTime() -
+        this.readDays('DIGEST_BOARD_LOOKBACK_DAYS', DEFAULT_BOARD_LOOKBACK_DAYS) *
+          24 *
+          60 *
+          60 *
+          1000,
+    );
+
+    const rows = (await this.prisma.messageBoardItem.findMany({
+      where: {
+        studentGuid,
+        ...yearScope,
+        firstSeenAt: { gte: seenSince },
+        expirationDate: { gte: todayStart },
+      },
+      select: { eventId: true, eventText: true, expirationDate: true, firstSeenAt: true },
+    })) as BoardCandidateRow[];
+
+    return rows.map((row) => ({
+      itemType: 'message_board' as DigestItemType,
+      itemId: String(row.eventId),
+      // The text is in the hash, so a school editing a notice re-reports it --
+      // the same contract every other input here has.
+      contentHash: hashFields('message_board', [String(row.eventId), row.eventText]),
+      itemDate: row.firstSeenAt,
+    }));
   }
 
   private async homeworkDueTomorrow(

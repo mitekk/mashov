@@ -16,7 +16,8 @@ export type DigestItemType =
   | 'homework_new'
   | 'homework_due'
   | 'release'
-  | 'activity';
+  | 'activity'
+  | 'message_board';
 
 /** An item the checker believes has not yet been reported to this child's parents. */
 export interface DigestCandidate {
@@ -77,6 +78,21 @@ export interface DigestActivityFact {
   endAnswerDate: Date | null;
 }
 
+/**
+ * A message-board notice as the parent will see it.
+ *
+ * Per student, but its content is usually school-wide, so siblings each get
+ * their own copy -- the board is fetched per studentGuid and dedup is per
+ * (child, parent), so there is nothing to collapse them against.
+ */
+export interface DigestBoardFact {
+  /** The upstream `eventId`, as a string, because that is what the ledger holds. */
+  id: string;
+  /** Already stripped to plain text; the sync task stores it as HTML. */
+  text: string;
+  expirationDate: Date;
+}
+
 /** A behavior event as the parent will see it. */
 export interface DigestBehaviorFact {
   id: string;
@@ -124,6 +140,7 @@ export interface DigestPayload {
   homeworkDueTomorrow: DigestHomeworkFact[];
   releases: DigestReleaseFact[];
   activities: DigestActivityFact[];
+  board: DigestBoardFact[];
 }
 
 /**
@@ -143,6 +160,8 @@ export interface DigestLines {
    * always been stored; it was simply never rendered.
    */
   positiveLine: string;
+  /** Message-board notices seen for the first time in the last few days. */
+  boardLine: string;
   homeworkLine: string;
   dueTomorrowLine: string;
   releaseLine: string;

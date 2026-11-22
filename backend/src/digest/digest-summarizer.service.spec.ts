@@ -48,6 +48,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     homeworkDueTomorrow: [],
     releases: [],
     activities: [],
+    board: [],
     ...overrides,
   };
 }
@@ -56,6 +57,7 @@ const GOOD_OUTPUT = {
   headline: 'יום עם איחור אחד',
   behaviorLine: 'נרשם איחור בשיעור מתמטיקה.',
   positiveLine: '',
+  boardLine: '',
   homeworkLine: 'ניתנה מטלה בחשבון.',
   dueTomorrowLine: '',
   releaseLine: '',
@@ -456,6 +458,30 @@ describe('buildPrompt with releases and activities', () => {
     // Two blocks, so the model cannot blend a note of praise into a sentence
     // about an absence.
     expect(prompt).toContain('חיזוקים חיוביים');
+  });
+
+  it('asks for a line about the message board', () => {
+    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
+      expect.arrayContaining(['boardLine']),
+    );
+    expect(OUTPUT_SCHEMA.required as readonly string[]).toContain('boardLine');
+  });
+
+  it('puts the board notices in the prompt as their own block', () => {
+    const prompt = buildPrompt(
+      makePayload({
+        board: [
+          {
+            id: '4211',
+            text: 'ביום חמישי יום ספורט',
+            expirationDate: new Date('2026-11-30T00:00:00Z'),
+          },
+        ],
+      }),
+    );
+
+    expect(prompt).toContain('לוח המודעות');
+    expect(prompt).toContain('ביום חמישי יום ספורט');
   });
 
   it('asks for no line about consent forms, having been given none', () => {

@@ -7,6 +7,7 @@ const LINES: DigestLines = {
   headline: 'יום רגוע עם הערה אחת',
   behaviorLine: 'היה איחור אחד בשיעור מתמטיקה.',
   positiveLine: 'קיבל חיזוק חיובי בספרות.',
+  boardLine: 'יש הודעה חדשה על לוח המודעות.',
   homeworkLine: 'ניתנה מטלה אחת בחשבון.',
   dueTomorrowLine: 'מטלה אחת צפויה להיבדק מחר.',
   releaseLine: 'שחרור מוקדם מחר.',
@@ -23,9 +24,16 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     homeworkDueTomorrow: [],
     releases: [],
     activities: [],
+    board: [],
     ...overrides,
   };
 }
+
+const NOTICE = {
+  id: '4211',
+  text: 'ביום חמישי יום ספורט',
+  expirationDate: new Date('2026-11-30T00:00:00Z'),
+};
 
 const PRAISE = {
   id: 'beh-praise',
@@ -226,6 +234,27 @@ describe('renderReport', () => {
     expect(text).not.toContain('לא מוצדק');
   });
 
+  it('gives the message board its own section', () => {
+    const text = renderReport(makePayload({ board: [NOTICE] }), LINES);
+
+    expect(text).toContain('הודעות מלוח המודעות');
+    expect(text).toContain('יש הודעה חדשה על לוח המודעות.');
+  });
+
+  it('shows no board section on a day with no new notice', () => {
+    const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES);
+
+    expect(text).not.toContain('הודעות מלוח המודעות');
+  });
+
+  it('keeps the link last, below the board section', () => {
+    const text = renderReport(makePayload({ board: [NOTICE] }), LINES, {
+      publicBaseUrl: 'https://mashov.mitya.dev',
+    });
+
+    expect(text.indexOf('הודעות מלוח המודעות')).toBeLessThan(text.indexOf('/home'));
+  });
+
   it('closes with a link to the site when a base URL is configured', () => {
     const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES, {
       publicBaseUrl: 'https://mashov.mitya.dev',
@@ -263,6 +292,16 @@ describe('renderReport', () => {
 describe('deterministicLines', () => {
   // The fallback when the LLM times out, refuses, or returns malformed output.
   // A parent getting a plainer message beats a parent getting nothing.
+  it('states the notice itself, since the prose is the only place it appears', () => {
+    const lines = deterministicLines(makePayload({ board: [NOTICE] }));
+
+    expect(lines.boardLine).toContain('ביום חמישי יום ספורט');
+  });
+
+  it('leaves boardLine empty when the board had nothing new', () => {
+    expect(deterministicLines(makePayload()).boardLine).toBe('');
+  });
+
   it('writes a positive note into positiveLine and leaves behaviorLine empty', () => {
     const lines = deterministicLines(makePayload({ behavior: [PRAISE] }));
 

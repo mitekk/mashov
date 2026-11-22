@@ -1046,6 +1046,7 @@ function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPa
     ['homeworkLine', after.homeworkNew.length],
     ['dueTomorrowLine', after.homeworkDueTomorrow.length],
     ['releaseLine', after.releases.length],
+    ['boardLine', after.board.length],
   ] as const;
 
   for (const [key, itemCount] of sections) {
@@ -1109,6 +1110,7 @@ function survivingHashes(claimed: DigestCandidate[], narrowed: DigestPayload): S
     ...narrowed.homeworkDueTomorrow.map((fact) => `homework_due:${fact.id}`),
     ...narrowed.releases.map((fact) => `release:${fact.id}`),
     ...narrowed.activities.map((fact) => `activity:${fact.id}`),
+    ...narrowed.board.map((fact) => `message_board:${fact.id}`),
   ]);
 
   return new Set(
@@ -1140,6 +1142,7 @@ function countItems(payload: DigestPayload): number {
     ...payload.homeworkDueTomorrow.map((fact) => `homework:${fact.id}`),
     ...payload.releases.map((fact) => `release:${fact.id}`),
     ...payload.activities.map((fact) => `activity:${fact.id}`),
+    ...payload.board.map((fact) => `board:${fact.id}`),
   ]);
   return ids.size;
 }

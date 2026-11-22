@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { deterministicLines, formatSchoolDate } from './digest-report.template';
 import {
   DigestBehaviorFact,
+  DigestBoardFact,
   DigestDeadlineResolution,
   DigestHomeworkFact,
   DigestLines,
@@ -53,6 +54,7 @@ export const OUTPUT_SCHEMA = {
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
+    'boardLine',
     'deadlineResolutions',
   ],
   properties: {
@@ -65,6 +67,7 @@ export const OUTPUT_SCHEMA = {
     homeworkLine: { type: 'string', description: 'משפט או שניים בעברית על המטלות החדשות' },
     dueTomorrowLine: { type: 'string', description: 'משפט או שניים בעברית על מה שצפוי מחר' },
     releaseLine: { type: 'string', description: 'משפט בעברית על שחרור מוקדם שכבר אושר' },
+    boardLine: { type: 'string', description: 'משפט או שניים בעברית על הודעות מלוח המודעות' },
     deadlineResolutions: {
       type: 'array',
       description:
@@ -100,6 +103,9 @@ const SYSTEM_PROMPT = [
   'אם אין מה לומר בסעיף מסוים, החזר מחרוזת ריקה לאותו שדה.',
   'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
   'שחרור מוקדם הוא בקשה שההורה עצמו הגיש ואושרה: כתוב עליו כתזכורת, לא כחדשות.',
+  // The board's own words are the content; a notice summarized into "there is
+  // a notice" tells a parent nothing they can act on.
+  'הודעות מלוח המודעות הן הודעות של בית הספר: מסור את תוכן ההודעה עצמה, לא רק שקיימת הודעה.',
   // The two behaviour sections are rendered separately, so a sentence that
   // blends praise into an absence lands under a heading that contradicts it.
   'הפרד בין אירועים שדורשים תשומת לב ובין חיזוקים חיוביים: behaviorLine לראשונים, positiveLine לשניים.',
@@ -171,12 +177,27 @@ export function buildPrompt(payload: DigestPayload): string {
     );
   }
 
+  if (payload.board.length > 0) {
+    sections.push(['הודעות מלוח המודעות:', ...payload.board.map(boardForPrompt)].join('\n'));
+  }
+
   // `payload.activities` is deliberately not rendered. The orchestrator
   // already passes an empty list, and this function is the PII boundary, so
   // the guarantee belongs here too: a consent form's title names a trip, a
   // theatre and sometimes a class, and it need never leave the host.
 
   return sections.join('\n\n');
+}
+
+/**
+ * The notice text, and deliberately not its expiry.
+ *
+ * `expirationDate` is when the school takes the notice down, not the date the
+ * notice is about, and a model handed it as a field will write it as a
+ * deadline.
+ */
+function boardForPrompt(fact: DigestBoardFact): string {
+  return `- ${fact.text.trim().replace(/\s*\n\s*/g, ' ')}`;
 }
 
 function behaviorForPrompt(fact: DigestBehaviorFact): string {
@@ -363,6 +384,7 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
+    'boardLine',
   ] as const;
   if (!lineKeys.every((key) => typeof candidate[key] === 'string')) return null;
 
@@ -378,6 +400,7 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
       homeworkLine: candidate.homeworkLine as string,
       dueTomorrowLine: candidate.dueTomorrowLine as string,
       releaseLine: candidate.releaseLine as string,
+      boardLine: candidate.boardLine as string,
       // Not asked for and not accepted: `linesFor` replaces it with the
       // deterministic line whatever arrives here.
       activityLine: '',
