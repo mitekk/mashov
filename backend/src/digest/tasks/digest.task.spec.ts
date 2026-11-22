@@ -2,6 +2,7 @@ import { DigestTask } from './digest.task';
 import type { DigestService } from '../digest.service';
 import type { DigestRetentionService } from '../digest-retention.service';
 import type { ConfigService } from '@nestjs/config';
+import { LAST_DIGEST_RUN_MINUTES } from '../digest-dismissal.service';
 
 function makeTask(env: Record<string, string> = {}) {
   const runAll = jest.fn().mockResolvedValue([
@@ -67,6 +68,21 @@ describe('DigestTask', () => {
       .find((entry) => typeof entry.value === 'object' && entry.value !== null && 'cronTime' in entry.value);
 
     expect(metadata?.value).toMatchObject({ cronTime: '0 11-19 * * *' });
+  });
+
+  it("ends its window on the hour the dismissal gate clamps releases to", () => {
+    // LAST_DIGEST_RUN_MINUTES is what stops a hold from outliving the day: a
+    // release past the final tick would hold every tick and lose that child's
+    // behaviour permanently, since the behaviour candidate window is strictly
+    // today. If the cron's end hour and that constant ever drift apart, the
+    // clamp protects the wrong minute and the guarantee quietly lapses.
+    const metadata = Reflect.getMetadataKeys(DigestTask.prototype.run)
+      .map((key) => Reflect.getMetadata(key, DigestTask.prototype.run))
+      .find((value) => typeof value === 'object' && value !== null && 'cronTime' in value);
+
+    const lastHour = Number(/^0 \d+-(\d+) /.exec(metadata.cronTime)?.[1]);
+
+    expect(lastHour * 60).toBe(LAST_DIGEST_RUN_MINUTES);
   });
 
   it('prunes history even when the digest itself is disabled', () => {

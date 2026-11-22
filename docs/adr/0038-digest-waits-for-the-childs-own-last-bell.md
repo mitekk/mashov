@@ -64,6 +64,16 @@ count. Filtering by day rather than taking the week's maximum is the whole point
 child with eight periods on Monday and four on Friday must be released at lunchtime on
 Friday.
 
+A schedule that does not cover the lesson number wants opposite answers in the two
+directions, which is worth stating because the symmetric-looking version is wrong.
+*Above* every row — a ninth-period child on an eight-period schedule — takes the latest
+row at or below the number: the last bell anybody knows about, which still beats sending
+at 11:00. *Below* every row — a first-grader whose only lesson is 1 against a schedule
+whose rows start at 2, which a school's malformed lesson-1 row produces, since ADR-0037's
+`toPeriod` silently drops an unusable row — takes the **earliest** row, because lesson 1
+must end before lesson 2 begins and the latest row would hold that child until the end of
+the whole school day.
+
 **2. The gate sits before `claim()`, and that is the load-bearing invariant.**
 A held tick consumes nothing. If it claimed, the items would be marked reported and the
 post-dismissal tick would find a quiet day — turning a delay into permanent
@@ -72,8 +82,26 @@ means a held tick costs no queries and no model call. It has its own test
 (`claims nothing while it holds`), because it is the one defect in this change that
 would be invisible to a parent and unrecoverable.
 
-Stated positively: **this change can only ever delay a message.** The next tick reports
-everything the held one would have.
+Stated positively: **this change can only ever delay a message** — but only because of
+decision 2b. The next tick reports everything the held one would have.
+
+**2b. A release time is clamped to the last tick of the cron (`LAST_DIGEST_RUN_MINUTES`).**
+The claim-ordering invariant above makes a hold lossless *within* a day. It says nothing
+about a hold that outlives the day, and that case is a permanent loss: there is no catch-up
+run, and the behaviour candidate window is strictly today — `behaviorToday` matches
+`lessonDate` OR `eventAt` inside today only, with none of the lookback that homework's
+`DIGEST_NEW_LOOKBACK_DAYS` gives it. A child whose last bell plus grace falls after 19:00
+would therefore be held at every tick, the day would end, and the behaviour a teacher entered
+that afternoon would never be reported to anybody — with no `digest_delivery` row to show for
+it, since a held tick writes none.
+
+Not reachable on the bundled default schedule, whose last period ends at 15:00. Very much
+reachable the day a school serves real bell rows with an afternoon programme, which is the
+whole point of preferring the school's own rows. So the release is clamped: a late-dismissing
+child gets a slightly early message rather than none. `digest.task.spec.ts` asserts the
+constant and the cron's end hour agree, because the guarantee lapses silently if they drift.
+
+This is also why the grace period has a ceiling (decision 6) rather than only a floor.
 
 **3. Missing data does not gate.**
 No `timetable_entry` rows for today — Saturday (Mashov day 7 matches no lesson), a
@@ -96,10 +124,18 @@ the school's or the default.
 button is asking for the digest *now*; the gate exists to stop unattended noise, not to
 refuse an explicit request.
 
-**6. The grace period is an env var: `DIGEST_POST_DISMISSAL_GRACE_MINUTES`, default 30.**
+**6. The grace period is an env var: `DIGEST_POST_DISMISSAL_GRACE_MINUTES`, default 30,
+clamped to 180.**
 Matching how every other digest knob is exposed. It has its own reader rather than
 reusing `digest.service.ts`'s `readDays`, which requires `> 0`: a configured `0` must
 mean "no grace, gate on the bell itself", not fall silently back to half an hour.
+
+The ceiling is not decoration. Unbounded, a value read as milliseconds — which the
+neighbouring `DIGEST_LLM_TIMEOUT_MS=30000` openly invites — pushes every child's release
+past the end of the day and, before decision 2b, would have stopped every digest for every
+child indefinitely with nothing in the history to say so. Anything above three hours is a
+mistake rather than a preference, so it is clamped and warned about, on `historyStartYear`'s
+precedent in `school-year.scope.ts`.
 
 **7. The wall clock is read through `Intl`, like every other date in this feature.**
 `jerusalemClockMinutes` in `digest-deadline.service.ts` returns minutes since Jerusalem
@@ -122,7 +158,8 @@ string storage exists to avoid.
   plausibly been filled in.
 - Correct for a short school day *and* a long one, from each child's own data, which no
   single cron window can be.
-- The change cannot lose an item. Every refusal path either delays or declines to gate.
+- The change cannot lose an item: every refusal path either delays within the day, clamps
+  to the day's last tick, or declines to gate at all.
 - `bell_schedule` now earns its keep beyond one grid, which is what ADR-0037 built it
   for.
 
@@ -133,6 +170,10 @@ string storage exists to avoid.
   whose real last bell is 13:30 but whose default-schedule period 6 ends at 13:20 is
   released ten minutes early — a smaller error than the fixed 13:00 window it replaces,
   and it disappears the day a school serves real times.
+- A child whose last bell is genuinely after 18:30 is released early rather than on their
+  own schedule. That is decision 2b choosing an incomplete message over no message, and it
+  is the one place the feature knowingly does not do what it says on the tin. Widening the
+  cron past 19:00 would be the alternative; sending a parent a digest at 21:00 is worse.
 - A child whose timetable is stale in the *other* direction — rows for eight periods on
   a day they actually finish at noon — is held until 15:30. A timetable sync fixes it;
   the gate memo is per run, so the next tick picks the correction up.

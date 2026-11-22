@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { schoolYearScope } from '../common/school-year/school-year.scope';
@@ -19,11 +19,35 @@ import { mashovDayFromJsDate } from './digest-deadline.service';
  */
 export const DEFAULT_POST_DISMISSAL_GRACE_MINUTES = 30;
 
+/**
+ * The ceiling on the configured grace period.
+ *
+ * Unbounded, a value read as milliseconds -- which the neighbouring
+ * `DIGEST_LLM_TIMEOUT_MS=30000` openly invites -- pushes every child's release
+ * past the end of the day, at which point no child is ever sent a digest
+ * again and no delivery row records it. Three hours is well past anything a
+ * register takes to fill in, so a larger value is a mistake rather than a
+ * preference. Clamped and warned about, on `historyStartYear`'s precedent in
+ * school-year.scope.ts.
+ */
+export const MAX_POST_DISMISSAL_GRACE_MINUTES = 180;
+
+/**
+ * The last tick of the digest cron, as minutes since Jerusalem midnight. Must
+ * match the end of the window in `tasks/digest.task.ts` -- digest.task.spec.ts
+ * asserts the two agree, because this constant is what stops a hold from
+ * outliving the day.
+ */
+export const LAST_DIGEST_RUN_MINUTES = 19 * 60;
+
 export interface DismissalGate {
   /**
    * Minutes since Jerusalem midnight before which nothing may be sent, or
    * `null` for "do not gate" -- which is the answer whenever the data needed
    * to decide is missing. Missing data must never hold a digest back.
+   *
+   * Never later than `LAST_DIGEST_RUN_MINUTES`, so it can differ from
+   * `lastLessonEnd + grace` for a child who finishes very late. See `gateFor`.
    */
   releaseAtMinutes: number | null;
   lastLesson: number | null;
@@ -60,6 +84,8 @@ const OPEN: DismissalGate = {
  */
 @Injectable()
 export class DigestDismissalService {
+  private readonly logger = new Logger(DigestDismissalService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -93,8 +119,16 @@ export class DigestDismissalService {
     const end = clockMinutes(period.endTime);
     if (end === null) return OPEN;
 
+    // Clamped to the last tick of the cron, and this is not a nicety. There is
+    // no catch-up run, and the behaviour candidate window is strictly today
+    // (`behaviorToday` in digest-checker.service.ts matches `lessonDate` OR
+    // `eventAt` inside today only). A release time past the final tick would
+    // hold every tick, let the day end, and lose that child's behaviour
+    // permanently -- which is exactly the suppression this feature's
+    // delay-only property exists to rule out. A school with a late afternoon
+    // programme gets a slightly early message instead of none.
     return {
-      releaseAtMinutes: end + this.graceMinutes(),
+      releaseAtMinutes: Math.min(end + this.graceMinutes(), LAST_DIGEST_RUN_MINUTES),
       lastLesson,
       lastLessonEnd: period.endTime,
       source: schedule.source,
@@ -112,32 +146,49 @@ export class DigestDismissalService {
       return DEFAULT_POST_DISMISSAL_GRACE_MINUTES;
     }
     const parsed = Number(raw);
-    return Number.isInteger(parsed) && parsed >= 0
-      ? parsed
-      : DEFAULT_POST_DISMISSAL_GRACE_MINUTES;
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      return DEFAULT_POST_DISMISSAL_GRACE_MINUTES;
+    }
+    if (parsed > MAX_POST_DISMISSAL_GRACE_MINUTES) {
+      this.logger.warn(
+        `DIGEST_POST_DISMISSAL_GRACE_MINUTES=${parsed} is longer than a school day's worth of ` +
+          `slack; clamping to ${MAX_POST_DISMISSAL_GRACE_MINUTES} minutes. It is minutes after ` +
+          `the last bell, not milliseconds.`,
+      );
+      return MAX_POST_DISMISSAL_GRACE_MINUTES;
+    }
+    return parsed;
   }
 }
 
 /**
  * The period that ends the child's day.
  *
- * A schedule that does not cover the lesson number is the interesting case: a
- * ninth-period child on an eight-period schedule, or a school whose rows are
- * gappy. Holding until the latest bell the schedule *does* know about is the
- * honest answer -- it still beats sending at 11:00 -- and the last period
- * overall is the floor for a lesson number below every row.
+ * A schedule that does not cover the lesson number is the interesting case,
+ * and the two directions want opposite answers.
+ *
+ * *Above* every row -- a ninth-period child on an eight-period schedule --
+ * takes the latest row at or below the number: that is the last bell anybody
+ * knows about, and it still beats sending at 11:00.
+ *
+ * *Below* every row -- a first-grader whose only lesson is 1 against a
+ * schedule whose rows start at 2, which is what a school's malformed lesson-1
+ * row produces, since `toPeriod` silently drops an unusable one -- takes the
+ * **earliest** row. Lesson 1 must end before lesson 2 begins, so the earliest
+ * row is the only bound the schedule supports; the latest would hold that
+ * child until the end of the whole school day, which is the opposite of what
+ * is known about them.
  */
 function periodFor(periods: BellPeriod[], lastLesson: number): BellPeriod | null {
   if (periods.length === 0) return null;
 
-  const exact = periods.find((period) => period.lesson === lastLesson);
+  const byLesson = [...periods].sort((a, b) => a.lesson - b.lesson);
+
+  const exact = byLesson.find((period) => period.lesson === lastLesson);
   if (exact) return exact;
 
-  const covered = periods
-    .filter((period) => period.lesson <= lastLesson)
-    .sort((a, b) => a.lesson - b.lesson)
-    .pop();
+  const covered = byLesson.filter((period) => period.lesson <= lastLesson).pop();
   if (covered) return covered;
 
-  return [...periods].sort((a, b) => a.lesson - b.lesson).pop() ?? null;
+  return byLesson[0] ?? null;
 }

@@ -1,4 +1,8 @@
-import { DigestDismissalService } from './digest-dismissal.service';
+import {
+  DigestDismissalService,
+  LAST_DIGEST_RUN_MINUTES,
+  MAX_POST_DISMISSAL_GRACE_MINUTES,
+} from './digest-dismissal.service';
 import { DEFAULT_BELL_SCHEDULE } from '../common/bells/default-bell-schedule';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ConfigService } from '@nestjs/config';
@@ -167,23 +171,25 @@ describe('DigestDismissalService.gateFor', () => {
     expect(gate.releaseAtMinutes).toBe(at(11, 0));
   });
 
-  it('falls back to the last period when the lesson is below every bell row', async () => {
-    // A schedule whose rows start at lesson 2 against a child whose only
-    // lesson today is 1. There is nothing at or below it, so the last bell the
-    // schedule knows about is the floor -- a release time in the past would be
-    // no gate at all, and this at least holds until the school is empty.
+  it('falls back to the EARLIEST period when the lesson is below every bell row', async () => {
+    // A schedule whose rows start at lesson 2 against a child whose only lesson
+    // today is 1 -- which a school's malformed lesson-1 row produces, since
+    // `toPeriod` silently drops an unusable one. Lesson 1 must end before
+    // lesson 2 begins, so the earliest row is the only bound the schedule
+    // supports. The latest row would hold a first-grader until the end of the
+    // whole school day, which is the opposite of what is known about them.
     const harness = makeHarness({
       timetable: [{ day: 6, lesson: 1 }],
       bells: [
         { lesson: 2, startTime: '08:50', endTime: '09:35' },
-        { lesson: 3, startTime: '09:45', endTime: '10:30' },
+        { lesson: 10, startTime: '16:00', endTime: '16:45' },
       ],
     });
 
     const gate = await harness.service.gateFor(STUDENT, SCHOOL_YEAR, FRIDAY);
 
-    expect(gate).toMatchObject({ lastLesson: 1, lastLessonEnd: '10:30' });
-    expect(gate.releaseAtMinutes).toBe(at(11, 0));
+    expect(gate).toMatchObject({ lastLesson: 1, lastLessonEnd: '09:35' });
+    expect(gate.releaseAtMinutes).toBe(at(10, 5));
   });
 
   it('does not gate when the child has no timetable rows for today', async () => {
@@ -273,5 +279,64 @@ describe('DigestDismissalService.gateFor', () => {
 
     expect(gate).toMatchObject({ source: 'default', lastLesson: 4 });
     expect(gate.releaseAtMinutes).toBe(at(11, 50));
+  });
+  it('never holds past the last cron tick of the day', async () => {
+    // The gate has no catch-up run to fall back on, and the behaviour
+    // candidate window is strictly today (digest-checker.service.ts's
+    // behaviorToday matches lessonDate OR eventAt inside today only). A
+    // release time after the final tick would therefore hold every tick, let
+    // the day end, and lose that child's behaviour permanently -- turning the
+    // delay this feature is built on into silent suppression. A slightly early
+    // message is the right trade.
+    const harness = makeHarness({
+      timetable: [{ day: 6, lesson: 9 }],
+      bells: [{ lesson: 9, startTime: '17:55', endTime: '18:40' }],
+    });
+
+    const gate = await harness.service.gateFor(STUDENT, SCHOOL_YEAR, FRIDAY);
+
+    // 18:40 + 30 would be 19:10, past the 19:00 tick.
+    expect(gate.lastLessonEnd).toBe('18:40');
+    expect(gate.releaseAtMinutes).toBe(LAST_DIGEST_RUN_MINUTES);
+  });
+
+  it('leaves a release time inside the window alone', async () => {
+    const harness = makeHarness({
+      timetable: [{ day: 6, lesson: 8 }],
+      bells: [{ lesson: 8, startTime: '17:00', endTime: '17:45' }],
+    });
+
+    const gate = await harness.service.gateFor(STUDENT, SCHOOL_YEAR, FRIDAY);
+
+    expect(gate.releaseAtMinutes).toBe(at(18, 15));
+  });
+
+  it('clamps an absurd grace period instead of suppressing the digest', async () => {
+    // `30000` is what someone reads off the neighbouring DIGEST_LLM_TIMEOUT_MS
+    // and copies as milliseconds. Unbounded, any value past a few hours holds
+    // every child at every tick on every day, forever, with no delivery row to
+    // show for it.
+    const harness = makeHarness({
+      timetable: [{ day: 6, lesson: 4 }],
+      env: { DIGEST_POST_DISMISSAL_GRACE_MINUTES: '1800' },
+    });
+
+    const gate = await harness.service.gateFor(STUDENT, SCHOOL_YEAR, FRIDAY);
+
+    // Default lesson 4 ends 11:20, plus the clamped maximum.
+    expect(gate.releaseAtMinutes).toBe(at(11, 20) + MAX_POST_DISMISSAL_GRACE_MINUTES);
+  });
+
+  it('accepts a grace period at the maximum', async () => {
+    const harness = makeHarness({
+      timetable: [{ day: 6, lesson: 4 }],
+      env: {
+        DIGEST_POST_DISMISSAL_GRACE_MINUTES: String(MAX_POST_DISMISSAL_GRACE_MINUTES),
+      },
+    });
+
+    const gate = await harness.service.gateFor(STUDENT, SCHOOL_YEAR, FRIDAY);
+
+    expect(gate.releaseAtMinutes).toBe(at(11, 20) + MAX_POST_DISMISSAL_GRACE_MINUTES);
   });
 });

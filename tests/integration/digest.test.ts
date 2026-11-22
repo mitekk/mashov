@@ -29,7 +29,7 @@ import { DigestDeadlineService } from '../../backend/src/digest/digest-deadline.
 import { DigestSummarizerService } from '../../backend/src/digest/digest-summarizer.service';
 import { DigestRecipientService } from '../../backend/src/digest/digest-recipient.service';
 import { DigestRetentionService } from '../../backend/src/digest/digest-retention.service';
-import { jerusalemDayBounds } from '../../backend/src/digest/digest-deadline.service';
+import { jerusalemDayBounds, mashovDayFromJsDate } from '../../backend/src/digest/digest-deadline.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { ConfigService } from '../../backend/node_modules/@nestjs/config';
 import type { SchoolYearService } from '../../backend/src/common/school-year/school-year.service';
@@ -117,6 +117,7 @@ describe('Per-child daily digest', () => {
     await prisma.digestReportedItem.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.digestDelivery.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.digestRecipient.deleteMany({ where: { studentGuid: { in: guids } } });
+    await prisma.timetableEntry.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.behaviorItem.deleteMany({ where: { studentGuid: { in: guids } } });
     await prisma.studentRelease.deleteMany({ where: { studentGuid: { in: guids } } });
@@ -224,6 +225,81 @@ describe('Per-child daily digest', () => {
         homeworkText: 'לפתור עמוד 42',
       },
     });
+  });
+
+  it('holds a child who is still in class without consuming anything, then reports it in full', async () => {
+    // The one unrecoverable defect this feature could have: if a held tick
+    // claimed, the items would be marked reported and the post-dismissal tick
+    // would find a quiet day -- a permanent loss, not a delay. Proved here
+    // against the real schema as well as against a mocked Prisma, because the
+    // claim rows and the unique constraint behind them are database objects.
+    await prisma.timetableEntry.create({
+      data: {
+        studentGuid: CHILD_WITH_NEWS,
+        schoolYear: SCHOOL_YEAR,
+        groupId: 70,
+        day: mashovDayFromJsDate(todayStart),
+        lesson: 8,
+        groupName: 'חשבון 70',
+        subjectName: 'חשבון',
+      },
+    });
+
+    // Default schedule: lesson 8 ends 15:00, so release is 15:30. These two
+    // instants are 08:00-09:00 and 18:00-19:00 in Jerusalem -- on the right
+    // side of 15:30 whether the offset is +2 or +3, so the test does not
+    // depend on the time of year.
+    const beforeDismissal = new Date(todayStart.getTime() + 6 * 60 * 60 * 1000);
+    const afterDismissal = new Date(todayStart.getTime() + 16 * 60 * 60 * 1000);
+
+    const held = new CapturingSender();
+    const heldResults = await makeService(prisma, held).runAll({
+      now: beforeDismissal,
+      studentGuid: CHILD_WITH_NEWS,
+    });
+
+    expect(heldResults.find((r) => r.studentGuid === CHILD_WITH_NEWS)?.status).toBe(
+      'skipped_before_dismissal',
+    );
+    expect(held.sent).toHaveLength(0);
+    // Nothing claimed and nothing recorded: the next tick must see the day as
+    // untouched, and the parent's history must not fill with held hours.
+    expect(
+      await prisma.digestReportedItem.count({ where: { studentGuid: CHILD_WITH_NEWS } }),
+    ).toBe(0);
+    expect(
+      await prisma.digestDelivery.count({ where: { studentGuid: CHILD_WITH_NEWS } }),
+    ).toBe(0);
+
+    const released = new CapturingSender();
+    const sentResults = await makeService(prisma, released).runAll({
+      now: afterDismissal,
+      studentGuid: CHILD_WITH_NEWS,
+    });
+
+    expect(sentResults.find((r) => r.studentGuid === CHILD_WITH_NEWS)?.status).toBe('sent');
+    expect(released.sent).toHaveLength(1);
+    // Both of the day's items, the ones the held tick would have reported.
+    const confirmed = await prisma.digestReportedItem.findMany({
+      where: { studentGuid: CHILD_WITH_NEWS, confirmedAt: { not: null } },
+      select: { itemType: true },
+    });
+    expect(confirmed.map((row) => row.itemType).sort()).toEqual(['behavior', 'homework_new']);
+  });
+
+  it('never holds a child whose timetable has nothing for today', async () => {
+    // Missing data must never hold a digest back. No timetable row is seeded
+    // for this child, and the early tick sends exactly as it did before the
+    // gate existed.
+    const sender = new CapturingSender();
+
+    const results = await makeService(prisma, sender).runAll({
+      now: new Date(todayStart.getTime() + 6 * 60 * 60 * 1000),
+      studentGuid: CHILD_WITH_NEWS,
+    });
+
+    expect(results.find((r) => r.studentGuid === CHILD_WITH_NEWS)?.status).toBe('sent');
+    expect(sender.sent).toHaveLength(1);
   });
 
   it('sends to the child with news and records a quiet day for the other', async () => {
