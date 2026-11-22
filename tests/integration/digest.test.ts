@@ -24,6 +24,7 @@ import { PrismaClient } from '../../backend/node_modules/@prisma/client';
 import { DigestService } from '../../backend/src/digest/digest.service';
 import { DigestCheckerService } from '../../backend/src/digest/digest-checker.service';
 import { DigestCollectorService } from '../../backend/src/digest/digest-collector.service';
+import { DigestDismissalService } from '../../backend/src/digest/digest-dismissal.service';
 import { DigestDeadlineService } from '../../backend/src/digest/digest-deadline.service';
 import { DigestSummarizerService } from '../../backend/src/digest/digest-summarizer.service';
 import { DigestRecipientService } from '../../backend/src/digest/digest-recipient.service';
@@ -88,6 +89,10 @@ function makeService(prisma: PrismaClient, sender: DigestSender) {
     new DigestCollectorService(prismaService),
     new DigestSummarizerService(config),
     new DigestRecipientService(prismaService),
+    // The real service against the real database: these fixtures seed no
+    // timetable rows, so the gate opens for every child and the suite reads
+    // exactly as it did before the gate existed (ADR-0038).
+    new DigestDismissalService(prismaService, config),
     sender,
     sender,
   );
