@@ -31,7 +31,8 @@ import {
 import {
   UNSCOPED_SCHOOL_YEAR,
   currentSchoolYearForStudent,
-  historyScopeForStudents,
+  historyScope,
+  schoolYearWindowForStudent,
   yearScopeForStudents,
 } from '../../backend/src/common/school-year/school-year.scope';
 import { ConnectionService } from '../../backend/src/connection/connection.service';
@@ -470,13 +471,17 @@ describe('Two parents, one school, shared children', () => {
     });
 
     it('is in the history scope too, so the archive is not empty either', async () => {
-      const scope = await historyScopeForStudents(
+      // The `ארכיון` tab is the only history-spanning read left (ADR-0036),
+      // and it is per-child: one window, resolved from that child's own
+      // connection. An unlinked child has no stamp, so this also pins the
+      // household fallback -- without it their archive is empty.
+      const window = await schoolYearWindowForStudent(
         prisma as unknown as PrismaService,
         { get: () => undefined } as unknown as ConfigService,
-        USER_A,
+        null,
       );
       const rows = await prisma.homeworkItem.findMany({
-        where: { ...scope, studentGuid: UNLINKED },
+        where: { ...historyScope(window), studentGuid: UNLINKED },
         select: { lessonId: true },
         orderBy: { lessonId: 'asc' },
       });
@@ -565,15 +570,11 @@ describe('Two parents, one school, shared children', () => {
         // The roster refresh is an upstream call; the fixture is the roster.
         { ensureStudentsAvailable: async () => undefined } as unknown as MashovSessionService,
         new UserItemStateService(prisma as unknown as PrismaService),
-        { get: () => undefined } as unknown as ConfigService,
       );
     }
 
     function makeFeed(): FeedService {
-      return new FeedService(
-        prisma as unknown as PrismaService,
-        { get: () => undefined } as unknown as ConfigService,
-      );
+      return new FeedService(prisma as unknown as PrismaService);
     }
 
     function makeChildren(): ChildrenService {
@@ -1564,7 +1565,6 @@ describe('Two schools whose short labels collide', () => {
       } as unknown as FreshnessService,
       { ensureStudentsAvailable: async () => undefined } as unknown as MashovSessionService,
       new UserItemStateService(prisma as unknown as PrismaService),
-      { get: () => undefined } as unknown as ConfigService,
     );
   }
 

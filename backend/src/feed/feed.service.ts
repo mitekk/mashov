@@ -1,12 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildStudentSchoolMap } from '../common/student-school-map';
 import { householdMailScope } from '../common/mail-scope';
 import { visibleStudentWhere } from '../common/student-links';
-import {
-  historyScopeForStudents,
-} from '../common/school-year/school-year.scope';
+import { yearScopeForStudents } from '../common/school-year/school-year.scope';
 
 export interface FeedItem {
   id: string;
@@ -40,24 +37,17 @@ export interface FeedItem {
 
 @Injectable()
 export class FeedService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async getFeed(page: number, limit: number, userId?: string) {
-    // The feed is a list, so spanning the configured history window is the
-    // point: more data is the feature. It is bounded at both ends, so an
-    // unbounded `orderBy desc` still cannot reach a year nobody asked for.
+    // The current year only. The feed is what a parent lands on, so a year
+    // the student has already left is history rather than a to-do list, and
+    // lives behind `ארכיון` on the child's own lists instead (ADR-0036).
     // Mail is deliberately not year-scoped — mailConversation carries no
     // schoolYear — and the backfill does not fetch it.
     // Cross-child, so each school contributes its own children at its own
-    // window rather than the household sharing one.
-    const yearScope = await historyScopeForStudents(
-      this.prisma,
-      this.configService,
-      userId,
-    );
+    // year rather than the household sharing one.
+    const yearScope = await yearScopeForStudents(this.prisma, userId);
 
     // R3: this read was unscoped, unlike the dashboard's. Every feed *item* is
     // year-scoped by child, so the roster's own leak is narrow -- but the

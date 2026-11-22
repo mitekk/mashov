@@ -21,6 +21,22 @@ export const MAX_HISTORY_YEARS = 2;
 export const UNSCOPED_SCHOOL_YEAR = 0;
 
 /**
+ * A row from a year the student has already left reads as archived.
+ *
+ * Derived rather than written: nothing is stamped at rollover, so the moment
+ * `household_connection.schoolYear` advances last year's items read as
+ * archived for every member of the household -- including one who joins next
+ * year and has no `user_item_state` rows of their own (ADR-0036).
+ *
+ * `UNSCOPED_SCHOOL_YEAR` is NOT past. It means "unknown" -- a pre-migration
+ * row that `currentYearScope` deliberately admits -- and reading it as last
+ * year would archive a half-migrated database wholesale.
+ */
+export function isPastSchoolYear(rowYear: number, currentYear: number): boolean {
+  return rowYear !== UNSCOPED_SCHOOL_YEAR && rowYear < currentYear;
+}
+
+/**
  * The current year alone — "what is true now", and every staleness signal.
  *
  * Staleness reads must never widen to the history window: a child with
@@ -271,7 +287,6 @@ export type StudentYearScope = {
   OR: Array<
     | { schoolYear: number }
     | { studentGuid: { in: string[] }; schoolYear: { in: number[] } }
-    | { studentGuid: { in: string[] }; schoolYear: { gte: number; lte: number } }
   >;
 };
 
@@ -374,41 +389,6 @@ export async function yearScopeForStudents(
     OR.push({
       studentGuid: { in: unstamped },
       schoolYear: { in: [...new Set([...byConnection.values(), UNSCOPED_SCHOOL_YEAR])] },
-    });
-  }
-
-  return { OR };
-}
-
-/** The configured history window for every child, each at their own school's. */
-export async function historyScopeForStudents(
-  prisma: PrismaService,
-  config: ConfigService,
-  userId?: string,
-): Promise<StudentYearScope> {
-  const windows = await schoolYearWindowsFor(prisma, config, userId);
-  const { byConnection: guids, unstamped } = await guidsByConnection(prisma, [
-    ...windows.keys(),
-  ]);
-
-  const OR: StudentYearScope['OR'] = [unscopedBranch(userId, guids, unstamped)];
-  for (const [connectionId, window] of windows) {
-    const connectionGuids = guids.get(connectionId);
-    if (!connectionGuids || connectionGuids.length === 0) continue;
-    OR.push({
-      studentGuid: { in: connectionGuids },
-      schoolYear: { gte: window.start, lte: window.current },
-    });
-  }
-
-  // As above: the widest window any of the household's schools spans, since
-  // nothing says which school's sync wrote this child's rows.
-  if (unstamped.length > 0) {
-    const starts = [...windows.values()].map((window) => window.start);
-    const currents = [...windows.values()].map((window) => window.current);
-    OR.push({
-      studentGuid: { in: unstamped },
-      schoolYear: { gte: Math.min(...starts), lte: Math.max(...currents) },
     });
   }
 

@@ -97,7 +97,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
           </button>
           {data && (
             <div className="flex items-center gap-2">
-              {!data.isArchived && (
+              {!data.isArchived && !data.isPastYear && (
                 <button
                   type="button"
                   data-testid={`behavior-detail-toggle-new-${behaviorId}`}
@@ -119,20 +119,31 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
                   )}
                 </button>
               )}
-              <button
-                type="button"
-                data-testid={`behavior-detail-archive-${behaviorId}`}
-                onClick={() => mutateArchive(!data.isArchived, { onSuccess: () => router.back() })}
-                disabled={isArchivePending}
-                aria-label={data.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50',
-                  data.isArchived ? 'text-primary' : 'text-muted-foreground',
-                )}
-              >
-                <Archive className="h-4 w-4" />
-                <span>{data.isArchived ? 'שחזר' : 'ארכיון'}</span>
-              </button>
+              {data.isPastYear ? (
+                // Archived by derivation, so there is no action to offer --
+                // only the reason it sits in the archive (ADR-0036).
+                <span
+                  data-testid={`behavior-detail-past-year-${behaviorId}`}
+                  className="inline-flex items-center rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm text-muted-foreground"
+                >
+                  שנה קודמת
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  data-testid={`behavior-detail-archive-${behaviorId}`}
+                  onClick={() => mutateArchive(!data.isArchived, { onSuccess: () => router.back() })}
+                  disabled={isArchivePending}
+                  aria-label={data.isArchived ? 'שחזר מארכיון' : 'העבר לארכיון'}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-3 py-1.5 text-sm transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50',
+                    data.isArchived ? 'text-primary' : 'text-muted-foreground',
+                  )}
+                >
+                  <Archive className="h-4 w-4" />
+                  <span>{data.isArchived ? 'שחזר' : 'ארכיון'}</span>
+                </button>
+              )}
             </div>
           )}
         </div>

@@ -125,9 +125,9 @@ export function ChildWorkspacePage({
     recentHomeworkCount: 0,
     recentBehaviorCount: 0,
     positiveBehaviorCount: 0,
+    neutralBehaviorCount: 0,
     subjectCount: 0,
     totalWeeklyHours: 0,
-    attentionBehaviorCount: 0,
   };
 
   if (isLoading) return <AppShell><LoadingState message="טוען נתוני ילד..." /></AppShell>;

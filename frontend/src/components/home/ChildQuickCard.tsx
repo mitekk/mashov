@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { BookOpen, AlertTriangle, ThumbsUp } from 'lucide-react';
+import { BookOpen, AlertTriangle, ThumbsUp, Info } from 'lucide-react';
 import type { DashboardChildCard } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
@@ -21,6 +21,7 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
   );
 
   const positiveBehaviorCount = child.positiveBehaviorCount ?? 0;
+  const neutralBehaviorCount = child.neutralBehaviorCount ?? 0;
 
   const content = (
     <>
@@ -59,6 +60,14 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
         >
           <ThumbsUp className="w-3 h-3" />
           {positiveBehaviorCount}
+        </span>
+        {/* Attendance: its own muted count, not part of the amber one. */}
+        <span
+          data-testid={`child-card-neutral-count-${child.studentGuid}`}
+          className="flex items-center gap-1 text-muted-foreground"
+        >
+          <Info className="w-3 h-3" />
+          {neutralBehaviorCount}
         </span>
       </div>
       {child.latestUpdateAt && (

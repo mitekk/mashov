@@ -1,9 +1,10 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { BookOpen, AlertTriangle, ThumbsUp, Clock, DoorOpen, ClipboardList } from 'lucide-react';
+import { BookOpen, AlertTriangle, ThumbsUp, Info, Clock, DoorOpen, ClipboardList } from 'lucide-react';
 import type { ChildStudent, ChildSummary } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
+import { getBucketLabel } from '@/lib/behavior';
 import {
   Select,
   SelectContent,
@@ -187,12 +188,14 @@ export function ChildHeader({
           <BookOpen className="w-3.5 h-3.5" />
           {summary.recentHomeworkCount} שיעורי בית
         </span>
+        {/* Same wording as the behaviour filter tabs, so a chip and the tab
+            it summarises name the same bucket. */}
         <span
           data-testid="child-header-negative-count"
           className="chip border-attention/35 bg-attention-subtle text-attention"
         >
           <AlertTriangle className="w-3.5 h-3.5" />
-          {summary.recentBehaviorCount} אירועים שליליים
+          {summary.recentBehaviorCount} {getBucketLabel('attention')}
         </span>
         <span
           data-testid="child-header-positive-count"
@@ -200,6 +203,15 @@ export function ChildHeader({
         >
           <ThumbsUp className="w-3.5 h-3.5" />
           {summary.positiveBehaviorCount} אירועים חיוביים
+        </span>
+        {/* Attendance logged by the school. Muted, and counted on its own:
+            folded into the amber chip it read as a negative event. */}
+        <span
+          data-testid="child-header-neutral-count"
+          className="chip border-border/85 bg-muted/70 text-muted-foreground"
+        >
+          <Info className="w-3.5 h-3.5" />
+          {summary.neutralBehaviorCount} {getBucketLabel('neutral')}
         </span>
         <span className="chip">
           {summary.subjectCount} מקצועות

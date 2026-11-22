@@ -32,7 +32,7 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0022](0022-middleware-cookie-name-alignment.md) | Next.js Middleware Auth Check — Read `mashov_session` Cookie, Not `session` | Accepted | Frontend agent, Smoke test verifier | 2026-03-17 |
 | [ADR-0023](0023-bounding-mashov-egress-abortsignal.md) | Bounding Mashov Egress — `AbortSignal` in a Shared Axios Factory | Accepted | Backend agent, Smoke test verifier | 2026-11-16 |
 | [ADR-0024](0024-school-year-resolution-and-rollover.md) | School Year — Resolve from Upstream, Persist on the Connection, Scope the Rows | Accepted | Backend agent, Planner | 2026-11-17 |
-| [ADR-0025](0025-school-year-history-window.md) | `MASHOV_YEAR` Means the Earliest Year to Fetch, Never the Year in Scope | Accepted | Backend agent, Planner | 2026-11-17 |
+| [ADR-0025](0025-school-year-history-window.md) | `MASHOV_YEAR` Means the Earliest Year to Fetch, Never the Year in Scope | Partially superseded by [ADR-0036](0036-current-year-lists-and-derived-past-year-archive.md) | Backend agent, Planner | 2026-11-17 |
 | [ADR-0026](0026-outbound-digest-delivery-and-llm-egress.md) | Outbound Digest Delivery — Pluggable Sender, Telegram First, and the Project's First Runtime LLM Call | Accepted | Backend agent, Planner | 2026-11-17 |
 | [ADR-0027](0027-derived-homework-deadlines.md) | Derived Homework Deadlines — Label the Estimate, Never Promise a Due Date | Accepted | Backend agent, Planner | 2026-11-17 |
 | [ADR-0028](0028-refresh-completion-envelope.md) | Refresh Completion Is an Envelope, Not a Source Threshold | Accepted | Backend agent, Frontend agent, Planner | 2026-11-18 |
@@ -41,4 +41,6 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0031](0031-child-visibility-is-a-set-of-connections.md) | A Child's Visibility Is a Set of Connections, Not the One That Answered | Accepted | User, Backend agent | 2026-11-18 |
 | [ADR-0032](0032-household-merge-trust-model.md) | A Household Merge Is a Confirmed, Password-Proven Move of One Connection | Accepted | User, Backend agent, Frontend agent | 2026-11-20 |
 | [ADR-0033](0033-parent-driven-telegram-linking.md) | A Parent Links Their Own Telegram, From a One-Time Code We Read Out of the START | Accepted | User, Backend agent, Frontend agent | 2026-11-21 |
+| [ADR-0034](0034-child-activity-badges-count-unread-this-year.md) | Child Activity Badges Count Unread Items for the School Year, Not a Rolling Window | Accepted | User, Backend agent, Frontend agent | 2026-11-22 |
 | [ADR-0035](0035-per-user-digest-isolation.md) | A Digest Run Is One Child and One Parent, Not One Child | Accepted | User, Backend agent | 2026-11-22 |
+| [ADR-0036](0036-current-year-lists-and-derived-past-year-archive.md) | The Default Lists Show the Current School Year; a Past Year Is Archived by Derivation | Accepted | User, Backend agent, Frontend agent | 2026-11-22 |

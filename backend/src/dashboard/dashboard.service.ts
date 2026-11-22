@@ -6,13 +6,12 @@ import { buildStudentSchoolMap } from '../common/student-school-map';
 import { FreshnessService } from '../sync/freshness.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { UserItemStateService } from '../common/user-item-state.service';
-import { ConfigService } from '@nestjs/config';
 import {
-  historyScopeForStudents,
   yearScopeForStudents,
   type StudentYearScope,
 } from '../common/school-year/school-year.scope';
 import { visibleStudentWhere } from '../common/student-links';
+import { unreadChildActivityCounts } from '../common/child-activity-counts';
 
 export interface FeedItem {
   id: string;
@@ -62,9 +61,13 @@ export interface ChildCard {
   fullName: string;
   classCode: string;
   classNum: number;
+  /** Unread this school year, not a rolling window (ADR-0034). */
   recentHomeworkCount: number;
+  /** Unread `attention` events this school year. */
   recentBehaviorCount: number;
   positiveBehaviorCount: number;
+  /** Attendance and anything unmapped: shown, but not as a negative event. */
+  neutralBehaviorCount: number;
   latestUpdateAt: string | null;
   oneLineStatus: string;
   /** `null` for a child with no ownership stamp: the UI shows no badge. */
@@ -79,22 +82,16 @@ export class DashboardService {
     private readonly freshnessService: FreshnessService,
     private readonly sessionService: MashovSessionService,
     private readonly userItemStateService: UserItemStateService,
-    private readonly configService: ConfigService,
   ) {}
 
   async getDashboard(userId?: string) {
     await this.sessionService.ensureStudentsAvailable(userId);
 
-    // Two scopes, deliberately: the lists span the history window, while the
-    // counts and `latestUpdateAt` stay on the current year. In September the
-    // feed therefore shows last year's items rather than being empty, and
-    // `latestUpdateAt` is what still reports the new year as quiet.
+    // One scope for everything: the current year. The feed is the default
+    // view, not a history browser, so a year the student has already left
+    // belongs behind `ארכיון` rather than at the top of the home page
+    // (ADR-0036, superseding ADR-0025's widening of the feed).
     const yearScope = await yearScopeForStudents(this.prisma, userId);
-    const windowScope = await historyScopeForStudents(
-      this.prisma,
-      this.configService,
-      userId,
-    );
 
     // Resolved once here rather than inside each reader: both `getSummary` and
     // `getFeed` need it, both are private and called only from here, so the
@@ -104,7 +101,7 @@ export class DashboardService {
     const [students, summary, feed, freshness] = await Promise.all([
       this.getChildren(yearScope, userId),
       this.getSummary(yearScope, mailScope, userId),
-      this.getFeed(windowScope, mailScope, userId),
+      this.getFeed(yearScope, mailScope, userId),
       this.getFreshness(userId),
     ]);
 
@@ -326,27 +323,20 @@ export class DashboardService {
     });
 
     const schoolMap = await buildStudentSchoolMap(this.prisma, students, userId);
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     const cards: ChildCard[] = await Promise.all(
       students.map(async (student) => {
-        const [recentHomeworkRows, recentBehaviorRows, latestHomework, latestBehavior] = await Promise.all([
-          this.prisma.homeworkItem.findMany({
-            where: {
-              studentGuid: student.studentGuid,
-              lessonDate: { gte: sevenDaysAgo },
-              ...yearScope,
-            },
-            select: { id: true },
-          }),
-          this.prisma.behaviorItem.findMany({
-            where: {
-              studentGuid: student.studentGuid,
-              lessonDate: { gte: sevenDaysAgo },
-              ...yearScope,
-            },
-            select: { id: true, classification: true },
-          }),
+        // The same helper `/children` and `/children/:guid` call. Two copies
+        // of these forty lines are how the home card and the children card
+        // came to be able to disagree about the same child.
+        const [counts, latestHomework, latestBehavior] = await Promise.all([
+          unreadChildActivityCounts(
+            this.prisma,
+            this.userItemStateService,
+            student.studentGuid,
+            yearScope,
+            userId,
+          ),
           this.prisma.homeworkItem.findFirst({
             where: { studentGuid: student.studentGuid, ...yearScope },
             orderBy: { lessonDate: 'desc' },
@@ -359,29 +349,9 @@ export class DashboardService {
           }),
         ]);
 
-        const homeworkIds = recentHomeworkRows.map((row) => row.id);
-        const behaviorIds = recentBehaviorRows.map((row) => row.id);
-        const [homeworkStateMap, behaviorStateMap] = userId
-          ? await Promise.all([
-              this.userItemStateService.getStateBatch(userId, 'homework', homeworkIds),
-              this.userItemStateService.getStateBatch(userId, 'behavior', behaviorIds),
-            ])
-          : [
-              new Map<string, { isNew: boolean; isArchived: boolean }>(),
-              new Map<string, { isNew: boolean; isArchived: boolean }>(),
-            ];
-
-        const recentHw = recentHomeworkRows.filter((row) =>
-          this.isUnreadAndNotArchived(homeworkStateMap.get(row.id)),
-        ).length;
-        const recentBehavior = recentBehaviorRows.filter((row) =>
-          row.classification !== 'positive'
-          && this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
-        ).length;
-        const positiveBehavior = recentBehaviorRows.filter((row) =>
-          row.classification === 'positive'
-          && this.isUnreadAndNotArchived(behaviorStateMap.get(row.id)),
-        ).length;
+        const recentHw = counts.unreadHomeworkCount;
+        const recentBehavior = counts.attentionCount;
+        const positiveBehavior = counts.positiveCount;
 
         // Deliberately excludes student.updatedAt — it bumps on every sign-in
         // and would report content as fresh that is a school year old.
@@ -410,6 +380,7 @@ export class DashboardService {
           recentHomeworkCount: recentHw,
           recentBehaviorCount: recentBehavior,
           positiveBehaviorCount: positiveBehavior,
+          neutralBehaviorCount: counts.neutralCount,
           latestUpdateAt,
           oneLineStatus,
           schoolId: schoolMap.get(student.studentGuid)?.schoolId ?? null,
@@ -437,10 +408,4 @@ export class DashboardService {
     };
   }
 
-  private isUnreadAndNotArchived(
-    state: { isNew: boolean; isArchived: boolean } | undefined,
-  ): boolean {
-    const effectiveState = state ?? { isNew: true, isArchived: false };
-    return effectiveState.isNew && !effectiveState.isArchived;
-  }
 }

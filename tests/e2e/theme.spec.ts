@@ -92,9 +92,10 @@ async function mockCoreRoutes(page: Page) {
       summary: {
         recentHomeworkCount: 1,
         recentBehaviorCount: 1,
+        positiveBehaviorCount: 1,
+        neutralBehaviorCount: 1,
         subjectCount: 3,
         totalWeeklyHours: 10,
-        attentionBehaviorCount: 1,
       },
       lastSyncAt: new Date().toISOString(),
     }),
