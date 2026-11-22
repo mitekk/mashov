@@ -46,8 +46,14 @@ EXPOSE 3000
 # It is guarded with to_regclass, so on a first-ever deploy, where the table
 # does not exist until push creates it, it is a no-op rather than an error.
 #
+# The digest per-user migration runs after push too, and for a reason of its
+# own: it does not only add columns, it copies each child's dedup ledger to the
+# child's other subscribers. Before that deploy one per-child run delivered to
+# every recipient, so without the copy the second parent's first run re-reports
+# the whole active window at them. Idempotent, like the files above.
+#
 # The ownership backfill runs after push, because push is what adds the
 # householdConnectionId columns it fills. Until it has run, every row is
 # NULL-stamped -- which MailInboxTask treats as "do not sweep yet" rather than
 # as "unowned", so an unrun backfill costs a stale badge, never wrong data.
-CMD ["sh", "-c", "npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120000000_connection_duplicate_collapse/migration.sql && npx prisma db push --accept-data-loss --skip-generate && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261117000000_school_year_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261119010000_roster_presence/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120010000_connection_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120020000_connection_unique_keys/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261121000000_connection_collision_keys/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261122000000_student_connection_links/migration.sql && node dist/src/main.js"]
+CMD ["sh", "-c", "npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120000000_connection_duplicate_collapse/migration.sql && npx prisma db push --accept-data-loss --skip-generate && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261117000000_school_year_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261119010000_roster_presence/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120010000_connection_scoping/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261120020000_connection_unique_keys/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261121000000_connection_collision_keys/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261122000000_student_connection_links/migration.sql && npx prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20261124000000_digest_per_user/migration.sql && node dist/src/main.js"]
