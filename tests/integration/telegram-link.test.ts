@@ -84,6 +84,7 @@ describe('Parent-driven Telegram linking', () => {
 
   beforeEach(async () => {
     await prisma.digestRecipient.deleteMany({ where: { userId: { in: USER_IDS } } });
+    await prisma.digestReportedItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.telegramLinkCode.deleteMany({ where: { userId: { in: USER_IDS } } });
     await prisma.studentConnection.deleteMany({ where: { studentGuid: { in: GUIDS } } });
     await prisma.student.deleteMany({ where: { studentGuid: { in: GUIDS } } });
@@ -513,6 +514,35 @@ describe('Parent-driven Telegram linking', () => {
       await links.disconnect(PARENT_A);
 
       expect(await prisma.digestRecipient.count({ where: { userId: PARENT_B } })).toBe(1);
+    });
+
+    it('takes this parent’s dedup ledger with it, and only theirs', async () => {
+      // Left behind, a re-link finds every item it had already reported still
+      // in the ledger and says nothing about any of them -- reconnecting then
+      // looks like it changed nothing. Scoped to this parent, so the other
+      // parent of a shared child keeps their own.
+      const minted = await links.mint(PARENT_A, [CHILD_SHARED]);
+      await links.consume(startUpdate(minted.code));
+      for (const userId of [PARENT_A, PARENT_B]) {
+        await prisma.digestReportedItem.create({
+          data: {
+            userId,
+            studentGuid: CHILD_SHARED,
+            itemType: 'behavior',
+            itemId: 'tg-beh-1',
+            contentHash: 'tg-hash-1',
+            reportedFor: new Date('2026-11-20T00:00:00Z'),
+            confirmedAt: new Date(),
+          },
+        });
+      }
+
+      await links.disconnect(PARENT_A);
+
+      const left = await prisma.digestReportedItem.findMany({
+        where: { studentGuid: CHILD_SHARED },
+      });
+      expect(left.map((row) => row.userId)).toEqual([PARENT_B]);
     });
   });
 });

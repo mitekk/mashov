@@ -58,6 +58,8 @@ function makeHarness(options: HarnessOptions = {}) {
       ],
     );
   const recipientDeleteMany = jest.fn().mockResolvedValue({ count: 3 });
+  const reportedDeleteMany = jest.fn().mockResolvedValue({ count: 7 });
+  const deliveryDeleteMany = jest.fn().mockResolvedValue({ count: 0 });
   const recipientCount = jest.fn().mockResolvedValue(options.recipientCount ?? 2);
   const recipientFindMany = jest
     .fn()
@@ -100,6 +102,11 @@ function makeHarness(options: HarnessOptions = {}) {
       findMany: recipientFindMany,
       deleteMany: recipientDeleteMany,
     },
+    digestReportedItem: { deleteMany: reportedDeleteMany },
+    digestDelivery: { deleteMany: deliveryDeleteMany },
+    // One transaction, so a crash cannot leave the subscriptions gone and the
+    // ledger behind.
+    $transaction: jest.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
   } as unknown as PrismaService;
 
   const config = {
@@ -129,6 +136,8 @@ function makeHarness(options: HarnessOptions = {}) {
     codeDeleteMany,
     studentFindMany,
     recipientUpsert,
+    reportedDeleteMany,
+    deliveryDeleteMany,
     recipientCount,
     recipientFindMany,
     recipientDeleteMany,
@@ -426,6 +435,32 @@ describe('TelegramLinkService.disconnect', () => {
     await harness.service.disconnect('user-1');
 
     expect(harness.codeDeleteMany).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
+  });
+
+  it('drops the dedup ledger the subscriptions it removed belonged to', async () => {
+    // The unlink path deletes the ledger with the subscription for a reason
+    // that applies here too: left behind, a re-link finds every item it had
+    // already reported still in the ledger and silently says nothing about
+    // them. "ניתוק" then looks like it changed nothing.
+    const harness = makeHarness();
+
+    await harness.service.disconnect('user-1');
+
+    expect(harness.reportedDeleteMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1', studentGuid: { in: ['stu-1', 'stu-2'] } },
+    });
+  });
+
+  it('keeps the delivery history, which holds no chat id', async () => {
+    // Unlike the unlink path, the child and the connection survive here --
+    // the parent has only turned Telegram off. Their own run history is
+    // readable through GET /digest/deliveries and carries no chat id, so
+    // there is nothing to erase and no reason to erase it.
+    const harness = makeHarness();
+
+    await harness.service.disconnect('user-1');
+
+    expect(harness.deliveryDeleteMany).not.toHaveBeenCalled();
   });
 
   it('leaves other channels alone', async () => {

@@ -96,8 +96,18 @@ twice.
 **A chat two accounts both linked gets one copy of an identical message.** Both rows exist and
 each account controls its own; within a run, a byte-identical message to a chat already reached is
 suppressed, counted as delivered (the `delivered === 0` guard throws, releases claims and would
-retry forever otherwise), and noted in the delivery row. If the two parents' forms differ the
-messages differ and both are sent — accepted.
+retry forever otherwise), and noted in the delivery row. `recipientCount` excludes it, because
+that is the field the delivery stats aggregate and a suppression is not a chat reached. The
+fingerprint is per (channel, address, child, text): two children whose messages render identically
+— two `studentGuid`s for one child, which a re-enrolment or two schools listing them both produce
+— are each sent. If the two parents' forms differ the messages differ and both are sent — accepted.
+
+**`ניתוק` takes that parent's ledger but keeps their history.** `TelegramLinkService.disconnect`
+deletes the recipient rows, the link codes and this user's `DigestReportedItem` rows for those
+children, in one transaction: left behind, a re-link would find every item it had already reported
+still in the ledger and say nothing about any of them, so reconnecting would look like it changed
+nothing. The delivery rows stay — unlike an unlink, the child and the connection survive here, the
+rows are the parent's own run history, and they carry no chat id.
 
 **Unlinking leaves `TelegramLinkCode` alone.** It is link history, nothing delivers off it, the
 codes expire in fifteen minutes, and they are pruned after a week.

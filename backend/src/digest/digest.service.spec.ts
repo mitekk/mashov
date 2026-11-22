@@ -1020,6 +1020,30 @@ describe('DigestService.runAll', () => {
     expect(harness.deliveryCreate.mock.calls[0][0].data.errorMessage).toBeNull();
   });
 
+  it('does not count a suppressed send as a recipient reached', async () => {
+    // `recipientCount` is what the delivery stats aggregate, so counting a
+    // suppression there reports a message as having gone to two chats when it
+    // went to one. The `delivered === 0` guard still has to see it -- a
+    // suppressed-only run that threw would release its claims and retry the
+    // same suppressed send every hour -- so the two counts are separate.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results.map((result) => result.recipientCount)).toEqual([1, 0]);
+    expect(results.map((result) => result.status)).toEqual(['sent', 'sent']);
+    expect(harness.deliveryCreate.mock.calls[1][0].data.recipientCount).toBe(0);
+  });
+
   it('sends to the shared chat again when the two parents’ messages differ', async () => {
     // Byte-identical is the only thing suppressed. A consent form only one of
     // them has to answer makes the messages differ, and then both are news.
@@ -1043,6 +1067,27 @@ describe('DigestService.runAll', () => {
     await harness.service.runAll({ now: NOW });
 
     expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('suppresses a repeat to one chat per child, not across two children', async () => {
+    // Two children of one parent, reported to one chat, whose rendered
+    // messages happen to be identical -- two studentGuids for the same child
+    // (a re-enrolment, or two schools listing them) is the shape that really
+    // produces this. Keyed on channel + address + text alone, the second
+    // child's send is suppressed while its claims are confirmed, so that
+    // child's news is lost for good.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-2', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+      ],
+      recipients: [{ channel: 'telegram', address: '111', enabled: true, userId: USER_A }],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(2);
+    expect(results.every((result) => result.status === 'sent')).toBe(true);
   });
 
   it('suppresses only within one run, never across runs', async () => {

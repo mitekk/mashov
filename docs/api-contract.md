@@ -1001,6 +1001,10 @@ itself defaults to `true`.
 }
 ```
 
+`recipientCount` is the number of chats actually reached. When two accounts link the same chat for
+the same child, the second run of that pass suppresses the byte-identical resend: its row is
+`status: "sent"` with `recipientCount: 0` and the suppression named in `errorMessage`.
+
 **Scoped by user, not by subscribed child** (ADR-0035). It used to answer every row for every
 child the caller held a recipient for, which in a two-parent household meant each parent could
 read the other's `messageText` -- and that text now contains the other parent's own unanswered

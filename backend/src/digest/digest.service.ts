@@ -315,6 +315,7 @@ export class DigestService {
       }
 
       const { delivered, failures, suppressed } = await this.deliver(
+        studentGuid,
         enabled,
         message,
         dryRun,
@@ -355,7 +356,12 @@ export class DigestService {
       return await this.record(userId, studentGuid, reportFor, {
         status: 'sent',
         itemCount,
-        recipientCount: delivered,
+        // Chats actually reached. A suppression counts as delivered for the
+        // guard above -- otherwise a suppressed-only run throws, releases its
+        // claims and retries the same suppressed send every hour -- but it is
+        // not a recipient reached, and `recipientCount` is what the delivery
+        // stats aggregate.
+        recipientCount: delivered - suppressed,
         usedLlm: summary.usedLlm,
         messageText: message,
         channel: enabled[0]?.channel ?? null,
@@ -483,6 +489,7 @@ export class DigestService {
 
   /** Sends to each recipient independently, so one bad address cannot undo the rest. */
   private async deliver(
+    studentGuid: string,
     recipients: { channel: string; address: string }[],
     message: string,
     dryRun: boolean,
@@ -494,7 +501,12 @@ export class DigestService {
     const digest = createHash('sha256').update(message).digest('hex');
 
     for (const recipient of recipients) {
-      const fingerprint = `${recipient.channel}\u0000${recipient.address}\u0000${digest}`;
+      // Per child as well as per chat. Two children whose messages render
+      // identically -- two studentGuids for the same child, which a
+      // re-enrolment or two schools listing them both produce -- would
+      // otherwise have the second one's send suppressed and its claims
+      // confirmed, losing that child's news for good.
+      const fingerprint = `${recipient.channel}\u0000${recipient.address}\u0000${studentGuid}\u0000${digest}`;
       if (alreadySent.has(fingerprint)) {
         // Counted as delivered, deliberately: the parent has the message. The
         // `delivered === 0` guard below throws, which releases the claims --
