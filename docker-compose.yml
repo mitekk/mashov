@@ -106,7 +106,12 @@ services:
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
     restart: unless-stopped
     ports:
-      - "3001:3000"
+      # Parameterised for the same reason as DB_PORT above: a hardcoded publish
+      # made the whole stack unliftable when another checkout of this project
+      # already held the port, rather than failing only that one mapping. The
+      # frontend proxy reaches the backend as `backend:3000` on the compose
+      # network, so BACKEND_PORT moves the host side only.
+      - "${BACKEND_PORT:-3001}:3000"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/health').then((r) => process.exit(r.status >= 500 ? 1 : 0)).catch(() => process.exit(1))\""]
       interval: 10s
@@ -144,7 +149,7 @@ services:
       # mashov-e2e-browser user agent walks straight past the auth guard.
       ENABLE_E2E_AUTH_BYPASS: "${ENABLE_E2E_AUTH_BYPASS:-0}"
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null --tries=1 http://127.0.0.1:3000/api/health || exit 1"]
       interval: 10s

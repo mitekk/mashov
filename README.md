@@ -80,8 +80,8 @@ docker compose up --build   # db, redis, backend, frontend (hot reload via the o
 
 | Service | URL | Notes |
 |---|---|---|
-| Frontend (Next.js) | <http://localhost:3000> | the app |
-| Backend (NestJS) | <http://localhost:3001> | health check at `/health` |
+| Frontend (Next.js) | <http://localhost:3000> | the app; host port overridable with `FRONTEND_PORT` |
+| Backend (NestJS) | <http://localhost:3001> | health check at `/health`; host port overridable with `BACKEND_PORT` |
 | PostgreSQL | `localhost:5432` | host port overridable with `DB_PORT` |
 | Redis | `localhost:6379` | cache + sessions |
 
@@ -168,6 +168,8 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 | Variable | What | Default |
 |---|---|---|
 | `DB_PORT` | host port the Postgres container publishes on. Containers always reach the database as `db:5432`, so this moves the host side only — set it when something else already holds 5432. | `5432` |
+| `BACKEND_PORT` | host port the backend publishes on. The frontend proxy always reaches it as `backend:3000`, so this moves the host side only — set it to lift a second copy of the stack (a worktree, say) beside a running one. | `3001` |
+| `FRONTEND_PORT` | host port the frontend publishes on, same rationale as `BACKEND_PORT`. | `3000` |
 | `MASHOV_BASE_URL` | upstream Mashov origin | `https://web.mashov.info` |
 | `HTTPS_PROXY` | egress proxy for Mashov calls — **required in production** | unset |
 | `MASHOV_TIMEOUT_MS` | wall-clock bound per Mashov request | `10000` |
