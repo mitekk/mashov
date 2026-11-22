@@ -75,7 +75,23 @@ describe('Inbox notifications', () => {
     await prisma.$connect();
   });
 
+  /**
+   * Cleans up, and not only out of tidiness.
+   *
+   * These suites share one Postgres, and `DigestService.runAll()` with no
+   * userId -- which is what the cron does, and what `digest.test.ts` exercises
+   * -- enumerates EVERY parent's `digest_recipient` rows. A leaked row here
+   * therefore shows up as a `skipped_unowned` result in another suite's run
+   * and fails an assertion that has nothing to do with mail.
+   */
   afterAll(async () => {
+    await prisma.mailNotifiedMessage.deleteMany({ where: { userId: USER_ID } });
+    await prisma.digestDelivery.deleteMany({ where: { userId: USER_ID } });
+    await prisma.digestRecipient.deleteMany({ where: { userId: USER_ID } });
+    await prisma.mailMessage.deleteMany({ where: { conversationId: CONVERSATION_ID } });
+    await prisma.mailConversation.deleteMany({ where: { conversationId: CONVERSATION_ID } });
+    await prisma.householdConnection.deleteMany({ where: { id: CONNECTION_ID } });
+    await prisma.appUser.deleteMany({ where: { id: USER_ID } });
     await prisma.$disconnect();
   });
 

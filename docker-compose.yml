@@ -272,7 +272,17 @@ services:
       MASHOV_PASSWORD: test
     volumes:
       - ./backend/coverage:/app/coverage
-    command: ["npm", "run", "test:coverage"]
+    # `--maxWorkers=2` is load-bearing, not tuning. Jest defaults to one worker
+    # per core, each a full Node process, and the container has no memory limit
+    # of its own -- so on a machine with many cores the OS OOM killer takes
+    # workers out mid-suite. That surfaces as
+    # "a jest worker process was terminated by another process: signal=SIGKILL"
+    # against suites that are individually fine, and the exit code is non-zero
+    # with ZERO failing tests, which reads like a broken test and is not one.
+    # Reached once the suite count passed ~85. Bounded here rather than in the
+    # package.json script so a developer's own `jest` run keeps full
+    # parallelism.
+    command: ["npm", "run", "test:coverage", "--", "--maxWorkers=2"]
     logging:
       driver: "json-file"
       options:
