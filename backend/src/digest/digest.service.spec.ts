@@ -40,7 +40,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
       {
         id: 'beh-1',
         achvaName: 'איחור',
-        classification: 'negative',
+        classification: 'attention',
         justifiable: true,
         subject: 'מתמטיקה',
         remark: null,

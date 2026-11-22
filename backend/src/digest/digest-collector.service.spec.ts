@@ -8,7 +8,7 @@ const TOMORROW = new Date('2026-11-18T00:00:00Z');
 const BEHAVIOR_ROW = {
   id: 'beh-1',
   achvaName: 'איחור',
-  classification: 'negative',
+  classification: 'attention',
   justifiable: true,
   subject: 'מתמטיקה',
   remark: 'הגיע באיחור',

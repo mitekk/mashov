@@ -29,7 +29,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
 const BEHAVIOR = {
   id: 'beh-1',
   achvaName: 'איחור',
-  classification: 'negative',
+  classification: 'attention',
   justifiable: true,
   subject: 'מתמטיקה',
   remark: 'הגיע באיחור של 10 דקות',

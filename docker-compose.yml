@@ -87,6 +87,12 @@ services:
       DIGEST_DUE_LOOKBACK_DAYS: ${DIGEST_DUE_LOOKBACK_DAYS:-14}
       DIGEST_NEW_LOOKBACK_DAYS: ${DIGEST_NEW_LOOKBACK_DAYS:-3}
       DIGEST_ACTIVITY_WINDOW_DAYS: ${DIGEST_ACTIVITY_WINDOW_DAYS:-7}
+      # Behaviour event codes the digest never reports. 18 is נוכחות, a
+      # presence row Mashov writes per lesson per day, which tells a parent
+      # nothing. `-` rather than `:-` on purpose: `:-` substitutes the default
+      # for an EMPTY value too, which would make "mute nothing" unreachable
+      # from .env.
+      DIGEST_MUTED_BEHAVIOR_CODES: ${DIGEST_MUTED_BEHAVIOR_CODES-18}
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
