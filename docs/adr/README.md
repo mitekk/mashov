@@ -44,5 +44,6 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0034](0034-child-activity-badges-count-unread-this-year.md) | Child Activity Badges Count Unread Items for the School Year, Not a Rolling Window | Accepted | User, Backend agent, Frontend agent | 2026-11-22 |
 | [ADR-0035](0035-per-user-digest-isolation.md) | A Digest Run Is One Child and One Parent, Not One Child | Accepted | User, Backend agent | 2026-11-22 |
 | [ADR-0036](0036-current-year-lists-and-derived-past-year-archive.md) | The Default Lists Show the Current School Year; a Past Year Is Archived by Derivation | Accepted | User, Backend agent, Frontend agent | 2026-11-22 |
-| [ADR-0037](0037-inbox-mail-notifications.md) | Inbox Mail Is Its Own Message, on Its Own Cadence, with Its Own Ledger | Accepted | User, Backend agent | 2026-11-22 |
-| [ADR-0038](0038-mashov-attachments-into-telegram.md) | Mashov Attachment Bytes Leave the Host, into a Telegram Chat | Accepted | User, Backend agent | 2026-11-22 |
+| [ADR-0037](0037-bell-schedule-source-and-derived-breaks.md) | Bell Times Come From the School When It Serves Them, From a Labelled Default When It Does Not — and Breaks Are Derived | Accepted | User, Backend agent, Frontend agent | 2026-11-22 |
+| [ADR-0038](0038-inbox-mail-notifications.md) | Inbox Mail Is Its Own Message, on Its Own Cadence, with Its Own Ledger | Accepted | User, Backend agent | 2026-11-22 |
+| [ADR-0039](0039-mashov-attachments-into-telegram.md) | Mashov Attachment Bytes Leave the Host, into a Telegram Chat | Accepted | User, Backend agent | 2026-11-22 |

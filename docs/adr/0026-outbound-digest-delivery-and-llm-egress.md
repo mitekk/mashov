@@ -207,7 +207,7 @@ receives a child's behavior record. There is no verification handshake. `DIGEST_
 the `digest_delivery.messageText` audit trail are the only guards, and a nonce handshake before
 a recipient goes live would be a worthwhile follow-up.
 
-**Volume.** Seven runs a day per child, each capable of sending — and since ADR-0038, N+1
+**Volume.** Seven runs a day per child, each capable of sending — and since ADR-0039, N+1
 messages per child per run when the day's items carry attachments. Nothing caps messages per day,
 and a parent who finds the bot noisy will mute it, which costs more than a missed digest. A
 minimum item age and a daily cap are the obvious next refinement. One specific failure here was

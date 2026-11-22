@@ -11,7 +11,7 @@ import { UserItemStateService } from '../common/user-item-state.service';
  * homework or behaviour attachment to forward it into a Telegram chat. Its
  * download methods take an `AppUser.id` and enforce visibility with it, which
  * is exactly why the media module calls them rather than reaching for the
- * Mashov client itself. See ADR-0038.
+ * Mashov client itself. See ADR-0039.
  */
 @Module({
   imports: [PrismaModule, MashovSessionModule, ConnectionScopeModule],

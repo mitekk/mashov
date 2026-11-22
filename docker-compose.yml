@@ -112,7 +112,7 @@ services:
       # Household mail -> Telegram, as its own message. Off by default and
       # silent even when on, exactly like the digest. The cron fires every ten
       # minutes; the quiet window HOLDS mail over rather than dropping it, so
-      # a letter that arrives at 02:00 goes out at 07:00. See ADR-0037.
+      # a letter that arrives at 02:00 goes out at 07:00. See ADR-0038.
       INBOX_NOTIFY_ENABLED: ${INBOX_NOTIFY_ENABLED:-false}
       INBOX_NOTIFY_DRY_RUN: ${INBOX_NOTIFY_DRY_RUN:-true}
       INBOX_NOTIFY_QUIET_FROM: ${INBOX_NOTIFY_QUIET_FROM:-21:00}
@@ -127,7 +127,7 @@ services:
       # bytes are buffered in memory between the download and the upload, and
       # this cron is the one thing here that can move the process's memory
       # profile. Telegram's own ceilings are 50 MB for a document and 10 MB for
-      # a photo upload; these sit well inside them. See ADR-0038.
+      # a photo upload; these sit well inside them. See ADR-0039.
       TELEGRAM_MEDIA_MAX_BYTES: ${TELEGRAM_MEDIA_MAX_BYTES:-20971520}
       # Above this a jpeg or png goes as a document instead of a photo:
       # sendPhoto re-encodes and downscales, so a scanned slip becomes

@@ -682,7 +682,7 @@ export class DigestService {
    * attachment metadata reaches this through DigestAttachmentResolver rather
    * than through DigestPayload -- that object feeds buildPrompt, and a
    * behaviour row's rawPayload carries the reporter's name and the child's
-   * guid. See ADR-0026 and ADR-0038.
+   * guid. See ADR-0026 and ADR-0039.
    */
   private async fetchMedia(
     userId: string,

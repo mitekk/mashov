@@ -1,4 +1,4 @@
-# ADR-0038: Mashov Attachment Bytes Leave the Host, into a Telegram Chat
+# ADR-0039: Mashov Attachment Bytes Leave the Host, into a Telegram Chat
 
 - **Date**: 2026-11-22
 - **Status**: Accepted
@@ -39,6 +39,12 @@ parent's message must never traverse it. So the media work lives apart, the modu
 `@Global()`, and the digest and the notifier depend on `MEDIA_DELIVERY` — injected
 `@Optional()`, so `digest.module.spec.ts` can still compile `DigestModule` alone and assert the
 Mashov client is unreachable from it.
+
+The module holds a second token for the same reason, `UPSTREAM_MAIL` (see ADR-0038): a mail
+attachment cannot be forwarded at all until the conversation detail has been fetched, because
+`MailInboxTask` stores message metadata only and `mail_message.files` defaults to `[]`. Both
+tokens are the Mashov-touching work the push features need and may not do themselves, and both
+are gated by `TELEGRAM_MEDIA_ENABLED`.
 
 **The downloads go through `MailService` and `ChildrenService`, not the Mashov client.**
 

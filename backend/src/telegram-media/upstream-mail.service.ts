@@ -14,7 +14,7 @@ import { UpstreamMail } from './media-delivery.interface';
  *
  * Lives here rather than in `inbox-notify/` because this module is the one
  * allowed to import `MailModule`, and through it `MashovSessionModule`. See
- * ADR-0037 and ADR-0038.
+ * ADR-0038 and ADR-0039.
  */
 @Injectable()
 export class UpstreamMailService implements UpstreamMail {

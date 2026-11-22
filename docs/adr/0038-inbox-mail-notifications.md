@@ -1,4 +1,4 @@
-# ADR-0037: Inbox Mail Is Its Own Message, on Its Own Cadence, with Its Own Ledger
+# ADR-0038: Inbox Mail Is Its Own Message, on Its Own Cadence, with Its Own Ledger
 
 - **Date**: 2026-11-22
 - **Status**: Accepted

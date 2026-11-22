@@ -18,7 +18,7 @@ import { InboxNotifyTask } from './tasks/inbox-notify.task';
  * second copy of either. Like DigestModule it imports nothing that builds a
  * Mashov axios client: ADR-0023's egress hop is a residential tinyproxy meant
  * only for Mashov, HTTPS_PROXY is process-wide, and a parent's mail must never
- * traverse it. See ADR-0037.
+ * traverse it. See ADR-0038.
  */
 @Module({
   imports: [PrismaModule, DigestModule],

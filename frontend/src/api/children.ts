@@ -12,6 +12,9 @@ import type {
   SubjectsResponse,
   NoticesResponse,
   TimetableResponse,
+  TimetableSchedule,
+  BellPeriod,
+  BellBreak,
   LessonPlansResponse,
   LessonHistoryResponse,
   BehaviorBucket,
@@ -170,6 +173,7 @@ export async function fetchChildTimetable(studentGuid: string): Promise<Timetabl
   const items = Array.isArray(response.data) ? response.data : [];
   return {
     data: items.map((item) => normalizeTimetableEntry(item as unknown as UnknownRecord)),
+    schedule: normalizeTimetableSchedule((response as UnknownRecord).schedule),
   };
 }
 
@@ -453,6 +457,70 @@ function normalizeTimetableEntry(item: UnknownRecord) {
       };
     }),
     updatedAt: String(item.updatedAt ?? ''),
+  };
+}
+
+/** A clock reading the grid can render, or `undefined`. */
+function normalizeClockValue(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value.trim()) ? value.trim() : undefined;
+}
+
+function normalizeBellPeriod(item: unknown): BellPeriod | undefined {
+  const row = (item ?? {}) as UnknownRecord;
+  const lesson = Number(row.lesson);
+  const startTime = normalizeClockValue(row.startTime);
+  const endTime = normalizeClockValue(row.endTime);
+  if (!Number.isInteger(lesson) || lesson <= 0 || !startTime || !endTime) return undefined;
+  return { lesson, startTime, endTime };
+}
+
+function normalizeBellBreak(item: unknown): BellBreak | undefined {
+  const row = (item ?? {}) as UnknownRecord;
+  const afterLesson = Number(row.afterLesson);
+  const minutes = Number(row.minutes);
+  const startTime = normalizeClockValue(row.startTime);
+  const endTime = normalizeClockValue(row.endTime);
+  if (!Number.isInteger(afterLesson) || afterLesson <= 0) return undefined;
+  if (!Number.isFinite(minutes) || minutes <= 0) return undefined;
+  if (!startTime || !endTime) return undefined;
+  return {
+    afterLesson,
+    startTime,
+    endTime,
+    minutes,
+    kind: row.kind === 'lunch' ? 'lunch' : 'recess',
+  };
+}
+
+/**
+ * The bell schedule, or `undefined` when there is nothing usable in it.
+ *
+ * Tolerant by design: a backend older than this field answers without it, and
+ * the grid has to render either way. A half-malformed payload loses only the
+ * rows that are malformed — but a payload with no usable period at all is
+ * reported as absent, because `source` without times would make the UI
+ * caveat a schedule it is not showing.
+ */
+export function normalizeTimetableSchedule(value: unknown): TimetableSchedule | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as UnknownRecord;
+
+  const periods = (Array.isArray(raw.periods) ? raw.periods : [])
+    .map(normalizeBellPeriod)
+    .filter((period): period is BellPeriod => period !== undefined);
+  if (periods.length === 0) return undefined;
+
+  const breaks = (Array.isArray(raw.breaks) ? raw.breaks : [])
+    .map(normalizeBellBreak)
+    .filter((item): item is BellBreak => item !== undefined);
+
+  return {
+    // Anything that is not explicitly the school's own is a default, so an
+    // unrecognized value errs towards captioning the times as approximate.
+    source: raw.source === 'school' ? 'school' : 'default',
+    periods,
+    breaks,
   };
 }
 

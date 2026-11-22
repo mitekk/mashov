@@ -65,7 +65,7 @@ const DEFAULT_DOWNLOAD_TIMEOUT_MS = 45_000;
  *
  * Nothing in this class throws. A failed attachment can neither fail nor
  * re-queue the text message, which remains the only thing gating ledger
- * confirmation. See ADR-0038.
+ * confirmation. See ADR-0039.
  */
 @Injectable()
 export class TelegramMediaService implements MediaDelivery {

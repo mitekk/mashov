@@ -9,7 +9,7 @@ import { ConnectionScopeModule } from '../common/connection-scope/connection-sco
  * MailService is exported for TelegramMediaModule, which downloads a mail
  * attachment to forward it into a Telegram chat. The edge runs one way only --
  * nothing here depends on that module -- so there is no circular dependency to
- * forwardRef around. See ADR-0038.
+ * forwardRef around. See ADR-0039.
  */
 @Module({
   imports: [PrismaModule, MashovSessionModule, ConnectionScopeModule],
