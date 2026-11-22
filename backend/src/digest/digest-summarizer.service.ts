@@ -49,6 +49,7 @@ export const OUTPUT_SCHEMA = {
   required: [
     'headline',
     'behaviorLine',
+    'positiveLine',
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
@@ -56,7 +57,11 @@ export const OUTPUT_SCHEMA = {
   ],
   properties: {
     headline: { type: 'string', description: 'שורה אחת קצרה בעברית' },
-    behaviorLine: { type: 'string', description: 'משפט או שניים בעברית על ההתנהגות' },
+    behaviorLine: {
+      type: 'string',
+      description: 'משפט או שניים בעברית על אירועי התנהגות ונוכחות שדורשים תשומת לב',
+    },
+    positiveLine: { type: 'string', description: 'משפט בעברית על חיזוקים חיוביים' },
     homeworkLine: { type: 'string', description: 'משפט או שניים בעברית על המטלות החדשות' },
     dueTomorrowLine: { type: 'string', description: 'משפט או שניים בעברית על מה שצפוי מחר' },
     releaseLine: { type: 'string', description: 'משפט בעברית על שחרור מוקדם שכבר אושר' },
@@ -95,6 +100,10 @@ const SYSTEM_PROMPT = [
   'אם אין מה לומר בסעיף מסוים, החזר מחרוזת ריקה לאותו שדה.',
   'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
   'שחרור מוקדם הוא בקשה שההורה עצמו הגיש ואושרה: כתוב עליו כתזכורת, לא כחדשות.',
+  // The two behaviour sections are rendered separately, so a sentence that
+  // blends praise into an absence lands under a heading that contradicts it.
+  'הפרד בין אירועים שדורשים תשומת לב ובין חיזוקים חיוביים: behaviorLine לראשונים, positiveLine לשניים.',
+  'אל תכתוב על חיזוק חיובי ב-behaviorLine ואל תכתוב על חיסור או איחור ב-positiveLine.',
   // Nothing about consent forms: the model is handed none. That section is
   // the one input that belongs to the parent rather than to the child, and the
   // prose is shared between the parents of one child (ADR-0035), so it is
@@ -127,10 +136,18 @@ export function buildPrompt(payload: DigestPayload): string {
     sections.unshift(`מין הילד/ה: ${payload.childGender === 'female' ? 'נקבה' : 'זכר'}`);
   }
 
-  if (payload.behavior.length > 0) {
-    sections.push(
-      ['אירועי התנהגות ונוכחות:', ...payload.behavior.map(behaviorForPrompt)].join('\n'),
-    );
+  // Two blocks, matching the two rendered sections: handing the model one
+  // list and asking for two lines is how praise ends up in a sentence about
+  // an absence.
+  const attention = payload.behavior.filter((fact) => fact.classification !== 'positive');
+  const positive = payload.behavior.filter((fact) => fact.classification === 'positive');
+
+  if (attention.length > 0) {
+    sections.push(['אירועי התנהגות ונוכחות:', ...attention.map(behaviorForPrompt)].join('\n'));
+  }
+
+  if (positive.length > 0) {
+    sections.push(['חיזוקים חיוביים:', ...positive.map(behaviorForPrompt)].join('\n'));
   }
 
   if (payload.homeworkNew.length > 0) {
@@ -342,6 +359,7 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
   const lineKeys = [
     'headline',
     'behaviorLine',
+    'positiveLine',
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
@@ -356,6 +374,7 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
     lines: {
       headline: candidate.headline as string,
       behaviorLine: candidate.behaviorLine as string,
+      positiveLine: candidate.positiveLine as string,
       homeworkLine: candidate.homeworkLine as string,
       dueTomorrowLine: candidate.dueTomorrowLine as string,
       releaseLine: candidate.releaseLine as string,

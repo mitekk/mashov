@@ -18,7 +18,7 @@ import type { DigestPayload } from './digest.types';
 
 const REPORT_FOR = new Date('2026-11-17T00:00:00Z');
 
-function makePayload(): DigestPayload {
+function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
   return {
     childFirstName: 'אבי',
     childGender: 'male',
@@ -48,12 +48,14 @@ function makePayload(): DigestPayload {
     homeworkDueTomorrow: [],
     releases: [],
     activities: [],
+    ...overrides,
   };
 }
 
 const GOOD_OUTPUT = {
   headline: 'יום עם איחור אחד',
   behaviorLine: 'נרשם איחור בשיעור מתמטיקה.',
+  positiveLine: '',
   homeworkLine: 'ניתנה מטלה בחשבון.',
   dueTomorrowLine: '',
   releaseLine: '',
@@ -408,6 +410,52 @@ describe('buildPrompt with releases and activities', () => {
     expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
       expect.arrayContaining(['releaseLine']),
     );
+  });
+
+  it('asks for a separate line about positive notes', () => {
+    // One behaviour line meant praise and an absence were written as one
+    // sentence, under a heading that fit neither.
+    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
+      expect.arrayContaining(['positiveLine']),
+    );
+    expect(OUTPUT_SCHEMA.required as readonly string[]).toContain('positiveLine');
+  });
+
+  it('separates the positive events from the ones needing attention in the prompt', () => {
+    const prompt = buildPrompt(
+      makePayload({
+        behavior: [
+          {
+            id: 'b1',
+            achvaName: 'חיסור',
+            classification: 'attention',
+            justifiable: false,
+            subject: 'מתמטיקה',
+            remark: null,
+            lessonDate: REPORT_FOR,
+            eventAt: REPORT_FOR,
+          },
+          {
+            id: 'b2',
+            achvaName: 'חיזוק חיובי',
+            classification: 'positive',
+            justifiable: true,
+            subject: 'ספרות',
+            remark: null,
+            lessonDate: REPORT_FOR,
+            eventAt: REPORT_FOR,
+          },
+        ],
+      }),
+    );
+
+    const attention = prompt.indexOf('מתמטיקה');
+    const positive = prompt.indexOf('ספרות');
+    expect(attention).toBeGreaterThan(-1);
+    expect(positive).toBeGreaterThan(-1);
+    // Two blocks, so the model cannot blend a note of praise into a sentence
+    // about an absence.
+    expect(prompt).toContain('חיזוקים חיוביים');
   });
 
   it('asks for no line about consent forms, having been given none', () => {

@@ -60,8 +60,22 @@ export function renderReport(
     lines.headline.trim(),
   ];
 
-  if (payload.behavior.length > 0) {
-    blocks.push(section('התנהגות ונוכחות', lines.behaviorLine));
+  // Two sections from one list. `classification` is written by the sync tasks
+  // and has always been in the payload; until now nothing rendered it, so a
+  // note of praise and an unexcused absence both read "נרשם ...".
+  const attention = payload.behavior.filter((fact) => fact.classification !== 'positive');
+  const positive = payload.behavior.filter((fact) => fact.classification === 'positive');
+
+  if (attention.length > 0) {
+    blocks.push(
+      section('התנהגות ונוכחות', [lines.behaviorLine, unexcusedMarker(attention)]
+        .filter((part) => part.trim().length > 0)
+        .join('\n')),
+    );
+  }
+
+  if (positive.length > 0) {
+    blocks.push(section('חיזוק חיובי', lines.positiveLine));
   }
 
   if (payload.homeworkNew.length > 0) {
@@ -136,7 +150,14 @@ function section(title: string, prose: string): string {
 export function deterministicLines(payload: DigestPayload): DigestLines {
   return {
     headline: 'עדכון יומי מבית הספר',
-    behaviorLine: payload.behavior.map(behaviorSentence).join(' '),
+    behaviorLine: payload.behavior
+      .filter((fact) => fact.classification !== 'positive')
+      .map(behaviorSentence)
+      .join(' '),
+    positiveLine: payload.behavior
+      .filter((fact) => fact.classification === 'positive')
+      .map(behaviorSentence)
+      .join(' '),
     homeworkLine:
       payload.homeworkNew.length === 0
         ? ''
@@ -151,6 +172,30 @@ export function deterministicLines(payload: DigestPayload): DigestLines {
         ? ''
         : `ממתינים לתשובתך: ${payload.activities.map(activitySentence).join('; ')}.`,
   };
+}
+
+/**
+ * Names the events the school does not count as excusing themselves.
+ *
+ * The template's, not the model's -- the same reasoning as the צפי label in
+ * the due-tomorrow section. Whether an absence was excused changes what a
+ * parent does next, so it must not depend on whether the prose happened to
+ * mention it.
+ *
+ * `justifiable` is the school's own policy for the event's code, read from
+ * BehaviorTypeReference by the sync tasks. It defaults to false when that
+ * school's achvas have not synced yet, so the marker can over-report on a
+ * fresh deployment -- which is the safe direction: it reports an absence as
+ * needing attention rather than silently excusing it.
+ */
+function unexcusedMarker(attention: DigestBehaviorFact[]): string {
+  const unexcused = attention.filter((fact) => fact.justifiable === false);
+  if (unexcused.length === 0) return '';
+
+  const named = unexcused
+    .map((fact) => [fact.achvaName, fact.subject].filter((part) => part && part.length > 0).join(' ב'))
+    .join('; ');
+  return `לא מוצדק: ${named}.`;
 }
 
 function behaviorSentence(fact: DigestBehaviorFact): string {

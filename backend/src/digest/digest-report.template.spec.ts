@@ -6,6 +6,7 @@ const REPORT_FOR = new Date('2026-11-17T00:00:00Z');
 const LINES: DigestLines = {
   headline: 'יום רגוע עם הערה אחת',
   behaviorLine: 'היה איחור אחד בשיעור מתמטיקה.',
+  positiveLine: 'קיבל חיזוק חיובי בספרות.',
   homeworkLine: 'ניתנה מטלה אחת בחשבון.',
   dueTomorrowLine: 'מטלה אחת צפויה להיבדק מחר.',
   releaseLine: 'שחרור מוקדם מחר.',
@@ -25,6 +26,28 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     ...overrides,
   };
 }
+
+const PRAISE = {
+  id: 'beh-praise',
+  achvaName: 'חיזוק חיובי',
+  classification: 'positive',
+  justifiable: true,
+  subject: 'ספרות',
+  remark: 'השתתפות יוצאת דופן',
+  lessonDate: REPORT_FOR,
+  eventAt: new Date('2026-11-17T09:00:00Z'),
+};
+
+const ABSENCE = {
+  id: 'beh-absent',
+  achvaName: 'חיסור',
+  classification: 'attention',
+  justifiable: false,
+  subject: 'מתמטיקה',
+  remark: null,
+  lessonDate: REPORT_FOR,
+  eventAt: new Date('2026-11-17T08:00:00Z'),
+};
 
 const BEHAVIOR = {
   id: 'beh-1',
@@ -161,6 +184,48 @@ describe('renderReport', () => {
     expect(text).not.toContain('reporter');
   });
 
+  it('gives a positive note its own section, away from what needs attention', () => {
+    // The single section read the same for both: "נרשם חיזוק חיובי" and
+    // "נרשם חיסור" sat side by side under one neutral heading.
+    const text = renderReport(makePayload({ behavior: [PRAISE] }), LINES);
+
+    expect(text).toContain('חיזוק חיובי');
+    expect(text).toContain('קיבל חיזוק חיובי בספרות.');
+    expect(text).not.toContain('התנהגות ונוכחות');
+  });
+
+  it('keeps an event needing attention out of the positive section', () => {
+    const text = renderReport(makePayload({ behavior: [ABSENCE] }), LINES);
+
+    expect(text).toContain('התנהגות ונוכחות');
+    expect(text).not.toContain('חיזוק חיובי\n');
+  });
+
+  it('renders both sections on a day that had both', () => {
+    const text = renderReport(makePayload({ behavior: [ABSENCE, PRAISE] }), LINES);
+
+    expect(text).toContain('התנהגות ונוכחות');
+    expect(text).toContain('חיזוק חיובי');
+    expect(text.indexOf('התנהגות ונוכחות')).toBeLessThan(text.indexOf('חיזוק חיובי'));
+  });
+
+  it('marks an unexcused event, so it does not read like an excused one', () => {
+    // The marker is the template's, not the model's -- the same reasoning as
+    // the צפי label: a structural fact must not depend on the prose.
+    const text = renderReport(makePayload({ behavior: [ABSENCE] }), LINES);
+
+    expect(text).toContain('לא מוצדק');
+    expect(text).toContain('חיסור');
+  });
+
+  it('does not mark an event the school counts as excusing itself', () => {
+    const excused = { ...ABSENCE, justifiable: true };
+
+    const text = renderReport(makePayload({ behavior: [excused] }), LINES);
+
+    expect(text).not.toContain('לא מוצדק');
+  });
+
   it('closes with a link to the site when a base URL is configured', () => {
     const text = renderReport(makePayload({ behavior: [BEHAVIOR] }), LINES, {
       publicBaseUrl: 'https://mashov.mitya.dev',
@@ -198,6 +263,20 @@ describe('renderReport', () => {
 describe('deterministicLines', () => {
   // The fallback when the LLM times out, refuses, or returns malformed output.
   // A parent getting a plainer message beats a parent getting nothing.
+  it('writes a positive note into positiveLine and leaves behaviorLine empty', () => {
+    const lines = deterministicLines(makePayload({ behavior: [PRAISE] }));
+
+    expect(lines.positiveLine).toContain('חיזוק חיובי');
+    expect(lines.behaviorLine).toBe('');
+  });
+
+  it('writes an attention event into behaviorLine and leaves positiveLine empty', () => {
+    const lines = deterministicLines(makePayload({ behavior: [ABSENCE] }));
+
+    expect(lines.behaviorLine).toContain('חיסור');
+    expect(lines.positiveLine).toBe('');
+  });
+
   it('describes a behavior event in Hebrew without the model', () => {
     const lines = deterministicLines(makePayload({ behavior: [BEHAVIOR] }));
 

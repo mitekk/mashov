@@ -965,7 +965,10 @@ function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPa
   lines.activityLine = fallback.activityLine;
 
   const sections = [
-    ['behaviorLine', after.behavior.length],
+    // Counted per section, not per list: the behaviour list feeds two sections
+    // now, and a blank positiveLine on a day with praise would drop it.
+    ['behaviorLine', after.behavior.filter((fact) => fact.classification !== 'positive').length],
+    ['positiveLine', after.behavior.filter((fact) => fact.classification === 'positive').length],
     ['homeworkLine', after.homeworkNew.length],
     ['dueTomorrowLine', after.homeworkDueTomorrow.length],
     ['releaseLine', after.releases.length],

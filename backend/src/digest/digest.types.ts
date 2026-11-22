@@ -133,7 +133,16 @@ export interface DigestPayload {
  */
 export interface DigestLines {
   headline: string;
+  /** Behaviour events that need the parent's attention -- everything but praise. */
   behaviorLine: string;
+  /**
+   * Praise, in its own line and its own section.
+   *
+   * One behaviour line meant "נרשם חיזוק חיובי" and "נרשם חיסור" were written
+   * as one sentence, under a heading that fit neither. `classification` has
+   * always been stored; it was simply never rendered.
+   */
+  positiveLine: string;
   homeworkLine: string;
   dueTomorrowLine: string;
   releaseLine: string;
