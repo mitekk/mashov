@@ -62,6 +62,10 @@ const USER_B = 'user-b';
 
 interface HarnessOptions {
   targets?: { studentGuid: string; activeFrom: Date; recipientCount: number; userId: string }[];
+  /** Targets the send-time ownership guard refused. */
+  skipped?: { studentGuid: string; userId: string; reason: string }[];
+  /** Delivery rows already on record for today, for the once-a-day check. */
+  existingDeliveries?: { userId: string; studentGuid: string; status: string }[];
   candidates?: DigestCandidate[];
   payload?: DigestPayload;
   claimCount?: number;
@@ -129,7 +133,19 @@ function makeHarness(options: HarnessOptions = {}) {
       }),
     },
     digestReportedItem: { createMany, updateMany, deleteMany, findMany: reportedFindMany },
-    digestDelivery: { create: deliveryCreate },
+    digestDelivery: {
+      create: deliveryCreate,
+      // Honours the where-clause, as Postgres would: the run asks whether it
+      // has already recorded this stop today.
+      findFirst: jest.fn().mockImplementation(({ where }) =>
+        (options.existingDeliveries ?? []).find(
+          (row) =>
+            row.userId === where?.userId &&
+            row.studentGuid === where?.studentGuid &&
+            row.status === where?.status,
+        ) ?? null,
+      ),
+    },
     digestRecipient: {
       // Honours the where-clause, as Postgres would: the service relies on
       // `where: { enabled: true, userId }` rather than filtering again in
@@ -180,7 +196,9 @@ function makeHarness(options: HarnessOptions = {}) {
   } as unknown as DigestSummarizerService;
 
   const recipients = {
-    listDeliveryTargets: jest.fn().mockResolvedValue(targets),
+    listDeliveryTargets: jest
+      .fn()
+      .mockResolvedValue({ targets, skipped: options.skipped ?? [] }),
   } as unknown as DigestRecipientService;
 
   const send = options.sendImpl ?? jest.fn().mockResolvedValue(undefined);
@@ -1278,6 +1296,68 @@ describe('DigestService.runAll', () => {
     expect(results[0].usedLlm).toBe(false);
     // The section is still there, from the deterministic line.
     expect(harness.send.mock.calls[0][1]).toContain('טיול שנתי לגליל');
+  });
+
+  it('records a target the ownership guard refused, instead of going quiet', async () => {
+    // Every other way a run stops writes a delivery row, which is what makes a
+    // quiet child distinguishable from a broken job. A parent whose digest
+    // stops because the school it was connected through is gone deserves the
+    // same: without this their history simply ends, and support has nothing
+    // but a log line.
+    const harness = makeHarness({
+      targets: [],
+      skipped: [
+        { studentGuid: 'stu-9', userId: USER_B, reason: 'this account no longer owns this child' },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results).toEqual([
+      expect.objectContaining({
+        studentGuid: 'stu-9',
+        userId: USER_B,
+        status: 'skipped_unowned',
+        itemCount: 0,
+        recipientCount: 0,
+      }),
+    ]);
+    const row = harness.deliveryCreate.mock.calls[0][0].data;
+    expect(row.status).toBe('skipped_unowned');
+    expect(row.userId).toBe(USER_B);
+    expect(row.errorMessage).toMatch(/no longer owns/i);
+    // Nothing was checked, collected, summarized or sent for it.
+    expect(harness.checker.check).not.toHaveBeenCalled();
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('records a refused target once a day, not once a run', async () => {
+    // Seven runs a day against a permanently retired child would otherwise
+    // write seven identical rows a day until the retention sweep, burying the
+    // history it exists to make readable.
+    const harness = makeHarness({
+      targets: [],
+      skipped: [{ studentGuid: 'stu-9', userId: USER_B, reason: 'no longer owns' }],
+      existingDeliveries: [
+        { userId: USER_B, studentGuid: 'stu-9', status: 'skipped_unowned' },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.deliveryCreate).not.toHaveBeenCalled();
+    // Still reported to the caller, so a manual run says what happened.
+    expect(results[0]).toMatchObject({ studentGuid: 'stu-9', status: 'skipped_unowned' });
+  });
+
+  it('does not report another child’s refusal when one child is named', async () => {
+    const harness = makeHarness({
+      skipped: [{ studentGuid: 'stu-9', userId: USER_B, reason: 'no longer owns' }],
+    });
+
+    const results = await harness.service.runAll({ now: NOW, studentGuid: 'stu-1' });
+
+    expect(results.map((result) => result.studentGuid)).toEqual(['stu-1']);
   });
 
   it('marks the delivery as not having used the model when it fell back', async () => {

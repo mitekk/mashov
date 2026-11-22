@@ -6,7 +6,11 @@ import { SchoolYearService } from '../common/school-year/school-year.service';
 import { DigestCheckerService, STALE_CLAIM_MS } from './digest-checker.service';
 import { DigestCollectorService } from './digest-collector.service';
 import { DigestSummarizerService } from './digest-summarizer.service';
-import { DigestRecipientService, DigestDeliveryTarget } from './digest-recipient.service';
+import {
+  DigestRecipientService,
+  DigestDeliveryTarget,
+  DigestSkippedTarget,
+} from './digest-recipient.service';
 import { DigestSender } from './senders/digest-sender.interface';
 import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
@@ -59,7 +63,14 @@ const DEFAULT_DUE_LOOKBACK_DAYS = 14;
  */
 const SYNC_SOURCES_BEHIND_THE_DIGEST = ['homework', 'behavior'];
 
-export type DigestRunStatus = 'sent' | 'skipped_empty' | 'skipped_stale' | 'failed' | 'dry_run';
+export type DigestRunStatus =
+  | 'sent'
+  | 'skipped_empty'
+  | 'skipped_stale'
+  /** The send-time ownership guard refused the (child, parent) pair. */
+  | 'skipped_unowned'
+  | 'failed'
+  | 'dry_run';
 
 export interface DigestRunResult {
   studentGuid: string;
@@ -141,12 +152,16 @@ export class DigestService {
       const now = options.now ?? new Date();
       const dryRun = options.dryRun ?? this.isDryRunByDefault();
 
-      const allTargets = await this.recipients.listDeliveryTargets(options.userId);
-      const targets = options.studentGuid
-        ? allTargets.filter((target) => target.studentGuid === options.studentGuid)
-        : allTargets;
+      const named = <T extends { studentGuid: string }>(rows: T[]): T[] =>
+        options.studentGuid
+          ? rows.filter((row) => row.studentGuid === options.studentGuid)
+          : rows;
 
-      if (targets.length === 0) return [];
+      const listed = await this.recipients.listDeliveryTargets(options.userId);
+      const targets = named(listed.targets);
+      const skipped = named(listed.skipped);
+
+      if (targets.length === 0 && skipped.length === 0) return [];
 
       if (dryRun && this.isEnabledByConfig()) {
         // Worth saying out loud: this combination spends a model call per child
@@ -183,6 +198,13 @@ export class DigestService {
       const summaries = new Map<string, DigestSummary>();
 
       const results: DigestRunResult[] = [];
+
+      // The refusals first, so a parent whose digest has stopped sees a row
+      // for it in the same history as everything else.
+      for (const refused of skipped) {
+        results.push(await this.recordRefused(refused, now));
+      }
+
       // Strictly sequential, and not only for the per-child isolation
       // homework.task.ts wants. Consent-form dedup across a parent's children
       // rests on the checker seeing the previous target's ledger row, so a
@@ -388,6 +410,53 @@ export class DigestService {
         errorMessage: message,
       });
     }
+  }
+
+  /**
+   * Writes the stop of a target the send-time ownership guard refused.
+   *
+   * Once per school day per (child, parent), not once per run: the cron runs
+   * seven times a day and a retired child's stale recipient row never stops
+   * being refused, so an unconditional write would bury the history this
+   * exists to make readable under 630 identical rows before the retention
+   * sweep reached them.
+   *
+   * The result is returned either way, so a manual run always says what
+   * happened even when the row was written by an earlier run today.
+   */
+  private async recordRefused(
+    refused: DigestSkippedTarget,
+    now: Date,
+  ): Promise<DigestRunResult> {
+    const { reportFor } = jerusalemDayBounds(now, this.timeZone());
+    const fields = {
+      status: 'skipped_unowned' as const,
+      itemCount: 0,
+      recipientCount: 0,
+      usedLlm: false,
+      errorMessage: refused.reason,
+    };
+
+    const alreadyRecorded = await this.prisma.digestDelivery.findFirst({
+      where: {
+        userId: refused.userId,
+        studentGuid: refused.studentGuid,
+        reportFor,
+        status: 'skipped_unowned',
+      },
+      select: { id: true },
+    });
+
+    if (alreadyRecorded) {
+      return {
+        studentGuid: refused.studentGuid,
+        userId: refused.userId,
+        ...fields,
+        error: refused.reason,
+      };
+    }
+
+    return this.record(refused.userId, refused.studentGuid, reportFor, fields);
   }
 
   /**

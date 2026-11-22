@@ -482,6 +482,52 @@ describe('Per-user digest isolation', () => {
     );
   });
 
+  it('leaves a trail when a parent’s ownership of a child has ended', async () => {
+    // The adoption path repoints a connection to another AppUser and leaves
+    // the old owner's recipient rows behind, so the send-time guard is what
+    // stops the digest. Without a row for it, that parent's history just ends
+    // and support has nothing to look at.
+    await prisma.studentConnection.deleteMany({
+      where: { studentGuid: SHARED, householdConnectionId: CONN_DAD },
+    });
+    const sender = new CapturingSender();
+
+    const results = ours(await makeService(prisma, sender).runAll({ now: NOW }));
+
+    // Mum is unaffected; dad's run is recorded as refused and sends nothing.
+    expect(sender.textsTo(CHAT_DAD)).toHaveLength(0);
+    expect(sender.textsTo(CHAT_MUM)).toHaveLength(2);
+    expect(results.find((result) => result.userId === DAD)).toMatchObject({
+      studentGuid: SHARED,
+      status: 'skipped_unowned',
+    });
+
+    const recipients = new DigestRecipientService(prisma as unknown as PrismaService);
+    const dadsHistory = await recipients.listDeliveries(DAD, { limit: 100 });
+    expect(dadsHistory.data.map((row) => row.status)).toEqual(['skipped_unowned']);
+    expect(dadsHistory.data[0].errorMessage).toMatch(/no longer owns/i);
+    // Nothing was mutated: revocation is the unlink path's job, and a
+    // transient roster gap must not delete a subscription.
+    expect(
+      await prisma.digestRecipient.count({ where: { userId: DAD, studentGuid: SHARED } }),
+    ).toBe(1);
+  });
+
+  it('records that refusal once a day, however many times the cron runs', async () => {
+    await prisma.studentConnection.deleteMany({
+      where: { studentGuid: SHARED, householdConnectionId: CONN_DAD },
+    });
+    const service = makeService(prisma, new CapturingSender());
+
+    await service.runAll({ now: NOW });
+    await service.runAll({ now: NOW });
+
+    const rows = await prisma.digestDelivery.findMany({
+      where: { userId: DAD, studentGuid: SHARED },
+    });
+    expect(rows).toHaveLength(1);
+  });
+
   describe('the per-user migration', () => {
     /** Executes the file, statement by statement, `times` times over. */
     async function runMigration(times: number): Promise<number> {

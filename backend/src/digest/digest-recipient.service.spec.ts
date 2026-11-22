@@ -354,7 +354,7 @@ describe('DigestRecipientService', () => {
     // with no enabled recipient is never collected for and never summarized.
     const harness = makeHarness();
 
-    const targets = await harness.service.listDeliveryTargets();
+    const { targets } = await harness.service.listDeliveryTargets();
 
     expect(targets).toEqual([
       {
@@ -395,7 +395,7 @@ describe('DigestRecipientService', () => {
       connectionsByUser: { 'user-1': ['conn-1'], 'user-2': ['conn-1'] },
     });
 
-    const targets = await harness.service.listDeliveryTargets();
+    const { targets } = await harness.service.listDeliveryTargets();
 
     expect(targets).toEqual([
       {
@@ -426,7 +426,7 @@ describe('DigestRecipientService', () => {
       connectionsByUser: { 'user-1': ['conn-1'], 'user-2': ['conn-1'] },
     });
 
-    const targets = await harness.service.listDeliveryTargets();
+    const { targets } = await harness.service.listDeliveryTargets();
 
     const second = targets.find((target) => target.userId === 'user-2');
     expect(second).toEqual({
@@ -450,7 +450,7 @@ describe('DigestRecipientService', () => {
       connectionsByUser: { 'user-1': ['conn-1'], 'ex-owner': [] },
     });
 
-    const targets = await harness.service.listDeliveryTargets();
+    const { targets } = await harness.service.listDeliveryTargets();
 
     expect(targets.map((target) => target.userId)).toEqual(['user-1']);
   });
@@ -460,7 +460,7 @@ describe('DigestRecipientService', () => {
     // A stale recipient row must not keep a retired child's digest running.
     const harness = makeHarness({ roster: [] });
 
-    expect(await harness.service.listDeliveryTargets()).toEqual([]);
+    expect((await harness.service.listDeliveryTargets()).targets).toEqual([]);
   });
 
   it('drops a target for a child no connection lists at all', async () => {
@@ -469,7 +469,39 @@ describe('DigestRecipientService', () => {
     // wrong here is another family's conduct reports on a stranger's phone.
     const harness = makeHarness({ links: [] });
 
-    expect(await harness.service.listDeliveryTargets()).toEqual([]);
+    expect((await harness.service.listDeliveryTargets()).targets).toEqual([]);
+  });
+
+  it('reports the targets it dropped, and why', async () => {
+    // A dropped target is a digest that has silently stopped. Every other way
+    // a run stops writes a `digest_delivery` row -- that is what makes a quiet
+    // child distinguishable from a broken job -- so the orchestrator has to be
+    // told which targets went and for what reason.
+    const harness = makeHarness({
+      recipientRows: [
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'ex-owner' },
+        { studentGuid: 'gone', activeFrom: new Date('2026-11-01T00:00:00Z'), userId: 'user-1' },
+      ],
+      connectionsByUser: { 'user-1': ['conn-1'], 'ex-owner': [] },
+      roster: ['stu-1'],
+      links: [
+        { studentGuid: 'stu-1', householdConnectionId: 'conn-1' },
+        { studentGuid: 'gone', householdConnectionId: 'conn-1' },
+      ],
+    });
+
+    const { targets, skipped } = await harness.service.listDeliveryTargets();
+
+    expect(targets.map((target) => [target.userId, target.studentGuid])).toEqual([
+      ['user-1', 'stu-1'],
+    ]);
+    expect(skipped.map((entry) => [entry.userId, entry.studentGuid])).toEqual([
+      ['ex-owner', 'stu-1'],
+      ['user-1', 'gone'],
+    ]);
+    expect(skipped[0].reason).toMatch(/no longer owns/i);
+    expect(skipped[1].reason).toMatch(/roster/i);
   });
 
   it('reads each user’s connections once, not once per target', async () => {
@@ -487,7 +519,7 @@ describe('DigestRecipientService', () => {
       ],
     });
 
-    const targets = await harness.service.listDeliveryTargets();
+    const { targets } = await harness.service.listDeliveryTargets();
 
     expect(targets).toHaveLength(2);
     expect(harness.prisma.householdConnection.findMany).toHaveBeenCalledTimes(1);

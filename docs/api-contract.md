@@ -960,7 +960,7 @@ gets the longer timeout rather than the 15 s default.
     {
       "studentGuid": "string",
       "userId": "string (whose run this was)",
-      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
+      "status": "sent | skipped_empty | skipped_stale | skipped_unowned | failed | dry_run",
       "itemCount": 2,
       "recipientCount": 1,
       "usedLlm": true,
@@ -988,7 +988,7 @@ itself defaults to `true`.
       "studentGuid": "string",
       "reportFor": "2026-11-17",
       "runAt": "2026-11-17T13:00:04Z",
-      "status": "sent | skipped_empty | skipped_stale | failed | dry_run",
+      "status": "sent | skipped_empty | skipped_stale | skipped_unowned | failed | dry_run",
       "itemCount": 2,
       "recipientCount": 1,
       "channel": "telegram",
@@ -1010,6 +1010,12 @@ child the caller held a recipient for, which in a two-parent household meant eac
 read the other's `messageText` -- and that text now contains the other parent's own unanswered
 consent forms. A run records whose it was, so that is the scope. `studentGuid` narrows it
 further, within the caller's own rows.
+
+`skipped_unowned` is the third: the run was refused at send time because that account no longer
+owns that child -- the school it was connected through is gone, or the child has left the active
+roster. The reason is in `errorMessage`. Nothing is deleted when this happens (revocation belongs
+to the unlink path, and a transient roster gap must not drop a subscription), and the row is
+written once per school day however many times the cron runs.
 
 Every run writes a row, `status: "skipped_empty"` included. That is deliberate: without it a
 quiet child is indistinguishable from a broken job. `skipped_stale` is the stronger version of

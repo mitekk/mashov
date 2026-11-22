@@ -64,7 +64,10 @@ that justified it.
   `activeFrom`, and re-checks `ownsStudentForDelivery` plus `Student.isActive` at send time. That
   send-time guard is what covers the adoption path, roster retirement, and any row written before
   ADR-0033's check existed; it mutates nothing, because revocation belongs to the unlink path and
-  a transient roster gap must not delete a subscription.
+  a transient roster gap must not delete a subscription. A refused pair is recorded as a
+  `skipped_unowned` delivery row — once per school day, not once per run — so a digest that has
+  stopped is visible in the same history as every other way a run stops, rather than being a log
+  line nobody reads.
 - `GET /digest/deliveries` scopes on `userId` rather than on subscribed children.
 - Unlinking a school deletes the unlinking user's recipient, ledger and delivery rows for every
   child that connection listed, shared ones included — and only that user's.

@@ -53,6 +53,22 @@ export interface DigestDeliveryTarget {
 }
 
 /**
+ * A (child, parent) the send-time guard refused, and the reason.
+ *
+ * Returned rather than only logged: a refused target is a digest that has
+ * stopped, and every other way a run stops writes a `digest_delivery` row --
+ * which is the only thing that makes a quiet child distinguishable from a
+ * broken job, and the only thing `GET /digest/deliveries` can show a parent
+ * asking why their updates went silent.
+ */
+export interface DigestSkippedTarget {
+  studentGuid: string;
+  userId: string;
+  /** Plain prose, for the delivery row's `errorMessage`. */
+  reason: string;
+}
+
+/**
  * Recipient CRUD, and the list of children the digest cron should run for.
  *
  * These rows are the de-facto child -> parent ownership mapping. `Student` has
@@ -235,7 +251,9 @@ export class DigestRecipientService {
    * because a `studentGuid` in a request body cannot be validated against a
    * child -> parent FK that does not exist (ADR-0026).
    */
-  async listDeliveryTargets(userId?: string): Promise<DigestDeliveryTarget[]> {
+  async listDeliveryTargets(
+    userId?: string,
+  ): Promise<{ targets: DigestDeliveryTarget[]; skipped: DigestSkippedTarget[] }> {
     const rows = await this.prisma.digestRecipient.findMany({
       where: { enabled: true, ...(userId ? { userId } : {}) },
       select: { studentGuid: true, activeFrom: true, userId: true },
@@ -286,8 +304,8 @@ export class DigestRecipientService {
    */
   private async stillDeliverable(
     targets: DigestDeliveryTarget[],
-  ): Promise<DigestDeliveryTarget[]> {
-    if (targets.length === 0) return [];
+  ): Promise<{ targets: DigestDeliveryTarget[]; skipped: DigestSkippedTarget[] }> {
+    if (targets.length === 0) return { targets: [], skipped: [] };
 
     const guids = [...new Set(targets.map((target) => target.studentGuid))];
 
@@ -308,11 +326,14 @@ export class DigestRecipientService {
     }
 
     const deliverable: DigestDeliveryTarget[] = [];
+    const skipped: DigestSkippedTarget[] = [];
     for (const target of targets) {
       if (!active.has(target.studentGuid)) {
+        const reason = 'this child is no longer on an active school roster';
         this.logger.warn(
           `Digest target skipped: child ${target.studentGuid} is no longer on an active roster.`,
         );
+        skipped.push({ ...pairOf(target), reason });
         continue;
       }
       const links = linksByGuid.get(target.studentGuid) ?? [];
@@ -321,15 +342,18 @@ export class DigestRecipientService {
       // the read-side canSeeStudent: an unattributed child belongs to nobody
       // until a roster refresh says otherwise.
       if (!links.some((connectionId) => mine.has(connectionId))) {
+        const reason =
+          'this account no longer owns this child -- the school it was connected through is gone';
         this.logger.warn(
           `Digest target skipped: userId=${target.userId} no longer owns child ${target.studentGuid}.`,
         );
+        skipped.push({ ...pairOf(target), reason });
         continue;
       }
       deliverable.push(target);
     }
 
-    return deliverable;
+    return { targets: deliverable, skipped };
   }
 
   /**
@@ -344,4 +368,9 @@ export class DigestRecipientService {
       throw new ForbiddenException('This digest recipient belongs to another user.');
     }
   }
+}
+
+/** The (child, parent) half of a target, for a skipped entry. */
+function pairOf(target: DigestDeliveryTarget): { studentGuid: string; userId: string } {
+  return { studentGuid: target.studentGuid, userId: target.userId };
 }
