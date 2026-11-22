@@ -419,6 +419,22 @@ test.describe('Child workspace page', () => {
   const UNKNOWN_GUID = 'e2e-test-unknown-guid-00001';
   const STUDENT_GUID = 'e2e-test-student-guid-00002';
 
+  /**
+   * The bundled default bell schedule, as `GET .../timetable` serves it in
+   * `schedule` (ADR-0037). Its period starts are the ones the early-release
+   * picker reads, which is why the release test below ships it too.
+   */
+  const DEFAULT_SCHEDULE_PERIODS = [
+    { lesson: 1, startTime: '08:00', endTime: '08:45' },
+    { lesson: 2, startTime: '08:50', endTime: '09:35' },
+    { lesson: 3, startTime: '09:45', endTime: '10:30' },
+    { lesson: 4, startTime: '10:35', endTime: '11:20' },
+    { lesson: 5, startTime: '11:45', endTime: '12:30' },
+    { lesson: 6, startTime: '12:35', endTime: '13:20' },
+    { lesson: 7, startTime: '13:25', endTime: '14:10' },
+    { lesson: 8, startTime: '14:15', endTime: '15:00' },
+  ];
+
   function stubWorkspaceRoutes(page: import('@playwright/test').Page) {
     page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
       await route.fulfill({
@@ -797,6 +813,21 @@ test.describe('Child workspace page', () => {
               updatedAt: `${selectedDateWithLessons}T00:00:00`,
             },
           ],
+          // The picker's start times come from here now, not from a map of its
+          // own: one period-time table for the whole app (ADR-0037).
+          schedule: {
+            source: 'default',
+            periods: DEFAULT_SCHEDULE_PERIODS,
+            breaks: [
+              {
+                afterLesson: 4,
+                startTime: '11:20',
+                endTime: '11:45',
+                minutes: 25,
+                kind: 'lunch',
+              },
+            ],
+          },
         }),
       });
     });
@@ -934,6 +965,22 @@ test.describe('Child workspace page', () => {
               updatedAt: lessonDate,
             },
           ],
+          schedule: {
+            source: 'school',
+            periods: [
+              { lesson: 1, startTime: '08:15', endTime: '09:00' },
+              { lesson: 2, startTime: '09:30', endTime: '10:15' },
+            ],
+            breaks: [
+              {
+                afterLesson: 1,
+                startTime: '09:00',
+                endTime: '09:30',
+                minutes: 30,
+                kind: 'lunch',
+              },
+            ],
+          },
         }),
       });
     });
@@ -1021,6 +1068,91 @@ test.describe('Child workspace page', () => {
     await expect(secondCell).not.toContainText('תכנון:');
     await expect(secondCell).not.toContainText('הערה:');
     await expect(secondCell).not.toContainText('שיעורי בית:');
+
+    // The row header carries the period's clock range under its number.
+    const lessonTimes = page.getByTestId('timetable-lesson-time');
+    await expect(lessonTimes).toHaveCount(2);
+    await expect(lessonTimes.first()).toHaveText('08:15–09:00');
+    // Forced LTR, or the RTL layout renders the range end-first.
+    await expect(lessonTimes.first()).toHaveAttribute('dir', 'ltr');
+
+    // The gap between the two periods is a row of its own.
+    const breakRow = page.getByTestId('timetable-break-row');
+    await expect(breakRow).toHaveCount(1);
+    await expect(breakRow).toContainText('הפסקת אוכל · 30 דק׳');
+    await expect(breakRow).toContainText('09:00–09:30');
+
+    // These are the school's own times, so nothing is captioned.
+    await expect(page.getByTestId('timetable-schedule-approximate')).toHaveCount(0);
+  });
+
+  test('timetable captions the bundled default schedule and renders unchanged without one', async ({ page }) => {
+    const entries = [1, 2].map((lesson) => ({
+      id: `tt-default-${lesson}`,
+      studentGuid: STUDENT_GUID,
+      groupId: 300 + lesson,
+      day: 2,
+      lesson,
+      roomNum: `${200 + lesson}`,
+      weeks: 1,
+      groupName: `קבוצה ${lesson}`,
+      subjectName: `מקצוע ${lesson}`,
+      teachers: [{ teacherGuid: `t-${lesson}`, teacherName: `מורה ${lesson}` }],
+      updatedAt: '2026-03-20T00:00:00',
+    }));
+
+    const stubTimetable = (schedule: unknown) =>
+      page.route(`**/api/v1/children/${STUDENT_GUID}/timetable`, async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(schedule === undefined ? { data: entries } : { data: entries, schedule }),
+        });
+      });
+
+    for (const path of ['lessons/plans', 'lessons/history']) {
+      await page.route(`**/api/v1/children/${STUDENT_GUID}/${path}`, async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ data: [] }),
+        });
+      });
+    }
+
+    await stubWorkspaceRoutes(page);
+    await stubTimetable({
+      source: 'default',
+      periods: DEFAULT_SCHEDULE_PERIODS,
+      breaks: [
+        {
+          afterLesson: 1,
+          startTime: '08:45',
+          endTime: '08:50',
+          minutes: 5,
+          kind: 'recess',
+        },
+      ],
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'timetable', 'all');
+
+    // Approximate times must never be passed off as the school's own.
+    await expect(page.getByTestId('timetable-schedule-approximate')).toBeVisible();
+    await expect(page.getByTestId('timetable-lesson-time').first()).toHaveText('08:00–08:45');
+    await expect(page.getByTestId('timetable-break-row')).toContainText('הפסקה · 5 דק׳');
+
+    // An older backend answers with no `schedule` at all. The grid is the
+    // feature; the clock is an addition to it.
+    await page.unroute(`**/api/v1/children/${STUDENT_GUID}/timetable`);
+    await stubTimetable(undefined);
+    await page.reload();
+    await expect(page.getByTestId('timetable-section')).toBeVisible();
+    await expect(page.locator('[data-testid="timetable-lesson-cell"]')).toHaveCount(2);
+    await expect(page.getByTestId('timetable-lesson-time')).toHaveCount(0);
+    await expect(page.getByTestId('timetable-break-row')).toHaveCount(0);
+    await expect(page.getByTestId('timetable-schedule-approximate')).toHaveCount(0);
   });
 
   test('timetable highlights today and auto-scrolls horizontal table on narrow viewport', async ({ page }) => {

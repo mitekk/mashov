@@ -119,6 +119,11 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     timetableEntry: {
       findMany: overrides.timetableFindMany ?? jest.fn().mockResolvedValue([]),
     },
+    // Empty by default, which is the default-schedule path: no school has
+    // served bell times until the (unverified) upstream endpoint answers.
+    bellSchedule: {
+      findMany: overrides.bellScheduleFindMany ?? jest.fn().mockResolvedValue([]),
+    },
     syncRun: {
       findFirst: overrides.syncRunFindFirst ?? jest.fn().mockResolvedValue(null),
     },
@@ -1260,23 +1265,86 @@ describe('ChildrenService', () => {
         where: { studentGuid: TEST_GUID, schoolYear: { in: [2027, 0] } },
         orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
       });
-      expect(result).toEqual({
-        data: [
-          {
-            id: 'tt-1',
-            studentGuid: TEST_GUID,
-            groupId: 20,
-            day: 1,
-            lesson: 2,
-            roomNum: '104',
-            weeks: 1,
-            groupName: 'Science 1',
-            subjectName: 'Science',
-            teachers: [{ teacherGuid: 't-1', teacherName: 'Dana Levi' }],
-            updatedAt: '2026-03-15T00:00:00.000Z',
-          },
-        ],
+      expect(result.data).toEqual([
+        {
+          id: 'tt-1',
+          studentGuid: TEST_GUID,
+          groupId: 20,
+          day: 1,
+          lesson: 2,
+          roomNum: '104',
+          weeks: 1,
+          groupName: 'Science 1',
+          subjectName: 'Science',
+          teachers: [{ teacherGuid: 't-1', teacherName: 'Dana Levi' }],
+          updatedAt: '2026-03-15T00:00:00.000Z',
+        },
+      ]);
+    });
+
+    it("reports source 'school' and the stored periods when the school served them", async () => {
+      const bellScheduleFindMany = jest.fn().mockResolvedValue([
+        { lesson: 1, startTime: '08:15', endTime: '09:00' },
+        { lesson: 2, startTime: '09:15', endTime: '10:00' },
+      ]);
+      const service = new ChildrenService(
+        makeMockPrisma({
+          bellScheduleFindMany,
+          connectionFindUnique: jest
+            .fn()
+            .mockResolvedValue({ id: 'conn-1', schoolCode: 540175, schoolYear: 2027 }),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+      );
+
+      const result = await service.getTimetable(TEST_GUID);
+
+      expect(bellScheduleFindMany).toHaveBeenCalledWith({
+        where: { schoolCode: 540175, schoolYear: 2027 },
+        orderBy: { lesson: 'asc' },
       });
+      expect(result.schedule.source).toBe('school');
+      expect(result.schedule.periods).toEqual([
+        { lesson: 1, startTime: '08:15', endTime: '09:00' },
+        { lesson: 2, startTime: '09:15', endTime: '10:00' },
+      ]);
+      // Derived from the gap, never fetched: the upstream serves no break rows.
+      expect(result.schedule.breaks).toEqual([
+        { afterLesson: 1, startTime: '09:00', endTime: '09:15', minutes: 15, kind: 'recess' },
+      ]);
+    });
+
+    it("reports source 'default' when the school served no bell times", async () => {
+      // The expected state, not a fault: `GET /api/bells` is unverified and
+      // may not exist for a school at all (ADR-0037). The times still render,
+      // and `source` is what lets the UI caveat them.
+      const service = new ChildrenService(
+        makeMockPrisma({
+          connectionFindUnique: jest
+            .fn()
+            .mockResolvedValue({ id: 'conn-1', schoolCode: 540175, schoolYear: 2027 }),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+      );
+
+      const result = await service.getTimetable(TEST_GUID);
+
+      expect(result.schedule.source).toBe('default');
+      expect(result.schedule.periods).toHaveLength(8);
+      expect(result.schedule.periods[0]).toEqual({
+        lesson: 1,
+        startTime: '08:00',
+        endTime: '08:45',
+      });
+      expect(result.schedule.breaks.filter((item) => item.kind === 'lunch')).toHaveLength(1);
     });
 
     it('throws NotFoundException for unknown student', async () => {
@@ -2405,6 +2473,7 @@ describe('ChildrenService household isolation', () => {
       },
       messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
       timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
+      bellSchedule: { findMany: jest.fn().mockResolvedValue([]) },
       studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
       schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
       mailConversation: {
@@ -2684,6 +2753,7 @@ describe('ChildrenService ownership guard coverage', () => {
       },
       messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
       timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
+      bellSchedule: { findMany: jest.fn().mockResolvedValue([]) },
       studentRelease: { findMany: jest.fn().mockResolvedValue([]) },
       schoolActivity: { findMany: jest.fn().mockResolvedValue([]) },
     } as unknown as jest.Mocked<PrismaService>;

@@ -14,6 +14,7 @@ import { OutBehaveTask } from './tasks/out-behave.task';
 import { ReleasesTask } from './tasks/releases.task';
 import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
+import { BellsTask } from './tasks/bells.task';
 import { StudentsTask } from './tasks/students.task';
 import { HEARTBEAT_INTERVAL_MS, RefreshProgressService } from './refresh-progress.service';
 import type { RefreshEnvelope } from './refresh-progress.service';
@@ -69,6 +70,7 @@ export class SyncService {
     private readonly releasesTask: ReleasesTask,
     private readonly schoolActivitiesTask: SchoolActivitiesTask,
     private readonly timetableTask: TimetableTask,
+    private readonly bellsTask: BellsTask,
     private readonly studentsTask: StudentsTask,
     private readonly refreshProgress: RefreshProgressService,
   ) {}
@@ -211,6 +213,7 @@ export class SyncService {
       { name: 'releases', fn: () => this.releasesTask.execute(context) },
       { name: 'schoolActivities', fn: () => this.schoolActivitiesTask.execute(context) },
       { name: 'timetable', fn: () => this.timetableTask.execute(context) },
+      { name: 'bells', fn: () => this.bellsTask.execute(context) },
     ];
   }
 

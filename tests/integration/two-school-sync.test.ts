@@ -10,7 +10,7 @@
  * cached badge, the per-school unique keys, the year each row is labelled
  * with) is only exercised by actually running them.
  *
- * It is a real refresh: the wired `SyncModule`, all sixteen tasks, real
+ * It is a real refresh: the wired `SyncModule`, all seventeen tasks, real
  * Postgres and real Redis. Only the two transports are fakes —
  * `MashovHttpClient`, and the private `httpClient` axios instance
  * `MashovSessionService` logs in with. Patching that field is deliberate: the
@@ -230,6 +230,14 @@ describe('Two schools in one household, synced one after the other', () => {
       ];
     }
     if (url === '/api/schoolActivities/permitted') return [];
+    if (url === '/api/bells') {
+      // School-wide: the one task that asks per school rather than per child,
+      // so each school's periods must land under its own semel and year.
+      return [
+        { lessonNumber: 1, startTime: '08:15:00', endTime: '09:00:00' },
+        { lessonNumber: 2, startTime: '10:15:00', endTime: '11:00:00' },
+      ];
+    }
 
     const perStudent = /^\/api\/students\/([^/]+)\/(.+)$/.exec(url);
     if (perStudent) {
@@ -328,6 +336,9 @@ describe('Two schools in one household, synced one after the other', () => {
 
   async function cleanup(): Promise<void> {
     await prisma.syncRun.deleteMany({});
+    await prisma.bellSchedule.deleteMany({
+      where: { schoolCode: { in: [SEMEL_A, SEMEL_B] } },
+    });
     await prisma.mailMessage.deleteMany({});
     await prisma.mailConversation.deleteMany({});
     await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: [CHILD_A, CHILD_B] } } });
@@ -525,6 +536,23 @@ describe('Two schools in one household, synced one after the other', () => {
         [LIVE_B]: true,
         [ORPHAN_B]: true,
       });
+    });
+
+    it("stores its own school's bell schedule and not school B's", async () => {
+      // The periods are school-wide, so they are keyed by semel and year
+      // rather than by child -- a run for A must leave B with no schedule at
+      // all, which is what makes B read as `source: 'default'` until it syncs.
+      const rows = await prisma.bellSchedule.findMany({
+        where: { schoolCode: { in: [SEMEL_A, SEMEL_B] } },
+        orderBy: [{ schoolCode: 'asc' }, { lesson: 'asc' }],
+      });
+
+      expect(
+        rows.map((row) => [row.schoolCode, row.schoolYear, row.lesson, row.startTime, row.endTime]),
+      ).toEqual([
+        [SEMEL_A, YEAR_A, 1, '08:15', '09:00'],
+        [SEMEL_A, YEAR_A, 2, '10:15', '11:00'],
+      ]);
     });
 
     it("writes its own cachedNewCount and not school B's", async () => {

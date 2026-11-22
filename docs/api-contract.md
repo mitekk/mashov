@@ -702,8 +702,30 @@ Used in both list and mutation responses:
 
 Returns the student's weekly timetable. Synced weekly (Sunday 03:00). Returns an empty array when no data has been synced yet.
 
+`schedule` is the school day's clock: when each period runs, and the breaks between
+them. Periods come from the school's own bell schedule when Mashov served one and from
+a bundled default otherwise — `source` says which, and a client rendering `'default'`
+times must caption them as approximate. Breaks are **derived** from the gaps between
+periods, never fetched; they span the full schedule, so a client renders only the ones
+between rows it is actually showing. See [ADR-0037](adr/0037-bell-schedule-source-and-derived-breaks.md).
+
 ```typescript
 {
+  schedule: {
+    source: 'school' | 'default';
+    periods: Array<{
+      lesson: number;                    // matches `data[].lesson`
+      startTime: string;                 // "HH:MM", school-local wall clock
+      endTime: string;                   // "HH:MM"
+    }>;
+    breaks: Array<{
+      afterLesson: number;               // the period the break follows
+      startTime: string;                 // "HH:MM" — that period's endTime
+      endTime: string;                   // "HH:MM" — the next period's startTime
+      minutes: number;                   // 5..90; outside that range no break is emitted
+      kind: 'recess' | 'lunch';          // at most one 'lunch' per schedule
+    }>;
+  };
   data: Array<{
     id: string;
     studentGuid: string;

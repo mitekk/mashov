@@ -510,6 +510,33 @@ model TimetableEntry {
   @@map("timetable_entry")
 }
 
+/// The school's bell schedule: when each lesson period starts and ends.
+///
+/// Keyed by school rather than by student, because that is what the upstream
+/// resource is -- `GET /api/bells` takes no student guid and answers for the
+/// session's `semel`. Two children at the same school share one set of rows,
+/// and the sync task makes one upstream call for them (ADR-0037).
+///
+/// Times are stored as "HH:MM" strings, not DateTime: a bell time is a wall
+/// clock reading with no date and no zone, and a DateTime column would invite
+/// exactly the UTC shift that would move 08:15 to 06:15.
+///
+/// Breaks are NOT stored. Recess is the gap between one period's end and the
+/// next period's start; it is derived on read by
+/// `backend/src/common/bells/derive-breaks.ts`.
+model BellSchedule {
+  id         String   @id @default(cuid())
+  schoolCode Int
+  schoolYear Int
+  lesson     Int
+  startTime  String
+  endTime    String
+  updatedAt  DateTime @updatedAt
+
+  @@unique([schoolCode, schoolYear, lesson])
+  @@map("bell_schedule")
+}
+
 // ---------------------------------------------------------------------------
 // Digest: per-child daily activity briefing pushed to a parent's messaging app.
 // ---------------------------------------------------------------------------

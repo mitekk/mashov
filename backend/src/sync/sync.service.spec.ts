@@ -15,6 +15,7 @@ import { OutBehaveTask } from './tasks/out-behave.task';
 import { ReleasesTask } from './tasks/releases.task';
 import { SchoolActivitiesTask } from './tasks/school-activities.task';
 import { TimetableTask } from './tasks/timetable.task';
+import { BellsTask } from './tasks/bells.task';
 import { StudentsTask } from './tasks/students.task';
 import type { RefreshEnvelope, RefreshProgressService } from './refresh-progress.service';
 import {
@@ -85,7 +86,7 @@ describe('SyncService', () => {
   // Derived, not hardcoded: this asserts that every task the harness wires up
   // actually ran, so adding a sync task cannot quietly go unexercised here --
   // nor break this test for no reason, as a literal count did.
-  const EXPECTED_TASK_COUNT = 16;
+  const EXPECTED_TASK_COUNT = 17;
 
   function createService(
     overrides: Partial<Record<string, { execute: jest.Mock }>> = {},
@@ -106,6 +107,7 @@ describe('SyncService', () => {
     const releases = overrides.releases ?? makeMockTask(makeResult());
     const schoolActivities = overrides.schoolActivities ?? makeMockTask(makeResult());
     const timetable = overrides.timetable ?? makeMockTask(makeResult());
+    const bells = overrides.bells ?? makeMockTask(makeResult());
     const students = overrides.students ?? makeMockTask(makeResult());
 
     const service = new SyncService(
@@ -124,6 +126,7 @@ describe('SyncService', () => {
       releases as unknown as ReleasesTask,
       schoolActivities as unknown as SchoolActivitiesTask,
       timetable as unknown as TimetableTask,
+      bells as unknown as BellsTask,
       students as unknown as StudentsTask,
       progress.mock as unknown as RefreshProgressService,
     );
@@ -147,6 +150,7 @@ describe('SyncService', () => {
         releases,
         schoolActivities,
         timetable,
+        bells,
         students,
       },
     };
