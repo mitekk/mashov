@@ -992,6 +992,70 @@ describe('DigestService.runAll', () => {
     expect(harness.prisma.syncRun.findFirst).toHaveBeenCalledTimes(2);
   });
 
+  it('sends one copy of an identical message to a chat both parents linked', async () => {
+    // One family, one group chat, both parents linked it. Each of them now has
+    // their own row and their own run, so without this the chat gets the same
+    // message twice in a row.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    // Both runs count as delivered. The `delivered === 0` guard throws, which
+    // would release the claims and retry the same suppressed send every hour,
+    // forever.
+    expect(results.map((result) => result.status)).toEqual(['sent', 'sent']);
+    expect(confirmCalls(harness.updateMany)).toHaveLength(2);
+    // Recorded, so support can tell a delivery from a suppression.
+    expect(harness.deliveryCreate.mock.calls[1][0].data.errorMessage).toMatch(/suppressed/i);
+    expect(harness.deliveryCreate.mock.calls[0][0].data.errorMessage).toBeNull();
+  });
+
+  it('sends to the shared chat again when the two parents’ messages differ', async () => {
+    // Byte-identical is the only thing suppressed. A consent form only one of
+    // them has to answer makes the messages differ, and then both are news.
+    const harness = makeHarness({
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: TODAY, recipientCount: 1, userId: USER_B },
+      ],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_B },
+      ],
+    });
+    // The real difference is a consent form only one parent has to answer;
+    // any difference in the rendered text does, and a second child name keeps
+    // this test about the suppression rather than about the forms section.
+    (harness.collector.collect as jest.Mock)
+      .mockResolvedValueOnce(makePayload())
+      .mockResolvedValueOnce(makePayload({ childFirstName: 'נועה' }));
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('suppresses only within one run, never across runs', async () => {
+    // The ledger is what stops a repeat between runs. Carrying the set over
+    // would silence a genuinely identical digest the next day.
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
   it('marks the delivery as not having used the model when it fell back', async () => {
     const harness = makeHarness();
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({

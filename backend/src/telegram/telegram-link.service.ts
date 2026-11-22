@@ -374,7 +374,15 @@ export class TelegramLinkService {
     for (const studentGuid of visible) {
       await this.prisma.digestRecipient.upsert({
         where: {
-          studentGuid_channel_address: { studentGuid, channel: 'telegram', address: chatId },
+          // Keyed on the parent too: the same chat can be linked by both
+          // parents of one child, and each of them needs their own row to
+          // see, toggle and disconnect.
+          userId_studentGuid_channel_address: {
+            userId: row.userId,
+            studentGuid,
+            channel: 'telegram',
+            address: chatId,
+          },
         },
         create: { userId: row.userId, studentGuid, channel: 'telegram', address: chatId },
         // The parent just chose this child in the wizard, so an explicit

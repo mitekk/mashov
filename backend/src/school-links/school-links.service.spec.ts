@@ -274,6 +274,8 @@ describe('SchoolLinksService.createLink', () => {
     orphanOtherActive?: number;
     orphanSessions?: Array<{ sessionToken: string }>;
     orphanItemStates?: Array<Record<string, unknown>>;
+    /** Digest subscriptions the surviving household already holds. */
+    targetRecipients?: Array<{ studentGuid: string; channel: string; address: string }>;
   } = {}) {
     const upsert = jest.fn().mockResolvedValue({ id: 'conn-new' });
     const studentUpsert = jest.fn().mockResolvedValue({});
@@ -293,6 +295,9 @@ describe('SchoolLinksService.createLink', () => {
       .mockResolvedValue(options.orphanSessions ?? [{ sessionToken: 'tok-orphan' }]);
     const sessionUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
     const digestUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
+    // The surviving household's own subscriptions, for the collision check.
+    const digestFindMany = jest.fn().mockResolvedValue(options.targetRecipients ?? []);
+    const digestDeleteMany = jest.fn().mockResolvedValue({ count: 0 });
     const activityUpdateMany = jest.fn().mockResolvedValue({ count: 0 });
     const itemStateFindMany = jest
       .fn()
@@ -320,6 +325,8 @@ describe('SchoolLinksService.createLink', () => {
       sessionFindMany,
       sessionUpdateMany,
       digestUpdateMany,
+      digestFindMany,
+      digestDeleteMany,
       activityUpdateMany,
       itemStateFindMany,
       itemStateCreateMany,
@@ -362,7 +369,11 @@ describe('SchoolLinksService.createLink', () => {
         },
         appUser: { update: appUserUpdate },
         appSession: { findMany: sessionFindMany, updateMany: sessionUpdateMany },
-        digestRecipient: { updateMany: digestUpdateMany },
+        digestRecipient: {
+          updateMany: digestUpdateMany,
+          findMany: digestFindMany,
+          deleteMany: digestDeleteMany,
+        },
         schoolActivity: { updateMany: activityUpdateMany },
         userItemState: { findMany: itemStateFindMany, createMany: itemStateCreateMany },
         $transaction: transaction,
@@ -590,6 +601,7 @@ describe('SchoolLinksService.createLink', () => {
         appUserUpdate,
         sessionUpdateMany,
         digestUpdateMany,
+        digestDeleteMany,
         activityUpdateMany,
         itemStateCreateMany,
         transaction,
@@ -663,6 +675,9 @@ describe('SchoolLinksService.createLink', () => {
           data: { userId: 'user-1' },
         }),
       );
+      // Nothing to delete: this household holds no subscription the orphan
+      // could collide with.
+      expect(digestDeleteMany).not.toHaveBeenCalled();
       expect(activityUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { userId: 'someone-else', householdConnectionId: 'conn-foreign' },
@@ -688,6 +703,44 @@ describe('SchoolLinksService.createLink', () => {
       );
       // And the link is then persisted as any other link is.
       expect(upsert).toHaveBeenCalled();
+    });
+
+    it('drops the orphan subscription the surviving household already holds', async () => {
+      // Exactly the household this feature exists for: both parents have
+      // linked the same family chat for the same child. The recipient key now
+      // carries the userId, so re-pointing the orphan's row onto an identical
+      // tuple is a P2002 inside the transaction -- the whole merge 500s and
+      // the parent cannot combine their schools at all. The surviving row
+      // wins; the orphan's duplicate is dropped.
+      const { prisma, digestDeleteMany, digestUpdateMany } = makePrisma({
+        orphanUserId: 'someone-else',
+        targetRecipients: [{ studentGuid: 'stu-1', channel: 'telegram', address: '98765' }],
+      });
+      const service = makeService(prisma, {
+        validator: { validate: jest.fn().mockResolvedValue(loginPayload()) },
+        redis: { incr: jest.fn().mockResolvedValue(1), expire: jest.fn(), del: jest.fn() },
+        appSession: { revokeAllSessionsForUser: jest.fn().mockResolvedValue(undefined) },
+      });
+
+      await expect(
+        service.createLink('user-1', {
+          semel: 999999,
+          username: 'parent-b',
+          password: 'pw',
+          confirmMerge: true,
+        }),
+      ).resolves.toBeTruthy();
+
+      expect(digestDeleteMany).toHaveBeenCalledWith({
+        where: {
+          userId: 'someone-else',
+          OR: [{ studentGuid: 'stu-1', channel: 'telegram', address: '98765' }],
+        },
+      });
+      // The rest still travels: only the colliding tuple is dropped.
+      expect(digestUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: 'someone-else' } }),
+      );
     });
 
     // `MASHOV_ENABLE_SCHOOL_LINK_ADOPTION=false` is documented as the switch

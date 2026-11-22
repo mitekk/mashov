@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -145,6 +145,15 @@ export class DigestService {
       // sync that recovers mid-afternoon must be visible to the next tick.
       const staleness = new Map<string, Date | null>();
 
+      // What this run has already put in front of a chat, as
+      // channel + address + hash(text). Two parents of one child who linked
+      // the same family chat each get their own run now, so without this the
+      // chat receives the same message twice in a row. Byte-identical only:
+      // if their consent forms differ the messages differ and both are news.
+      // Per run, never held between runs -- the ledger is what stops a repeat
+      // tomorrow.
+      const alreadySent = new Set<string>();
+
       const results: DigestRunResult[] = [];
       // Strictly sequential, and not only for the per-child isolation
       // homework.task.ts wants. Consent-form dedup across a parent's children
@@ -152,7 +161,9 @@ export class DigestService {
       // `Promise.all` over the targets of one household would send the same
       // form twice. See ADR-0035.
       for (const target of targets) {
-        results.push(await this.runForChild(target, schoolYear, now, dryRun, staleness));
+        results.push(
+          await this.runForChild(target, schoolYear, now, dryRun, staleness, alreadySent),
+        );
       }
       return results;
     } finally {
@@ -166,6 +177,7 @@ export class DigestService {
     now: Date,
     dryRun: boolean,
     staleness: Map<string, Date | null>,
+    alreadySent: Set<string>,
   ): Promise<DigestRunResult> {
     const { studentGuid, userId } = target;
     const { tomorrowStart, reportFor: defaultReportFor } = jerusalemDayBounds(now, this.timeZone());
@@ -257,7 +269,12 @@ export class DigestService {
         return await this.recordEmpty(userId, studentGuid, reportFor, 'no enabled recipient left');
       }
 
-      const { delivered, failures } = await this.deliver(enabled, message, dryRun);
+      const { delivered, failures, suppressed } = await this.deliver(
+        enabled,
+        message,
+        dryRun,
+        alreadySent,
+      );
 
       if (delivered === 0 && enabled.length > 0) {
         throw new Error(`no recipient could be reached (${failures.join('; ')})`);
@@ -298,7 +315,9 @@ export class DigestService {
         messageText: message,
         channel: enabled[0]?.channel ?? null,
         // A partial failure is recorded but does not undo a real delivery.
-        errorMessage: failures.length > 0 ? failures.join('; ') : undefined,
+        // The suppression note rides on the same field, so support can tell
+        // "sent" from "the other parent's run sent this exact text already".
+        errorMessage: deliveryNote(failures, suppressed),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -392,15 +411,31 @@ export class DigestService {
     recipients: { channel: string; address: string }[],
     message: string,
     dryRun: boolean,
-  ): Promise<{ delivered: number; failures: string[] }> {
+    alreadySent: Set<string>,
+  ): Promise<{ delivered: number; failures: string[]; suppressed: number }> {
     let delivered = 0;
+    let suppressed = 0;
     const failures: string[] = [];
+    const digest = createHash('sha256').update(message).digest('hex');
 
     for (const recipient of recipients) {
+      const fingerprint = `${recipient.channel}\u0000${recipient.address}\u0000${digest}`;
+      if (alreadySent.has(fingerprint)) {
+        // Counted as delivered, deliberately: the parent has the message. The
+        // `delivered === 0` guard below throws, which releases the claims --
+        // so a run whose only recipient was suppressed would retry the same
+        // suppressed send every hour, with a fresh model call each time, and
+        // never confirm anything.
+        suppressed += 1;
+        delivered += 1;
+        continue;
+      }
+
       try {
         const sender = dryRun ? this.logSender : this.senderFor(recipient.channel);
         await sender.send(recipient.address, message);
         delivered += 1;
+        alreadySent.add(fingerprint);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         this.logger.warn(`Digest delivery to ${recipient.channel} failed: ${reason}`);
@@ -408,7 +443,7 @@ export class DigestService {
       }
     }
 
-    return { delivered, failures };
+    return { delivered, failures, suppressed };
   }
 
   /**
@@ -817,4 +852,20 @@ function countItems(payload: DigestPayload): number {
     ...payload.activities.map((fact) => `activity:${fact.id}`),
   ]);
   return ids.size;
+}
+
+/**
+ * What goes in the delivery row's `errorMessage`.
+ *
+ * Partial send failures and suppressions share the column because both are
+ * "the row says sent, and here is the asterisk".
+ */
+function deliveryNote(failures: string[], suppressed: number): string | undefined {
+  const notes = [...failures];
+  if (suppressed > 0) {
+    notes.push(
+      `suppressed ${suppressed} duplicate send(s): an identical message had already gone to that chat in this run`,
+    );
+  }
+  return notes.length > 0 ? notes.join('; ') : undefined;
 }

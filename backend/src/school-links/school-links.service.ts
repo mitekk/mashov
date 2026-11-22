@@ -528,10 +528,36 @@ export class SchoolLinksService {
         data: { revokedAt: new Date() },
       });
 
-      // The unique key is `[studentGuid, channel, address]` and OMITS
-      // `userId`, so the same tuple cannot exist under both households
-      // globally -- the re-point is collision-free and a skip-on-conflict
-      // branch here would be unreachable code.
+      // The unique key is `[userId, studentGuid, channel, address]`, so the
+      // same (child, chat) tuple CAN exist under both households -- and for
+      // the household this merge exists for it usually does: both parents
+      // linked the family group chat for the same child. Re-pointing the
+      // orphan's row onto a tuple the survivor already holds is a P2002
+      // inside this transaction, which fails the whole merge, identically on
+      // every retry.
+      //
+      // The survivor's own row wins and the orphan's duplicate is dropped,
+      // rather than the reverse: the surviving row is the one whose
+      // `activeFrom` and `enabled` the parent has been living with, and a
+      // subscription dropped here is one the parent can re-create from the
+      // wizard in a few taps.
+      const ours = await tx.digestRecipient.findMany({
+        where: { userId },
+        select: { studentGuid: true, channel: true, address: true },
+      });
+      if (ours.length > 0) {
+        await tx.digestRecipient.deleteMany({
+          where: {
+            userId: orphanUserId,
+            OR: ours.map((row) => ({
+              studentGuid: row.studentGuid,
+              channel: row.channel,
+              address: row.address,
+            })),
+          },
+        });
+      }
+
       await tx.digestRecipient.updateMany({
         where: { userId: orphanUserId },
         data: { userId },

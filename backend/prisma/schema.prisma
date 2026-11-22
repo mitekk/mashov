@@ -621,7 +621,12 @@ model DigestRecipient {
 
   user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([studentGuid, channel, address])
+  /// `userId` leads the key because a subscription belongs to a parent, not to
+  /// a chat. Without it, two parents linking one family group chat for one
+  /// child shared a single row: the second parent's START found the first's
+  /// row and only flipped `enabled`, so they had no row of their own to see,
+  /// toggle or delete.
+  @@unique([userId, studentGuid, channel, address])
   @@index([studentGuid, enabled])
   @@index([userId])
   @@map("digest_recipient")

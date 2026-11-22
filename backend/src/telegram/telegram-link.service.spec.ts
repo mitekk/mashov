@@ -648,6 +648,27 @@ describe('TelegramLinkService.consume', () => {
     expect(harness.recipientUpsert.mock.calls[0][0].update).toEqual({ enabled: true });
   });
 
+  it('matches the subscription on the parent as well as the chat', async () => {
+    // Two parents can legitimately link the same chat for the same child --
+    // one family, one group chat. Keyed without the userId, the second
+    // parent's START found the FIRST parent's row and only flipped
+    // `enabled: true` on it: the second parent got no row at all, so their
+    // wizard reported a link with zero children, their per-child toggles
+    // changed nothing and their disconnect could not remove it.
+    const harness = makeHarness({ codeRow: LIVE });
+
+    await harness.service.consume(start('abc'), NOW);
+
+    expect(harness.recipientUpsert.mock.calls[0][0].where).toEqual({
+      userId_studentGuid_channel_address: {
+        userId: 'user-1',
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address: '98765',
+      },
+    });
+  });
+
   it('ignores an update that is not a message at all', async () => {
     const harness = makeHarness();
 
