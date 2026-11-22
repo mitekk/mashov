@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { DigestDelivery, DigestRecipient } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ownsStudentForDelivery } from '../common/student-links';
 
 /** Channels a sender exists for. A row for anything else could never deliver. */
 const SUPPORTED_CHANNELS = ['telegram', 'log'];
@@ -51,11 +52,14 @@ export interface DigestDeliveryTarget {
  * row exists for it. That makes delivery strictly opt-in, which is the right
  * default for pushing a child's behavior data to a messaging app.
  *
- * Knowingly accepted limitation: nothing stops user A creating a row for user
- * B's child, because there is no FK to validate against. What is done here is
- * what can be done -- the studentGuid must be on the active roster, and the
- * creating userId is recorded on every row, so each one is attributable. A real
- * ownership model is separate work; see ADR-0026.
+ * Creation is scoped to the caller's own children. `Student` still has no
+ * userId FK, but ADR-0031's `StudentConnection` link set answers "who may see
+ * this child", and `ownsStudentForDelivery` is the strict form of that answer
+ * -- strict because it also refuses a child no connection lists, which the
+ * read-side `canSeeStudent` deliberately admits. So user A can no longer
+ * create a row pointing user B's child, or an unattributed child, at their own
+ * Telegram chat. This supersedes ADR-0026's accepted recipient-ownership
+ * limitation; see ADR-0033.
  */
 @Injectable()
 export class DigestRecipientService {
@@ -83,6 +87,19 @@ export class DigestRecipientService {
       throw new BadRequestException(`No active child with studentGuid "${studentGuid}".`);
     }
 
+    // Roster membership is not ownership. Without this, an authenticated parent
+    // could point another family's child at their own Telegram chat and start
+    // receiving that child's behavior reports -- ADR-0026's accepted hole,
+    // which stopped being acceptable the moment a UI creates these rows.
+    //
+    // ownsStudentForDelivery, not canSeeStudent: the read-side helper admits a
+    // child no connection lists, because on the read side "ownership unknown"
+    // must not empty the app. A write that starts pushing that child's conduct
+    // record outward has to fail the other way round. See ADR-0033.
+    if (!(await ownsStudentForDelivery(this.prisma, userId, studentGuid))) {
+      throw new ForbiddenException('This child belongs to another household.');
+    }
+
     return this.prisma.digestRecipient.create({
       data: {
         userId,
@@ -94,12 +111,46 @@ export class DigestRecipientService {
     });
   }
 
-  /** The caller's own recipients for a child, not every household's. */
-  async listFor(studentGuid: string, userId: string): Promise<DigestRecipient[]> {
-    return this.prisma.digestRecipient.findMany({
-      where: { studentGuid, userId },
-      orderBy: { createdAt: 'asc' },
-    });
+  /**
+   * The caller's own recipients, not every household's.
+   *
+   * `studentGuid` is optional because the `/more` card asks "what am I
+   * subscribed to" without naming a child, and joins names, classes and school
+   * labels client-side from the already-cached children list.
+   *
+   * Paginated, like `listDeliveries` and for the same reason: `.claude/rules/
+   * api.md` allows no unbounded list route. A household has a handful of
+   * children today, but rows accumulate across years and re-links, and the
+   * `/more` card asks for a page large enough to hold them all explicitly
+   * rather than relying on the route to never grow.
+   */
+  async list(options: {
+    userId: string;
+    studentGuid?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{
+    data: DigestRecipient[];
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }> {
+    const page = options.page ?? 1;
+    const limit = options.limit ?? 20;
+    const where = {
+      userId: options.userId,
+      ...(options.studentGuid ? { studentGuid: options.studentGuid } : {}),
+    };
+
+    const [data, total] = await Promise.all([
+      this.prisma.digestRecipient.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.digestRecipient.count({ where }),
+    ]);
+
+    return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
   async update(

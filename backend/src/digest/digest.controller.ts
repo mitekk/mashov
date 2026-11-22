@@ -57,9 +57,28 @@ class RunDigestDto {
 }
 
 class RecipientQueryDto {
+  /**
+   * Optional: the /more card asks "what am I subscribed to" without naming a
+   * child, and joins names, classes and school labels client-side from the
+   * already-cached children list rather than needing a server-side join.
+   */
+  @IsOptional()
   @IsString()
   @MinLength(1)
-  studentGuid!: string;
+  studentGuid?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
 }
 
 class DeliveryQueryDto {
@@ -95,7 +114,12 @@ export class DigestController {
   @Get('recipients')
   async listRecipients(@Req() req: Request, @Query() query: RecipientQueryDto) {
     const userId = requireUserId(req);
-    return { data: await this.recipients.listFor(query.studentGuid, userId) };
+    return this.recipients.list({
+      userId,
+      studentGuid: query.studentGuid,
+      page: query.page,
+      limit: query.limit,
+    });
   }
 
   @Post('recipients')

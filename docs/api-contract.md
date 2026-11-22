@@ -301,12 +301,25 @@ for it. See ADR-0026 (delivery and LLM egress) and ADR-0027 (derived deadlines).
 
 | Method | Path | Auth | Request Body | Response Body | Status | State |
 |--------|------|------|--------------|---------------|--------|-------|
-| GET | `/api/v1/digest/recipients?studentGuid=` | **Yes** | — | `{ data: DigestRecipient[] }` | 200, 400, 401 | new |
-| POST | `/api/v1/digest/recipients` | **Yes** | `{ studentGuid, channel, address, displayName? }` | `{ data: DigestRecipient }` | 201, 400, 401 | new |
+| GET | `/api/v1/digest/recipients?studentGuid=&page=&limit=` | **Yes** | — | Paginated `DigestRecipient[]` | 200, 400, 401 | changed |
+| POST | `/api/v1/digest/recipients` | **Yes** | `{ studentGuid, channel, address, displayName? }` | `{ data: DigestRecipient }` | 201, 400, 401, 403 | new |
 | PATCH | `/api/v1/digest/recipients/:id` | **Yes** | `{ enabled?, displayName? }` | `{ data: DigestRecipient }` | 200, 401, 404 | new |
 | DELETE | `/api/v1/digest/recipients/:id` | **Yes** | — | — | 204, 401, 403, 404 | new |
 | POST | `/api/v1/digest/runs` | **Yes** | `{ studentGuid?, dryRun? }` | `{ data: DigestRunResult[] }` | 201, 401, 429 | new |
 | GET | `/api/v1/digest/deliveries?studentGuid=&page=&limit=` | **Yes** | — | Paginated `DigestDelivery[]` | 200, 401 | new |
+| POST | `/api/v1/digest/telegram-links` | **Yes** | `{ studentGuids: string[] }` | `{ data: TelegramLink }` | 201, 400, 401, 403, 429, 503 | new |
+| GET | `/api/v1/digest/telegram-links/:code` | **Yes** | — | `{ data: TelegramLinkState }` | 200, 401, 404 | new |
+| DELETE | `/api/v1/digest/telegram-links` | **Yes** | — | — | 204, 401 | new |
+
+`studentGuid` on `GET /digest/recipients` is **optional**. Omitted, it answers every recipient
+row the caller owns, which is what the `/more` Telegram card asks for: "what am I subscribed
+to". Child names, classes and school labels are joined client-side from the already-cached
+children list, so there is no new read route and no server-side join.
+
+The route is paginated like `GET /digest/deliveries` (default `page=1`, `limit=20`, max `limit=100`),
+because `.claude/rules/api.md` allows no unbounded list route. The `/more` card is not a paged
+list -- its question is "everything" -- so it sends `limit=100` explicitly rather than relying on
+a household never outgrowing the default page.
 
 ---
 
@@ -849,6 +862,87 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 | GET | `/api/students/{childGuid}/dailyBehave` | DailyBehaveSyncTask (feature-flagged) |
 | GET | `/api/students/{studentId}/outBehave` | OutBehaveSyncTask (feature-flagged) |
 
+### Telegram link — POST /api/v1/digest/telegram-links
+
+A parent cannot be messaged by a Telegram bot that they have not pressed START on, so the
+START is unavoidable; what this route avoids is making them *also* find their chat id and
+retype it. It mints a one-time code and returns the deep link that carries it. The parent taps
+it, presses START, and the backend's long poller reads `message.chat.id` out of that update.
+See ADR-0033.
+
+```json
+{
+  "data": {
+    "code": "32 hex chars",
+    "deepLink": "https://t.me/<bot>?start=<code>",
+    "botUsername": "string",
+    "expiresAt": "2026-11-21T10:15:00Z"
+  }
+}
+```
+
+`botUsername` comes from Telegram's own `getMe`, cached in memory, rather than from
+configuration: `NEXT_PUBLIC_*` is inlined at build time by Next, so a bot username set as a
+runtime compose variable would never reach the browser — and asking the bot means the username
+cannot drift from whatever token is deployed.
+
+**The code is a credential.** A guessed code binds the guesser's own chat to a victim's
+account, and they would then receive that family's children's behaviour reports. It is 16
+random bytes, single-use, expires after `TELEGRAM_LINK_CODE_TTL_MINUTES` (15), and this route
+is rate-limited to 10/min.
+
+`400` for a `studentGuid` that is not on the active roster, `403` for one the caller's own
+connections do not list — including a child no connection lists at all, which the read side
+admits and this path does not (note 9). `503 TELEGRAM_NOT_CONFIGURED` when the server
+has no `TELEGRAM_BOT_TOKEN` — rather than returning a `t.me/undefined` link that would send the
+parent to Telegram to be told the bot does not exist.
+
+### GET /api/v1/digest/telegram-links/:code
+
+What the wizard polls while it waits for the START. Scoped to the caller's `userId` as well as
+the code, so a code is never a bearer token for another user's link status.
+
+```json
+{
+  "data": {
+    "status": "pending | linked | expired",
+    "linkedAt": "2026-11-21T10:05:00Z",
+    "recipientCount": 1,
+    "subscribedGuids": ["string"],
+    "confirmationSent": true,
+    "confirmationPending": false,
+    "confirmationError": null,
+    "deliveryEnabled": false
+  }
+}
+```
+
+A consumed code reads `linked` permanently, not `expired` once its TTL passes — the wizard polls
+after the link already worked.
+
+`confirmationSent` is the real proof: the confirmation message is sent server-side at the
+instant the chat is proven reachable, by the link path and not by the digest cron.
+`confirmationPending` is the third state between those two — the code is marked consumed before
+the send is attempted, so a poll can legitimately land on neither sent nor failed, and the
+client must wait there rather than report a failure. `deliveryEnabled` reflects `DIGEST_ENABLED`
+**and** `DIGEST_DRY_RUN`, so the wizard's last step can say sending is turned off on this server
+rather than promise briefings that will never arrive.
+
+`subscribedGuids` is the children the server actually registered, scoped to this code's own
+choice and to rows still switched on. It is **not** always what the parent ticked: a child whose
+roster links moved between minting and START is skipped, and the client must name these rather
+than its own selection or it will contradict the Telegram message the same link just sent.
+
+Only a **private** chat is bound. A `/start` from a group or channel — which a forwarded deep
+link reaches — is refused with a note and leaves the code unspent, because binding there would
+send every future digest, naming a child, to everyone in that group.
+
+### DELETE /api/v1/digest/telegram-links
+
+Removes every `telegram` recipient row the caller owns, and their link codes. A parent's chat
+id is personal data, so "disconnect" means it stops being stored, not that it is disabled.
+Turning off one child stays `PATCH /api/v1/digest/recipients/:id`.
+
 ### POST /api/v1/digest/runs
 
 Rate-limited to 5/min, tighter than the global 50/min, because it spends model tokens and
@@ -923,5 +1017,5 @@ return 403 otherwise.
 6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects`, `/children/notices`, and `/children/timetable` return full lists (no pagination needed at current data scale).
 7. **Read/handled state** — implemented directly on items (`isNew`, `isArchived` fields on `homework_item` and `behavior_item`; `isNew` on `mail_conversation`). There is no separate `read_state` table in Phase 1. State is household-global.
 8. **Digest deadlines** — the `צפי הגשה` date in a digest message is an *estimate*, never a due date. Mashov exposes no homework due-date field; the estimate comes from an explicit deadline written in the Hebrew text when there is one, else the group's next lesson from the timetable. ADR-0027 records this departure from the requirement not to promise due-soon logic.
-9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. The API validates that `studentGuid` is on the active roster and records the creating `userId`, but nothing prevents a row for another household's child. ADR-0026 documents the limitation.
+9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. Every route that creates one validates that `studentGuid` is on the **active** roster and that the caller's own connections list the child (`ownsStudentForDelivery`, the ADR-0031 link set), answering `400` and `403 FORBIDDEN` respectively; the creating `userId` is recorded and scopes every mutation and the delivery history. That check is deliberately **stricter than the read side**: `canSeeStudent` admits a child no connection lists, because on a read "ownership unknown" must not empty the app, but a write that starts pushing a child's conduct record to a messaging app refuses it — otherwise any authenticated parent could claim an unattributed child. The cost is that on a roster that has never been attributed, a parent must wait for a successful roster sync before subscribing. ADR-0033 closed the cross-household hole ADR-0026 had accepted.
 10. **Timetable** — synced weekly (Sunday 03:00). The `day` field uses Israeli school week: 1=Sunday, 2=Monday, …, 6=Friday. Frontend should handle the case where `data` is empty (sync not yet run or source returned no data).

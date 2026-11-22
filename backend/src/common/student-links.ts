@@ -88,6 +88,43 @@ export async function canSeeStudent(
 }
 
 /**
+ * Whether a user may *act* on one child — a deliberately stricter question
+ * than whether they may read them.
+ *
+ * `canSeeStudent` admits a child with no links at all, and must: on the read
+ * side "ownership unknown" means "link on the next roster refresh", and
+ * excluding those children would empty the app on a deployment that has not
+ * re-synced. The shared env-credential session legitimately writes children it
+ * cannot attribute, so that state is normal rather than exceptional.
+ *
+ * On a write that starts pushing a child's behaviour record out to a messaging
+ * app, the safe failure is the other way round. An unattributed child belongs
+ * to nobody until a roster refresh says otherwise, so nobody gets to point them
+ * at their own phone — because the cost of being wrong is not a row a parent
+ * should not have seen, it is another family's children's conduct reports
+ * arriving on a stranger's phone every afternoon until somebody notices.
+ *
+ * The cost of this strictness, stated plainly: on a deployment whose roster has
+ * never been attributed, a parent sees their children in the app and cannot
+ * subscribe them until the next successful roster sync writes the links. That
+ * is the right way round to fail. See ADR-0033.
+ */
+export async function ownsStudentForDelivery(
+  prisma: PrismaService,
+  userId: string,
+  studentGuid: string,
+): Promise<boolean> {
+  const links = await prisma.studentConnection.findMany({
+    where: { studentGuid },
+    select: { householdConnectionId: true },
+  });
+  if (links.length === 0) return false;
+
+  const connectionIds = new Set(await activeConnectionIdsFor(prisma, userId));
+  return links.some((link) => connectionIds.has(link.householdConnectionId));
+}
+
+/**
  * Record that a connection's login roster lists these children.
  *
  * Upsert, never replace: the update branch touches `lastSeenInRosterAt` and

@@ -4,17 +4,27 @@ import type { PrismaService } from '../prisma/prisma.service';
 const NOW = new Date('2026-11-17T02:00:00Z');
 /** 90 days before the Jerusalem school day containing NOW. */
 const CUTOFF = new Date('2026-08-19T00:00:00Z');
+/** 7 days before NOW, to the second: createdAt is a timestamp, not @db.Date. */
+const CODE_CUTOFF = new Date('2026-11-10T02:00:00Z');
 
 function makeHarness() {
   const reportedDelete = jest.fn().mockResolvedValue({ count: 12 });
   const deliveryDelete = jest.fn().mockResolvedValue({ count: 5 });
+  const linkCodeDelete = jest.fn().mockResolvedValue({ count: 3 });
 
   const prisma = {
     digestReportedItem: { deleteMany: reportedDelete },
     digestDelivery: { deleteMany: deliveryDelete },
+    telegramLinkCode: { deleteMany: linkCodeDelete },
   } as unknown as PrismaService;
 
-  return { prisma, reportedDelete, deliveryDelete, service: new DigestRetentionService(prisma) };
+  return {
+    prisma,
+    reportedDelete,
+    deliveryDelete,
+    linkCodeDelete,
+    service: new DigestRetentionService(prisma),
+  };
 }
 
 describe('DigestRetentionService.prune', () => {
@@ -38,12 +48,25 @@ describe('DigestRetentionService.prune', () => {
     });
   });
 
+  it('deletes telegram link codes on a much shorter cutoff than the history', async () => {
+    // A code is dead the moment it is consumed or expires -- minutes, not
+    // months -- and a parent who abandons the wizard leaves one behind. 90 days
+    // of them would be 90 days of live-looking credentials.
+    const harness = makeHarness();
+
+    await harness.service.prune(NOW);
+
+    expect(harness.linkCodeDelete).toHaveBeenCalledWith({
+      where: { createdAt: { lt: CODE_CUTOFF } },
+    });
+  });
+
   it('reports how much it removed', async () => {
     const harness = makeHarness();
 
     const result = await harness.service.prune(NOW);
 
-    expect(result).toEqual({ reportedItems: 12, deliveries: 5 });
+    expect(result).toEqual({ reportedItems: 12, deliveries: 5, linkCodes: 3 });
   });
 
   it('keeps pruning deliveries when the reported-item delete fails', async () => {
@@ -55,7 +78,17 @@ describe('DigestRetentionService.prune', () => {
     const result = await harness.service.prune(NOW);
 
     expect(harness.deliveryDelete).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ reportedItems: 0, deliveries: 5 });
+    expect(result).toEqual({ reportedItems: 0, deliveries: 5, linkCodes: 3 });
+  });
+
+  it('keeps pruning link codes when the delivery delete fails', async () => {
+    const harness = makeHarness();
+    harness.deliveryDelete.mockRejectedValue(new Error('deadlock detected'));
+
+    const result = await harness.service.prune(NOW);
+
+    expect(harness.linkCodeDelete).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ reportedItems: 12, deliveries: 0, linkCodes: 3 });
   });
 
   it('cuts off on a date boundary, not a timestamp', async () => {

@@ -164,11 +164,15 @@ child gets one only if an enabled `digest_recipient` row exists for it. That mak
 strictly opt-in, which is the right default for pushing a child's behavior data to a messaging
 app, and it keeps the model bill at zero for families who have not asked for it.
 
-**The limitation this accepts:** nothing stops user A creating a recipient row for user B's
-child, because there is no FK to validate against. The mitigations are what is available — the
-`studentGuid` must be on the active roster, and the creating `userId` is recorded on every row,
-so every row is attributable. **A real ownership model is separate work and should be its
-own piece of work before this is exposed to more than one household.**
+**The limitation this accepted — now closed.** As written, nothing stopped user A creating a
+recipient row for user B's child, because there was no FK to validate against; the mitigations
+were that the `studentGuid` had to be on the active roster and the creating `userId` was
+recorded on every row, so every row was attributable. That was tolerable only while recipients
+were operator-inserted rows. **ADR-0031 supplied the missing edge** — `StudentConnection` is
+the set of connections that may see a child — and **ADR-0033 supersedes this paragraph**:
+`DigestRecipientService.create` now calls `canSeeStudent(prisma, userId, studentGuid)` and
+answers `403` for a child outside the caller's own visibility set. Roster membership is still
+checked, but it is no longer the only check.
 
 What the missing FK does *not* excuse is the manual-run endpoint. `POST /digest/runs` takes a
 `studentGuid` in its body, and a run both spends model tokens and sends real messages — so a
@@ -208,12 +212,13 @@ Delivery is now per-recipient. What is still missing is a permanent-vs-transient
 a `403 bot was blocked` is retried on the same cadence as a `503`, forever, with no
 consecutive-failure counter and no auto-disable.
 
-**Ownership, partially tightened.** Recipient mutations and delivery history are scoped by the
-creating `userId`, because a `digest_delivery` row carries `messageText` — the rendered
-behavior remarks that were sent to a parent — and one household could otherwise read another's
-or silently disable its digest. This does **not** amount to an ownership model: creation is
-still validated only against the global active roster, so a user can still register a recipient
-for another household's child. That remains separate work.
+**Ownership, tightened — and since closed.** Recipient mutations and delivery history are
+scoped by the creating `userId`, because a `digest_delivery` row carries `messageText` — the
+rendered behavior remarks that were sent to a parent — and one household could otherwise read
+another's or silently disable its digest. At the time this ADR was written that did **not**
+amount to an ownership model, because creation was validated only against the global active
+roster. ADR-0033 closes it: creation is validated against `canSeeStudent`, so a user can no
+longer register a recipient for another household's child.
 
 **Silence is no longer unqualified.** A run that finds nothing now distinguishes a genuinely
 quiet day from one where the school data has not synced successfully for hours, recording

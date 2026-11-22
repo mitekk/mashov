@@ -90,6 +90,12 @@ services:
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
+      # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
+      # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
+      # it starts, and the mint route answers 503.
+      TELEGRAM_LINK_CODE_TTL_MINUTES: ${TELEGRAM_LINK_CODE_TTL_MINUTES:-15}
+      TELEGRAM_POLL_TIMEOUT_SECONDS: ${TELEGRAM_POLL_TIMEOUT_SECONDS:-30}
+      TELEGRAM_POLL_ENABLED: ${TELEGRAM_POLL_ENABLED:-true}
       # Secrets. Never logged; see the note in ADR-0026 about ops/ having no
       # secrets-management path for them yet.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -100,7 +106,12 @@ services:
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
     restart: unless-stopped
     ports:
-      - "3001:3000"
+      # Parameterised for the same reason as DB_PORT above: a hardcoded publish
+      # made the whole stack unliftable when another checkout of this project
+      # already held the port, rather than failing only that one mapping. The
+      # frontend proxy reaches the backend as `backend:3000` on the compose
+      # network, so BACKEND_PORT moves the host side only.
+      - "${BACKEND_PORT:-3001}:3000"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/health').then((r) => process.exit(r.status >= 500 ? 1 : 0)).catch(() => process.exit(1))\""]
       interval: 10s
@@ -138,7 +149,7 @@ services:
       # mashov-e2e-browser user agent walks straight past the auth guard.
       ENABLE_E2E_AUTH_BYPASS: "${ENABLE_E2E_AUTH_BYPASS:-0}"
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null --tries=1 http://127.0.0.1:3000/api/health || exit 1"]
       interval: 10s

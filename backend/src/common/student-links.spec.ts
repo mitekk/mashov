@@ -3,6 +3,7 @@ import {
   canSeeStudent,
   connectionStudentWhere,
   linkStudentsToConnection,
+  ownsStudentForDelivery,
   visibleStudentWhere,
 } from './student-links';
 
@@ -176,5 +177,58 @@ describe('connectionStudentWhere', () => {
         { links: { none: {} } },
       ],
     });
+  });
+});
+
+describe('ownsStudentForDelivery', () => {
+  it('lets a user act on a child linked to their own connection', async () => {
+    const { prisma } = makePrisma({
+      connections: [{ id: CONN_A }],
+      links: [{ householdConnectionId: CONN_A }],
+    });
+
+    await expect(ownsStudentForDelivery(prisma, 'user-a', 'guid-1')).resolves.toBe(true);
+  });
+
+  it('lets BOTH parents act on a child their two connections share', async () => {
+    const shared = {
+      links: [{ householdConnectionId: CONN_A }, { householdConnectionId: CONN_B }],
+    };
+
+    const a = makePrisma({ connections: [{ id: CONN_A }], ...shared });
+    const b = makePrisma({ connections: [{ id: CONN_B }], ...shared });
+
+    await expect(ownsStudentForDelivery(a.prisma, 'user-a', 'guid-1')).resolves.toBe(true);
+    await expect(ownsStudentForDelivery(b.prisma, 'user-b', 'guid-1')).resolves.toBe(true);
+  });
+
+  it('refuses a child only another household lists', async () => {
+    const { prisma } = makePrisma({
+      connections: [{ id: CONN_A }],
+      links: [{ householdConnectionId: CONN_B }],
+    });
+
+    await expect(ownsStudentForDelivery(prisma, 'user-a', 'guid-1')).resolves.toBe(false);
+  });
+
+  it('REFUSES a child with no links at all, unlike canSeeStudent', async () => {
+    // The whole reason this function exists. On the read side an unattributed
+    // child is admitted, because "ownership unknown" must not empty the app.
+    // On a write that starts pushing a child's behaviour record to a messaging
+    // app, the safe failure is the other way round: nobody owns a child the
+    // roster cannot attribute, so nobody gets to point them at their phone.
+    const { prisma } = makePrisma({ connections: [{ id: CONN_A }], links: [] });
+
+    await expect(canSeeStudent(prisma, 'user-a', 'guid-1')).resolves.toBe(true);
+    await expect(ownsStudentForDelivery(prisma, 'user-a', 'guid-1')).resolves.toBe(false);
+  });
+
+  it('refuses when the caller has no active connections at all', async () => {
+    const { prisma } = makePrisma({
+      connections: [],
+      links: [{ householdConnectionId: CONN_A }],
+    });
+
+    await expect(ownsStudentForDelivery(prisma, 'user-a', 'guid-1')).resolves.toBe(false);
   });
 });

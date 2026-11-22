@@ -696,3 +696,78 @@ export interface SyncStatus {
   currentTask?: string | null;
   tasks?: SyncTaskProgress[];
 }
+
+// --- Telegram updates -------------------------------------------------------
+//
+// A parent connects their own Telegram in `/more` rather than an operator
+// inserting a chat id by hand. See ADR-0033.
+
+/** One child's subscription to a delivery channel. */
+export interface DigestRecipient {
+  id: string;
+  userId: string;
+  studentGuid: string;
+  /** 'telegram' today; the backend's DigestSender interface allows more. */
+  channel: string;
+  /** Telegram chat id. */
+  address: string;
+  displayName: string | null;
+  enabled: boolean;
+  activeFrom: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DigestRecipientsResponse {
+  data: DigestRecipient[];
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+
+export interface DigestRecipientResponse {
+  data: DigestRecipient;
+}
+
+/** A freshly minted one-time link, and where to send the parent with it. */
+export interface TelegramLink {
+  code: string;
+  deepLink: string;
+  botUsername: string;
+  expiresAt: string;
+}
+
+export interface TelegramLinkResponse {
+  data: TelegramLink;
+}
+
+export type TelegramLinkStatus = 'pending' | 'linked' | 'expired';
+
+export interface TelegramLinkState {
+  status: TelegramLinkStatus;
+  linkedAt: string | null;
+  recipientCount: number;
+  /** The confirmation message the backend sends the instant the chat is bound. */
+  confirmationSent: boolean;
+  /**
+   * Bound, but the confirmation has neither landed nor failed yet. The backend
+   * marks the code consumed before it has tried to send, so this is the state
+   * to wait in rather than resolve pessimistically.
+   */
+  confirmationPending: boolean;
+  confirmationError: string | null;
+  /**
+   * The children the server actually subscribed, which is not always what the
+   * parent ticked: one whose roster links moved between minting and START is
+   * skipped. The last step names these.
+   */
+  subscribedGuids: string[];
+  /**
+   * Whether this server will actually send briefings from here on --
+   * DIGEST_ENABLED and not DIGEST_DRY_RUN. The last step says so plainly rather
+   * than promising messages that will never arrive.
+   */
+  deliveryEnabled: boolean;
+}
+
+export interface TelegramLinkStateResponse {
+  data: TelegramLinkState;
+}

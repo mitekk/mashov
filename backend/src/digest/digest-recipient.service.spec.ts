@@ -13,11 +13,34 @@ const RECIPIENT = {
   activeFrom: new Date('2026-11-17T00:00:00Z'),
 };
 
-function makeHarness(options: { roster?: string[]; existing?: unknown } = {}) {
+function makeHarness(
+  options: {
+    roster?: string[];
+    existing?: unknown;
+    /** studentGuid -> the connections that list the child. */
+    links?: { studentGuid: string; householdConnectionId: string }[];
+    /** The caller's own active connections. */
+    connections?: string[];
+  } = {},
+) {
   const roster = options.roster ?? ['stu-1'];
+  // Visibility is the link set, not the routing stamp (ADR-0031). By default
+  // the child under test is one the caller can see.
+  const links = options.links ?? [{ studentGuid: 'stu-1', householdConnectionId: 'conn-1' }];
+  const connections = options.connections ?? ['conn-1'];
   // `?? RECIPIENT` would defeat the point: null is the case under test.
   const existing = 'existing' in options ? options.existing : RECIPIENT;
   const prisma = {
+    studentConnection: {
+      findMany: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { studentGuid: string } }) =>
+          links.filter((link) => link.studentGuid === where.studentGuid),
+        ),
+    },
+    householdConnection: {
+      findMany: jest.fn().mockResolvedValue(connections.map((id) => ({ id }))),
+    },
     student: {
       findMany: jest
         .fn()
@@ -31,6 +54,7 @@ function makeHarness(options: { roster?: string[]; existing?: unknown } = {}) {
     digestRecipient: {
       create: jest.fn().mockResolvedValue(RECIPIENT),
       findMany: jest.fn().mockResolvedValue([RECIPIENT]),
+      count: jest.fn().mockResolvedValue(1),
       findUnique: jest.fn().mockResolvedValue(existing),
       update: jest.fn().mockResolvedValue({ ...RECIPIENT, enabled: false }),
       delete: jest.fn().mockResolvedValue(RECIPIENT),
@@ -62,8 +86,6 @@ describe('DigestRecipientService', () => {
   });
 
   it('refuses a studentGuid that is not on the active roster', async () => {
-    // Student has no userId FK, so this check plus the recorded userId is the
-    // only validation available. See ADR-0026.
     const harness = makeHarness({ roster: ['other-child'] });
 
     await expect(
@@ -73,6 +95,45 @@ describe('DigestRecipientService', () => {
         address: '12345',
       }),
     ).rejects.toThrow(BadRequestException);
+    expect(harness.prisma.digestRecipient.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a child on the roster that the caller cannot see', async () => {
+    // The roster check alone was ADR-0026's accepted hole: it let one parent
+    // point another family's child at their own Telegram chat. A UI creates
+    // these rows now, so visibility is checked, not just roster membership.
+    const harness = makeHarness({
+      links: [{ studentGuid: 'stu-1', householdConnectionId: 'someone-elses-conn' }],
+      connections: ['conn-1'],
+    });
+
+    await expect(
+      harness.service.create('user-1', {
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address: '12345',
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(harness.prisma.digestRecipient.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a child no connection lists yet', async () => {
+    // The read side admits an unattributed child, and must: "ownership
+    // unknown" means "link on the next roster refresh", and excluding them
+    // would empty the app on a roster that has not been attributed. This is a
+    // write that starts pushing that child's conduct record to a messaging
+    // app, so it fails the other way round -- otherwise any authenticated
+    // parent could point an unattributed child's digests at their own phone.
+    // Hence ownsStudentForDelivery rather than canSeeStudent.
+    const harness = makeHarness({ links: [] });
+
+    await expect(
+      harness.service.create('user-1', {
+        studentGuid: 'stu-1',
+        channel: 'telegram',
+        address: '12345',
+      }),
+    ).rejects.toThrow(ForbiddenException);
     expect(harness.prisma.digestRecipient.create).not.toHaveBeenCalled();
   });
 
@@ -103,12 +164,56 @@ describe('DigestRecipientService', () => {
   it('lists the recipients for one child', async () => {
     const harness = makeHarness();
 
-    const listed = await harness.service.listFor('stu-1', 'user-1');
+    const listed = await harness.service.list({ userId: 'user-1', studentGuid: 'stu-1' });
 
-    expect(listed).toHaveLength(1);
+    expect(listed.data).toHaveLength(1);
     expect((harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where).toMatchObject(
       { studentGuid: 'stu-1', userId: 'user-1' },
     );
+  });
+
+  it('lists everything the caller is subscribed to when no child is named', async () => {
+    // The /more card asks "what am I subscribed to" without naming a child, so
+    // the studentGuid filter has to be omittable rather than required.
+    const harness = makeHarness();
+
+    await harness.service.list({ userId: 'user-1' });
+
+    const where = (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where;
+    expect(where).toEqual({ userId: 'user-1' });
+  });
+
+  it('answers with the pagination envelope the API rules require', async () => {
+    // `.claude/rules/api.md`: a list route is always paginated and never
+    // returns an unbounded list. This one was the exception, and a household
+    // that accumulates recipient rows over years is exactly who pays for it.
+    const harness = makeHarness();
+    (harness.prisma.digestRecipient.count as jest.Mock).mockResolvedValue(43);
+
+    const listed = await harness.service.list({ userId: 'user-1' });
+
+    expect(listed.pagination).toEqual({ page: 1, limit: 20, total: 43, totalPages: 3 });
+  });
+
+  it('skips and takes the page it was asked for', async () => {
+    const harness = makeHarness();
+
+    await harness.service.list({ userId: 'user-1', page: 3, limit: 10 });
+
+    const args = (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0];
+    expect(args.skip).toBe(20);
+    expect(args.take).toBe(10);
+  });
+
+  it('counts only the caller’s own rows, not every household’s', async () => {
+    const harness = makeHarness();
+
+    await harness.service.list({ userId: 'user-1', studentGuid: 'stu-1' });
+
+    expect((harness.prisma.digestRecipient.count as jest.Mock).mock.calls[0][0].where).toEqual({
+      userId: 'user-1',
+      studentGuid: 'stu-1',
+    });
   });
 
   it('updates the enabled flag', async () => {
@@ -164,7 +269,7 @@ describe('DigestRecipientService', () => {
   it('lists only the recipients the caller created for that child', async () => {
     const harness = makeHarness();
 
-    await harness.service.listFor('stu-1', 'user-1');
+    await harness.service.list({ userId: 'user-1', studentGuid: 'stu-1' });
 
     expect(
       (harness.prisma.digestRecipient.findMany as jest.Mock).mock.calls[0][0].where,

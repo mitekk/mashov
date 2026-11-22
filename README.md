@@ -80,8 +80,8 @@ docker compose up --build   # db, redis, backend, frontend (hot reload via the o
 
 | Service | URL | Notes |
 |---|---|---|
-| Frontend (Next.js) | <http://localhost:3000> | the app |
-| Backend (NestJS) | <http://localhost:3001> | health check at `/health` |
+| Frontend (Next.js) | <http://localhost:3000> | the app; host port overridable with `FRONTEND_PORT` |
+| Backend (NestJS) | <http://localhost:3001> | health check at `/health`; host port overridable with `BACKEND_PORT` |
 | PostgreSQL | `localhost:5432` | host port overridable with `DB_PORT` |
 | Redis | `localhost:6379` | cache + sessions |
 
@@ -168,6 +168,8 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 | Variable | What | Default |
 |---|---|---|
 | `DB_PORT` | host port the Postgres container publishes on. Containers always reach the database as `db:5432`, so this moves the host side only — set it when something else already holds 5432. | `5432` |
+| `BACKEND_PORT` | host port the backend publishes on. The frontend proxy always reaches it as `backend:3000`, so this moves the host side only — set it to lift a second copy of the stack (a worktree, say) beside a running one. | `3001` |
+| `FRONTEND_PORT` | host port the frontend publishes on, same rationale as `BACKEND_PORT`. | `3000` |
 | `MASHOV_BASE_URL` | upstream Mashov origin | `https://web.mashov.info` |
 | `HTTPS_PROXY` | egress proxy for Mashov calls — **required in production** | unset |
 | `MASHOV_TIMEOUT_MS` | wall-clock bound per Mashov request | `10000` |
@@ -183,7 +185,8 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 A per-child Hebrew briefing, pushed hourly from 13:00 to 19:00 Asia/Jerusalem — but only when
 that child has something unreported. Nothing new means no model call, no message, no cost.
 Delivery is opt-in per child: a child gets a digest only if an enabled recipient row exists for
-it (`POST /api/v1/digest/recipients`).
+it. A parent creates those rows themselves, in `עוד` → `עדכונים בטלגרם` — see
+**Connecting a parent's Telegram** below.
 
 | Variable | What | Default |
 |---|---|---|
@@ -197,7 +200,10 @@ it (`POST /api/v1/digest/recipients`).
 | `DIGEST_LLM_EFFORT` | how hard it thinks first — `low`/`medium`/`high`/`xhigh`/`max` | `low` |
 | `DIGEST_LLM_TIMEOUT_MS` | bound per summarization call | `30000` |
 | `ANTHROPIC_API_KEY` | **secret.** Omit it and the digest still sends, using the deterministic renderer | unset |
-| `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather | unset |
+| `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather. Also the master switch for the link wizard: without it the mint route answers `503` and the poller never starts | unset |
+| `TELEGRAM_LINK_CODE_TTL_MINUTES` | how long a one-time link code stays valid | `15` |
+| `TELEGRAM_POLL_TIMEOUT_SECONDS` | how long each `getUpdates` long poll waits | `30` |
+| `TELEGRAM_POLL_ENABLED` | set `false` to stop polling — required if you ever set a webhook on the bot, since Telegram refuses `getUpdates` while one is active | `true` |
 
 Both defaults are deliberately inert: merging the feature changes nothing until `DIGEST_ENABLED`
 is `true`, and even then `DIGEST_DRY_RUN` keeps it from messaging anyone until you set it to
@@ -213,6 +219,40 @@ timeout, refusal, malformed output — falls back to deterministic Hebrew and st
 > field, only when the work was given. The digest estimates from an explicit date written in the
 > teacher's text, else the group's next lesson, and labels it as an estimate.
 > See [ADR-0027](docs/adr/0027-derived-homework-deadlines.md).
+
+### Connecting a parent's Telegram
+
+A parent opens `עוד` → `עדכונים בטלגרם`, picks which children to hear about, taps one button,
+and presses START in Telegram. They type nothing: the backend reads their chat id out of that
+START and writes the recipient rows itself. Per-child toggles and a disconnect live back in
+`עוד` afterwards.
+
+A Telegram bot can never start a conversation — it may only message a chat that has already
+pressed START on it — so that press is unavoidable in any design. What this avoids is making
+the parent *also* find `@userinfobot` and retype a number, which buys nothing and verifies
+nothing.
+
+Setting it up as an operator is one step: get a token from `@BotFather` and set
+`TELEGRAM_BOT_TOKEN`. The bot's `@username` is read from Telegram's own `getMe`, not
+configured, so it cannot drift from the deployed token. Without a token the wizard says the
+server is not set up for Telegram rather than rendering a dead link.
+
+The chat id arrives over `getUpdates` long-polling, not a webhook: a webhook needs a public
+HTTPS URL Telegram can reach, and this stack is local Docker behind NAT. The two are **mutually
+exclusive on one bot** — if you ever call `setWebhook`, set `TELEGRAM_POLL_ENABLED=false`, and
+only one backend replica may poll. See
+[ADR-0033](docs/adr/0033-parent-driven-telegram-linking.md).
+
+> **The link code is a credential.** A guessed code would bind the guesser's own chat to another
+> family's account and start streaming that family's children's behaviour reports to them.
+> Hence 16 random bytes, single-use, a 15-minute TTL, and a rate-limited mint route. Only a
+> private Telegram chat can be bound — a forwarded deep link tapped in a group is refused.
+
+Subscribing a child requires that one of the parent's own connections lists them, which is
+stricter than being able to *see* them: a child no connection lists yet is visible in the app
+but cannot be subscribed until the next successful roster sync attributes them. That is
+deliberate — the cost of guessing wrong here is another family's conduct reports on a
+stranger's phone.
 
 To try it on your own machine — including the Telegram RTL check, which no test can make —
 follow [docs/ops/digest-local-test.md](docs/ops/digest-local-test.md). It seeds a synthetic

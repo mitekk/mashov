@@ -62,26 +62,27 @@ model HouseholdConnection {
 }
 
 model AppUser {
-  id               String                @id @default(uuid())
-  mashovUserId     String                @unique
+  id                String                @id @default(uuid())
+  mashovUserId      String                @unique
   /// The school of the credential that CREATED this row -- an origin marker,
   /// not a scope. A household can hold connections to several schools, so this
   /// answers "which account opened the account", nothing more. Read nowhere in
   /// src/ outside the upstream school list; never use it to decide what a user
   /// may see. Ownership lives on HouseholdConnection.userId.
-  semel            Int
+  semel             Int
   /// Set when this AppUser's only connection was absorbed into another
   /// household, pointing at the household that now owns it. Sign-in follows it
   /// exactly one hop; the row is kept because AppSession and UserItemState
   /// reference it and the pointer is the audit trail. See ADR-0029.
-  mergedIntoUserId String?
-  username         String
-  displayName      String
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
-  sessions         AppSession[]
-  connections      HouseholdConnection[]
-  digestRecipients DigestRecipient[]
+  mergedIntoUserId  String?
+  username          String
+  displayName       String
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  sessions          AppSession[]
+  connections       HouseholdConnection[]
+  digestRecipients  DigestRecipient[]
+  telegramLinkCodes TelegramLinkCode[]
 
   @@map("app_user")
 }
@@ -624,6 +625,45 @@ model DigestRecipient {
   @@index([studentGuid, enabled])
   @@index([userId])
   @@map("digest_recipient")
+}
+
+/// A one-time code that binds a parent's Telegram chat to their AppUser.
+///
+/// The parent gets `https://t.me/<bot>?start=<code>` and presses START; the
+/// long poller reads `message.chat.id` out of that update and matches the code
+/// here. Postgres rather than Redis for two reasons: ADR-0017 forbids durable
+/// state in Redis, and this cache runs `allkeys-lru` with no persistence, so an
+/// evicted code would be a START that matches nothing and a parent stuck on the
+/// wizard's third step with no way forward.
+///
+/// The code is a credential: guessing one binds the guesser's own chat to a
+/// victim's userId and starts streaming that family's children's behaviour
+/// reports to a stranger. Hence 16 random bytes, single-use via `consumedAt`,
+/// a short TTL, and a throttled mint route. See ADR-0033.
+model TelegramLinkCode {
+  id                 String    @id @default(cuid())
+  code               String    @unique
+  userId             String
+  /// The children this link was minted for -- the parent's step-2 choice. The
+  /// START arrives server-side with no browser attached, so the intent has to
+  /// travel on the row. Re-validated against the caller's visibility set at
+  /// consume time, because the roster can change in between.
+  studentGuids       String[]
+  expiresAt          DateTime
+  /// Set in the same conditional update that matches the code, which is what
+  /// makes a replayed START a no-op rather than a second binding.
+  consumedAt         DateTime?
+  /// Telegram chat id, written at consume time. The wizard's poll reads this
+  /// row to know the link resolved.
+  chatId             String?
+  confirmationSentAt DateTime?
+  confirmationError  String?
+  createdAt          DateTime  @default(now())
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("telegram_link_code")
 }
 
 /// One row per (item, reason) already reported to a parent. This is the dedup

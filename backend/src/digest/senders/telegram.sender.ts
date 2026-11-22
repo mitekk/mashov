@@ -1,30 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance } from 'axios';
+import { AxiosInstance } from 'axios';
+import {
+  TelegramEnvelope,
+  botPath,
+  createTelegramHttp,
+  describeTelegramError,
+  redact,
+} from '../../telegram/telegram-http';
 import { DigestSender } from './digest-sender.interface';
-
-const TELEGRAM_API_ROOT = 'https://api.telegram.org';
-const SEND_TIMEOUT_MS = 15_000;
-
-interface TelegramResponse {
-  ok: boolean;
-  description?: string;
-}
 
 /**
  * Delivers a digest through the Telegram Bot API.
  *
- * Two things here are deliberate and load-bearing.
- *
- * `proxy: false` -- HTTPS_PROXY is process-wide and plain axios honours it.
- * ADR-0023's egress hop is a single residential tinyproxy with a 10s
- * AbortSignal and no retry-on-abort, meant only for Mashov. A parent's message
- * must never traverse it, so the proxy is switched off explicitly rather than
- * left to the environment.
- *
- * The bot token is kept out of `baseURL` and put on each request path instead.
- * An axios error carries `config.url`, which ends up in logs and error
- * trackers; a token in the base URL would be in every one of them.
+ * The axios instance comes from `telegram-http.ts`, which owns the two
+ * load-bearing decisions -- `proxy: false` so a parent's message never crosses
+ * ADR-0023's Mashov-only residential hop, and the token on the request path
+ * rather than in `baseURL` so it stays out of `config.url` in every log line.
+ * One place owns them because the link poller makes the same calls.
  */
 @Injectable()
 export class TelegramSender implements DigestSender {
@@ -33,11 +26,7 @@ export class TelegramSender implements DigestSender {
   private readonly http: AxiosInstance;
 
   constructor(private readonly config: ConfigService) {
-    this.http = axios.create({
-      baseURL: TELEGRAM_API_ROOT,
-      timeout: SEND_TIMEOUT_MS,
-      proxy: false,
-    });
+    this.http = createTelegramHttp();
   }
 
   async send(address: string, text: string): Promise<void> {
@@ -49,10 +38,10 @@ export class TelegramSender implements DigestSender {
     // The transport call and the ok-check are deliberately not in the same
     // try: a `throw` for ok=false inside it would be caught by its own catch
     // and re-described as a transport failure, losing Telegram's reason.
-    let data: TelegramResponse | undefined;
+    let data: TelegramEnvelope<unknown> | undefined;
     try {
-      const response = await this.http.post<TelegramResponse>(
-        `/bot${token.trim()}/sendMessage`,
+      const response = await this.http.post<TelegramEnvelope<unknown>>(
+        botPath(token, 'sendMessage'),
         {
           chat_id: address,
           // No parse_mode on purpose: Telegram rejects an entire message whose
@@ -64,7 +53,7 @@ export class TelegramSender implements DigestSender {
       );
       data = response.data;
     } catch (error) {
-      throw new Error(`Telegram send failed: ${redact(describeError(error), token)}`);
+      throw new Error(`Telegram send failed: ${redact(describeTelegramError(error), token)}`);
     }
 
     if (data?.ok !== true) {
@@ -75,21 +64,4 @@ export class TelegramSender implements DigestSender {
       throw new Error(`Telegram send failed: ${redact(described, token)}`);
     }
   }
-}
-
-function describeError(error: unknown): string {
-  if (axios.isAxiosError(error)) {
-    const description = (error.response?.data as TelegramResponse | undefined)?.description;
-    return description ?? `HTTP ${error.response?.status ?? 'unknown'}`;
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Axios puts the request URL into both the error message and `config.url`, and
- * those reach logs and error trackers. The token is redacted from whatever text
- * we extract rather than trusted not to be in it.
- */
-function redact(text: string, token: string): string {
-  return text.split(token.trim()).join('[redacted]');
 }

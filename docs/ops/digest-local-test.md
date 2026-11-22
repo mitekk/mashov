@@ -106,33 +106,62 @@ the same message. That is what keeps a dry run from silencing the first real
 send.
 
 > **An integration run wipes this.** `tests/integration` runs
-> `prisma db push --force-reset`, which drops and recreates the database — so a
-> real chat id you set below is gone afterwards and the seed restores the
-> placeholder. Re-point `digest_recipient.address` after any integration run.
+> `prisma db push --force-reset`, which drops and recreates the database — so the
+> chat id the wizard bound below is gone afterwards and the seed restores the
+> placeholder. Re-run the wizard after any integration run.
 
 ## 4. Real Telegram send
 
-Get a bot token from BotFather, then message your bot once and read your chat
-id from `https://api.telegram.org/bot<TOKEN>/getUpdates`.
+**Use the wizard, not psql.** Reading your own chat id out of `getUpdates` and
+`UPDATE digest_recipient` by hand is exactly the procedure ADR-0033 replaced —
+and a chat id set by hand is the unverified-recipient problem ADR-0026 flagged,
+since a typo is indistinguishable from a correct id until a stranger receives a
+child's behaviour record.
+
+Get a bot token from `@BotFather`, put `TELEGRAM_BOT_TOKEN=...` and
+`DIGEST_DRY_RUN=false` in your `.env`, and restart:
 
 ```bash
-docker compose exec -T db psql -U postgres -d mashov \
-  -c "update digest_recipient set address='<YOUR_CHAT_ID>'
-      where id='local-digest-recipient';"
+docker compose up -d backend frontend
 ```
 
-Put `TELEGRAM_BOT_TOKEN=...` and `DIGEST_DRY_RUN=false` in your `.env`,
-restart the backend, re-seed (to clear the ledger), then run without
-`dryRun`:
+Then, in the app: `עוד` → `עדכונים בטלגרם` → pick the children → tap the button
+→ press **START** in Telegram.
+
+Three things to confirm while you are there, none of which a test covers:
+
+- the wizard advances to its last step **by itself**, with no "I pressed it"
+  button — that is the long poller having seen the START;
+- the confirmation message arrives in the real Telegram client;
+- the Hebrew renders right-to-left correctly, with the bullets and the date on
+  the correct side. This is the one thing a log cannot show you.
+
+Press START a second time: you should get a friendly "already connected" reply
+and **no** duplicate recipient rows.
+
+The seeded child is the one to pick. `backend/scripts/seed-digest-local.sql`
+leaves `digest_recipient` with a placeholder address; the wizard overwrites it
+with your real chat id through the upsert on
+`@@unique([studentGuid, channel, address])`, so pick the seeded child in step 2
+rather than editing the row.
+
+Now re-seed (to clear the ledger) and run the digest itself:
 
 ```bash
-docker compose up -d backend
 docker compose exec -T db psql -U postgres -d mashov -v ON_ERROR_STOP=1 \
   -f /dev/stdin < backend/scripts/seed-digest-local.sql
 curl -s -X POST http://localhost:3001/api/v1/digest/runs \
   -H 'Content-Type: application/json' \
   -H 'Cookie: mashov_session=local-digest-token' -d '{}'
 ```
+
+Two more checks worth making back in `עוד`: toggle one child off and re-run —
+that child must drop out of the results — and `ניתוק`, after which the
+`digest_recipient` rows and the link codes are both gone.
+
+If you have no bot token, the wizard says so on step 2 rather than offering a
+dead `t.me/undefined` link. If `DIGEST_ENABLED` is false, its last step says
+sending is turned off on this server rather than promising briefings.
 
 This is the only way to check the one thing a log cannot show you: that the
 Hebrew renders right-to-left correctly in the actual Telegram client, with
