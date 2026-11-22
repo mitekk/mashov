@@ -141,6 +141,8 @@ describe('Household merge — adding a school another household already owns', (
     await prisma.appSession.deleteMany({ where: { userId: { in: ALL_USERS } } });
     await prisma.userItemState.deleteMany({ where: { userId: { in: ALL_USERS } } });
     await prisma.digestRecipient.deleteMany({ where: { userId: { in: ALL_USERS } } });
+    await prisma.digestReportedItem.deleteMany({ where: { userId: { in: ALL_USERS } } });
+    await prisma.digestDelivery.deleteMany({ where: { userId: { in: ALL_USERS } } });
     await prisma.schoolActivity.deleteMany({ where: { userId: { in: ALL_USERS } } });
     await prisma.studentConnection.deleteMany({ where: { studentGuid: CHILD_B } });
     await prisma.student.deleteMany({ where: { studentGuid: CHILD_B } });
@@ -358,6 +360,76 @@ describe('Household merge — adding a school another household already owns', (
       where: { studentGuid: CHILD_B, address: 'hm-shared-chat' },
     });
     expect(recipients.map((row) => row.userId)).toEqual([USER_A]);
+  });
+
+  it('brings the dedup ledger and the delivery history across', async () => {
+    // The repointed recipient keeps its activeFrom, so an empty ledger at the
+    // merged household means its next run re-reports the whole active window.
+    // One item both households already hold, one only the orphan does, and one
+    // delivery row of the orphan's.
+    await seed();
+
+    await prisma.digestRecipient.create({
+      data: {
+        userId: USER_B,
+        studentGuid: CHILD_B,
+        channel: 'telegram',
+        address: 'hm-chat-ledger',
+        enabled: true,
+      },
+    });
+    for (const userId of [USER_A, USER_B]) {
+      await prisma.digestReportedItem.create({
+        data: {
+          userId,
+          studentGuid: CHILD_B,
+          itemType: 'behavior',
+          itemId: 'shared-beh',
+          contentHash: 'hm-hash-shared',
+          reportedFor: new Date('2026-11-20T00:00:00Z'),
+          confirmedAt: new Date(),
+        },
+      });
+    }
+    await prisma.digestReportedItem.create({
+      data: {
+        userId: USER_B,
+        studentGuid: CHILD_B,
+        itemType: 'homework_new',
+        itemId: 'b-only-hw',
+        contentHash: 'hm-hash-b-only',
+        reportedFor: new Date('2026-11-20T00:00:00Z'),
+        confirmedAt: new Date(),
+      },
+    });
+    await prisma.digestDelivery.create({
+      data: {
+        userId: USER_B,
+        studentGuid: CHILD_B,
+        reportFor: new Date('2026-11-20T00:00:00Z'),
+        status: 'sent',
+        messageText: 'מה שנשלח להורה של בית ספר ב',
+      },
+    });
+
+    await expect(addSchoolB(true)).resolves.toMatchObject({ semel: SEMEL_B });
+
+    const ledger = await prisma.digestReportedItem.findMany({
+      where: { studentGuid: CHILD_B },
+      orderBy: { contentHash: 'asc' },
+    });
+    // The orphan's duplicate of the shared item is dropped -- the dedup unique
+    // carries userId now, so repointing it would be a P2002 inside the merge
+    // transaction -- and everything else travels.
+    expect(ledger.map((row) => [row.userId, row.contentHash])).toEqual([
+      [USER_A, 'hm-hash-b-only'],
+      [USER_A, 'hm-hash-shared'],
+    ]);
+
+    const deliveries = await prisma.digestDelivery.findMany({
+      where: { studentGuid: CHILD_B },
+    });
+    expect(deliveries.map((row) => row.userId)).toEqual([USER_A]);
   });
 
   // The DoD's live-session case, and the reason the Redis deletes bracket the

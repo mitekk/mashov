@@ -1060,10 +1060,15 @@ describe('DigestService.runAll', () => {
     // The forms section is the one input that is per parent, so the prose --
     // which is shared between the parents of one child -- must not depend on
     // it. The deterministic Hebrew line renders the section instead.
+    // A mixed day, so the model is called at all: a day whose ONLY news is a
+    // form skips it entirely, which the next test pins.
     const harness = makeHarness({
-      candidates: [{ itemType: 'activity', itemId: '7', contentHash: 'hash-act' }],
+      candidates: [
+        BEHAVIOR_CANDIDATE,
+        { itemType: 'activity', itemId: '7', contentHash: 'hash-act' },
+      ],
+      ownedHashes: ['hash-beh', 'hash-act'],
       payload: makePayload({
-        behavior: [],
         activities: [
           {
             id: '7',
@@ -1078,7 +1083,7 @@ describe('DigestService.runAll', () => {
     await harness.service.runAll({ now: NOW });
 
     // Collected, so the section can be rendered and the claim confirmed...
-    expect((harness.collector.collect as jest.Mock).mock.calls[0][0].candidates).toHaveLength(1);
+    expect((harness.collector.collect as jest.Mock).mock.calls[0][0].candidates).toHaveLength(2);
     // ...and summarized without them.
     expect((harness.summarizer.summarize as jest.Mock).mock.calls[0][0].activities).toEqual([]);
     expect(harness.send.mock.calls[0][1]).toContain('טיול שנתי לגליל');
@@ -1197,6 +1202,37 @@ describe('DigestService.runAll', () => {
     await harness.service.runAll({ now: NOW });
 
     expect(harness.summarizer.summarize).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call the model for a run with nothing but consent forms', async () => {
+    // Forms are withheld from the summarizer, so on a day whose only news is a
+    // form the prompt carries no facts at all -- just the child's gender and
+    // the date. The model is then asked for a headline and four section lines
+    // with nothing to base them on, and `linesFor` keeps the headline it
+    // invents. One Sonnet call per run, seven times a day, for prose that is
+    // either discarded or made up.
+    const harness = makeHarness({
+      candidates: [{ itemType: 'activity', itemId: '7', contentHash: 'hash-act' }],
+      payload: makePayload({
+        behavior: [],
+        activities: [
+          {
+            id: '7',
+            title: 'טיול שנתי לגליל',
+            activityStartDate: TOMORROW,
+            endAnswerDate: TOMORROW,
+          },
+        ],
+      }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).not.toHaveBeenCalled();
+    expect(results[0].status).toBe('sent');
+    expect(results[0].usedLlm).toBe(false);
+    // The section is still there, from the deterministic line.
+    expect(harness.send.mock.calls[0][1]).toContain('טיול שנתי לגליל');
   });
 
   it('marks the delivery as not having used the model when it fell back', async () => {

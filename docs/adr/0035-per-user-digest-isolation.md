@@ -71,11 +71,17 @@ that justified it.
 
 ### Things that stayed, and why
 
-**One model call per child per run.** The summarizer never sees consent forms, so its prose covers
-only per-child facts, which are identical for both parents; the summary is memoized per child per
-run and the forms section uses the deterministic Hebrew line. Two parents of one child cost one
-Sonnet call, as before. This also removes consent-form titles from the prompt altogether, which
-ADR-0026 would have preferred.
+**One model call per child per run, and none at all on some days.** The summarizer never sees
+consent forms, so its prose covers only per-child facts, which are identical for both parents; the
+summary is memoized per child per run and the forms section uses the deterministic Hebrew line.
+Two parents of one child cost one Sonnet call, as before. This also removes consent-form titles
+from the prompt altogether, which ADR-0026 would have preferred.
+
+A run whose *only* claims are forms skips the model entirely. With the forms withheld, its prompt
+would carry no facts beyond the child's gender and the date, and the model would still be asked for
+a headline and four section lines — a headline written from nothing is a headline invented, and
+`linesFor` keeps the headline. The deterministic renderer produces the whole message instead, and
+the run records `usedLlm: false`.
 
 **The consent-form dedup still ignores `studentGuid`.** A form belongs to the parent, not the
 child, so it is mentioned once across their children — but now also once per *parent*, which is
@@ -108,6 +114,33 @@ Without that copy, the second parent's first per-user run would re-report the wh
 at them: today's behaviour, three days of newly assigned homework, fourteen days of hint-matched
 due homework, seven days of consent forms. Activity rows are excluded because their content hash
 embeds the owning `userId`, making a copy a row that parent could never compute or match.
+
+Two details that are load-bearing rather than incidental:
+
+- **"Earliest subscriber" means earliest *enabled* subscriber.** That is what the pre-deploy code
+  did (`listDeliveryTargets` read `where: { enabled: true }`, then took the earliest `activeFrom`
+  among those rows), so it is who the forms in a historic `messageText` belonged to and whose run
+  logged it. Ordering over all rows instead would attribute that message to a parent whose chat
+  was switched off, who could then read the other parent's message through
+  `GET /digest/deliveries` — this change's own leak, applied to history. `enabled` leads the
+  `ORDER BY` rather than filtering, so a child whose every chat is off still has an owner.
+- **The copy runs once, not on every boot.** `backend/Dockerfile` executes the file on every
+  container start, and the copy's justification holds only for the state the deploy inherits: once
+  the per-user code is live, a freshly confirmed row belongs to the one parent it was sent to, and
+  copying it at the next restart would silence that item for everyone else — exactly the failure
+  this change removes. So it is guarded by a marker row in a new `DataBackfill` table. The table
+  is declared in `schema.prisma` and not only in the migration because
+  `prisma db push --accept-data-loss` **drops a table the schema does not mention**, which would
+  reset the marker on every boot; that was verified against Postgres rather than assumed.
+
+The same reasoning applies to the household merge, which repoints a connection to another
+`AppUser`: `DigestReportedItem` and `DigestDelivery` now carry a `userId`, so they travel with the
+subscription. Leaving them behind would hand the merged household a recipient row with a months-old
+`activeFrom` and an empty ledger, and its next run would re-report that same window. The orphan's
+colliding ledger rows are deleted first (the dedup unique carries `userId`, so a shared child can
+hold a row under both households), by correlated subquery rather than a key list — the ledger is
+unbounded, and a list that long would eventually exceed Postgres's bind-parameter limit and break
+the merge permanently.
 
 The file has no `DELETE`. A row left at the `userId = ''` default is invisible to every per-user
 query and `DigestRetentionService` clears it within ninety days; deleting would be the one

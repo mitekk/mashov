@@ -29,6 +29,15 @@
 -- assigned homework, fourteen days of hint-matched due homework, seven days of
 -- consent forms -- as if none of it had ever been sent.
 --
+-- Step 3 is the one statement here that is NOT safe to repeat, so it is
+-- guarded by a marker row in `data_backfill`. Its justification holds only for
+-- the state this deploy inherits; once the per-user code is live, a freshly
+-- confirmed row belongs to the parent it was sent to and nobody else, and
+-- copying it on the next restart would silence that item for everyone else --
+-- the very failure this whole change removes. The marker table is declared in
+-- schema.prisma because `db push --accept-data-loss` drops a table the schema
+-- does not mention, which would reset the marker on every boot.
+--
 -- There is deliberately no DELETE anywhere in this file. A row left at
 -- `userId = ''` is invisible to every per-user query and DigestRetentionService
 -- sweeps it within ninety days. Deleting would be the one irreversible
@@ -91,18 +100,39 @@ BEGIN
     ON "digest_recipient" ("userId", "studentGuid", "channel", "address");
 END $$;
 
--- 2. Backfill: the child's earliest subscriber owns the rows that exist today,
---    because that is exactly who the pre-deploy code reported consent forms
---    for and logged deliveries as. Resolved over ALL recipient rows rather
---    than only enabled ones -- a parent who toggled their chat off still
---    received everything in the ledger -- and ordered deterministically, so a
---    second run of this file reasons identically to the first.
+-- The marker table. Repeated here with IF NOT EXISTS so the file also works
+-- standalone, the same reason the DDL above is.
+CREATE TABLE IF NOT EXISTS "data_backfill" (
+  "id"        TEXT NOT NULL,
+  "appliedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "data_backfill_pkey" PRIMARY KEY ("id")
+);
+
+-- 2. Backfill: the child's earliest ENABLED subscriber owns the rows that
+--    exist today, because that is exactly who the pre-deploy code reported
+--    consent forms for and logged deliveries as -- `listDeliveryTargets` read
+--    `where: { enabled: true }` and then took the earliest `activeFrom` among
+--    those rows.
+--
+--    `enabled` leads the ORDER BY rather than being a WHERE: a child whose
+--    every chat is switched off still has rows to attribute, and its one
+--    recipient is the only answer available. Disabled rows are only passed
+--    over while an enabled one exists.
+--
+--    Getting this wrong is not cosmetic. A `digest_delivery` row carries
+--    `messageText`, which holds the enabled parent's own unanswered consent
+--    forms, and `GET /digest/deliveries` scopes on `userId` -- so attributing
+--    history to a parent whose chat was off would hand them the other
+--    parent's message, which is the leak this whole change removes.
+--
+--    Ordered deterministically throughout, so a second run of this file
+--    reasons identically to the first.
 UPDATE "digest_reported_item" AS i
 SET "userId" = (
   SELECT r."userId"
   FROM "digest_recipient" r
   WHERE r."studentGuid" = i."studentGuid"
-  ORDER BY r."activeFrom" ASC, r."id" ASC
+  ORDER BY r."enabled" DESC, r."activeFrom" ASC, r."id" ASC
   LIMIT 1
 )
 WHERE i."userId" = ''
@@ -115,7 +145,7 @@ SET "userId" = (
   SELECT r."userId"
   FROM "digest_recipient" r
   WHERE r."studentGuid" = d."studentGuid"
-  ORDER BY r."activeFrom" ASC, r."id" ASC
+  ORDER BY r."enabled" DESC, r."activeFrom" ASC, r."id" ASC
   LIMIT 1
 )
 WHERE d."userId" = ''
@@ -141,28 +171,44 @@ WHERE d."userId" = ''
 --
 --    ON CONFLICT names the index's columns rather than a constraint: Prisma's
 --    `@@unique` is a unique index, and `ON CONSTRAINT` would not find it.
-INSERT INTO "digest_reported_item" (
-  "id", "userId", "studentGuid", "itemType", "itemId", "contentHash",
-  "reportedFor", "claimedAt", "claimedBy", "confirmedAt", "resolvedDueDate",
-  "deliveryId"
-)
-SELECT gen_random_uuid()::text,
-       r."userId",
-       i."studentGuid",
-       i."itemType",
-       i."itemId",
-       i."contentHash",
-       i."reportedFor",
-       i."claimedAt",
-       NULL,
-       i."confirmedAt",
-       i."resolvedDueDate",
-       NULL
-FROM "digest_reported_item" i
-JOIN (SELECT DISTINCT "studentGuid", "userId" FROM "digest_recipient") r
-  ON r."studentGuid" = i."studentGuid"
- AND r."userId" <> i."userId"
-WHERE i."userId" <> ''
-  AND i."itemType" <> 'activity'
-  AND i."confirmedAt" IS NOT NULL
-ON CONFLICT ("userId", "studentGuid", "itemType", "itemId", "contentHash") DO NOTHING;
+DO $$
+BEGIN
+  -- Once only, and the one statement in this file that is not idempotent.
+  -- A second pass would copy rows confirmed AFTER the deploy -- rows that
+  -- belong to the one parent they were sent to -- and the other parent's run
+  -- would then find them already reported and say nothing.
+  --
+  -- To deliberately run it again (a restore, a re-seeded database):
+  --   DELETE FROM data_backfill WHERE id = 'digest-per-user-ledger-copy';
+  IF EXISTS (SELECT 1 FROM "data_backfill" WHERE "id" = 'digest-per-user-ledger-copy') THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO "digest_reported_item" (
+    "id", "userId", "studentGuid", "itemType", "itemId", "contentHash",
+    "reportedFor", "claimedAt", "claimedBy", "confirmedAt", "resolvedDueDate",
+    "deliveryId"
+  )
+  SELECT gen_random_uuid()::text,
+         r."userId",
+         i."studentGuid",
+         i."itemType",
+         i."itemId",
+         i."contentHash",
+         i."reportedFor",
+         i."claimedAt",
+         NULL,
+         i."confirmedAt",
+         i."resolvedDueDate",
+         NULL
+  FROM "digest_reported_item" i
+  JOIN (SELECT DISTINCT "studentGuid", "userId" FROM "digest_recipient") r
+    ON r."studentGuid" = i."studentGuid"
+   AND r."userId" <> i."userId"
+  WHERE i."userId" <> ''
+    AND i."itemType" <> 'activity'
+    AND i."confirmedAt" IS NOT NULL
+  ON CONFLICT ("userId", "studentGuid", "itemType", "itemId", "contentHash") DO NOTHING;
+
+  INSERT INTO "data_backfill" ("id") VALUES ('digest-per-user-ledger-copy');
+END $$;

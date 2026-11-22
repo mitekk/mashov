@@ -563,6 +563,52 @@ export class SchoolLinksService {
         data: { userId },
       });
 
+      // The dedup ledger and the delivery log travel with the subscription.
+      // Both gained a `userId` with the per-user digest (ADR-0035), and
+      // leaving them behind is not a tidiness problem: the repointed recipient
+      // row keeps its `activeFrom`, which can be months old, so the merged
+      // household's next run would arrive at an empty ledger and re-report the
+      // entire active window -- today's behaviour, three days of newly
+      // assigned homework, fourteen days of hint-matched due homework, seven
+      // days of consent forms. That is the backlog the migration's ledger copy
+      // exists to prevent, arriving through the other door.
+      //
+      // Colliding rows first, as with the recipients above, because the dedup
+      // unique now carries `userId` and a shared child can legitimately have
+      // a row under both households.
+      //
+      // By correlated subquery rather than reading the survivor's keys and
+      // passing them back as an OR list: the recipient table holds a handful
+      // of rows per household, but the ledger holds one per reported item for
+      // ninety days, and a key list that long would exceed Postgres's 16-bit
+      // bind-parameter limit -- the same failure class connection.service.ts
+      // documents, where it breaks an unlink permanently.
+      await tx.$executeRaw`
+        DELETE FROM "digest_reported_item" o
+        WHERE o."userId" = ${orphanUserId}
+          AND EXISTS (
+            SELECT 1
+            FROM "digest_reported_item" t
+            WHERE t."userId" = ${userId}
+              AND t."studentGuid" = o."studentGuid"
+              AND t."itemType" = o."itemType"
+              AND t."itemId" = o."itemId"
+              AND t."contentHash" = o."contentHash"
+          )
+      `;
+
+      await tx.digestReportedItem.updateMany({
+        where: { userId: orphanUserId },
+        data: { userId },
+      });
+
+      // No unique key here, so nothing to collide: the history of both
+      // households simply becomes the history of the one that survives.
+      await tx.digestDelivery.updateMany({
+        where: { userId: orphanUserId },
+        data: { userId },
+      });
+
       // Not named in B2, found while reading: `SchoolActivity.userId` is
       // required with no AppUser relation, so the orphan's consent rows would
       // otherwise strand on an AppUser nobody signs into. Scoped to the

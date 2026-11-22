@@ -60,6 +60,9 @@ const TIMEZONE = 'Asia/Jerusalem';
 const NOW = new Date();
 const { todayStart } = jerusalemDayBounds(NOW, TIMEZONE);
 const LONG_AGO = new Date(todayStart.getTime() - 30 * 24 * 60 * 60 * 1000);
+/** Mum opted in first; dad a week later. Both long before anything seeded. */
+const MUM_SUBSCRIBED = LONG_AGO;
+const DAD_SUBSCRIBED = new Date(LONG_AGO.getTime() + 7 * 24 * 60 * 60 * 1000);
 
 function migrationFile(): string {
   return path.join(
@@ -197,6 +200,11 @@ describe('Per-user digest isolation', () => {
       where: { id: { in: [CONN_MUM, CONN_DAD] } },
     });
     await prisma.appUser.deleteMany({ where: { id: { in: USER_IDS } } });
+    // Each migration test simulates a fresh deploy, and the ledger copy is
+    // guarded by a marker row that is deliberately permanent in production.
+    await prisma.dataBackfill.deleteMany({
+      where: { id: 'digest-per-user-ledger-copy' },
+    });
   }
 
   beforeEach(async () => {
@@ -265,13 +273,15 @@ describe('Per-user digest isolation', () => {
       });
     }
 
-    for (const [userId, guid, address] of [
-      [MUM, SHARED, CHAT_MUM],
-      [DAD, SHARED, CHAT_DAD],
-      [MUM, MUM_ONLY, CHAT_MUM],
+    // Distinct activeFrom values, so "earliest subscriber" is decided by the
+    // column the code orders on rather than by a cuid tiebreak.
+    for (const [userId, guid, address, activeFrom] of [
+      [MUM, SHARED, CHAT_MUM, MUM_SUBSCRIBED],
+      [DAD, SHARED, CHAT_DAD, DAD_SUBSCRIBED],
+      [MUM, MUM_ONLY, CHAT_MUM, MUM_SUBSCRIBED],
     ] as const) {
       await prisma.digestRecipient.create({
-        data: { userId, studentGuid: guid, channel: 'telegram', address, activeFrom: LONG_AGO },
+        data: { userId, studentGuid: guid, channel: 'telegram', address, activeFrom },
       });
     }
 
@@ -375,15 +385,24 @@ describe('Per-user digest isolation', () => {
     // An unconfirmed claim past the staleness window is a run that died
     // before sending, and the takeover is the one claim write not already
     // scoped by claimedBy. Unscoped, mum's run restamps dad's row -- and
-    // dad's own confirm then matches nothing, so he is told again next hour.
-    const zombie = await prisma.digestReportedItem.create({
+    // dad's own confirm then matches nothing, so he is told the same thing
+    // again half an hour later.
+    //
+    // Dad's row is produced by a real run of his, so it carries the content
+    // hash mum's run will really compute. A hand-written hash would not be in
+    // the `contentHash: { in: hashes }` list the takeover filters on, and the
+    // assertion would hold whether or not the predicate is scoped by user.
+    await makeService(prisma, new CapturingSender()).runAll({ now: NOW, userId: DAD });
+    const dadsRows = await prisma.digestReportedItem.findMany({
+      where: { userId: DAD, studentGuid: SHARED },
+    });
+    expect(dadsRows).toHaveLength(1);
+
+    // Forced back to how a run that died between claiming and sending leaves
+    // it: claimed long enough ago to be stale, never confirmed.
+    const zombie = await prisma.digestReportedItem.update({
+      where: { id: dadsRows[0].id },
       data: {
-        userId: DAD,
-        studentGuid: SHARED,
-        itemType: 'behavior',
-        itemId: 'does-not-matter',
-        contentHash: 'dad-stale-hash',
-        reportedFor: todayStart,
         claimedAt: new Date(NOW.getTime() - STALE_CLAIM_MS - 60_000),
         claimedBy: 'dad-run-that-died',
         confirmedAt: null,
@@ -395,6 +414,7 @@ describe('Per-user digest isolation', () => {
     const after = await prisma.digestReportedItem.findUnique({ where: { id: zombie.id } });
     expect(after?.claimedBy).toBe('dad-run-that-died');
     expect(after?.confirmedAt).toBeNull();
+    expect(after?.claimedAt).toEqual(zombie.claimedAt);
   });
 
   it('reports a consent form to the parent whose form it is, and to nobody else', async () => {
@@ -479,13 +499,12 @@ describe('Per-user digest isolation', () => {
      * The pre-deploy state: ledger and delivery rows with no owner, which is
      * what `prisma db push` leaves behind when it adds the columns.
      */
-    async function seedPreState(): Promise<void> {
-      // Dad's chat is off, so this also proves the backfill resolves the
-      // owner over ALL recipient rows: he received everything in the ledger
-      // before he toggled it off, and a run that ignored disabled rows would
-      // hand his child's history to nobody.
+    async function seedPreState(options: { toggledOff?: string } = {}): Promise<void> {
+      // One of the two chats is off. By default it is dad's, the LATER
+      // subscriber, so mum -- earliest and enabled -- is the owner the
+      // pre-deploy code would have used, and dad's rows are the copy.
       await prisma.digestRecipient.updateMany({
-        where: { userId: DAD, studentGuid: SHARED },
+        where: { userId: options.toggledOff ?? DAD, studentGuid: SHARED },
         data: { enabled: false },
       });
 
@@ -580,6 +599,74 @@ describe('Per-user digest isolation', () => {
       // Unconfirmed means nothing was delivered, so there is nothing for the
       // other parent to have already received.
       expect(inflight.map((row) => row.userId)).toEqual([MUM]);
+    });
+
+    it('attributes the rows to the earliest ENABLED subscriber', async () => {
+      // The owner has to be whoever the pre-deploy code would have reported
+      // for: `listDeliveryTargets` read `where: { enabled: true }` and then
+      // took the earliest activeFrom among those rows. Resolving over all
+      // rows instead hands every historic `digest_delivery` row -- and its
+      // `messageText`, which holds the ENABLED parent's unanswered consent
+      // forms -- to a parent whose chat was switched off, who can then read it
+      // through GET /digest/deliveries. That is this branch's own leak, for
+      // history.
+      await seedPreState({ toggledOff: MUM });
+
+      await runMigration(2);
+
+      const deliveries = await prisma.digestDelivery.findMany({
+        where: { studentGuid: SHARED },
+      });
+      expect(deliveries.map((row) => row.userId)).toEqual([DAD]);
+
+      // And the consent form, whose hash embeds its owner, stays with the
+      // parent whose form it was -- the one the run was for.
+      const forms = await prisma.digestReportedItem.findMany({
+        where: { studentGuid: SHARED, contentHash: 'pre-hash-activity' },
+      });
+      expect(forms.map((row) => row.userId)).toEqual([DAD]);
+    });
+
+    it('copies the ledger once, not on every container boot', async () => {
+      // backend/Dockerfile executes this file on EVERY boot, and the copy's
+      // justification -- "pre-deploy, one per-child run delivered to every
+      // enabled recipient" -- stops being true the moment the per-user code
+      // is live. Unguarded, the next restart re-shares a freshly confirmed
+      // row with a parent who has not been told, whose own run then finds it
+      // already reported: exactly the silence this branch exists to remove,
+      // re-created by the backfill.
+      await seedPreState();
+      await runMigration(1);
+
+      // Life after the deploy: dad subscribes to the other child today, and
+      // mum's run confirms today's behaviour for that child.
+      await prisma.digestRecipient.create({
+        data: {
+          userId: DAD,
+          studentGuid: MUM_ONLY,
+          channel: 'telegram',
+          address: CHAT_DAD,
+          activeFrom: NOW,
+        },
+      });
+      await prisma.digestReportedItem.create({
+        data: {
+          userId: MUM,
+          studentGuid: MUM_ONLY,
+          itemType: 'behavior',
+          itemId: 'beh-after-deploy',
+          contentHash: 'post-deploy-hash',
+          reportedFor: todayStart,
+          confirmedAt: new Date(),
+        },
+      });
+
+      await runMigration(1);
+
+      const dadsCopies = await prisma.digestReportedItem.findMany({
+        where: { userId: DAD, studentGuid: MUM_ONLY },
+      });
+      expect(dadsCopies).toEqual([]);
     });
 
     it('leaves a row it cannot attribute alone rather than deleting it', async () => {

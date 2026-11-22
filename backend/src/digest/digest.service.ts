@@ -15,19 +15,25 @@ import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
 
 /**
- * The key a child's prose is memoized under for one run.
+ * The claimed hashes a child's prose is written from, sorted.
  *
  * Activity hashes are excluded because they embed the owning `userId`, so two
  * parents' claims for the same form hash differently -- and the forms are not
  * in the summarizer's payload anyway. Every other hash is derived from the
- * child's own row, so an equal key means an equal payload.
+ * child's own row, which is what makes an equal list mean an equal payload
+ * for the fields the model is shown. (`childFirstName`, `childGender` and the
+ * timetable estimates are re-read per target and are not in any hash; two
+ * targets of one child are seconds apart, so the only way they could diverge
+ * is a row edited mid-run, and the shared summary then carries the first
+ * reading of it.)
+ *
+ * An empty list means there is nothing for the model to write about.
  */
-function summaryKeyFor(studentGuid: string, claimed: DigestCandidate[]): string {
-  const hashes = claimed
+function nonActivityHashes(claimed: DigestCandidate[]): string[] {
+  return claimed
     .filter((candidate) => candidate.itemType !== 'activity')
     .map((candidate) => candidate.contentHash)
     .sort();
-  return `${studentGuid}\u0000${hashes.join('|')}`;
 }
 
 const DEFAULT_TIMEZONE = 'Asia/Jerusalem';
@@ -261,11 +267,7 @@ export class DigestService {
       // Shared, not re-requested: the summary is read-only downstream, so the
       // other parent's run for the same child and the same claimed items gets
       // the same object rather than a second Sonnet call.
-      const summaryKey = summaryKeyFor(studentGuid, claimed);
-      const memoed = summaries.get(summaryKey);
-      const summary =
-        memoed ?? (await this.summarizer.summarize({ ...payload, activities: [] }));
-      summaries.set(summaryKey, summary);
+      const summary = await this.summaryFor(studentGuid, claimed, payload, summaries);
       const { payload: narrowed, resolutionByItemId } = narrowDueTomorrow(
         payload,
         summary,
@@ -380,6 +382,36 @@ export class DigestService {
         errorMessage: message,
       });
     }
+  }
+
+  /**
+   * The prose for this run: the model's, or the deterministic renderer's.
+   *
+   * Two things happen here. A run whose only claims are consent forms never
+   * reaches the model at all -- the forms are withheld from its payload, so
+   * the prompt would carry no facts beyond the child's gender and the date,
+   * and a headline written from nothing is a headline invented. And a run for
+   * a child another parent's run has already summarized in this pass reuses
+   * that summary rather than paying for an identical one.
+   */
+  private async summaryFor(
+    studentGuid: string,
+    claimed: DigestCandidate[],
+    payload: DigestPayload,
+    summaries: Map<string, DigestSummary>,
+  ): Promise<DigestSummary> {
+    const hashes = nonActivityHashes(claimed);
+    if (hashes.length === 0) {
+      return { lines: deterministicLines(payload), deadlineResolutions: [], usedLlm: false };
+    }
+
+    const key = `${studentGuid}\u0000${hashes.join('|')}`;
+    const memoed = summaries.get(key);
+    if (memoed) return memoed;
+
+    const summary = await this.summarizer.summarize({ ...payload, activities: [] });
+    summaries.set(key, summary);
+    return summary;
   }
 
   /**

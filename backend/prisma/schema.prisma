@@ -739,6 +739,25 @@ model DigestReportedItem {
   @@map("digest_reported_item")
 }
 
+/// One row per one-time data migration that must never run a second time.
+///
+/// A table rather than a constant, and declared here rather than only in the
+/// migration file, because `prisma db push --accept-data-loss` -- which is how
+/// production gets its schema, on every boot -- DROPS a table the schema does
+/// not mention. A marker that push deletes is a marker that resets on every
+/// restart, which is no marker at all.
+///
+/// Only statements that are unsafe to repeat need this. Every other statement
+/// in prisma/migrations is written to be idempotent, which is cheaper and
+/// needs no bookkeeping.
+model DataBackfill {
+  /// A stable name for the statement, e.g. "digest-per-user-ledger-copy".
+  id        String   @id
+  appliedAt DateTime @default(now())
+
+  @@map("data_backfill")
+}
+
 /// The digest's own run log. Deliberately NOT recorded in `sync_run`: a digest is
 /// not a sync source, and sync.controller.ts counts distinct successful sources
 /// against a hardcoded TOTAL_SYNC_SOURCES, so digest rows there would silently skew
