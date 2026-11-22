@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { deterministicLines, formatSchoolDate } from './digest-report.template';
 import {
-  DigestActivityFact,
   DigestBehaviorFact,
   DigestDeadlineResolution,
   DigestHomeworkFact,
@@ -53,7 +52,6 @@ export const OUTPUT_SCHEMA = {
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
-    'activityLine',
     'deadlineResolutions',
   ],
   properties: {
@@ -62,10 +60,6 @@ export const OUTPUT_SCHEMA = {
     homeworkLine: { type: 'string', description: 'משפט או שניים בעברית על המטלות החדשות' },
     dueTomorrowLine: { type: 'string', description: 'משפט או שניים בעברית על מה שצפוי מחר' },
     releaseLine: { type: 'string', description: 'משפט בעברית על שחרור מוקדם שכבר אושר' },
-    activityLine: {
-      type: 'string',
-      description: 'משפט בעברית על אישור שממתין לתשובת ההורה, כולל דחיפות לפי התאריך',
-    },
     deadlineResolutions: {
       type: 'array',
       description:
@@ -101,7 +95,11 @@ const SYSTEM_PROMPT = [
   'אם אין מה לומר בסעיף מסוים, החזר מחרוזת ריקה לאותו שדה.',
   'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
   'שחרור מוקדם הוא בקשה שההורה עצמו הגיש ואושרה: כתוב עליו כתזכורת, לא כחדשות.',
-  'אישור שממתין לתשובה הוא הדבר היחיד שדורש פעולה מההורה. ציין עד מתי צריך להשיב.',
+  // Nothing about consent forms: the model is handed none. That section is
+  // the one input that belongs to the parent rather than to the child, and the
+  // prose is shared between the parents of one child (ADR-0035), so it is
+  // rendered from the deterministic Hebrew line instead. An instruction about
+  // a section with no facts behind it is an invitation to invent one.
 ].join('\n');
 
 /**
@@ -156,14 +154,10 @@ export function buildPrompt(payload: DigestPayload): string {
     );
   }
 
-  if (payload.activities.length > 0) {
-    sections.push(
-      [
-        'אישורים שממתינים לתשובת ההורה:',
-        ...payload.activities.map(activityForPrompt),
-      ].join('\n'),
-    );
-  }
+  // `payload.activities` is deliberately not rendered. The orchestrator
+  // already passes an empty list, and this function is the PII boundary, so
+  // the guarantee belongs here too: a consent form's title names a trip, a
+  // theatre and sometimes a class, and it need never leave the host.
 
   return sections.join('\n\n');
 }
@@ -193,21 +187,6 @@ function releaseForPrompt(fact: DigestReleaseFact): string {
   return `- תאריך: ${formatSchoolDate(fact.releaseDate)} | שעה: ${fact.startHour.slice(0, 5)}`;
 }
 
-/**
- * Title and dates. The consent letter itself never goes: it is long, it is
- * HTML, and it names staff and other families' children.
- */
-function activityForPrompt(fact: DigestActivityFact): string {
-  const fields = [
-    `- נושא: ${fact.title}`,
-    `מועד האירוע: ${formatSchoolDate(fact.activityStartDate)}`,
-  ];
-  // Omitted rather than formatted as a null: an activity with no response
-  // deadline has nothing to say here, and inventing a date for the model would
-  // put it in the parent's message.
-  if (fact.endAnswerDate) fields.push(`יש להשיב עד: ${formatSchoolDate(fact.endAnswerDate)}`);
-  return fields.join(' | ');
-}
 
 function homeworkForPrompt(fact: DigestHomeworkFact): string {
   const fields = [`ref: ${fact.id}`, `מקצוע: ${fact.subjectName}`, `מטלה: ${fact.homeworkText.trim()}`];
@@ -366,7 +345,6 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
     'homeworkLine',
     'dueTomorrowLine',
     'releaseLine',
-    'activityLine',
   ] as const;
   if (!lineKeys.every((key) => typeof candidate[key] === 'string')) return null;
 
@@ -381,7 +359,9 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
       homeworkLine: candidate.homeworkLine as string,
       dueTomorrowLine: candidate.dueTomorrowLine as string,
       releaseLine: candidate.releaseLine as string,
-      activityLine: candidate.activityLine as string,
+      // Not asked for and not accepted: `linesFor` replaces it with the
+      // deterministic line whatever arrives here.
+      activityLine: '',
     },
     deadlineResolutions: resolutions,
   };

@@ -1056,6 +1056,72 @@ describe('DigestService.runAll', () => {
     expect(harness.send).toHaveBeenCalledTimes(2);
   });
 
+  it('hands the summarizer no consent forms, having collected them', async () => {
+    // The forms section is the one input that is per parent, so the prose --
+    // which is shared between the parents of one child -- must not depend on
+    // it. The deterministic Hebrew line renders the section instead.
+    const harness = makeHarness({
+      candidates: [{ itemType: 'activity', itemId: '7', contentHash: 'hash-act' }],
+      payload: makePayload({
+        behavior: [],
+        activities: [
+          {
+            id: '7',
+            title: 'טיול שנתי לגליל',
+            activityStartDate: TOMORROW,
+            endAnswerDate: TOMORROW,
+          },
+        ],
+      }),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    // Collected, so the section can be rendered and the claim confirmed...
+    expect((harness.collector.collect as jest.Mock).mock.calls[0][0].candidates).toHaveLength(1);
+    // ...and summarized without them.
+    expect((harness.summarizer.summarize as jest.Mock).mock.calls[0][0].activities).toEqual([]);
+    expect(harness.send.mock.calls[0][1]).toContain('טיול שנתי לגליל');
+  });
+
+  it('ignores a forms line the model wrote anyway', async () => {
+    // Today's substitution only fires when the model's line is blank, so a
+    // hallucinated sentence about a section the model was given nothing for
+    // would ship to the parent.
+    const harness = makeHarness({
+      candidates: [{ itemType: 'activity', itemId: '7', contentHash: 'hash-act' }],
+      payload: makePayload({
+        behavior: [],
+        activities: [
+          {
+            id: '7',
+            title: 'טיול שנתי לגליל',
+            activityStartDate: TOMORROW,
+            endAnswerDate: TOMORROW,
+          },
+        ],
+      }),
+    });
+    (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
+      lines: {
+        headline: 'כותרת',
+        behaviorLine: '',
+        homeworkLine: '',
+        dueTomorrowLine: '',
+        releaseLine: '',
+        activityLine: 'יש אישור שממתין, אבל אין לי מושג איזה',
+      },
+      deadlineResolutions: [],
+      usedLlm: true,
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).not.toContain('אין לי מושג');
+    expect(sent).toContain('ממתינים לתשובתך');
+  });
+
   it('marks the delivery as not having used the model when it fell back', async () => {
     const harness = makeHarness();
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({

@@ -222,7 +222,11 @@ export class DigestService {
         userId,
       });
 
-      const summary = await this.summarizer.summarize(payload);
+      // Without the consent forms. They belong to this parent rather than to
+      // the child, while everything else in the payload is the same for both
+      // of a child's parents -- which is what lets one summary serve both
+      // runs. The section is rendered from the deterministic line instead.
+      const summary = await this.summarizer.summarize({ ...payload, activities: [] });
       const { payload: narrowed, resolutionByItemId } = narrowDueTomorrow(
         payload,
         summary,
@@ -750,12 +754,16 @@ function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPa
   // news from the message while the ledger still recorded it as reported --
   // meaning it would never be mentioned again. The deterministic sentence is
   // plainer than the model's and complete, which is the right trade here.
+  // The model is handed no consent forms at all, so its line about them -- if
+  // it writes one anyway -- describes nothing. Replaced outright rather than
+  // only when blank, which is all the loop below would do.
+  lines.activityLine = fallback.activityLine;
+
   const sections = [
     ['behaviorLine', after.behavior.length],
     ['homeworkLine', after.homeworkNew.length],
     ['dueTomorrowLine', after.homeworkDueTomorrow.length],
     ['releaseLine', after.releases.length],
-    ['activityLine', after.activities.length],
   ] as const;
 
   for (const [key, itemCount] of sections) {
