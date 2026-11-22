@@ -109,6 +109,8 @@ function makeHarness(options: HarnessOptions = {}) {
     .fn()
     .mockImplementation(() => ownedHashes.map((contentHash) => ({ contentHash })));
 
+  const recipientUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+
   const prisma = {
     syncRun: {
       // Honours the where-clause, as Postgres would. This matters more than it
@@ -147,6 +149,7 @@ function makeHarness(options: HarnessOptions = {}) {
       ),
     },
     digestRecipient: {
+      updateMany: recipientUpdateMany,
       // Honours the where-clause, as Postgres would: the service relies on
       // `where: { enabled: true, userId }` rather than filtering again in
       // code. The userId arm matters most -- a mock that answered every
@@ -236,6 +239,7 @@ function makeHarness(options: HarnessOptions = {}) {
     deleteMany,
     deliveryCreate,
     reportedFindMany,
+    recipientUpdateMany,
   };
 }
 
@@ -274,6 +278,66 @@ describe('DigestService.runAll', () => {
     expect(confirmCalls(harness.updateMany)[0][0].where.contentHash.in).toEqual(['hash-beh']);
   });
 
+  it('retires a chat Telegram says will never accept another message', async () => {
+    // A blocked bot or a deleted chat is not a transient failure. Releasing the
+    // claims would re-report the same day's items on every run forever, each
+    // with a fresh model call, to a chat that can never receive them.
+    const harness = makeHarness({
+      sendImpl: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('Telegram send failed: Forbidden: bot was blocked by the user'),
+        ),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.recipientUpdateMany).toHaveBeenCalledTimes(1);
+    expect(harness.recipientUpdateMany.mock.calls[0][0]).toMatchObject({
+      where: { userId: USER_A, studentGuid: 'stu-1', channel: 'telegram', address: '12345' },
+      data: { enabled: false },
+    });
+    // Confirmed rather than released: never retried.
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+    expect(harness.deleteMany).not.toHaveBeenCalled();
+    expect(results[0].status).toBe('failed');
+    expect(results[0].error).toContain('blocked');
+  });
+
+  it('releases the claims for a transient failure so the next run retries', async () => {
+    const harness = makeHarness({
+      sendImpl: jest.fn().mockRejectedValue(new Error('Telegram send failed: HTTP 502')),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.recipientUpdateMany).not.toHaveBeenCalled();
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+    expect(results[0].status).toBe('failed');
+  });
+
+  it('still confirms for the chats that did receive it when one is retired', async () => {
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: 'dead', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: 'live', enabled: true, userId: USER_A },
+      ],
+      sendImpl: jest.fn().mockImplementation((address: string) => {
+        if (address === 'dead') {
+          throw new Error('Telegram send failed: Bad Request: chat not found');
+        }
+        return Promise.resolve();
+      }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0]).toMatchObject({ status: 'sent', recipientCount: 1 });
+    expect(harness.recipientUpdateMany.mock.calls[0][0].where.address).toBe('dead');
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+  });
+
   it('records a quiet day without calling the model or sending anything', async () => {
     const harness = makeHarness({ candidates: [] });
 
@@ -299,8 +363,10 @@ describe('DigestService.runAll', () => {
   });
 
   it('rolls the claim back when the send fails, so the next hour retries', async () => {
+    // A transient failure on purpose. A permanent one (a blocked bot, a
+    // deleted chat) confirms instead of releasing -- see the retirement tests.
     const harness = makeHarness({
-      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+      sendImpl: jest.fn().mockRejectedValue(new Error('HTTP 502')),
     });
 
     const results = await harness.service.runAll({ now: NOW });
@@ -663,7 +729,7 @@ describe('DigestService.runAll', () => {
         { channel: 'telegram', address: '111', enabled: true },
         { channel: 'telegram', address: '222', enabled: true },
       ],
-      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+      sendImpl: jest.fn().mockRejectedValue(new Error('HTTP 502')),
     });
 
     const results = await harness.service.runAll({ now: NOW });
@@ -930,7 +996,7 @@ describe('DigestService.runAll', () => {
 
   it('claims, confirms and releases under its own userId', async () => {
     const harness = makeHarness({
-      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+      sendImpl: jest.fn().mockRejectedValue(new Error('HTTP 502')),
     });
 
     await harness.service.runAll({ now: NOW });

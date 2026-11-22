@@ -4,6 +4,7 @@ import {
   TELEGRAM_CHUNK_LIMIT,
   botPath,
   chunkTelegramText,
+  isPermanentTelegramFailure,
   createTelegramHttp,
   describeTelegramError,
   redact,
@@ -182,5 +183,37 @@ describe('chunkTelegramText', () => {
     const rejoined = chunkTelegramText(text, 500).join('\n');
 
     expect(rejoined).toBe(text);
+  });
+});
+
+describe('isPermanentTelegramFailure', () => {
+  it.each([
+    'Forbidden: bot was blocked by the user',
+    'Bad Request: chat not found',
+    'Forbidden: user is deactivated',
+    "Forbidden: bot can't initiate conversation with a user",
+  ])('treats %s as permanent, so the item is never retried at that chat', (description) => {
+    expect(isPermanentTelegramFailure(description)).toBe(true);
+  });
+
+  it('still matches once the sender has wrapped the description in its own prefix', () => {
+    expect(
+      isPermanentTelegramFailure('Telegram send failed: Forbidden: bot was blocked by the user'),
+    ).toBe(true);
+  });
+
+  it('matches regardless of the case Telegram used', () => {
+    expect(isPermanentTelegramFailure('CHAT NOT FOUND')).toBe(true);
+  });
+
+  it.each([
+    'HTTP 502',
+    'ECONNABORTED: timeout of 15000ms exceeded',
+    'Too Many Requests: retry after 30',
+    'Bad Request: message text is empty',
+    'Telegram reported ok=false',
+    '',
+  ])('treats %s as transient, so the next run tries again', (description) => {
+    expect(isPermanentTelegramFailure(description)).toBe(false);
   });
 });

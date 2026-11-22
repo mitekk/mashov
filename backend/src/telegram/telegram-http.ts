@@ -139,3 +139,37 @@ function cutPoint(text: string, limit: number): number {
   const splitsAPair = code >= 0xd800 && code <= 0xdbff;
   return splitsAPair && limit > 1 ? limit - 1 : limit;
 }
+
+/**
+ * Descriptions that mean "this chat will never accept another message".
+ *
+ * Matched as substrings because Telegram prefixes them inconsistently
+ * (`Forbidden: `, `Bad Request: `) and this project's senders prefix them
+ * again with their own text.
+ *
+ * Deliberately a closed list of four rather than a heuristic. Everything else
+ * -- a 429, a 502, a timeout, an empty-text rejection -- is transient and must
+ * be retried, and a wrong "permanent" silently stops a parent's digest with no
+ * error anyone sees. A code this list does not know costs one wasted retry per
+ * run; a code it wrongly claims costs a parent the feature.
+ */
+const PERMANENT_TELEGRAM_FAILURES = [
+  'bot was blocked by the user',
+  'chat not found',
+  'user is deactivated',
+  "bot can't initiate conversation",
+];
+
+/**
+ * Whether a failed send should stop being retried and retire the chat.
+ *
+ * A transient failure releases the dedup claims so the next run tries again. A
+ * permanent one must not: the items would be re-claimed, re-summarized (a
+ * model call each time) and re-sent to a chat that cannot receive them, on
+ * every run, forever. So the caller confirms the ledger rows anyway and
+ * disables the recipient.
+ */
+export function isPermanentTelegramFailure(description: string): boolean {
+  const text = description.toLowerCase();
+  return PERMANENT_TELEGRAM_FAILURES.some((phrase) => text.includes(phrase));
+}

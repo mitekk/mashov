@@ -15,6 +15,7 @@ import { DigestSender } from './senders/digest-sender.interface';
 import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
 import { jerusalemDayBounds } from './digest-deadline.service';
+import { isPermanentTelegramFailure } from '../telegram/telegram-http';
 import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
 
@@ -336,7 +337,7 @@ export class DigestService {
         return await this.recordEmpty(userId, studentGuid, reportFor, 'no enabled recipient left');
       }
 
-      const { delivered, failures, suppressed } = await this.deliver(
+      const { delivered, failures, suppressed, retired } = await this.deliver(
         studentGuid,
         enabled,
         message,
@@ -344,7 +345,15 @@ export class DigestService {
         alreadySent,
       );
 
-      if (delivered === 0 && enabled.length > 0) {
+      await this.retireRecipients(userId, studentGuid, retired);
+
+      // `retired.length > 0` is what keeps this from throwing when every chat
+      // was refused permanently. Throwing releases the claims, which is right
+      // for a transient failure and wrong here: the items would come back on
+      // every run, with a fresh model call each time, for chats that have just
+      // been disabled. So the run falls through to confirm them instead, and
+      // records `failed` because nothing reached a parent.
+      if (delivered === 0 && enabled.length > 0 && retired.length === 0) {
         throw new Error(`no recipient could be reached (${failures.join('; ')})`);
       }
 
@@ -376,7 +385,7 @@ export class DigestService {
       await this.confirmClaims(userId, studentGuid, [...surviving], runId);
 
       return await this.record(userId, studentGuid, reportFor, {
-        status: 'sent',
+        status: delivered > 0 ? 'sent' : 'failed',
         itemCount,
         // Chats actually reached. A suppression counts as delivered for the
         // guard above -- otherwise a suppressed-only run throws, releases its
@@ -563,10 +572,17 @@ export class DigestService {
     message: string,
     dryRun: boolean,
     alreadySent: Set<string>,
-  ): Promise<{ delivered: number; failures: string[]; suppressed: number }> {
+  ): Promise<{
+    delivered: number;
+    failures: string[];
+    suppressed: number;
+    /** Chats Telegram says will never accept another message. */
+    retired: { channel: string; address: string; reason: string }[];
+  }> {
     let delivered = 0;
     let suppressed = 0;
     const failures: string[] = [];
+    const retired: { channel: string; address: string; reason: string }[] = [];
     const digest = createHash('sha256').update(message).digest('hex');
 
     for (const recipient of recipients) {
@@ -596,10 +612,44 @@ export class DigestService {
         const reason = error instanceof Error ? error.message : String(error);
         this.logger.warn(`Digest delivery to ${recipient.channel} failed: ${reason}`);
         failures.push(reason);
+        // A blocked bot or a deleted chat is not worth retrying: the items
+        // would be re-claimed, re-summarized and re-sent on every run forever.
+        // The caller confirms the claims anyway and disables the row.
+        if (!dryRun && isPermanentTelegramFailure(reason)) {
+          retired.push({ channel: recipient.channel, address: recipient.address, reason });
+        }
       }
     }
 
-    return { delivered, failures, suppressed };
+    return { delivered, failures, suppressed, retired };
+  }
+
+  /**
+   * Stops sending to a chat Telegram has refused permanently.
+   *
+   * Scoped to the (child, parent) row rather than the address alone: the same
+   * family group chat can be linked by two parents and for several children,
+   * and the refusal this run saw was for this subscription.
+   */
+  private async retireRecipients(
+    userId: string,
+    studentGuid: string,
+    retired: { channel: string; address: string; reason: string }[],
+  ): Promise<void> {
+    for (const recipient of retired) {
+      this.logger.warn(
+        `Disabling digest recipient ${recipient.channel}/${recipient.address} for ${studentGuid}: ${recipient.reason}`,
+      );
+      await this.prisma.digestRecipient.updateMany({
+        where: {
+          userId,
+          studentGuid,
+          channel: recipient.channel,
+          address: recipient.address,
+        },
+        data: { enabled: false },
+      });
+    }
   }
 
   /**
