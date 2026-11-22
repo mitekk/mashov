@@ -291,6 +291,16 @@ async function mockBaseRoutes(page: Page) {
       lastFullSyncAt: null,
     }),
   );
+
+  // `/more` also asks what the household is subscribed to in Telegram. Same
+  // reasoning as school-links above: unmocked, it 401s, and apiFetch's global
+  // handler reads that as an expired session and sends the browser to
+  // /auth/sign-in -- which aborts whatever navigation this test does next.
+  // Note the `**` suffix: the client sends ?limit=100, since the route is
+  // paginated.
+  await page.route('**/api/v1/digest/recipients**', (route) =>
+    json(route, { data: [], pagination: { page: 1, limit: 100, total: 0, totalPages: 0 } }),
+  );
   await page.route('**/api/v1/settings/profile', (route) =>
     json(route, [
       {

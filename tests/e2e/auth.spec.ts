@@ -114,6 +114,26 @@ async function mockMorePageQueries(page: Page): Promise<void> {
     });
   });
 
+  // `/more` now reads the roster too: the Telegram card joins subscription rows
+  // to child names client-side rather than through a server-side join. Same
+  // eviction trap as the routes above -- and this one is what actually broke
+  // the sign-out test, since an unmocked /children 401s on mount and starts a
+  // hard redirect before the click even lands.
+  await page.route('**/api/v1/children', async (route) => {
+    await route.fulfill({ json: { data: [] } });
+  });
+
+  // `/more` also asks what the household is subscribed to in Telegram.
+  // Unmocked, it 401s, apiFetch's global handler reads that as an expired
+  // session, and the browser is thrown at /auth/sign-in mid-test -- which is
+  // what broke the sign-out test: the click's navigation never settled because
+  // a second one kept superseding it. `**` because the client sends ?limit=100.
+  await page.route('**/api/v1/digest/recipients**', async (route) => {
+    await route.fulfill({
+      json: { data: [], pagination: { page: 1, limit: 100, total: 0, totalPages: 0 } },
+    });
+  });
+
   await page.route('**/api/v1/settings/profile', async (route) => {
     await route.fulfill({
       json: [
