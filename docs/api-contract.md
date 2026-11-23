@@ -51,6 +51,59 @@
 | POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
 | GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | planned |
+| POST | `/api/v1/feedback` | Yes | `{ subject: FeedbackSubject, subjectOther?: string, contactEmail?: string, content: string, pagePath?: string, viewportWidth?: number, viewportHeight?: number, appVersion?: string }` | `{ data: { id: string, subject: string, createdAt: string } }` | 201, 400, 401, 429 | implemented |
+
+### POST /api/v1/feedback
+
+Write-only. There is no read path, no reply thread and no operator notification — whoever
+reads the reports runs SQL against `feedback`.
+
+`subject` is one of seven codes, and the list is the server's (`FEEDBACK_SUBJECTS` in
+`backend/src/feedback/feedback.service.ts`). The Hebrew labels live in the client, typed
+`Record<FeedbackSubject, string>` so a code added on one side without a label fails `tsc`:
+
+| Code | Label |
+|---|---|
+| `bug` | תקלה |
+| `suggestion` | הצעה לשיפור |
+| `data` | נתון שגוי או חסר |
+| `account` | התחברות וחשבון |
+| `notifications` | טלגרם והתראות |
+| `timetable` | מערכת שעות |
+| `other` | אחר — and only then is `subjectOther` required (max 80) |
+
+`subjectOther` is **nulled by the server for every other subject**. `whitelist: true` strips
+only undecorated properties and `@ValidateIf` merely skips the field, so a stray label would
+otherwise persist against a subject it does not belong to.
+
+Field rules: `content` is trimmed before its length check (so whitespace alone is a 400) and
+capped at 2000; `contactEmail` is optional and must be an email, max 254; `pagePath` max 200;
+`appVersion` max 40; the viewport fields are non-negative integers.
+
+**What the client sends versus what the server captures.** The client sends the page path
+(path only — never query or hash, which can carry a child guid), the viewport, and the build
+from `NEXT_PUBLIC_APP_VERSION`. The server adds, and the client cannot influence:
+
+- the `user-agent` request header, truncated to 512 characters — the one field whose purpose
+  is saying what the client actually is;
+- `appVersion` from its own `APP_VERSION` when the client sends none;
+- `mashovUserId`, `username` and `displayName` from the caller's `app_user` row, the name
+  stripped of its `[child class]` group by `common/parent-name.ts`;
+- `schoolsSnapshot` — every **active** connection as
+  `{ id, schoolCode, schoolName, label, schoolYear }`, with `label` resolved over the whole
+  set, so two schools in one cluster carry both full names rather than one colliding short
+  one.
+
+Each row is a self-contained snapshot with no foreign key, because the household merge
+(ADR-0029) and the connection unlink (ADR-0032) make pure references uninterpretable exactly
+when a two-school household is involved. See ADR-0043.
+
+**Rate limit: 10 reports per hour per user** — counted as rows in `feedback`, not by the
+global `ThrottlerGuard`, which keys on IP and would lock out a whole school NAT or both
+parents of one household. The same reasoning `POST /school-links` follows. Over the limit the
+route answers `429 RATE_LIMIT_EXCEEDED`; the route's `@Throttle` decorator is a crude per-IP
+backstop on top. No new error codes: validation failures are the envelope's usual
+`400 VALIDATION_ERROR`.
 
 ### School identity on the data
 
