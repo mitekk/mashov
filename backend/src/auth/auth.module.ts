@@ -8,6 +8,8 @@ import { SchoolLinksModule } from '../school-links/school-links.module';
 import { MashovLoginModule } from '../common/mashov-login/mashov-login.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+import { CredentialRecoveryService } from './credential-recovery.service';
+import { CredentialRecoveryController } from './credential-recovery.controller';
 
 @Module({
   imports: [
@@ -19,8 +21,8 @@ import { AuthController } from './auth.controller';
     SchoolLinksModule,
     MashovLoginModule,
   ],
-  controllers: [AuthController],
-  providers: [AuthService],
-  exports: [AuthService],
+  controllers: [AuthController, CredentialRecoveryController],
+  providers: [AuthService, CredentialRecoveryService],
+  exports: [AuthService, CredentialRecoveryService],
 })
 export class AuthModule {}

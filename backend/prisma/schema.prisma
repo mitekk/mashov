@@ -887,3 +887,33 @@ model DigestDelivery {
   @@index([userId, runAt])
   @@map("digest_delivery")
 }
+
+/// One row per COMPLETED password reset driven through our recovery flow.
+///
+/// We are mutating a password on a third-party system on behalf of someone we
+/// have not authenticated -- whoever completed the flow proved control of the
+/// school-registered email or phone, not ownership of an AppUser household. The
+/// attempt caps protect us from being an abuse amplifier as much as they
+/// protect the parent, and this table is the trail that makes an abuse pattern
+/// visible after the fact. See ADR-0042.
+///
+/// What is deliberately NOT here: the recovery code, the new password, and the
+/// raw ID number. The ID number is stored only as a SHA-256 hash, which is
+/// enough to count resets per identity and to join two attempts together
+/// without parking a national identifier in a support-readable table.
+model CredentialRecoveryAudit {
+  id String @id @default(cuid())
+  /// Mashov `semel`.
+  schoolCode   Int
+  /// SHA-256 hex of the ID number the reset was performed for. Never the ID.
+  idNumberHash String
+  /// The caller's IP, as the login rate limiter sees it.
+  ip           String
+  at           DateTime @default(now())
+
+  /// "how many resets at this school lately" -- the abuse-amplifier question.
+  @@index([schoolCode, at])
+  /// "how many resets for this identity lately".
+  @@index([idNumberHash, at])
+  @@map("credential_recovery_audit")
+}
