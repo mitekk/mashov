@@ -125,9 +125,7 @@ describe('SignInPageClient', () => {
     await submitSignIn();
 
     await waitFor(() => {
-      expect(push).toHaveBeenCalledWith(
-        `/auth/mfa?cid=ch-9&semel=${SCHOOL.semel}&username=303977367`,
-      );
+      expect(push).toHaveBeenCalledWith(`/auth/mfa?cid=ch-9&semel=${SCHOOL.semel}`);
     });
   });
 
@@ -155,7 +153,7 @@ describe('SignInPageClient forced credential change', () => {
 
     await waitFor(() => {
       expect(push).toHaveBeenCalledWith(
-        `/auth/complete-setup?mode=password&semel=${SCHOOL.semel}&username=303977367`,
+        `/auth/complete-setup?mode=password&semel=${SCHOOL.semel}`,
       );
     });
   });
@@ -167,7 +165,7 @@ describe('SignInPageClient forced credential change', () => {
 
     await waitFor(() => {
       expect(push).toHaveBeenCalledWith(
-        `/auth/complete-setup?mode=credentials&semel=${SCHOOL.semel}&username=303977367`,
+        `/auth/complete-setup?mode=credentials&semel=${SCHOOL.semel}`,
       );
     });
   });
@@ -343,5 +341,35 @@ describe('SignInPageClient captcha escape hatch', () => {
     await walk(root);
 
     expect(offenders).toEqual(['components/auth/CaptchaEscapeHatch.tsx']);
+  });
+});
+
+describe('SignInPageClient review fixes', () => {
+  it('keeps the username out of the MFA URL', async () => {
+    // For these accounts the Mashov username IS the national ID number, so a
+    // query string puts it in browser history and in every reverse-proxy
+    // access log. The next screen asks for it, like it already asks for the
+    // password.
+    rejectWith(400, 'MFA_REQUIRED', { challengeId: 'ch-9' });
+    renderPage();
+    await submitSignIn();
+
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    const url = String(push.mock.calls[0][0]);
+    expect(url).toContain('cid=ch-9');
+    expect(url).not.toContain('303977367');
+    expect(url).not.toContain('username');
+  });
+
+  it('keeps the username out of the forced-change URL', async () => {
+    rejectWith(400, 'PASSWORD_CHANGE_REQUIRED');
+    renderPage();
+    await submitSignIn();
+
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    const url = String(push.mock.calls[0][0]);
+    expect(url).toContain('/auth/complete-setup');
+    expect(url).not.toContain('303977367');
+    expect(url).not.toContain('username');
   });
 });

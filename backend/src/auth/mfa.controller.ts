@@ -42,6 +42,7 @@ export class MfaController {
   async sendCode(
     @Param('challengeId') challengeId: string,
     @Body() body: SendMfaCodeDto,
+    @Req() req: Request,
   ) {
     if (!challengeId?.trim()) {
       throw validationError('challengeId is required');
@@ -50,7 +51,7 @@ export class MfaController {
       throw validationError("method must be 'email' or 'sms'");
     }
 
-    return this.mfa.sendCode(challengeId, body.method);
+    return this.mfa.sendCode(challengeId, body.method, clientIp(req));
   }
 
   @Public()

@@ -6,7 +6,10 @@ import { isUpstreamUnreachable } from '../common/http/mashov-http';
 import { buildLoginBody } from '../common/mashov-login/mashov-login-body';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { assertPasswordPolicy } from '../common/mashov-login/password-policy';
-import { readReason } from '../common/mashov-login/mashov-reason';
+import { isMashovRejection, readChallengeId, readReason } from '../common/mashov-login/mashov-reason';
+import { countAgainstLimit, identityKeyHash } from '../common/mashov-login/rate-limit';
+import { RedisService } from '../redis/redis.service';
+import { EncryptionService } from '../session/encryption.service';
 import { AuthService } from './auth.service';
 import type { MashovLoginPayload } from '../common/mashov-login/mashov-credential-validator.service';
 
@@ -23,6 +26,13 @@ import type { MashovLoginPayload } from '../common/mashov-login/mashov-credentia
  * storing the NEW password -- otherwise every background sync from the next
  * cron onwards would be using a credential Mashov has just replaced.
  */
+/** 5 per quarter hour per IP, matching the login limiter's shape. */
+const IP_LIMIT = 5;
+const IP_WINDOW_SECONDS = 900;
+/** Tighter per identity: nobody legitimately changes one account's password 5x an hour. */
+const IDENTITY_LIMIT = 5;
+const IDENTITY_WINDOW_SECONDS = 3600;
+
 @Injectable()
 export class CredentialSetupService {
   private readonly logger = new Logger(CredentialSetupService.name);
@@ -32,6 +42,8 @@ export class CredentialSetupService {
     private readonly prisma: PrismaService,
     private readonly schoolYearService: SchoolYearService,
     private readonly upstream: MashovRecoveryService,
+    private readonly redis: RedisService,
+    private readonly encryption: EncryptionService,
   ) {}
 
   async setCredentials(
@@ -48,6 +60,32 @@ export class CredentialSetupService {
     ip: string,
   ): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
     const semel = Number(input.semel);
+
+    // Rate limited FIRST, and this route needs it more than any other in the
+    // surface. It is unauthenticated, it takes a current password, it answers
+    // `400 INVALID_CREDENTIALS` for a wrong one and a session cookie for a
+    // right one -- an unmetered password oracle that routes straight around
+    // `ratelimit:login`. It also changes a third party's password on every
+    // success, which makes it the obvious lever for anyone wanting to use us
+    // as an abuse amplifier against Mashov.
+    await countAgainstLimit(
+      this.redis,
+      `ratelimit:credentials:${ip}`,
+      IP_LIMIT,
+      IP_WINDOW_SECONDS,
+    );
+    await countAgainstLimit(
+      this.redis,
+      // Hashed: a Mashov username is usually a national ID number, and a raw
+      // key would park one under a greppable Redis key.
+      `ratelimit:credentials:id:${semel}:${identityKeyHash(
+        this.encryption.hashKey(),
+        input.username,
+      )}`,
+      IDENTITY_LIMIT,
+      IDENTITY_WINDOW_SECONDS,
+    );
+
     const newUsername = input.newUsername?.trim() || undefined;
     const newPassword = input.newPassword || undefined;
 
@@ -141,6 +179,9 @@ export class CredentialSetupService {
       loginData: payload,
       newUniqueId,
       devicePass,
+      // Mashov accepted the current password on the way to changing it, so
+      // this credential is proven and the stale flag can be cleared.
+      credentialProven: true,
       ip,
       existingConnBeforeLogin,
     });
@@ -175,10 +216,14 @@ export class CredentialSetupService {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       case 'MfaRequired':
+        // The challenge id rides along, or the parent lands on a screen that
+        // knows a code is needed and has no handle to ask for one -- the same
+        // dead end this whole surface exists to remove.
         return envelope(
           'MFA_REQUIRED',
           'Mashov requires a one-time code before this change.',
           HttpStatus.BAD_REQUEST,
+          readChallengeId(err),
         );
       case 'UserSuspended':
         return envelope(
@@ -191,7 +236,14 @@ export class CredentialSetupService {
     }
 
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-    if (status !== undefined && status >= 400 && status < 500) {
+    if (
+      status !== undefined &&
+      status >= 400 &&
+      status < 500 &&
+      // Only if Mashov's API answered. A proxy ACL 403 reported as a bad
+      // password sends the parent to retype one that was correct.
+      isMashovRejection(err)
+    ) {
       // Includes the upstream 401: the CURRENT password was rejected. Reported
       // as 400 INVALID_CREDENTIALS rather than a 401, because a 401 would send
       // `apiFetch` into its hard redirect and lose the half-filled form -- and
@@ -212,6 +264,21 @@ export class CredentialSetupService {
   }
 }
 
-function envelope(code: string, message: string, status: HttpStatus): HttpException {
-  return new HttpException({ error: { code, message, details: [] } }, status);
+function envelope(
+  code: string,
+  message: string,
+  status: HttpStatus,
+  challengeId?: string,
+): HttpException {
+  return new HttpException(
+    {
+      error: {
+        code,
+        message,
+        details: [],
+        ...(challengeId ? { challengeId } : {}),
+      },
+    },
+    status,
+  );
 }

@@ -244,3 +244,63 @@ describe('ResetPasswordPageClient', () => {
     expect(password).toHaveAttribute('autoComplete', 'new-password');
   });
 });
+
+describe('ResetPasswordPageClient review fixes', () => {
+  it('names the rule the server rejected, not just "does not meet the policy"', async () => {
+    // The checklist deliberately hides the `noUsername` rule, because the
+    // username is unknown on this screen. The backend still enforces it against
+    // the recovering ID number -- so without rendering `details[]` the parent
+    // sees an all-green checklist and a generic rejection, with nothing to act
+    // on. The envelope already carries the Hebrew message.
+    completeRecovery.mockRejectedValue(
+      new ApiError(422, 'weak', {
+        error: {
+          code: 'WEAK_PASSWORD',
+          message: 'weak',
+          details: [
+            { field: 'newPassword', message: 'הסיסמה לא יכולה להכיל את שם המשתמש' },
+          ],
+        },
+      }),
+    );
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    const error = await screen.findByTestId('reset-password-error');
+    expect(error.textContent).toContain('הסיסמה לא יכולה להכיל את שם המשתמש');
+  });
+
+  it('lists every rule the server rejected', async () => {
+    completeRecovery.mockRejectedValue(
+      new ApiError(422, 'weak', {
+        error: {
+          code: 'WEAK_PASSWORD',
+          message: 'weak',
+          details: [
+            { field: 'newPassword', message: 'לפחות 6 תווים' },
+            { field: 'newPassword', message: 'לפחות ספרה אחת' },
+          ],
+        },
+      }),
+    );
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    const error = await screen.findByTestId('reset-password-error');
+    expect(error.textContent).toContain('לפחות 6 תווים');
+    expect(error.textContent).toContain('לפחות ספרה אחת');
+  });
+
+  it('falls back to the code\u2019s own copy when there are no details', async () => {
+    completeRecovery.mockRejectedValue(apiError(400, 'INVALID_RECOVERY_CODE'));
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    expect((await screen.findByTestId('reset-password-error')).textContent).toContain(
+      'קוד האימות שגוי',
+    );
+  });
+});

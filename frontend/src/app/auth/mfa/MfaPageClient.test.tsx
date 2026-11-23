@@ -6,7 +6,7 @@ import { ApiError } from '@/api/client';
 import MfaPageClient from './MfaPageClient';
 
 const push = vi.fn();
-let searchParams = new URLSearchParams('cid=ch-1&semel=482273&username=303977367');
+let searchParams = new URLSearchParams('cid=ch-1&semel=482273');
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push, replace: vi.fn(), back: vi.fn() }),
   useSearchParams: () => searchParams,
@@ -30,9 +30,18 @@ function renderPage() {
   );
 }
 
-function fill({ code = '123456', password = 'secret1' } = {}) {
+function fill({
+  code = '123456',
+  password = 'secret1',
+  username,
+}: { code?: string; password?: string; username?: string } = {}) {
   fireEvent.change(screen.getByTestId('mfa-code'), { target: { value: code } });
   fireEvent.change(screen.getByTestId('mfa-password'), { target: { value: password } });
+  if (username !== undefined) {
+    fireEvent.change(screen.getByTestId('mfa-username'), {
+      target: { value: username },
+    });
+  }
 }
 
 function apiError(status: number, code: string) {
@@ -43,7 +52,7 @@ function apiError(status: number, code: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  searchParams = new URLSearchParams('cid=ch-1&semel=482273&username=303977367');
+  searchParams = new URLSearchParams('cid=ch-1&semel=482273');
   sendMfaCode.mockResolvedValue({ ok: true });
   createMfaSession.mockResolvedValue({ ok: true, isFirstLogin: false });
 });
@@ -61,7 +70,7 @@ describe('MfaPageClient', () => {
 
   it('completes the sign-in with the challenge, code and password', async () => {
     renderPage();
-    fill();
+    fill({ username: '303977367' });
     fireEvent.click(screen.getByTestId('mfa-submit'));
 
     await waitFor(() => {
@@ -85,12 +94,13 @@ describe('MfaPageClient', () => {
       'password',
     );
     expect(searchParams.toString()).not.toContain('password');
+    expect(searchParams.toString()).not.toContain('username');
   });
 
   it('lands on the sync screen for a first login', async () => {
     createMfaSession.mockResolvedValue({ ok: true, isFirstLogin: true });
     renderPage();
-    fill();
+    fill({ username: '303977367' });
     fireEvent.click(screen.getByTestId('mfa-submit'));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith('/auth/syncing'));
@@ -99,7 +109,7 @@ describe('MfaPageClient', () => {
   it('lands in the app for a returning sign-in', async () => {
     createMfaSession.mockResolvedValue({ ok: true, isFirstLogin: false });
     renderPage();
-    fill();
+    fill({ username: '303977367' });
     fireEvent.click(screen.getByTestId('mfa-submit'));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith('/'));
@@ -118,7 +128,7 @@ describe('MfaPageClient', () => {
 
   it('refuses to submit without a code', async () => {
     renderPage();
-    fill({ code: '  ' });
+    fill({ code: '  ', username: '303977367' });
     fireEvent.click(screen.getByTestId('mfa-submit'));
 
     expect(await screen.findByTestId('mfa-error')).toBeInTheDocument();
@@ -127,7 +137,7 @@ describe('MfaPageClient', () => {
 
   it('refuses to submit without a password, rather than killing sync silently', async () => {
     renderPage();
-    fill({ password: '' });
+    fill({ password: '', username: '303977367' });
     fireEvent.click(screen.getByTestId('mfa-submit'));
 
     expect(await screen.findByTestId('mfa-error')).toBeInTheDocument();
@@ -137,7 +147,7 @@ describe('MfaPageClient', () => {
   it('names a wrong code as a wrong code', async () => {
     createMfaSession.mockRejectedValue(apiError(400, 'INVALID_MFA_CODE'));
     renderPage();
-    fill();
+    fill({ username: '303977367' });
     fireEvent.click(screen.getByTestId('mfa-submit'));
 
     const error = await screen.findByTestId('mfa-error');
@@ -148,7 +158,7 @@ describe('MfaPageClient', () => {
   it('distinguishes an outage from a wrong code', async () => {
     createMfaSession.mockRejectedValue(apiError(502, 'UPSTREAM_ERROR'));
     renderPage();
-    fill();
+    fill({ username: '303977367' });
     fireEvent.click(screen.getByTestId('mfa-submit'));
 
     expect((await screen.findByTestId('mfa-error')).textContent).toContain(
@@ -172,5 +182,42 @@ describe('MfaPageClient', () => {
     expect(code).toHaveAttribute('dir', 'ltr');
     expect(code).toHaveAttribute('inputMode', 'numeric');
     expect(code).toHaveAttribute('autoComplete', 'one-time-code');
+  });
+});
+
+describe('MfaPageClient review fixes', () => {
+  it('asks for the username, because it is no longer in the URL', async () => {
+    searchParams = new URLSearchParams('cid=ch-1&semel=482273');
+    renderPage();
+
+    const field = await screen.findByTestId('mfa-username');
+    expect(field).toBeInTheDocument();
+    fireEvent.change(field, { target: { value: '303977367' } });
+    fill();
+    fireEvent.click(screen.getByTestId('mfa-submit'));
+
+    await waitFor(() => {
+      expect(createMfaSession.mock.calls[0][1]).toMatchObject({
+        username: '303977367',
+      });
+    });
+  });
+
+  it('refuses to submit with no username', async () => {
+    searchParams = new URLSearchParams('cid=ch-1&semel=482273');
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('mfa-submit'));
+
+    expect(await screen.findByTestId('mfa-error')).toBeInTheDocument();
+    expect(createMfaSession).not.toHaveBeenCalled();
+  });
+
+  it('still renders the form when only the challenge and school are known', async () => {
+    searchParams = new URLSearchParams('cid=ch-1&semel=482273');
+    renderPage();
+
+    expect(await screen.findByTestId('mfa-submit')).toBeInTheDocument();
+    expect(screen.queryByTestId('mfa-start-again')).toBeNull();
   });
 });

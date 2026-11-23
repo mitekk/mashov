@@ -36,6 +36,7 @@ import { RedisService } from '../../backend/src/redis/redis.service';
 import { MashovRecoveryService } from '../../backend/src/common/mashov-login/mashov-recovery.service';
 import { MashovSessionService } from '../../backend/src/session/mashov-session.service';
 import { SchoolLinksService } from '../../backend/src/school-links/school-links.service';
+import { AuthService } from '../../backend/src/auth/auth.service';
 import { MashovSessionModule } from '../../backend/src/session/mashov-session.module';
 import { SchoolLinksModule } from '../../backend/src/school-links/school-links.module';
 
@@ -58,12 +59,33 @@ function reasonError(reason: string, status = 403): AxiosError {
   return err;
 }
 
+/**
+ * A Mashov answer with no `Reason` header.
+ *
+ * The JSON content type is load-bearing, not decoration: it is what marks the
+ * response as having come from Mashov's API rather than from a proxy ACL page,
+ * and only the former is evidence about what the parent typed. A fixture
+ * without it is a fixture for a proxy rejection.
+ */
 function bareError(status: number): AxiosError {
   const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
   err.response = {
     status,
     data: {},
-    headers: {},
+    headers: { 'content-type': 'application/json' },
+    statusText: '',
+    config: {},
+  } as unknown as AxiosError['response'];
+  return err;
+}
+
+/** What something BETWEEN us and Mashov answers with: HTML, no `Reason`. */
+function proxyError(status: number): AxiosError {
+  const err = new AxiosError('Forbidden', 'ERR_BAD_REQUEST');
+  err.response = {
+    status,
+    data: '<html>Access denied</html>',
+    headers: { 'content-type': 'text/html' },
     statusText: '',
     config: {},
   } as unknown as AxiosError['response'];
@@ -77,6 +99,7 @@ describe('In-app Mashov password recovery', () => {
   let upstream: MashovRecoveryService;
   let session: MashovSessionService;
   let schoolLinks: SchoolLinksService;
+  let authService: AuthService;
 
   let requestRecovery: jest.SpyInstance;
   let resetPassword: jest.SpyInstance;
@@ -114,6 +137,7 @@ describe('In-app Mashov password recovery', () => {
     upstream = module.get(MashovRecoveryService);
     session = module.get(MashovSessionService);
     schoolLinks = module.get(SchoolLinksService);
+    authService = module.get(AuthService);
 
     requestRecovery = jest.spyOn(upstream, 'requestRecovery');
     resetPassword = jest.spyOn(upstream, 'resetPassword');
@@ -132,8 +156,13 @@ describe('In-app Mashov password recovery', () => {
     jest.clearAllMocks();
     // Every test gets its own limiter budget. Without this the first suite to
     // run three recoveries would 429 everything after it.
-    await redisService.scanDel('ratelimit:recovery:*');
+    // ALL of them, not just recovery's: the fix pass added limiters to
+    // /auth/credentials and both MFA routes, and a bucket surviving between
+    // tests makes a later test fail for a reason that has nothing to do with
+    // what it is checking.
+    await redisService.scanDel('ratelimit:*');
     await redisService.scanDel('recovery:*');
+    await redisService.scanDel('otp:*');
     await prisma.credentialRecoveryAudit.deleteMany({});
 
     requestRecovery.mockResolvedValue({});
@@ -618,6 +647,7 @@ describe('In-app Mashov password recovery', () => {
     });
 
     beforeEach(async () => {
+      await redisService.scanDel('ratelimit:*');
       sendMfa.mockResolvedValue(undefined);
       verifyMfa.mockResolvedValue({
         data: {
@@ -806,6 +836,7 @@ describe('In-app Mashov password recovery', () => {
     });
 
     beforeEach(async () => {
+      await redisService.scanDel('ratelimit:*');
       changePassword.mockResolvedValue(loginPayload());
       changeUsername.mockResolvedValue(loginPayload());
       requestOtp.mockResolvedValue(undefined);
@@ -993,6 +1024,182 @@ describe('In-app Mashov password recovery', () => {
           expect(res.status).not.toBe(401);
         }
       });
+    });
+  });
+
+  describe('review fixes, end to end', () => {
+    async function seedConnection(username = KNOWN_ID) {
+      const user = await prisma.appUser.create({
+        data: {
+          mashovUserId: `mashov-fix-${username}`,
+          semel: SEMEL,
+          username,
+          displayName: 'Parent',
+        },
+      });
+      return prisma.householdConnection.create({
+        data: {
+          schoolCode: SEMEL,
+          schoolYear: 2027,
+          username,
+          encryptedPassword: 'enc-old-password',
+          schoolName: 'Test School',
+          upstreamUserId: `mashov-fix-${username}`,
+          active: true,
+          credentialStaleAt: new Date('2026-11-23T09:00:00Z'),
+          userId: user.id,
+        },
+      });
+    }
+
+    afterEach(async () => {
+      await redisService.scanDel('ratelimit:*');
+      await prisma.appSession.deleteMany({});
+      await prisma.householdConnection.deleteMany({});
+      await prisma.appUser.deleteMany({});
+    });
+
+    // C1 lives in `connection.service.spec.ts` instead: the write that heals a
+    // stale connection is `ConnectionService.updateConnection`, which validates
+    // against Mashov first, and this suite stubs the recovery/MFA client rather
+    // than ConnectionService's own axios instance. What IS asserted here is the
+    // other half -- that the flag a reset sets surfaces on the school-link list,
+    // which the `stale-credential remediation, end to end` describe above
+    // covers.
+
+    // C2 — nothing that did not prove the password may clear the flag.
+    it('leaves the stale flag set after an OTP sign-in', async () => {
+      // OTP re-stores the password it already had, which may be exactly the
+      // dead one a reset invalidated. Clearing the flag would delete the only
+      // signal saying this school's sync is broken.
+      const connection = await seedConnection();
+
+      await authService.persistSessionFromLogin({
+        semel: SEMEL,
+        username: KNOWN_ID,
+        password: 'whatever-we-already-had',
+        year: 2027,
+        loginData: {
+          credential: { userId: `mashov-fix-${KNOWN_ID}` },
+          accessToken: { children: [] },
+        },
+        credentialProven: false,
+        ip: '203.0.113.90',
+        existingConnBeforeLogin: {
+          id: connection.id,
+          mashovUniqueId: null,
+          userId: connection.userId,
+        },
+      });
+
+      const after = await prisma.householdConnection.findUnique({
+        where: { id: connection.id },
+      });
+      expect(after?.credentialStaleAt).not.toBeNull();
+    });
+
+    it('clears the stale flag when the password WAS proven', async () => {
+      const connection = await seedConnection();
+
+      await authService.persistSessionFromLogin({
+        semel: SEMEL,
+        username: KNOWN_ID,
+        password: 'a-proven-password',
+        year: 2027,
+        loginData: {
+          credential: { userId: `mashov-fix-${KNOWN_ID}` },
+          accessToken: { children: [] },
+        },
+        credentialProven: true,
+        ip: '203.0.113.91',
+        existingConnBeforeLogin: {
+          id: connection.id,
+          mashovUniqueId: null,
+          userId: connection.userId,
+        },
+      });
+
+      const after = await prisma.householdConnection.findUnique({
+        where: { id: connection.id },
+      });
+      expect(after?.credentialStaleAt).toBeNull();
+    });
+
+    // C3 — the password-change route must not be the unguarded one.
+    it('rate limits POST /auth/credentials per IP', async () => {
+      const ip = freshIp();
+      const body = {
+        semel: SEMEL,
+        username: KNOWN_ID,
+        password: 'oldpw1',
+        newPassword: 'secret1',
+      };
+
+      for (let i = 0; i < 5; i += 1) {
+        const res = await request(app.getHttpServer())
+          .post('/api/v1/auth/credentials')
+          .set('X-Forwarded-For', ip)
+          .send(body);
+        expect(res.status).not.toBe(429);
+      }
+
+      const sixth = await request(app.getHttpServer())
+        .post('/api/v1/auth/credentials')
+        .set('X-Forwarded-For', ip)
+        .send(body);
+
+      expect(sixth.status).toBe(429);
+      expect(sixth.body.error.code).toBe('RATE_LIMITED');
+    });
+
+    it('rate limits both MFA routes per IP', async () => {
+      const ip = freshIp();
+
+      for (let i = 0; i < 10; i += 1) {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/mfa-challenges/ch-limit/code')
+          .set('X-Forwarded-For', ip)
+          .send({ method: 'email' });
+      }
+
+      const over = await request(app.getHttpServer())
+        .post('/api/v1/auth/mfa-challenges/ch-limit/code')
+        .set('X-Forwarded-For', ip)
+        .send({ method: 'email' });
+
+      expect(over.status).toBe(429);
+      expect(over.body.error.code).toBe('RATE_LIMITED');
+    });
+
+    // I4 — a 4xx from something that is not Mashov is never a wrong code.
+    it('answers 502 when a proxy, not Mashov, rejects the reset', async () => {
+      const { body } = await startRecovery();
+      resetPassword.mockRejectedValue(proxyError(403));
+
+      const res = await completeRecovery(body.recoveryId);
+
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('UPSTREAM_ERROR');
+    });
+
+    // I8a — the raw ID number must not sit in a Redis value.
+    it('stores no raw ID number in the recovery state', async () => {
+      const { body } = await startRecovery();
+
+      const stored = await redisService.get(`recovery:${body.recoveryId}`);
+      expect(stored).not.toBeNull();
+      expect(stored).not.toContain(KNOWN_ID);
+    });
+
+    it('still completes a recovery whose state it encrypted', async () => {
+      // The encryption is worthless if the service cannot read its own state
+      // back -- that would turn every recovery into "start again".
+      const { body } = await startRecovery();
+
+      const res = await completeRecovery(body.recoveryId);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, username: KNOWN_ID });
     });
   });
 });

@@ -181,6 +181,24 @@ describe('ConnectionService', () => {
       );
     });
 
+    it('clears a stale-credential flag, because Mashov just proved this password', async () => {
+      // This is the write behind `PUT /school-links/:id`, which is what the
+      // `credentialStale` banner's own password field posts to. Without this
+      // the parent re-enters their password, we store it, and the banner comes
+      // straight back and never leaves -- the remediation loop never closes.
+      mockPrisma.householdConnection.findFirst.mockResolvedValue(existingConn);
+      mockHttp.post = jest.fn().mockResolvedValue({ data: {} });
+      mockPrisma.householdConnection.update.mockResolvedValue({});
+
+      await service.updateConnection('user-1', undefined, 'the-new-password');
+
+      expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ credentialStaleAt: null }),
+        }),
+      );
+    });
+
     it('uses existing password when none provided', async () => {
       mockPrisma.householdConnection.findFirst.mockResolvedValue(existingConn);
       mockHttp.post = jest.fn().mockResolvedValue({ data: {} });

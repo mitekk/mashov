@@ -3,6 +3,7 @@ import {
   MASHOV_REASONS,
   type MashovReason,
   classifyLoginReason,
+  isMashovRejection,
   readChallengeId,
   readReason,
 } from './mashov-reason';
@@ -165,5 +166,55 @@ describe('readChallengeId', () => {
 
   it('ignores a non-string challenge id rather than coercing it', () => {
     expect(readChallengeId(withBody({ challengeId: 42 }))).toBeUndefined();
+  });
+});
+
+/**
+ * A 4xx is only evidence about the user's input if it came from Mashov's API.
+ *
+ * The egress proxy answers `403` with an HTML body and no `Reason` header when
+ * its ACL rejects us -- which is a thing that happens, and is recorded as
+ * happening on a dev machine. Blaming that on the recovery code tells a parent
+ * their code was wrong after they have already burned it, which is
+ * unrecoverable.
+ */
+describe('isMashovRejection', () => {
+  function response(headers: Record<string, string>, status = 403): AxiosError {
+    const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+    err.response = {
+      status,
+      data: {},
+      headers,
+    } as unknown as AxiosError['response'];
+    return err;
+  }
+
+  it('accepts a response carrying a known Reason header', () => {
+    expect(isMashovRejection(response({ reason: 'MfaInvalidCode' }))).toBe(true);
+  });
+
+  it('accepts a JSON response, which is what the API answers with', () => {
+    expect(
+      isMashovRejection(response({ 'content-type': 'application/json; charset=utf-8' })),
+    ).toBe(true);
+  });
+
+  it('rejects an HTML error page, which is what a proxy ACL answers with', () => {
+    expect(isMashovRejection(response({ 'content-type': 'text/html' }))).toBe(false);
+  });
+
+  it('rejects a response with no content type and no Reason at all', () => {
+    expect(isMashovRejection(response({}))).toBe(false);
+  });
+
+  it('accepts an unknown Reason value, which still proves it reached the API', () => {
+    // `readReason` returns undefined for a value it does not recognise, but the
+    // header's presence is what matters here.
+    expect(isMashovRejection(response({ Reason: 'SomeBrandNewReason' }))).toBe(true);
+  });
+
+  it('is false for a non-axios error and for a response-less one', () => {
+    expect(isMashovRejection(new Error('boom'))).toBe(false);
+    expect(isMashovRejection(new AxiosError('no response'))).toBe(false);
   });
 });

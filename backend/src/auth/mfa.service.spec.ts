@@ -4,6 +4,7 @@ import axios, { AxiosError, CanceledError } from 'axios';
 import { MfaService } from './mfa.service';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 
@@ -24,6 +25,14 @@ const mockSchoolYear = {
   resolveForSchool: jest.fn(),
 };
 
+const mockRedis = {
+  get: jest.fn(),
+  set: jest.fn(),
+  del: jest.fn(),
+  incr: jest.fn(),
+  expire: jest.fn(),
+};
+
 const SEMEL = 482273;
 const USERNAME = '303977367';
 const IP = '203.0.113.9';
@@ -39,9 +48,18 @@ function reasonError(reason: string, status = 403): AxiosError {
   return err;
 }
 
+/**
+ * A Mashov answer with no `Reason` header. The JSON content type matters: it is
+ * what marks the response as having come from Mashov's API rather than from a
+ * proxy ACL page or a WAF, and only the former is evidence about the input.
+ */
 function bareError(status: number): AxiosError {
   const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
-  err.response = { status, data: {}, headers: {} } as unknown as AxiosError['response'];
+  err.response = {
+    status,
+    data: {},
+    headers: { 'content-type': 'application/json' },
+  } as unknown as AxiosError['response'];
   return err;
 }
 
@@ -65,6 +83,7 @@ describe('MfaService', () => {
     jest.clearAllMocks();
     jest.spyOn(axios, 'isCancel').mockReturnValue(false);
     jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
     mockUpstream.sendMfa.mockResolvedValue(undefined);
     mockUpstream.verifyMfa.mockResolvedValue({
       data: { credential: { userId: 'u1' } },
@@ -85,6 +104,7 @@ describe('MfaService', () => {
         { provide: AuthService, useValue: mockAuth },
         { provide: PrismaService, useValue: mockPrisma },
         { provide: SchoolYearService, useValue: mockSchoolYear },
+        { provide: RedisService, useValue: mockRedis },
         { provide: MashovRecoveryService, useValue: mockUpstream },
       ],
     }).compile();
@@ -94,7 +114,7 @@ describe('MfaService', () => {
 
   describe('sendCode', () => {
     it('asks Mashov to send the code on the chosen channel', async () => {
-      await expect(service.sendCode(CHALLENGE, 'sms')).resolves.toEqual({ ok: true });
+      await expect(service.sendCode(CHALLENGE, 'sms', IP)).resolves.toEqual({ ok: true });
       expect(mockUpstream.sendMfa).toHaveBeenCalledWith(CHALLENGE, 'sms');
     });
 
@@ -109,7 +129,7 @@ describe('MfaService', () => {
     for (const [reason, status, code] of CASES) {
       it(`maps ${reason} to ${status} ${code}`, async () => {
         mockUpstream.sendMfa.mockRejectedValue(reasonError(reason));
-        expect(await thrown(() => service.sendCode(CHALLENGE, 'email'))).toEqual({
+        expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
           status,
           code,
         });
@@ -119,7 +139,7 @@ describe('MfaService', () => {
     it('answers 502 when Mashov never responded', async () => {
       jest.spyOn(axios, 'isCancel').mockReturnValue(true);
       mockUpstream.sendMfa.mockRejectedValue(new CanceledError('aborted'));
-      expect(await thrown(() => service.sendCode(CHALLENGE, 'email'))).toEqual({
+      expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
         status: 502,
         code: 'UPSTREAM_ERROR',
       });
@@ -137,7 +157,7 @@ describe('MfaService', () => {
         jest.spyOn(axios, 'isCancel').mockReturnValue(false);
         jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
         arrange();
-        expect((await thrown(() => service.sendCode(CHALLENGE, 'email'))).status).not.toBe(
+        expect((await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).status).not.toBe(
           401,
         );
       }
@@ -289,6 +309,111 @@ describe('MfaService', () => {
         arrange();
         expect((await thrown(() => createSession())).status).not.toBe(401);
       }
+    });
+  });
+});
+
+describe('MfaService review fixes', () => {
+  let service: MfaService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
+    mockUpstream.sendMfa.mockResolvedValue(undefined);
+    mockUpstream.verifyMfa.mockResolvedValue({
+      data: { credential: { userId: 'u1' } },
+      newUniqueId: 'uniq-1',
+      csrfToken: 'csrf-1',
+      devicePass: 'dp-1',
+    });
+    mockAuth.persistSessionFromLogin.mockResolvedValue({
+      sessionToken: 'tok',
+      isFirstLogin: true,
+    });
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockSchoolYear.resolveForSchool.mockResolvedValue({ year: 2027, source: 'calendar' });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        MfaService,
+        { provide: AuthService, useValue: mockAuth },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: SchoolYearService, useValue: mockSchoolYear },
+        { provide: MashovRecoveryService, useValue: mockUpstream },
+      ],
+    }).compile();
+
+    service = module.get(MfaService);
+  });
+
+  function createSession() {
+    return service.createSession(
+      CHALLENGE,
+      { semel: SEMEL, username: USERNAME, password: 'pw', code: '123456' },
+      IP,
+    );
+  }
+
+  it('does NOT claim the password was proven', async () => {
+    // Mashov's verify route rejects the password, so nothing on either side
+    // checked it. The Task-7 screen re-asks for it, which makes a typo likely,
+    // and a typo must not clear the stale flag for that school.
+    await createSession();
+
+    expect(mockAuth.persistSessionFromLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ credentialProven: false }),
+    );
+  });
+
+  describe('rate limits', () => {
+    it('limits code sends per IP, so nobody can spam a victim\u2019s phone', async () => {
+      mockRedis.incr.mockResolvedValue(99);
+
+      expect(await thrown(() => service.sendCode(CHALLENGE, 'sms', IP))).toMatchObject({
+        status: 429,
+        code: 'RATE_LIMITED',
+      });
+      expect(mockUpstream.sendMfa).not.toHaveBeenCalled();
+    });
+
+    it('limits code attempts per IP, so nobody can brute-force the code', async () => {
+      mockRedis.incr.mockResolvedValue(99);
+
+      expect(await thrown(() => createSession())).toMatchObject({
+        status: 429,
+        code: 'RATE_LIMITED',
+      });
+      expect(mockUpstream.verifyMfa).not.toHaveBeenCalled();
+    });
+
+    it('also caps attempts per challenge, not just per IP', async () => {
+      // Per-IP alone does nothing against a botnet grinding one challenge.
+      const keys: string[] = [];
+      mockRedis.incr.mockImplementation((key: string) => {
+        keys.push(key);
+        return Promise.resolve(1);
+      });
+
+      await createSession();
+
+      expect(keys).toEqual([
+        `ratelimit:mfa:${IP}`,
+        `ratelimit:mfa:challenge:${CHALLENGE}`,
+      ]);
+    });
+
+    it('sets each window TTL on its first hit only', async () => {
+      mockRedis.incr.mockResolvedValue(1);
+      await createSession();
+      expect(mockRedis.expire).toHaveBeenCalledTimes(2);
+
+      mockRedis.expire.mockClear();
+      mockRedis.incr.mockResolvedValue(2);
+      await createSession();
+      expect(mockRedis.expire).not.toHaveBeenCalled();
     });
   });
 });

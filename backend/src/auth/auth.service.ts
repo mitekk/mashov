@@ -103,6 +103,13 @@ export class AuthService {
     let year = candidate.year;
     let loginData: MashovLoginPayload;
     let newUniqueId: string | undefined;
+    /**
+     * Mashov issues a trusted-device credential on `POST /api/login` too, not
+     * only on `mfa/verify`. Dropped here, the trusted-device re-login path
+     * would only ever be seeded by an MFA sign-in or a cron -- never by the one
+     * sign-in every parent actually performs.
+     */
+    let devicePass: string | undefined;
 
     try {
       let attempt = await this.credentialValidator.postLogin({
@@ -150,6 +157,7 @@ export class AuthService {
 
       loginData = attempt.data;
       newUniqueId = attempt.newUniqueId;
+      devicePass = attempt.devicePass;
     } catch (err) {
       // Never report an upstream outage as bad credentials — the user would be
       // sent off to retype a password that was correct all along.
@@ -221,6 +229,9 @@ export class AuthService {
       year,
       loginData,
       newUniqueId,
+      devicePass,
+      // A password sign-in is the definition of a proven credential.
+      credentialProven: true,
       ip,
       existingConnBeforeLogin,
     });
@@ -250,6 +261,20 @@ export class AuthService {
     newUniqueId?: string;
     /** Mashov's trusted-device credential, when this login produced one. */
     devicePass?: string;
+    /**
+     * Did Mashov just validate THIS password?
+     *
+     * True for a password sign-in and for a credential change: both post the
+     * password upstream and Mashov accepts or rejects it. False for the MFA and
+     * OTP paths, where the password is either never checked by anyone
+     * (`mfa/verify` strips it) or is simply the one we already had.
+     *
+     * It gates the `credentialStaleAt` clearing, and only that. Clearing the
+     * flag on an unproven password would throw away the one signal saying
+     * which school's sync is broken -- and in the OTP case the password being
+     * re-stored may be exactly the dead one a reset just invalidated.
+     */
+    credentialProven: boolean;
     ip: string;
     existingConnBeforeLogin: {
       id: string;
@@ -262,6 +287,9 @@ export class AuthService {
     const devicePassPatch = input.devicePass
       ? { devicePass: this.encryptionService.encrypt(input.devicePass) }
       : {};
+    // Spread, not a literal `null`: an unproven sign-in must leave whatever is
+    // there alone rather than overwrite it either way.
+    const stalePatch = input.credentialProven ? { credentialStaleAt: null } : {};
 
     const mashovUserId = loginData.credential?.userId;
     const displayName = loginData.credential?.displayName ?? username;
@@ -337,13 +365,13 @@ export class AuthService {
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
-          // A sign-in is the one moment we hold the plaintext password, so it
-          // is the only place that can heal a credential a recovery reset
-          // invalidated. Cleared on the same write that rewrites
-          // `encryptedPassword`, on every branch -- missed on one, a parent who
-          // has already fixed things keeps being told their school needs
-          // attention.
-          credentialStaleAt: null,
+          // A proven password is the only thing that can heal a credential a
+          // recovery reset invalidated, and it is healed on the same write that
+          // rewrites `encryptedPassword`, on every branch -- missed on one, a
+          // parent who has already fixed things keeps being told their school
+          // needs attention. `credentialProven` is what keeps an MFA or OTP
+          // sign-in, which proves nothing about the password, from clearing it.
+          ...stalePatch,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
           ...devicePassPatch,
         },
@@ -405,13 +433,13 @@ export class AuthService {
           lastLoginAt: new Date(),
           active: true,
           userId: ownerId,
-          // A sign-in is the one moment we hold the plaintext password, so it
-          // is the only place that can heal a credential a recovery reset
-          // invalidated. Cleared on the same write that rewrites
-          // `encryptedPassword`, on every branch -- missed on one, a parent who
-          // has already fixed things keeps being told their school needs
-          // attention.
-          credentialStaleAt: null,
+          // A proven password is the only thing that can heal a credential a
+          // recovery reset invalidated, and it is healed on the same write that
+          // rewrites `encryptedPassword`, on every branch -- missed on one, a
+          // parent who has already fixed things keeps being told their school
+          // needs attention. `credentialProven` is what keeps an MFA or OTP
+          // sign-in, which proves nothing about the password, from clearing it.
+          ...stalePatch,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
           ...devicePassPatch,
         },
@@ -428,13 +456,13 @@ export class AuthService {
           lastLoginAt: new Date(),
           active: true,
           userId: ownerId,
-          // A sign-in is the one moment we hold the plaintext password, so it
-          // is the only place that can heal a credential a recovery reset
-          // invalidated. Cleared on the same write that rewrites
-          // `encryptedPassword`, on every branch -- missed on one, a parent who
-          // has already fixed things keeps being told their school needs
-          // attention.
-          credentialStaleAt: null,
+          // A proven password is the only thing that can heal a credential a
+          // recovery reset invalidated, and it is healed on the same write that
+          // rewrites `encryptedPassword`, on every branch -- missed on one, a
+          // parent who has already fixed things keeps being told their school
+          // needs attention. `credentialProven` is what keeps an MFA or OTP
+          // sign-in, which proves nothing about the password, from clearing it.
+          ...stalePatch,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
           ...devicePassPatch,
         },

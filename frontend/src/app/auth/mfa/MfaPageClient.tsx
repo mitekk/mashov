@@ -31,7 +31,15 @@ function MfaForm() {
   const searchParams = useSearchParams();
   const challengeId = searchParams.get('cid') ?? '';
   const semel = Number(searchParams.get('semel') ?? '');
-  const username = searchParams.get('username') ?? '';
+  /**
+   * Collected here, not read from the query.
+   *
+   * For these accounts the Mashov username IS the national ID number, so a
+   * query string would put it in browser history and in every reverse-proxy
+   * access log. The screen already asks for the password; one more field is the
+   * price of keeping the identifier out of those logs.
+   */
+  const [username, setUsername] = useState(searchParams.get('username') ?? '');
 
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
@@ -60,7 +68,12 @@ function MfaForm() {
 
   const submitMutation = useMutation({
     mutationFn: () =>
-      createMfaSession(challengeId, { semel, username, password, code }),
+      createMfaSession(challengeId, {
+        semel,
+        username: username.trim(),
+        password,
+        code,
+      }),
     onSuccess: (data) => router.push(data.isFirstLogin ? '/auth/syncing' : '/'),
     onError: (err) => {
       const read = readAuthError(err);
@@ -74,6 +87,10 @@ function MfaForm() {
     setErrorMsg(null);
     setErrorCode(undefined);
 
+    if (!username.trim()) {
+      setErrorMsg('יש להזין את שם המשתמש שלך במשוב');
+      return;
+    }
     if (!code.trim()) {
       setErrorMsg('יש להזין את קוד האימות');
       return;
@@ -88,7 +105,7 @@ function MfaForm() {
     submitMutation.mutate();
   }
 
-  if (!challengeId || !Number.isFinite(semel) || semel <= 0 || !username) {
+  if (!challengeId || !Number.isFinite(semel) || semel <= 0) {
     return (
       <Shell title="האימות אינו בתוקף">
         <p className="text-sm text-muted-foreground">
@@ -143,6 +160,25 @@ function MfaForm() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="space-y-1.5">
+          <label
+            htmlFor="mfa-username-input"
+            className="block text-sm font-medium text-foreground"
+          >
+            שם המשתמש שלך במשוב
+          </label>
+          <input
+            id="mfa-username-input"
+            type="text"
+            data-testid="mfa-username"
+            dir="ltr"
+            autoComplete="username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors"
+          />
+        </div>
+
         <div className="space-y-1.5">
           <label
             htmlFor="mfa-code-input"

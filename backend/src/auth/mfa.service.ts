@@ -8,7 +8,9 @@ import {
   MashovRecoveryService,
   type MfaMethod,
 } from '../common/mashov-login/mashov-recovery.service';
-import { readReason } from '../common/mashov-login/mashov-reason';
+import { isMashovRejection, readReason } from '../common/mashov-login/mashov-reason';
+import { countAgainstLimit } from '../common/mashov-login/rate-limit';
+import { RedisService } from '../redis/redis.service';
 import { AuthService } from './auth.service';
 
 /**
@@ -30,6 +32,16 @@ import { AuthService } from './auth.service';
  * whose code is not `INVALID_CREDENTIALS`, which would throw the parent off the
  * code-entry screen and lose a one-time code they have to wait to replace.
  */
+const IP_LIMIT = 10;
+const IP_WINDOW_SECONDS = 900;
+/**
+ * Per challenge, so a botnet cannot grind one six-digit code from many
+ * addresses. Deliberately above the number of attempts a real parent needs and
+ * far below the 10^6 a brute force does.
+ */
+const CHALLENGE_LIMIT = 10;
+const CHALLENGE_WINDOW_SECONDS = 900;
+
 @Injectable()
 export class MfaService {
   private readonly logger = new Logger(MfaService.name);
@@ -39,10 +51,26 @@ export class MfaService {
     private readonly prisma: PrismaService,
     private readonly schoolYearService: SchoolYearService,
     private readonly upstream: MashovRecoveryService,
+    private readonly redis: RedisService,
   ) {}
 
   /** Ask Mashov to (re)send the code for an open challenge. */
-  async sendCode(challengeId: string, method: MfaMethod): Promise<{ ok: true }> {
+  async sendCode(
+    challengeId: string,
+    method: MfaMethod,
+    ip: string,
+  ): Promise<{ ok: true }> {
+    // Unmetered, this route lets anyone holding a challenge id text a victim's
+    // phone as often as they like. Mashov's own `MfaResendTooSoon` is a brake,
+    // but relying on it puts our abuse budget in their hands.
+    await countAgainstLimit(this.redis, `ratelimit:mfa:${ip}`, IP_LIMIT, IP_WINDOW_SECONDS);
+    await countAgainstLimit(
+      this.redis,
+      `ratelimit:mfa:challenge:${challengeId}`,
+      CHALLENGE_LIMIT,
+      CHALLENGE_WINDOW_SECONDS,
+    );
+
     try {
       await this.upstream.sendMfa(challengeId, method);
       return { ok: true };
@@ -73,6 +101,17 @@ export class MfaService {
     ip: string,
   ): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
     const semel = Number(input.semel);
+
+    // Per IP and per challenge: per-IP alone does nothing against a botnet
+    // grinding one six-digit code, which is the whole attack this route
+    // invites.
+    await countAgainstLimit(this.redis, `ratelimit:mfa:${ip}`, IP_LIMIT, IP_WINDOW_SECONDS);
+    await countAgainstLimit(
+      this.redis,
+      `ratelimit:mfa:challenge:${challengeId}`,
+      CHALLENGE_LIMIT,
+      CHALLENGE_WINDOW_SECONDS,
+    );
 
     // Read BEFORE the login, like `AuthService.login` does: adoption turns on
     // whether the connection existed beforehand, and the stored `uniquId` makes
@@ -134,6 +173,10 @@ export class MfaService {
       loginData: result.data,
       newUniqueId: result.newUniqueId,
       devicePass: result.devicePass,
+      // NOT proven: `mfa/verify` strips the password, so neither Mashov nor we
+      // checked it. The screen re-asks for it, which makes a typo likely, and
+      // a typo must not clear a school's stale-credential flag.
+      credentialProven: false,
       ip,
       existingConnBeforeLogin,
     });
@@ -203,7 +246,15 @@ export class MfaService {
     }
 
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-    if (status !== undefined && status >= 400 && status < 500) {
+    if (
+      status !== undefined &&
+      status >= 400 &&
+      status < 500 &&
+      // Only Mashov's API gets to say a code is wrong. A proxy ACL 403 told as
+      // "wrong code" costs the parent a one-time code they must wait to
+      // replace.
+      isMashovRejection(err)
+    ) {
       // Includes an upstream 401. Rendered as 400 deliberately -- see the class
       // docblock on why nothing here may answer 401.
       return envelope(

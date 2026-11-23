@@ -4,6 +4,8 @@ import axios, { AxiosError, CanceledError } from 'axios';
 import { CredentialSetupService } from './credential-setup.service';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
+import { EncryptionService } from '../session/encryption.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 
@@ -15,6 +17,18 @@ const mockUpstream = {
 const mockAuth = { persistSessionFromLogin: jest.fn() };
 const mockPrisma = { householdConnection: { findUnique: jest.fn() } };
 const mockSchoolYear = { resolveForSchool: jest.fn() };
+
+const mockRedis = {
+  get: jest.fn(),
+  set: jest.fn(),
+  del: jest.fn(),
+  incr: jest.fn(),
+  expire: jest.fn(),
+};
+
+const mockEncryption = {
+  hashKey: jest.fn().mockReturnValue(Buffer.from('test-identity-hash-key')),
+};
 
 const SEMEL = 482273;
 const USERNAME = '303977367';
@@ -39,9 +53,18 @@ function reasonError(reason: string, status = 403): AxiosError {
   return err;
 }
 
+/**
+ * A Mashov answer with no `Reason` header. The JSON content type matters: it is
+ * what marks the response as having come from Mashov's API rather than from a
+ * proxy ACL page or a WAF, and only the former is evidence about the input.
+ */
 function bareError(status: number): AxiosError {
   const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
-  err.response = { status, data: {}, headers: {} } as unknown as AxiosError['response'];
+  err.response = {
+    status,
+    data: {},
+    headers: { 'content-type': 'application/json' },
+  } as unknown as AxiosError['response'];
   return err;
 }
 
@@ -71,6 +94,8 @@ describe('CredentialSetupService', () => {
     jest.clearAllMocks();
     jest.spyOn(axios, 'isCancel').mockReturnValue(false);
     jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
+    mockEncryption.hashKey.mockReturnValue(Buffer.from('test-identity-hash-key'));
     mockUpstream.changePassword.mockResolvedValue(okResult());
     mockUpstream.changeUsername.mockResolvedValue(okResult());
     mockAuth.persistSessionFromLogin.mockResolvedValue({
@@ -86,6 +111,8 @@ describe('CredentialSetupService', () => {
         { provide: AuthService, useValue: mockAuth },
         { provide: PrismaService, useValue: mockPrisma },
         { provide: SchoolYearService, useValue: mockSchoolYear },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: EncryptionService, useValue: mockEncryption },
         { provide: MashovRecoveryService, useValue: mockUpstream },
       ],
     }).compile();
@@ -260,5 +287,127 @@ describe('CredentialSetupService', () => {
 
     expect(await thrown(() => run())).toMatchObject({ status: 400 });
     expect(mockAuth.persistSessionFromLogin).not.toHaveBeenCalled();
+  });
+});
+
+describe('CredentialSetupService review fixes', () => {
+  let service: CredentialSetupService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
+    mockEncryption.hashKey.mockReturnValue(Buffer.from('test-identity-hash-key'));
+    mockUpstream.changePassword.mockResolvedValue(okResult());
+    mockUpstream.changeUsername.mockResolvedValue(okResult());
+    mockAuth.persistSessionFromLogin.mockResolvedValue({
+      sessionToken: 'tok',
+      isFirstLogin: false,
+    });
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockSchoolYear.resolveForSchool.mockResolvedValue({ year: 2027, source: 'calendar' });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        CredentialSetupService,
+        { provide: AuthService, useValue: mockAuth },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: EncryptionService, useValue: mockEncryption },
+        { provide: SchoolYearService, useValue: mockSchoolYear },
+        { provide: MashovRecoveryService, useValue: mockUpstream },
+      ],
+    }).compile();
+
+    service = module.get(CredentialSetupService);
+  });
+
+  function run(overrides: Record<string, unknown> = {}) {
+    return service.setCredentials(
+      {
+        semel: SEMEL,
+        username: USERNAME,
+        password: 'oldpw1',
+        newPassword: 'secret1',
+        ...overrides,
+      },
+      IP,
+    );
+  }
+
+  it('claims the password WAS proven, because Mashov checked it', async () => {
+    await run();
+    expect(mockAuth.persistSessionFromLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ credentialProven: true }),
+    );
+  });
+
+  describe('rate limits', () => {
+    it('refuses once the per-IP budget is gone, before any upstream call', async () => {
+      // Without this the route is an unauthenticated password oracle that
+      // routes around `ratelimit:login` entirely: a wrong current password
+      // answers 400, a right one answers with a session cookie.
+      mockRedis.incr.mockResolvedValue(99);
+
+      expect(await thrown(() => run())).toMatchObject({
+        status: 429,
+        code: 'RATE_LIMITED',
+      });
+      expect(mockUpstream.changePassword).not.toHaveBeenCalled();
+      expect(mockUpstream.changeUsername).not.toHaveBeenCalled();
+    });
+
+    it('limits per identity as well as per IP', async () => {
+      const keys: string[] = [];
+      mockRedis.incr.mockImplementation((key: string) => {
+        keys.push(key);
+        return Promise.resolve(1);
+      });
+
+      await run();
+
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toBe(`ratelimit:credentials:${IP}`);
+      expect(keys[1]).toMatch(
+        new RegExp(`^ratelimit:credentials:id:${SEMEL}:[0-9a-f]{64}$`),
+      );
+      expect(keys.join(' ')).not.toContain(USERNAME);
+    });
+  });
+
+  it('answers 502, not a bad current password, for a proxy ACL 403', async () => {
+    const err = new AxiosError('Forbidden', 'ERR_BAD_REQUEST');
+    err.response = {
+      status: 403,
+      data: '<html>denied</html>',
+      headers: { 'content-type': 'text/html' },
+    } as unknown as AxiosError['response'];
+    mockUpstream.changePassword.mockRejectedValue(err);
+
+    expect(await thrown(() => run())).toMatchObject({
+      status: 502,
+      code: 'UPSTREAM_ERROR',
+    });
+  });
+
+  it('carries the challenge id through on MfaRequired, so the next step has a handle', async () => {
+    const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+    err.response = {
+      status: 403,
+      data: { challengeId: 'ch-9' },
+      headers: { reason: 'MfaRequired' },
+    } as unknown as AxiosError['response'];
+    mockUpstream.changePassword.mockRejectedValue(err);
+
+    let thrownErr: HttpException | undefined;
+    try {
+      await run();
+    } catch (caught) {
+      thrownErr = caught as HttpException;
+    }
+
+    const body = thrownErr?.getResponse() as { error: { challengeId?: string } };
+    expect(body.error.challengeId).toBe('ch-9');
   });
 });

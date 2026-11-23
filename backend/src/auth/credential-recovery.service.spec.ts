@@ -1,11 +1,13 @@
 import { HttpException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { createHash } from 'node:crypto';
 import axios, { AxiosError, CanceledError } from 'axios';
 import { CredentialRecoveryService } from './credential-recovery.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { MashovSessionService } from '../session/mashov-session.service';
+import { EncryptionService } from '../session/encryption.service';
 
 const mockRedis = {
   get: jest.fn(),
@@ -31,6 +33,20 @@ const mockSession = {
   invalidateConnection: jest.fn(),
 };
 
+/**
+ * A real round-trip, not `jest.fn()` stubs: the recovery state is now
+ * encrypted at rest, and a stub that does not actually reverse itself would
+ * make every "step 2 still works" test pass for the wrong reason.
+ */
+const mockEncryption = {
+  encrypt: (plaintext: string) => `enc:${Buffer.from(plaintext).toString('base64')}`,
+  decrypt: (value: string) => {
+    if (!value.startsWith('enc:')) throw new Error('not encrypted by this service');
+    return Buffer.from(value.slice(4), 'base64').toString('utf8');
+  },
+  hashKey: () => Buffer.from('test-identity-hash-key'),
+};
+
 const GOOD_PASSWORD = 'secret1';
 const ID = '303977367';
 const SEMEL = 482273;
@@ -47,9 +63,18 @@ function reasonError(reason: string, status = 403): AxiosError {
   return err;
 }
 
+/**
+ * A Mashov answer with no `Reason` header. The JSON content type matters: it is
+ * what marks the response as having come from Mashov's API rather than from a
+ * proxy ACL page, and only the former is evidence about what the user typed.
+ */
 function bareError(status: number): AxiosError {
   const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
-  err.response = { status, data: {}, headers: {} } as unknown as AxiosError['response'];
+  err.response = {
+    status,
+    data: {},
+    headers: { 'content-type': 'application/json' },
+  } as unknown as AxiosError['response'];
   return err;
 }
 
@@ -87,16 +112,21 @@ describe('CredentialRecoveryService', () => {
         { provide: MashovRecoveryService, useValue: mockUpstream },
         { provide: PrismaService, useValue: mockPrisma },
         { provide: MashovSessionService, useValue: mockSession },
+        { provide: EncryptionService, useValue: mockEncryption },
       ],
     }).compile();
 
     service = module.get(CredentialRecoveryService);
   });
 
-  /** The state `start` wrote into Redis, parsed. */
+  /** The state `start` wrote into Redis, decrypted and parsed. */
   function storedState() {
     const call = mockRedis.set.mock.calls[mockRedis.set.mock.calls.length - 1];
-    return { key: call[0] as string, value: JSON.parse(call[1] as string), ttl: call[2] };
+    return {
+      key: call[0] as string,
+      value: JSON.parse(mockEncryption.decrypt(call[1] as string)),
+      ttl: call[2],
+    };
   }
 
   function start(overrides: Partial<{ channel: 'email' | 'sms'; idNumber: string }> = {}) {
@@ -327,15 +357,17 @@ describe('CredentialRecoveryService', () => {
 
     function stateIs(overrides: Record<string, unknown> = {}) {
       mockRedis.get.mockResolvedValue(
-        JSON.stringify({
-          semel: SEMEL,
-          idNumber: ID,
-          channel: 'email',
-          isResettingAndVerifying: false,
-          attempts: 0,
-          poisoned: false,
-          ...overrides,
-        }),
+        mockEncryption.encrypt(
+          JSON.stringify({
+            semel: SEMEL,
+            idNumber: ID,
+            channel: 'email',
+            isResettingAndVerifying: false,
+            attempts: 0,
+            poisoned: false,
+            ...overrides,
+          }),
+        ),
       );
     }
 
@@ -574,14 +606,16 @@ describe('CredentialRecoveryService stale-credential remediation', () => {
     jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
     mockRedis.incr.mockResolvedValue(1);
     mockRedis.get.mockResolvedValue(
-      JSON.stringify({
-        semel: SEMEL,
-        idNumber: ID,
-        channel: 'email',
-        isResettingAndVerifying: false,
-        attempts: 0,
-        poisoned: false,
-      }),
+      mockEncryption.encrypt(
+        JSON.stringify({
+          semel: SEMEL,
+          idNumber: ID,
+          channel: 'email',
+          isResettingAndVerifying: false,
+          attempts: 0,
+          poisoned: false,
+        }),
+      ),
     );
     mockUpstream.resetPassword.mockResolvedValue({ username: ID });
     mockPrisma.credentialRecoveryAudit.create.mockResolvedValue({});
@@ -595,6 +629,7 @@ describe('CredentialRecoveryService stale-credential remediation', () => {
         { provide: MashovRecoveryService, useValue: mockUpstream },
         { provide: PrismaService, useValue: mockPrisma },
         { provide: MashovSessionService, useValue: mockSession },
+        { provide: EncryptionService, useValue: mockEncryption },
       ],
     }).compile();
 
@@ -666,19 +701,190 @@ describe('CredentialRecoveryService stale-credential remediation', () => {
 
   it('marks nothing for a fabricated recovery', async () => {
     mockRedis.get.mockResolvedValue(
-      JSON.stringify({
-        semel: SEMEL,
-        idNumber: ID,
-        channel: 'email',
-        isResettingAndVerifying: false,
-        attempts: 0,
-        poisoned: true,
-      }),
+      mockEncryption.encrypt(
+        JSON.stringify({
+          semel: SEMEL,
+          idNumber: ID,
+          channel: 'email',
+          isResettingAndVerifying: false,
+          attempts: 0,
+          poisoned: true,
+        }),
+      ),
     );
 
     await thrown(() => complete());
 
     expect(mockPrisma.householdConnection.findUnique).not.toHaveBeenCalled();
     expect(mockSession.invalidateConnection).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Fixes from the whole-branch review. Each of these reproduces a finding.
+ */
+describe('CredentialRecoveryService review fixes', () => {
+  let service: CredentialRecoveryService;
+
+  const RID = '55555555-5555-4555-8555-555555555555';
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
+    mockUpstream.requestRecovery.mockResolvedValue({});
+    mockUpstream.resetPassword.mockResolvedValue({ username: ID });
+    mockPrisma.credentialRecoveryAudit.create.mockResolvedValue({});
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        CredentialRecoveryService,
+        { provide: RedisService, useValue: mockRedis },
+        { provide: MashovRecoveryService, useValue: mockUpstream },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: MashovSessionService, useValue: mockSession },
+        { provide: EncryptionService, useValue: mockEncryption },
+      ],
+    }).compile();
+
+    service = module.get(CredentialRecoveryService);
+  });
+
+  function stateIs(overrides: Record<string, unknown> = {}) {
+    mockRedis.get.mockResolvedValue(
+      mockEncryption.encrypt(
+        JSON.stringify({
+          semel: SEMEL,
+          idNumber: ID,
+          channel: 'email',
+          isResettingAndVerifying: false,
+          attempts: 0,
+          poisoned: false,
+          ...overrides,
+        }),
+      ),
+    );
+  }
+
+  function complete() {
+    return service.completePassword(
+      RID,
+      { code: 'ABC123', newPassword: GOOD_PASSWORD },
+      IP,
+    );
+  }
+
+  // I4 — a non-Mashov 4xx must never be blamed on the code.
+  describe('a 4xx that did not come from Mashov', () => {
+    function proxyError(status: number, contentType = 'text/html'): AxiosError {
+      const err = new AxiosError('Forbidden', 'ERR_BAD_REQUEST');
+      err.response = {
+        status,
+        data: '<html>Access denied</html>',
+        headers: { 'content-type': contentType },
+      } as unknown as AxiosError['response'];
+      return err;
+    }
+
+    it('answers 502, not an invalid code, for a proxy ACL 403', async () => {
+      // The egress proxy answers 403 with an HTML page and no Reason header.
+      // Reported as a bad code it tells the parent their single-use code was
+      // wrong, and they cannot ask for another.
+      stateIs();
+      mockUpstream.resetPassword.mockRejectedValue(proxyError(403));
+
+      expect(await thrown(() => complete())).toMatchObject({
+        status: 502,
+        code: 'UPSTREAM_ERROR',
+      });
+    });
+
+    it('answers 502 for an HTML 404 from something in the middle', async () => {
+      stateIs();
+      mockUpstream.resetPassword.mockRejectedValue(proxyError(404));
+
+      expect(await thrown(() => complete())).toMatchObject({
+        code: 'UPSTREAM_ERROR',
+      });
+    });
+
+    it('still blames the code for a JSON 404, which IS Mashov answering', async () => {
+      stateIs();
+      mockUpstream.resetPassword.mockRejectedValue(
+        proxyError(404, 'application/json'),
+      );
+
+      expect(await thrown(() => complete())).toMatchObject({
+        status: 400,
+        code: 'INVALID_RECOVERY_CODE',
+      });
+    });
+
+    it('does not fabricate a recovery at step 1 for a proxy 403 either', async () => {
+      mockUpstream.requestRecovery.mockRejectedValue(proxyError(403));
+
+      expect(
+        await thrown(() =>
+          service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP),
+        ),
+      ).toMatchObject({ status: 502, code: 'UPSTREAM_ERROR' });
+    });
+  });
+
+  // I7 — a bare sha256 over a 9-digit space is a rainbow table away.
+  describe('identity hashing', () => {
+    it('uses a keyed HMAC, not a bare sha256 of the ID number', async () => {
+      const keys: string[] = [];
+      mockRedis.incr.mockImplementation((key: string) => {
+        keys.push(key);
+        return Promise.resolve(1);
+      });
+
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+
+      const bare = createHash('sha256').update(ID).digest('hex');
+      expect(keys.join(' ')).not.toContain(bare);
+      expect(keys[1]).toMatch(new RegExp(`^ratelimit:recovery:id:${SEMEL}:[0-9a-f]{64}$`));
+    });
+
+    it('hashes the audit row the same keyed way', async () => {
+      stateIs();
+      await complete();
+
+      const row = mockPrisma.credentialRecoveryAudit.create.mock.calls[0][0].data;
+      expect(row.idNumberHash).not.toBe(createHash('sha256').update(ID).digest('hex'));
+      expect(row.idNumberHash).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
+  // I8a — the raw ID number must not sit in a Redis value.
+  describe('recovery state at rest', () => {
+    it('stores no raw ID number in Redis', async () => {
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+
+      const written = mockRedis.set.mock.calls[0][1] as string;
+      expect(written).not.toContain(ID);
+    });
+
+    it('round-trips the state it wrote, so step 2 still works', async () => {
+      // The encryption is only worth anything if the service can read its own
+      // state back -- otherwise every recovery silently becomes "start again".
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+      const written = mockRedis.set.mock.calls[0][1] as string;
+      mockRedis.get.mockResolvedValue(written);
+
+      await expect(complete()).resolves.toEqual({ ok: true, username: ID });
+      expect(mockUpstream.resetPassword).toHaveBeenCalledWith('ABC123', GOOD_PASSWORD);
+    });
+
+    it('treats an unreadable state as expired rather than throwing', async () => {
+      mockRedis.get.mockResolvedValue('not-valid-anything');
+
+      expect(await thrown(() => complete())).toMatchObject({
+        code: 'RECOVERY_SESSION_EXPIRED',
+      });
+    });
   });
 });

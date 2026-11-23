@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import { Check, X } from 'lucide-react';
 import { completeRecovery, login } from '@/api/auth';
-import { readAuthError } from '@/lib/authErrors';
+import { authErrorText, readAuthError } from '@/lib/authErrors';
 import { PASSWORD_RULES, brokenRules } from '@/lib/passwordPolicy';
 
 /**
@@ -67,7 +67,8 @@ function ResetPasswordForm() {
       }
     },
     onError: (err) => {
-      const { code: errorCode, message } = readAuthError(err);
+      const read = readAuthError(err);
+      const { code: errorCode } = read;
 
       if (errorCode === 'SECOND_CODE_REQUIRED') {
         // Mashov sent a code to both channels. Revealed by the server, not
@@ -81,7 +82,11 @@ function ResetPasswordForm() {
         setExpired(true);
         return;
       }
-      setErrorMsg(message);
+      // `authErrorText`, not the code's own copy: a 422 WEAK_PASSWORD carries
+      // the broken rules' Hebrew messages in `details[]`, and the checklist on
+      // this screen deliberately hides the relational rule -- so the detail is
+      // the only thing that tells the parent what to change.
+      setErrorMsg(authErrorText(read));
     },
   });
 

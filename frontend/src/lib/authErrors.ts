@@ -93,6 +93,16 @@ export interface ReadAuthError {
    * the forced-change codes, which carry one too and must echo it back.
    */
   challengeId: string | undefined;
+  /**
+   * Field-level messages from the envelope's `details[]`, already in Hebrew.
+   *
+   * These are the difference between "the password does not meet the policy"
+   * and "the password cannot contain your username". The reset screen hides
+   * the relational rule from its live checklist (the username is unknown
+   * there), so without these a parent sees an all-green checklist and a
+   * generic rejection, with nothing to act on.
+   */
+  details: string[];
 }
 
 function isKnownCode(code: string): code is AuthErrorCode {
@@ -108,12 +118,22 @@ function isKnownCode(code: string): code is AuthErrorCode {
  */
 export function readAuthError(error: unknown): ReadAuthError {
   if (!(error instanceof ApiError)) {
-    return { code: undefined, message: GENERIC, challengeId: undefined };
+    return { code: undefined, message: GENERIC, challengeId: undefined, details: [] };
   }
 
-  const envelope = (error.body as { error?: { code?: string; challengeId?: string } })
-    ?.error;
+  const envelope = (
+    error.body as {
+      error?: {
+        code?: string;
+        challengeId?: string;
+        details?: Array<{ message?: string }>;
+      };
+    }
+  )?.error;
   const code = envelope?.code || undefined;
+  const details = (envelope?.details ?? [])
+    .map((detail) => detail?.message)
+    .filter((message): message is string => typeof message === 'string' && message.length > 0);
 
   // The code lookup comes FIRST, before the 429 fallback: several of our 429s
   // have copy of their own (RECOVERY_THROTTLED, MFA_LOCKED, OTP_LOCKED), and a
@@ -126,12 +146,24 @@ export function readAuthError(error: unknown): ReadAuthError {
       challengeId: CHALLENGE_BEARING_CODES.has(code)
         ? envelope?.challengeId
         : undefined,
+      details,
     };
   }
 
   if (error.status === 429) {
-    return { code, message: TOO_MANY_REQUESTS, challengeId: undefined };
+    return { code, message: TOO_MANY_REQUESTS, challengeId: undefined, details };
   }
 
-  return { code, message: GENERIC, challengeId: undefined };
+  return { code, message: GENERIC, challengeId: undefined, details };
+}
+
+/**
+ * The message to show, preferring the server's field-level detail.
+ *
+ * A `422 WEAK_PASSWORD` whose `details[]` name the broken rules is strictly
+ * more useful than the code's own copy, which can only say "does not meet the
+ * policy".
+ */
+export function authErrorText(read: ReadAuthError): string {
+  return read.details.length > 0 ? read.details.join(' · ') : read.message;
 }

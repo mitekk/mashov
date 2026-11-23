@@ -266,14 +266,18 @@ test.describe('in-app MFA', () => {
 
     await expect(page).toHaveURL(/\/auth\/mfa\?/);
     await expect(page).toHaveURL(/cid=ch-e2e/);
-    // The password does not travel in the URL.
+    // Neither the password nor the ID number travels in the URL: one has no
+    // business there, the other would land in browser history and every
+    // reverse-proxy access log.
     await expect(page).not.toHaveURL(new RegExp(GOOD_PASSWORD));
+    await expect(page).not.toHaveURL(new RegExp(ID_NUMBER));
   });
 
-  test('the code screen asks for the password again, and says why', async ({ page }) => {
+  test('the code screen asks for the username and password again', async ({ page }) => {
     const mfa = new MfaPage(page);
-    await mfa.navigate('ch-e2e', SCHOOL.semel, ID_NUMBER);
+    await mfa.navigate('ch-e2e', SCHOOL.semel);
 
+    await expect(mfa.usernameInput).toBeVisible();
     await expect(mfa.passwordInput).toHaveAttribute('type', 'password');
     await expect(mfa.codeInput).toHaveAttribute('autocomplete', 'one-time-code');
   });
@@ -282,7 +286,7 @@ test.describe('in-app MFA', () => {
     const mfa = new MfaPage(page);
     await routeJson(page, '**/api/v1/auth/mfa-challenges/*/code', 202, { ok: true });
 
-    await mfa.navigate('ch-e2e', SCHOOL.semel, ID_NUMBER);
+    await mfa.navigate('ch-e2e', SCHOOL.semel);
     await mfa.sendSms.click();
 
     await expect(mfa.sentNote).toBeVisible();
@@ -299,8 +303,8 @@ test.describe('in-app MFA', () => {
       errorBody('INVALID_MFA_CODE'),
     );
 
-    await mfa.navigate('ch-e2e', SCHOOL.semel, ID_NUMBER);
-    await mfa.verify('000000', GOOD_PASSWORD);
+    await mfa.navigate('ch-e2e', SCHOOL.semel);
+    await mfa.verify(ID_NUMBER, '000000', GOOD_PASSWORD);
 
     await expect(mfa.errorMessage).toBeVisible();
     await expect(page).toHaveURL(/\/auth\/mfa\?/);

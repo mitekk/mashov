@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Plus, School } from 'lucide-react';
 import { updateSchoolLink } from '@/api/schoolLinks';
+import { authErrorText, readAuthError } from '@/lib/authErrors';
 import type { SchoolLink } from '@/types/api';
 
 interface SchoolLinksCardProps {
@@ -128,7 +129,10 @@ function CredentialStaleBanner({ link }: { link: SchoolLink }) {
       void queryClient.invalidateQueries({ queryKey: ['school-links'] });
       void queryClient.invalidateQueries({ queryKey: ['me'] });
     },
-    onError: () => setErrorMsg('הסיסמה לא התקבלה במשוב, נסה שוב'),
+    // Read, not assumed: `PUT /school-links/:id` answers 502 UPSTREAM_ERROR
+    // for an unreachable Mashov precisely so this does not tell the parent
+    // their password was refused and send them to change one that is fine.
+    onError: (err) => setErrorMsg(authErrorText(readAuthError(err))),
   });
 
   function handleSubmit(event: React.FormEvent) {

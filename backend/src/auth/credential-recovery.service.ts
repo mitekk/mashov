@@ -1,12 +1,17 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { isUpstreamUnreachable } from '../common/http/mashov-http';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { assertPasswordPolicy } from '../common/mashov-login/password-policy';
-import { readReason, type MashovReason } from '../common/mashov-login/mashov-reason';
+import {
+  isMashovRejection,
+  readReason,
+  type MashovReason,
+} from '../common/mashov-login/mashov-reason';
+import { EncryptionService } from '../session/encryption.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 
 /**
@@ -130,7 +135,24 @@ export class CredentialRecoveryService {
     private readonly upstream: MashovRecoveryService,
     private readonly prisma: PrismaService,
     private readonly sessionService: MashovSessionService,
+    private readonly encryption: EncryptionService,
   ) {}
+
+  /**
+   * A keyed, non-reversible handle on an identity.
+   *
+   * NOT a bare `sha256(idNumber)`. An Israeli ID number is about 10^9
+   * candidates, so a plain digest is a rainbow table away from the original --
+   * which would defeat both things the hash is for: keeping a national
+   * identifier out of a greppable Redis key, and out of a support-readable
+   * audit table. Keyed with the deploy's own secret, it is still stable enough
+   * to count resets per identity and join two attempts together.
+   */
+  private identityHash(idNumber: string): string {
+    return createHmac('sha256', this.encryption.hashKey())
+      .update(idNumber)
+      .digest('hex');
+  }
 
   /**
    * Step 1: ask Mashov to send a code, and hand back an opaque handle.
@@ -184,6 +206,17 @@ export class CredentialRecoveryService {
       // recovery here would have the parent wait for an email that was never
       // going to be sent.
       if (status === undefined || status >= 500) {
+        throw upstreamError();
+      }
+
+      // A 4xx that did not come from Mashov's API is not evidence about this
+      // account at all -- it is a proxy ACL or a WAF between us and them.
+      // Fabricating a recovery for it would have the parent wait for an email
+      // nobody was ever going to send.
+      if (!isMashovRejection(err)) {
+        this.logger.error(
+          `Mashov recovery answered ${status} without Mashov's own signature for semel=${input.semel}; treating as an outage`,
+        );
         throw upstreamError();
       }
 
@@ -426,9 +459,18 @@ export class CredentialRecoveryService {
         break;
     }
 
-    // 404 means a bad code — and ONLY because `assertPasswordPolicy` already
-    // ran. Mashov answers 404 for a policy violation too.
-    if (status !== undefined && status >= 400 && status < 500) {
+    // 404 means a bad code — and only on two conditions. One:
+    // `assertPasswordPolicy` already ran, because Mashov answers 404 for a
+    // policy violation too. Two: the answer actually came from Mashov's API.
+    // Our egress is a residential proxy, and a proxy ACL rejection is a 403
+    // with an HTML body and no `Reason` — reported as a bad code, it tells the
+    // parent their single-use code was wrong, which they cannot recover from.
+    if (
+      status !== undefined &&
+      status >= 400 &&
+      status < 500 &&
+      isMashovRejection(err)
+    ) {
       return invalidRecoveryCode();
     }
 
@@ -447,7 +489,7 @@ export class CredentialRecoveryService {
     // Hashed: a raw key would park a national ID number under a greppable
     // Redis key, readable by anything with Redis access.
     await this.countAgainstLimit(
-      `ratelimit:recovery:id:${Number(semel)}:${sha256(idNumber)}`,
+      `ratelimit:recovery:id:${Number(semel)}:${this.identityHash(idNumber)}`,
       ID_LIMIT,
       ID_WINDOW_SECONDS,
     );
@@ -477,11 +519,16 @@ export class CredentialRecoveryService {
   }
 
   private async writeState(recoveryId: string, state: RecoveryState): Promise<void> {
+    // Encrypted, not plain JSON: the state carries the `idNumber`, and a plain
+    // value means `SCAN recovery:* ` plus `GET` dumps every in-flight
+    // recovery's national ID to anything with Redis access. The same
+    // `EncryptionService` that protects `encryptedPassword`.
+    //
     // The TTL is refreshed on each attempt deliberately: a parent working
     // through a two-code form should not have the handle expire under them.
     await this.redis.set(
       stateKey(recoveryId),
-      JSON.stringify(state),
+      this.encryption.encrypt(JSON.stringify(state)),
       RECOVERY_TTL_SECONDS,
     );
   }
@@ -490,10 +537,12 @@ export class CredentialRecoveryService {
     const raw = await this.redis.get(key);
     if (!raw) return null;
     try {
-      return JSON.parse(raw) as RecoveryState;
+      return JSON.parse(this.encryption.decrypt(raw)) as RecoveryState;
     } catch {
-      // A corrupt value is indistinguishable from an expired one as far as the
-      // caller is concerned, and guessing at it would be worse.
+      // A value we cannot decrypt or parse is indistinguishable from an expired
+      // one as far as the caller is concerned -- including a plaintext value
+      // left by a previous deploy -- and guessing at it would be worse. The
+      // parent is told to start again, which is true.
       return null;
     }
   }
@@ -503,7 +552,7 @@ export class CredentialRecoveryService {
       await this.prisma.credentialRecoveryAudit.create({
         data: {
           schoolCode: state.semel,
-          idNumberHash: sha256(state.idNumber),
+          idNumberHash: this.identityHash(state.idNumber),
           ip,
         },
       });
@@ -524,9 +573,7 @@ function stateKey(recoveryId: string): string {
   return `recovery:${recoveryId}`;
 }
 
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
+
 
 function invalidRecoveryCode(): HttpException {
   return new HttpException(

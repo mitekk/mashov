@@ -7,7 +7,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Check, X } from 'lucide-react';
 import { setCredentials } from '@/api/auth';
 import { CaptchaEscapeHatch } from '@/components/auth/CaptchaEscapeHatch';
-import { readAuthError } from '@/lib/authErrors';
+import { authErrorText, readAuthError } from '@/lib/authErrors';
 import { PASSWORD_RULES, brokenRules } from '@/lib/passwordPolicy';
 
 /**
@@ -31,7 +31,12 @@ function CompleteSetupForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const semel = Number(searchParams.get('semel') ?? '');
-  const username = searchParams.get('username') ?? '';
+  /**
+   * Collected here, not read from the query -- the Mashov username is the
+   * parent's national ID number for these accounts, and a query string puts it
+   * in browser history and every access log.
+   */
+  const [username, setUsername] = useState(searchParams.get('username') ?? '');
   const challengeId = searchParams.get('cid') ?? '';
   /** `credentials` also asks for a username; `password` is a change only. */
   const mode = searchParams.get('mode') === 'credentials' ? 'credentials' : 'password';
@@ -47,14 +52,14 @@ function CompleteSetupForm() {
    */
   const [errorCode, setErrorCode] = useState<string | undefined>(undefined);
 
-  const effectiveUsername = newUsername.trim() || username;
+  const effectiveUsername = newUsername.trim() || username.trim();
   const broken = brokenRules(newPassword, effectiveUsername);
 
   const mutation = useMutation({
     mutationFn: () =>
       setCredentials({
         semel,
-        username,
+        username: username.trim(),
         password: currentPassword,
         newPassword,
         ...(mode === 'credentials' && newUsername.trim()
@@ -65,8 +70,21 @@ function CompleteSetupForm() {
     onSuccess: (data) => router.push(data.isFirstLogin ? '/auth/syncing' : '/'),
     onError: (err) => {
       const read = readAuthError(err);
+
+      // Mashov can demand a one-time code before it will accept the change,
+      // and it sends a challenge id with that refusal. Routing onward beats
+      // rendering "a code is required" on a screen with no way to enter one.
+      if (read.code === 'MFA_REQUIRED' && read.challengeId) {
+        const query = new URLSearchParams({
+          cid: read.challengeId,
+          semel: String(semel),
+        });
+        router.push(`/auth/mfa?${query.toString()}`);
+        return;
+      }
+
       setErrorCode(read.code);
-      setErrorMsg(read.message);
+      setErrorMsg(authErrorText(read));
     },
   });
 
@@ -75,6 +93,10 @@ function CompleteSetupForm() {
     setErrorMsg(null);
     setErrorCode(undefined);
 
+    if (!username.trim()) {
+      setErrorMsg('יש להזין את שם המשתמש שלך במשוב');
+      return;
+    }
     if (!currentPassword) {
       setErrorMsg('יש להזין את הסיסמה הנוכחית');
       return;
@@ -87,7 +109,7 @@ function CompleteSetupForm() {
     mutation.mutate();
   }
 
-  if (!Number.isFinite(semel) || semel <= 0 || !username) {
+  if (!Number.isFinite(semel) || semel <= 0) {
     return (
       <Shell title="הקישור אינו בתוקף">
         <p className="text-sm text-muted-foreground">
@@ -115,6 +137,16 @@ function CompleteSetupForm() {
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-5">
+        <Field
+          id="complete-setup-username"
+          label="שם המשתמש שלך במשוב"
+          type="text"
+          autoComplete="username"
+          dir="ltr"
+          value={username}
+          onChange={setUsername}
+        />
+
         <Field
           id="complete-setup-current-password"
           label="הסיסמה הנוכחית במשוב"

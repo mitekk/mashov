@@ -84,10 +84,13 @@ function SignInForm() {
       // without one the next screen has nothing to work with, and sending them
       // there would be a dead end with a spinner.
       if (code === 'MFA_REQUIRED' && challengeId && selectedSchool) {
+        // The username is NOT in the query. For these accounts it is the
+        // parent's national ID number, so a query string puts it in browser
+        // history and in every reverse-proxy access log. The next screen asks
+        // for it, exactly as it already asks for the password.
         const query = new URLSearchParams({
           cid: challengeId,
           semel: String(selectedSchool.semel),
-          username: username.trim(),
         });
         router.push(`/auth/mfa?${query.toString()}`);
         return;
@@ -100,10 +103,10 @@ function SignInForm() {
         (code === 'PASSWORD_CHANGE_REQUIRED' || code === 'CREDENTIALS_SETUP_REQUIRED') &&
         selectedSchool
       ) {
+        // Same reason as the MFA route above: no ID number in the URL.
         const query = new URLSearchParams({
           mode: code === 'CREDENTIALS_SETUP_REQUIRED' ? 'credentials' : 'password',
           semel: String(selectedSchool.semel),
-          username: username.trim(),
           ...(challengeId ? { cid: challengeId } : {}),
         });
         router.push(`/auth/complete-setup?${query.toString()}`);

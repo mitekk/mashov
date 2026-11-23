@@ -11,7 +11,8 @@ import {
   MashovRecoveryService,
   type MfaMethod,
 } from '../common/mashov-login/mashov-recovery.service';
-import { readReason } from '../common/mashov-login/mashov-reason';
+import { isMashovRejection, readReason } from '../common/mashov-login/mashov-reason';
+import { countAgainstLimit, identityKeyHash } from '../common/mashov-login/rate-limit';
 import { AuthService } from './auth.service';
 
 /**
@@ -41,6 +42,9 @@ import { AuthService } from './auth.service';
 const OTP_TTL_SECONDS = 900;
 const IP_LIMIT = 5;
 const IP_WINDOW_SECONDS = 900;
+/** Per identity, because the 409 this route can answer is a membership oracle. */
+const IDENTITY_LIMIT = 5;
+const IDENTITY_WINDOW_SECONDS = 3600;
 const MAX_CODE_ATTEMPTS = 5;
 
 interface OtpState {
@@ -68,9 +72,23 @@ export class OtpService {
     input: { semel: number; username: string; method: MfaMethod },
     ip: string,
   ): Promise<{ otpRequestId: string; method: MfaMethod }> {
-    await this.checkIpRateLimit(ip);
-
     const semel = Number(input.semel);
+
+    await countAgainstLimit(this.redis, `ratelimit:otp:${ip}`, IP_LIMIT, IP_WINDOW_SECONDS);
+    // Per identity as well, and it matters more here than the per-IP bucket:
+    // the 409 below tells the caller whether that person uses our app at all,
+    // so this route is a membership oracle keyed on an ID number. Per-IP alone
+    // does nothing against a botnet walking a list. Hashed, for the same reason
+    // the recovery key is.
+    await countAgainstLimit(
+      this.redis,
+      `ratelimit:otp:id:${semel}:${identityKeyHash(
+        this.encryption.hashKey(),
+        input.username,
+      )}`,
+      IDENTITY_LIMIT,
+      IDENTITY_WINDOW_SECONDS,
+    );
 
     // Checked BEFORE a code is sent, so the parent is never left holding a
     // code they cannot use.
@@ -176,6 +194,10 @@ export class OtpService {
       loginData: result.data,
       newUniqueId: result.newUniqueId,
       devicePass: result.devicePass,
+      // NOT proven: this is the password we already had, which may be exactly
+      // the dead one a recovery reset invalidated. Clearing the stale flag here
+      // would delete the only signal saying this school's sync is broken.
+      credentialProven: false,
       ip,
       existingConnBeforeLogin: {
         id: connection.id,
@@ -209,21 +231,6 @@ export class OtpService {
     }
 
     return connection;
-  }
-
-  private async checkIpRateLimit(ip: string): Promise<void> {
-    const key = `ratelimit:otp:${ip}`;
-    const count = await this.redis.incr(key);
-    if (count === 1) {
-      await this.redis.expire(key, IP_WINDOW_SECONDS);
-    }
-    if (count > IP_LIMIT) {
-      throw envelope(
-        'RATE_LIMITED',
-        'Too many sign-in attempts. Please try again later.',
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
   }
 
   private async writeState(otpRequestId: string, state: OtpState): Promise<void> {
@@ -308,7 +315,14 @@ export class OtpService {
     }
 
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-    if (status !== undefined && status >= 400 && status < 500) {
+    if (
+      status !== undefined &&
+      status >= 400 &&
+      status < 500 &&
+      // Only Mashov's API gets to call a code invalid; a proxy ACL page does
+      // not.
+      isMashovRejection(err)
+    ) {
       return envelope(
         'INVALID_OTP_CODE',
         'That code is not valid.',

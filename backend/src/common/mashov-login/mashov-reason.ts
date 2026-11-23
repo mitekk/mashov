@@ -208,3 +208,40 @@ export function readChallengeId(error: unknown): string | undefined {
   const candidate = record.challengeId ?? record.mfaChallengeId;
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
 }
+
+/**
+ * True when a failed response actually came from Mashov's API.
+ *
+ * A 4xx is only evidence about what the user typed if Mashov's API produced
+ * it. Our egress is a residential proxy, and a proxy ACL rejection answers
+ * `403` with an HTML error page and no `Reason` header -- as does a WAF, a
+ * captive portal, or anything else between us and them. `isUpstreamUnreachable`
+ * cannot catch those: it is true only when there was NO response at all.
+ *
+ * Blaming one of those on the user's single-use recovery code tells a parent
+ * their code was wrong after they have already burned it, and they cannot ask
+ * for that code again. So every "that code is not valid" answer is gated on
+ * this, and anything else becomes `UPSTREAM_ERROR`.
+ *
+ * Evidence accepted: a `Reason` header at all (even a value we do not
+ * recognise -- its presence proves the API answered), or a JSON content type,
+ * which is what the API replies with and what an HTML error page is not.
+ */
+export function isMashovRejection(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const headers = error.response?.headers as Record<string, unknown> | undefined;
+  if (!headers) return false;
+
+  for (const [key, value] of Object.entries(headers)) {
+    const name = key.toLowerCase();
+    if (name === 'reason') {
+      const raw = Array.isArray(value) ? value[0] : value;
+      if (typeof raw === 'string' && raw.trim().length > 0) return true;
+    }
+    if (name === 'content-type') {
+      const raw = Array.isArray(value) ? value[0] : value;
+      if (typeof raw === 'string' && raw.toLowerCase().includes('json')) return true;
+    }
+  }
+  return false;
+}

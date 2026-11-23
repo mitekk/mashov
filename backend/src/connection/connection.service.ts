@@ -189,6 +189,12 @@ export class ConnectionService {
           username: newUsername,
           encryptedPassword,
           lastLoginAt: new Date(),
+          // Mashov just validated this password, so it is the credential that
+          // works -- which makes this the write that HEALS a connection a
+          // recovery reset marked stale. Without it the banner the parent is
+          // acting on can never clear itself: they re-enter the password, we
+          // store it, and the banner comes straight back forever.
+          credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });

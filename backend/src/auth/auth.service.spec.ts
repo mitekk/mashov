@@ -1409,3 +1409,151 @@ describe('AuthService login clears a stale credential flag', () => {
     expect(data.credentialStaleAt).toBeNull();
   });
 });
+
+/**
+ * Fixes from the whole-branch review.
+ */
+describe('AuthService review fixes', () => {
+  let service: AuthService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
+    mockSchoolYearService.resolveForSchool.mockResolvedValue({
+      year: 2027,
+      source: 'calendar',
+    });
+    mockSchoolYearService.reconcileFromLogin.mockImplementation((candidate: number) => ({
+      year: candidate,
+      changed: false,
+    }));
+    mockSchoolYearService.schoolNameFor.mockResolvedValue(null);
+    mockRedis.incr.mockResolvedValue(1);
+    mockHttp.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
+    mockPrisma.student.upsert.mockResolvedValue({});
+    mockPrisma.student.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockPrisma.householdConnection.update.mockResolvedValue({ id: 'conn-1' });
+    mockPrisma.householdConnection.create.mockResolvedValue({ id: 'conn-new' });
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.upsert.mockResolvedValue({ id: 'user-1', mergedIntoUserId: null });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: AppSessionService, useValue: mockAppSessionService },
+        { provide: EncryptionService, useValue: mockEncryptionService },
+        { provide: ConfigService, useValue: mockConfig },
+        { provide: SchoolYearService, useValue: mockSchoolYearService },
+        { provide: SchoolLinksService, useValue: mockSchoolLinksService },
+        MashovCredentialValidatorService,
+      ],
+    }).compile();
+
+    service = module.get<AuthService>(AuthService);
+  });
+
+  function persist(overrides: Record<string, unknown> = {}) {
+    return service.persistSessionFromLogin({
+      semel: 482273,
+      username: 'testuser',
+      password: 'pw',
+      year: 2027,
+      loginData: mockLoginResponse,
+      ip: '127.0.0.1',
+      existingConnBeforeLogin: { id: 'conn-1', mashovUniqueId: null, userId: 'user-1' },
+      credentialProven: true,
+      ...overrides,
+    });
+  }
+
+  describe('credentialProven gates the stale-flag clearing', () => {
+    it('clears the flag when the password was proven upstream', async () => {
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mergedIntoUserId: null,
+      });
+      await persist({ credentialProven: true });
+
+      const data = mockPrisma.householdConnection.update.mock.calls[0][0].data;
+      expect(data.credentialStaleAt).toBeNull();
+    });
+
+    it('leaves the flag ALONE when the password was not proven', async () => {
+      // An OTP sign-in re-stores the password it already had -- which may be
+      // the dead one a reset just invalidated. Clearing the flag there throws
+      // away the only signal saying which school needs attention, and sync
+      // stays broken with nothing to show for it.
+      mockPrisma.appUser.findUnique.mockResolvedValue({
+        id: 'user-1',
+        mergedIntoUserId: null,
+      });
+      await persist({ credentialProven: false });
+
+      const data = mockPrisma.householdConnection.update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty('credentialStaleAt');
+    });
+
+    it('leaves it alone on the create branch too', async () => {
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+      await persist({ credentialProven: false, existingConnBeforeLogin: null });
+
+      const data = mockPrisma.householdConnection.create.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty('credentialStaleAt');
+    });
+
+    it('leaves it alone on the adoption branch too', async () => {
+      mockPrisma.appUser.findUnique.mockResolvedValue(null);
+      await persist({
+        credentialProven: false,
+        existingConnBeforeLogin: {
+          id: 'conn-b',
+          mashovUniqueId: null,
+          userId: 'household-1',
+        },
+      });
+
+      const data = mockPrisma.householdConnection.update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty('credentialStaleAt');
+    });
+  });
+
+  describe('an ordinary sign-in seeds the trusted-device credential', () => {
+    it('persists the devicePass the login response carried', async () => {
+      // Mashov issues one on `POST /api/login` too, not only on mfa/verify.
+      // Dropped, the trusted-device path is never seeded by the one sign-in
+      // every parent actually performs.
+      mockHttp.post = jest.fn().mockResolvedValue({
+        data: mockLoginResponse,
+        headers: { devicepass: 'dp-from-login' },
+      });
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+
+      await service.login(482273, 'testuser', 'pw', '127.0.0.1');
+
+      const data = mockPrisma.householdConnection.create.mock.calls[0][0].data;
+      expect(data.devicePass).toBe('encrypted-pw');
+    });
+
+    it('writes no devicePass when the response carried none', async () => {
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+
+      await service.login(482273, 'testuser', 'pw', '127.0.0.1');
+
+      const data = mockPrisma.householdConnection.create.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty('devicePass');
+    });
+
+    it('still clears the stale flag, because a login proves the password', async () => {
+      mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+
+      await service.login(482273, 'testuser', 'pw', '127.0.0.1');
+
+      const data = mockPrisma.householdConnection.create.mock.calls[0][0].data;
+      expect(data.credentialStaleAt).toBeNull();
+    });
+  });
+});

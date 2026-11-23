@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '@/api/client';
 import type { SchoolLink } from '@/types/api';
 import { SchoolLinksCard } from './SchoolLinksCard';
 
@@ -121,5 +122,52 @@ describe('SchoolLinksCard credential-stale banner', () => {
       'type',
       'password',
     );
+  });
+});
+
+describe('SchoolLinksCard review fixes', () => {
+  it('reports an outage as an outage, not as a rejected password', async () => {
+    // `PUT /school-links/:id` answers 502 UPSTREAM_ERROR for an unreachable
+    // Mashov precisely so this lie is not told. Telling the parent their
+    // password was refused sends them to change a password that is fine.
+    updateSchoolLink.mockRejectedValue(
+      new ApiError(502, 'down', {
+        error: { code: 'UPSTREAM_ERROR', message: 'down', details: [] },
+      }),
+    );
+    renderCard([link({ credentialStale: true })]);
+
+    fireEvent.click(screen.getByTestId('school-credential-reenter-btn-540175'));
+    fireEvent.change(screen.getByTestId('school-credential-password-540175'), {
+      target: { value: 'secret1' },
+    });
+    fireEvent.click(screen.getByTestId('school-credential-submit-540175'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('school-credential-error-540175').textContent).toContain(
+        'משוב אינו זמין כרגע',
+      );
+    });
+  });
+
+  it('still names a rejected password as a rejected password', async () => {
+    updateSchoolLink.mockRejectedValue(
+      new ApiError(401, 'nope', {
+        error: { code: 'INVALID_CREDENTIALS', message: 'nope', details: [] },
+      }),
+    );
+    renderCard([link({ credentialStale: true })]);
+
+    fireEvent.click(screen.getByTestId('school-credential-reenter-btn-540175'));
+    fireEvent.change(screen.getByTestId('school-credential-password-540175'), {
+      target: { value: 'wrongpw1' },
+    });
+    fireEvent.click(screen.getByTestId('school-credential-submit-540175'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('school-credential-error-540175').textContent).toContain(
+        'פרטי הכניסה שגויים',
+      );
+    });
   });
 });

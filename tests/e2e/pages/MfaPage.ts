@@ -1,11 +1,13 @@
 import { Page, Locator, expect } from '@playwright/test';
 
 /**
- * The MFA challenge screen: `/auth/mfa?cid=…&semel=…&username=…`.
+ * The MFA challenge screen: `/auth/mfa?cid=…&semel=…`.
  *
- * The password is deliberately NOT in that query string. It is asked for again
- * on the screen, because our background sync stores it and because a password
- * has no business in a URL or in browser storage.
+ * Neither the password NOR the username is in that query string. The password
+ * because it has no business in a URL; the username because for these accounts
+ * it IS the parent's national ID number, which would then sit in browser
+ * history and in every reverse-proxy access log. Both are asked for on the
+ * screen instead.
  */
 export class MfaPage {
   readonly page: Page;
@@ -13,6 +15,7 @@ export class MfaPage {
   readonly sendSms: Locator;
   readonly sentNote: Locator;
   readonly codeInput: Locator;
+  readonly usernameInput: Locator;
   readonly passwordInput: Locator;
   readonly submitButton: Locator;
   readonly errorMessage: Locator;
@@ -25,6 +28,7 @@ export class MfaPage {
     this.sendSms = page.getByTestId('mfa-send-sms');
     this.sentNote = page.getByTestId('mfa-sent-note');
     this.codeInput = page.getByTestId('mfa-code');
+    this.usernameInput = page.getByTestId('mfa-username');
     this.passwordInput = page.getByTestId('mfa-password');
     this.submitButton = page.getByTestId('mfa-submit');
     this.errorMessage = page.getByTestId('mfa-error');
@@ -32,8 +36,8 @@ export class MfaPage {
     this.backToSignIn = page.getByTestId('mfa-back-to-sign-in');
   }
 
-  async navigate(challengeId: string, semel: number, username: string): Promise<void> {
-    const query = new URLSearchParams({ cid: challengeId, semel: String(semel), username });
+  async navigate(challengeId: string, semel: number): Promise<void> {
+    const query = new URLSearchParams({ cid: challengeId, semel: String(semel) });
     await this.page.goto(`/auth/mfa?${query.toString()}`);
     await expect(this.submitButton).toBeVisible({ timeout: 15_000 });
   }
@@ -44,7 +48,8 @@ export class MfaPage {
     await expect(this.startAgain).toBeVisible({ timeout: 15_000 });
   }
 
-  async verify(code: string, password: string): Promise<void> {
+  async verify(username: string, code: string, password: string): Promise<void> {
+    await this.usernameInput.fill(username);
     await this.codeInput.fill(code);
     await this.passwordInput.fill(password);
     await this.submitButton.click();

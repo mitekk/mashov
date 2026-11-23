@@ -13,7 +13,10 @@ const mockUpstream = { requestOtp: jest.fn(), verifyOtp: jest.fn() };
 const mockAuth = { persistSessionFromLogin: jest.fn() };
 const mockRedis = { get: jest.fn(), set: jest.fn(), del: jest.fn(), incr: jest.fn(), expire: jest.fn() };
 const mockPrisma = { householdConnection: { findUnique: jest.fn() } };
-const mockEncryption = { decrypt: jest.fn().mockReturnValue('stored-pw') };
+const mockEncryption = {
+  decrypt: jest.fn().mockReturnValue('stored-pw'),
+  hashKey: jest.fn().mockReturnValue(Buffer.from('test-identity-hash-key')),
+};
 const mockSchoolYear = { resolveForSchool: jest.fn() };
 
 const SEMEL = 482273;
@@ -38,9 +41,18 @@ function reasonError(reason: string, status = 403): AxiosError {
   return err;
 }
 
+/**
+ * A Mashov answer with no `Reason` header. The JSON content type matters: it is
+ * what marks the response as having come from Mashov's API rather than from a
+ * proxy ACL page or a WAF, and only the former is evidence about the input.
+ */
 function bareError(status: number): AxiosError {
   const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
-  err.response = { status, data: {}, headers: {} } as unknown as AxiosError['response'];
+  err.response = {
+    status,
+    data: {},
+    headers: { 'content-type': 'application/json' },
+  } as unknown as AxiosError['response'];
   return err;
 }
 
@@ -88,6 +100,7 @@ describe('OtpService', () => {
     });
     mockPrisma.householdConnection.findUnique.mockResolvedValue(CONNECTION);
     mockEncryption.decrypt.mockReturnValue('stored-pw');
+    mockEncryption.hashKey.mockReturnValue(Buffer.from('test-identity-hash-key'));
     mockSchoolYear.resolveForSchool.mockResolvedValue({ year: 2027, source: 'calendar' });
     mockRedis.get.mockResolvedValue(
       JSON.stringify({ semel: SEMEL, username: USERNAME, method: 'email', attempts: 0 }),
@@ -307,5 +320,100 @@ describe('OtpService', () => {
         expect((await thrown(() => createSession())).status).not.toBe(401);
       }
     });
+  });
+});
+
+describe('OtpService review fixes', () => {
+  let service: OtpService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
+    mockUpstream.requestOtp.mockResolvedValue(undefined);
+    mockUpstream.verifyOtp.mockResolvedValue({
+      data: { credential: { userId: 'u1' } },
+      newUniqueId: 'uniq-1',
+      csrfToken: 'csrf-1',
+      devicePass: 'dp-1',
+    });
+    mockAuth.persistSessionFromLogin.mockResolvedValue({
+      sessionToken: 'tok',
+      isFirstLogin: false,
+    });
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(CONNECTION);
+    mockEncryption.decrypt.mockReturnValue('stored-pw');
+    mockEncryption.hashKey.mockReturnValue(Buffer.from('test-identity-hash-key'));
+    mockSchoolYear.resolveForSchool.mockResolvedValue({ year: 2027, source: 'calendar' });
+    mockRedis.get.mockResolvedValue(
+      JSON.stringify({ semel: SEMEL, username: USERNAME, method: 'email', attempts: 0 }),
+    );
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        OtpService,
+        { provide: AuthService, useValue: mockAuth },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: EncryptionService, useValue: mockEncryption },
+        { provide: SchoolYearService, useValue: mockSchoolYear },
+        { provide: MashovRecoveryService, useValue: mockUpstream },
+      ],
+    }).compile();
+
+    service = module.get(OtpService);
+  });
+
+  it('does NOT claim the password was proven', async () => {
+    // It re-stores the password it already had -- which may be the dead one a
+    // reset just invalidated. Clearing the stale flag here would throw away
+    // the only signal saying which school needs attention.
+    await service.createSession(OTP_ID, { code: '123456' }, IP);
+
+    expect(mockAuth.persistSessionFromLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ credentialProven: false }),
+    );
+  });
+
+  it('limits code requests per identity as well as per IP', async () => {
+    // Per-IP alone does nothing against a botnet, and the 409 this route can
+    // answer tells the caller whether that person uses our app at all.
+    const keys: string[] = [];
+    mockRedis.incr.mockImplementation((key: string) => {
+      keys.push(key);
+      return Promise.resolve(1);
+    });
+
+    await service.request({ semel: SEMEL, username: USERNAME, method: 'email' }, IP);
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(`ratelimit:otp:${IP}`);
+    expect(keys[1]).toMatch(new RegExp(`^ratelimit:otp:id:${SEMEL}:[0-9a-f]{64}$`));
+  });
+
+  it('parks no raw username in a rate-limit key', async () => {
+    const keys: string[] = [];
+    mockRedis.incr.mockImplementation((key: string) => {
+      keys.push(key);
+      return Promise.resolve(1);
+    });
+
+    await service.request({ semel: SEMEL, username: USERNAME, method: 'email' }, IP);
+
+    expect(keys.join(' ')).not.toContain(USERNAME);
+  });
+
+  it('refuses the membership probe once the per-identity budget is gone', async () => {
+    mockRedis.incr.mockImplementation((key: string) =>
+      Promise.resolve(key.includes(':id:') ? 99 : 1),
+    );
+
+    expect(
+      await thrown(() =>
+        service.request({ semel: SEMEL, username: USERNAME, method: 'email' }, IP),
+      ),
+    ).toMatchObject({ status: 429, code: 'RATE_LIMITED' });
+    expect(mockPrisma.householdConnection.findUnique).not.toHaveBeenCalled();
   });
 });
