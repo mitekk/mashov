@@ -182,9 +182,14 @@ Egress and timeout knobs (see [Reaching Mashov](#reaching-mashov) below):
 
 ### Daily digest to Telegram
 
-A per-child Hebrew briefing, pushed hourly from 13:00 to 19:00 Asia/Jerusalem — but only when
-that child has something unreported. Nothing new means no model call, no message, no cost.
-Delivery is opt-in per child: a child gets a digest only if an enabled recipient row exists for
+A per-child Hebrew briefing, pushed hourly until 19:00 Asia/Jerusalem — but only when that
+child has something unreported, and never before that child's own school day is over. The cron
+is awake from 11:00; each child is then held until their last lesson for the day ends plus
+`DIGEST_POST_DISMISSAL_GRACE_MINUTES`, read from their timetable and their school's bell
+schedule (ADR-0040). A held hour claims nothing, so nothing is lost by waiting; a child with
+no timetable for today is not held at all; and a release time later than the 19:00 tick is
+clamped back to it, so no child's day can be held past the end of it. Nothing new means no model call, no
+message, no cost. Delivery is opt-in per child: a child gets a digest only if an enabled recipient row exists for
 it. A parent creates those rows themselves, in `עוד` → `עדכונים בטלגרם` — see
 **Connecting a parent's Telegram** below.
 
@@ -196,6 +201,7 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `DIGEST_DUE_LOOKBACK_DAYS` | how far back to look for homework that may be needed tomorrow | `14` |
 | `DIGEST_NEW_LOOKBACK_DAYS` | how far back to look for homework to report as newly assigned | `3` |
 | `DIGEST_ACTIVITY_WINDOW_DAYS` | how far ahead an unanswered consent deadline is worth mentioning | `7` |
+| `DIGEST_POST_DISMISSAL_GRACE_MINUTES` | how long after a child's last bell to wait before sending, so the register is filled in. `0` gates on the bell itself; anything above 180 is clamped — it is minutes, not milliseconds | `30` |
 | `DIGEST_BOARD_LOOKBACK_DAYS` | how recently a message-board notice must have been first seen to count as news | `2` |
 | `DIGEST_MUTED_BEHAVIOR_CODES` | behaviour event codes never reported. `18` is נוכחות — a presence row per lesson per day, which tells a parent nothing. Set to empty to mute nothing | `18` |
 | `DIGEST_LLM_MODEL` | model that writes the Hebrew prose | `claude-sonnet-5-5` |

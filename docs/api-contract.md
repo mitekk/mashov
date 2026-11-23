@@ -995,7 +995,7 @@ gets the longer timeout rather than the 15 s default.
     {
       "studentGuid": "string",
       "userId": "string (whose run this was)",
-      "status": "sent | skipped_empty | skipped_stale | skipped_unowned | failed | dry_run",
+      "status": "sent | skipped_empty | skipped_stale | skipped_before_dismissal | skipped_unowned | failed | dry_run",
       "itemCount": 2,
       "recipientCount": 1,
       "usedLlm": true,
@@ -1011,6 +1011,11 @@ One element per (child, subscribing parent). A manual run is already scoped to t
 `dryRun` renders and logs the message without sending it, and marks nothing as reported, so a
 later real run still has something to say. It defaults to the `DIGEST_DRY_RUN` env var, which
 itself defaults to `true`.
+
+`skipped_before_dismissal` is in the union for completeness but cannot come back from *this*
+endpoint: a manual run bypasses the per-child dismissal gate, because a parent pressing the
+button is asking for the digest now (ADR-0040). It is what the cron's own early ticks report
+for a child who is still in class.
 
 ### GET /api/v1/digest/deliveries
 
@@ -1045,6 +1050,12 @@ child the caller held a recipient for, which in a two-parent household meant eac
 read the other's `messageText` -- and that text now contains the other parent's own unanswered
 consent forms. A run records whose it was, so that is the scope. `studentGuid` narrows it
 further, within the caller's own rows.
+
+`skipped_before_dismissal` never appears here. The cron's run result carries it, but a held
+tick deliberately writes no delivery row: the hold is a scheduling decision rather than an
+outcome, and a row per child per held hour would add a few noise rows a day and drown the
+`skipped_empty` / `skipped_stale` signal this history exists to make readable (ADR-0040).
+A held hour also claims nothing, so the next tick reports everything it would have.
 
 `skipped_unowned` is the third: the run was refused at send time because that account no longer
 owns that child -- the school it was connected through is gone, or the child has left the active

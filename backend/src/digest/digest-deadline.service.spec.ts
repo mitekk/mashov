@@ -1,4 +1,10 @@
-import { DigestDeadlineService, hasDeadlineHint, jerusalemDayBounds, mashovDayFromJsDate } from './digest-deadline.service';
+import {
+  DigestDeadlineService,
+  hasDeadlineHint,
+  jerusalemClockMinutes,
+  jerusalemDayBounds,
+  mashovDayFromJsDate,
+} from './digest-deadline.service';
 import type { PrismaService } from '../prisma/prisma.service';
 
 const JERUSALEM = 'Asia/Jerusalem';
@@ -85,6 +91,46 @@ describe('jerusalemDayBounds', () => {
     const bounds = jerusalemDayBounds(new Date('2027-07-14T19:00:00Z'), JERUSALEM);
 
     expect(bounds.reportFor.toISOString()).toBe('2027-07-14T00:00:00.000Z');
+  });
+});
+
+describe('jerusalemClockMinutes', () => {
+  // The dismissal gate compares a bell time -- minutes since midnight, with no
+  // zone of its own -- against the wall clock in Jerusalem. The process is
+  // pinned to UTC (src/common/process-zone.ts), so now.getHours() is not an
+  // option and this has to go through Intl like jerusalemDayBounds does.
+  it('reads the winter wall clock (UTC+2)', () => {
+    expect(jerusalemClockMinutes(new Date('2027-01-14T11:00:00Z'), JERUSALEM)).toBe(13 * 60);
+  });
+
+  it('reads the summer wall clock (UTC+3)', () => {
+    // The same instant-of-day reads an hour later in July. A gate built on UTC
+    // would hold every child an hour too long for seven months of the year.
+    expect(jerusalemClockMinutes(new Date('2027-07-14T11:00:00Z'), JERUSALEM)).toBe(14 * 60);
+  });
+
+  it('crosses the DST spring-forward boundary', () => {
+    // Israel springs forward on the Friday before the last Sunday of March;
+    // in 2027 that is 2027-03-26 at 02:00 local. 00:30Z on the 26th is 02:30
+    // local -- the clock has already jumped.
+    expect(jerusalemClockMinutes(new Date('2027-03-25T23:30:00Z'), JERUSALEM)).toBe(
+      1 * 60 + 30,
+    );
+    expect(jerusalemClockMinutes(new Date('2027-03-26T00:30:00Z'), JERUSALEM)).toBe(
+      3 * 60 + 30,
+    );
+  });
+
+  it('reads Jerusalem midnight as 0, not 1440', () => {
+    // hour12: false alone reports "24" for midnight on some ICU builds, which
+    // would read as 1440 and hold every child's digest for a whole day. 22:00Z
+    // in January is 00:00 the next day in Jerusalem.
+    expect(jerusalemClockMinutes(new Date('2027-01-14T22:00:00Z'), JERUSALEM)).toBe(0);
+  });
+
+  it('reads a UTC midnight whose Jerusalem date is already tomorrow', () => {
+    // 00:00Z is 02:00 local in winter: a new Jerusalem day, two hours in.
+    expect(jerusalemClockMinutes(new Date('2027-01-15T00:00:00Z'), JERUSALEM)).toBe(2 * 60);
   });
 });
 

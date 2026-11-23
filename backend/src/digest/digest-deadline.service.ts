@@ -65,6 +65,35 @@ export function jerusalemDayBounds(now: Date, timeZone: string): JerusalemDayBou
 }
 
 /**
+ * The wall clock in `timeZone`, as minutes since that zone's midnight.
+ *
+ * The companion to `jerusalemDayBounds`, and read the same way for the same
+ * reason: the process is pinned to UTC (`src/common/process-zone.ts` throws at
+ * boot otherwise), so `now.getHours()` reports UTC and would be two or three
+ * hours behind the clock the school rings its bells on.
+ *
+ * Bell times are zone-less "HH:MM" strings (ADR-0037), so this is the other
+ * half of a minutes-since-midnight comparison -- nothing here becomes a Date.
+ *
+ * `hourCycle: 'h23'` rather than `hour12: false`: the latter reports "24" for
+ * midnight on some ICU builds, which would read as 1440 minutes. The `% 24` is
+ * belt and braces for a build that reports it anyway.
+ */
+export function jerusalemClockMinutes(now: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(now);
+
+  const field = (type: 'hour' | 'minute'): number =>
+    Number(parts.find((part) => part.type === type)?.value);
+
+  return (field('hour') % 24) * 60 + field('minute');
+}
+
+/**
  * Whether the Hebrew text looks like it names a deadline of its own.
  *
  * Deliberately widening: it pulls rows into the candidate set so the LLM can

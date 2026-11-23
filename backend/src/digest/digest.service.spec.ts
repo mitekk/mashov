@@ -7,6 +7,7 @@ import type { DigestCollectorService } from './digest-collector.service';
 import type { DigestSummarizerService } from './digest-summarizer.service';
 import type { DigestRecipientService } from './digest-recipient.service';
 import type { DigestSender } from './senders/digest-sender.interface';
+import type { DigestDismissalService, DismissalGate } from './digest-dismissal.service';
 import type { DigestAttachmentResolver } from './digest-attachment.resolver';
 import type { MediaDelivery } from '../telegram-media/media-delivery.interface';
 import type { DigestCandidate, DigestPayload } from './digest.types';
@@ -83,6 +84,12 @@ interface HarnessOptions {
   publicBaseUrl?: string;
   checkImpl?: jest.Mock;
   dryRunEnv?: string;
+  /**
+   * What the dismissal gate answers for every child. The default is an open
+   * gate -- the pre-gate behaviour -- so every other test in this file reads
+   * as it did before the gate existed.
+   */
+  gate?: DismissalGate;
   attachments?: { itemType: 'homework' | 'behavior'; itemId: string; fileId: string; fileName: string }[];
   media?: Partial<MediaDelivery>;
 }
@@ -220,6 +227,16 @@ function makeHarness(options: HarnessOptions = {}) {
     currentSchoolYearFor: jest.fn().mockResolvedValue(2027),
   } as unknown as SchoolYearService;
 
+  const gateFor = jest.fn().mockResolvedValue(
+    options.gate ?? {
+      releaseAtMinutes: null,
+      lastLesson: null,
+      lastLessonEnd: null,
+      source: null,
+    },
+  );
+  const dismissal = { gateFor } as unknown as DigestDismissalService;
+
   const resolveAttachments = jest.fn().mockResolvedValue(
     (options.attachments ?? []).map((row) => ({ ...row, studentGuid: 'stu-1' })),
   );
@@ -249,6 +266,7 @@ function makeHarness(options: HarnessOptions = {}) {
     collector,
     summarizer,
     recipients,
+    dismissal,
     telegram,
     logSender,
     attachments,
@@ -269,6 +287,7 @@ function makeHarness(options: HarnessOptions = {}) {
     deleteMany,
     deliveryCreate,
     reportedFindMany,
+    gateFor,
     recipientUpdateMany,
     resolveAttachments,
     mediaFetch,
@@ -1518,7 +1537,6 @@ describe('DigestService.runAll', () => {
     expect(harness.deliveryCreate.mock.calls[0][0].data.usedLlm).toBe(false);
   });
 });
-
 describe('DigestService media', () => {
   const FILE = {
     itemType: 'homework' as const,
@@ -1649,5 +1667,141 @@ describe('DigestService media', () => {
 
     expect(harness.resolveAttachments).not.toHaveBeenCalled();
     expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('DigestService.runAll dismissal gate', () => {
+  /** NOW is 13:00Z, which is 15:00 in Jerusalem -- 900 minutes past midnight. */
+  const HELD = { releaseAtMinutes: 15 * 60 + 30, lastLesson: 8, lastLessonEnd: '15:00', source: 'default' as const };
+  const RELEASED = { ...HELD, releaseAtMinutes: 15 * 60 - 1 };
+
+  it('holds the run when the child is still in class', async () => {
+    const harness = makeHarness({ gate: HELD });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results).toEqual([
+      {
+        studentGuid: 'stu-1',
+        userId: USER_A,
+        status: 'skipped_before_dismissal',
+        itemCount: 0,
+        recipientCount: 0,
+        usedLlm: false,
+      },
+    ]);
+    expect(harness.send).not.toHaveBeenCalled();
+  });
+
+  it('claims nothing while it holds', async () => {
+    // The single most important invariant in the feature. A held tick that
+    // claimed would mark the day's items reported, and the post-dismissal tick
+    // would find a quiet day -- turning a delay into permanent suppression.
+    const harness = makeHarness({ gate: HELD });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.createMany).not.toHaveBeenCalled();
+    expect(harness.updateMany).not.toHaveBeenCalled();
+    expect(harness.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('holds before the checker runs, so it costs nothing', async () => {
+    const harness = makeHarness({ gate: HELD });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.checker.check).not.toHaveBeenCalled();
+    expect(harness.collector.collect).not.toHaveBeenCalled();
+    expect(harness.summarizer.summarize).not.toHaveBeenCalled();
+  });
+
+  it('writes no digest_delivery row for a held tick', async () => {
+    // Deliberate (ADR-0040): a row per child per held hour would add ~3 noise
+    // rows a day and drown the skipped_empty / skipped_stale signal that
+    // GET /digest/deliveries exists to make readable. The hold is a scheduling
+    // decision, not an outcome.
+    const harness = makeHarness({ gate: HELD });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.deliveryCreate).not.toHaveBeenCalled();
+  });
+
+  it('sends normally once the release time has passed', async () => {
+    const harness = makeHarness({ gate: RELEASED });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0]).toMatchObject({ status: 'sent' });
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends at exactly the release minute', async () => {
+    const harness = makeHarness({ gate: { ...HELD, releaseAtMinutes: 15 * 60 } });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0]).toMatchObject({ status: 'sent' });
+  });
+
+  it('never holds a child whose timetable has nothing for today', async () => {
+    // The open gate is the default fixture; asserted explicitly because
+    // missing data holding a digest back would be the feature's worst failure.
+    const harness = makeHarness();
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0]).toMatchObject({ status: 'sent' });
+  });
+
+  it('bypasses the gate for a manual run', async () => {
+    // A parent pressing the button is asking for the digest now; the gate
+    // exists to stop unattended noise, not to refuse an explicit request.
+    const harness = makeHarness({ gate: HELD });
+
+    const results = await harness.service.runAll({ now: NOW, ignoreDismissalGate: true });
+
+    expect(results[0]).toMatchObject({ status: 'sent' });
+    expect(harness.gateFor).not.toHaveBeenCalled();
+  });
+
+  it('asks the gate once for a child two parents subscribe to', async () => {
+    const harness = makeHarness({
+      gate: HELD,
+      targets: [
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-09-01T00:00:00Z'), recipientCount: 1, userId: USER_A },
+        { studentGuid: 'stu-1', activeFrom: new Date('2026-09-01T00:00:00Z'), recipientCount: 1, userId: USER_B },
+      ],
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results.map((result) => result.status)).toEqual([
+      'skipped_before_dismissal',
+      'skipped_before_dismissal',
+    ]);
+    expect(harness.gateFor).toHaveBeenCalledTimes(1);
+  });
+
+  it('gates on the Jerusalem wall clock, not on UTC', async () => {
+    // 09:00Z in November is 11:00 in Jerusalem. A child released at 11:50 must
+    // still be held -- and a gate that read UTC would see 09:00 and hold a
+    // child who had already gone home at 09:30.
+    const harness = makeHarness({ gate: { ...HELD, releaseAtMinutes: 11 * 60 + 50 } });
+
+    const held = await harness.service.runAll({ now: new Date('2026-11-17T09:00:00Z') });
+    expect(held[0]).toMatchObject({ status: 'skipped_before_dismissal' });
+
+    const sent = await harness.service.runAll({ now: new Date('2026-11-17T10:00:00Z') });
+    expect(sent[0]).toMatchObject({ status: 'sent' });
+  });
+
+  it('asks the gate for the school day the run covers', async () => {
+    const harness = makeHarness({ gate: HELD });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.gateFor).toHaveBeenCalledWith('stu-1', 2027, TODAY);
   });
 });

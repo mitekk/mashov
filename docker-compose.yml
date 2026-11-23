@@ -87,6 +87,10 @@ services:
       DIGEST_DUE_LOOKBACK_DAYS: ${DIGEST_DUE_LOOKBACK_DAYS:-14}
       DIGEST_NEW_LOOKBACK_DAYS: ${DIGEST_NEW_LOOKBACK_DAYS:-3}
       DIGEST_ACTIVITY_WINDOW_DAYS: ${DIGEST_ACTIVITY_WINDOW_DAYS:-7}
+      # How long after a child's last lesson ends the register has plausibly
+      # been filled in. `0` gates on the bell itself; above 180 is clamped,
+      # because minutes read as milliseconds would stop every digest. ADR-0040.
+      DIGEST_POST_DISMISSAL_GRACE_MINUTES: ${DIGEST_POST_DISMISSAL_GRACE_MINUTES:-30}
       # Behaviour event codes the digest never reports. 18 is נוכחות, a
       # presence row Mashov writes per lesson per day, which tells a parent
       # nothing. `-` rather than `:-` on purpose: `:-` substitutes the default
