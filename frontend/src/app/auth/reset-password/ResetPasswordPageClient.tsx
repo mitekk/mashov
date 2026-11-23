@@ -38,8 +38,18 @@ function ResetPasswordForm() {
 
   const [code, setCode] = useState('');
   const [secondCode, setSecondCode] = useState('');
-  /** Server-decided, never client-chosen: it is revealed by SECOND_CODE_REQUIRED. */
-  const [needsSecondCode, setNeedsSecondCode] = useState(false);
+  /**
+   * Whether Mashov wants a code from both channels.
+   *
+   * Seeded from the `two=1` hint step 1 passed on, so a two-channel parent sees
+   * both fields immediately rather than discovering the second one by
+   * submitting and reading an error. The hint is only ever a HINT: the
+   * server-stored flag is the authority, and `SECOND_CODE_REQUIRED` still turns
+   * this on for a client that arrived without it.
+   */
+  const [needsSecondCode, setNeedsSecondCode] = useState(
+    searchParams.get('two') === '1',
+  );
   const [newPassword, setNewPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
@@ -78,7 +88,15 @@ function ResetPasswordForm() {
         setErrorMsg('משוב שלח קוד גם לאימייל וגם לטלפון. יש להזין את שני הקודים.');
         return;
       }
-      if (errorCode === 'RECOVERY_SESSION_EXPIRED') {
+      // Both mean "this recovery is over, start again", and the server has
+      // already deleted the handle in the locked case -- so the next attempt
+      // would answer RECOVERY_SESSION_EXPIRED anyway. Showing an error the
+      // parent cannot act on, and only then the start-again panel, is two
+      // screens for one dead end.
+      if (
+        errorCode === 'RECOVERY_SESSION_EXPIRED' ||
+        errorCode === 'RECOVERY_LOCKED'
+      ) {
         setExpired(true);
         return;
       }
@@ -122,7 +140,7 @@ function ResetPasswordForm() {
     return (
       <Shell title="הקישור אינו בתוקף">
         <p className="text-sm text-muted-foreground">
-          תהליך איפוס הסיסמה פג או שלא התחיל. יש להתחיל מחדש.
+          תהליך איפוס הסיסמה פג, הסתיים או שלא התחיל. יש להתחיל מחדש.
         </p>
         <Link
           href="/auth/forgot-password"

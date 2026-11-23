@@ -304,3 +304,76 @@ describe('ResetPasswordPageClient review fixes', () => {
     );
   });
 });
+
+describe('ResetPasswordPageClient minor fixes', () => {
+  it('renders both code fields up front when the handle says two are needed', async () => {
+    searchParams = new URLSearchParams('rid=rid-1&semel=482273&two=1');
+    renderPage();
+
+    expect(await screen.findByTestId('reset-password-code')).toBeInTheDocument();
+    expect(screen.getByTestId('reset-password-second-code')).toBeInTheDocument();
+  });
+
+  it('sends both codes on the first submit, with no wasted round trip', async () => {
+    searchParams = new URLSearchParams('rid=rid-1&semel=482273&two=1');
+    renderPage();
+
+    fireEvent.change(screen.getByTestId('reset-password-code'), {
+      target: { value: 'AAA111' },
+    });
+    fireEvent.change(screen.getByTestId('reset-password-second-code'), {
+      target: { value: 'BBB222' },
+    });
+    fireEvent.change(screen.getByTestId('reset-password-new-password'), {
+      target: { value: 'secret1' },
+    });
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    await waitFor(() => {
+      expect(completeRecovery.mock.calls[0][1]).toMatchObject({
+        code: 'AAA111',
+        secondCode: 'BBB222',
+      });
+    });
+  });
+
+  it('demands the second code before submitting when it knows one is needed', async () => {
+    searchParams = new URLSearchParams('rid=rid-1&semel=482273&two=1');
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    expect(await screen.findByTestId('reset-password-error')).toBeInTheDocument();
+    expect(completeRecovery).not.toHaveBeenCalled();
+  });
+
+  it('still obeys the server when the hint is absent or lies', async () => {
+    // The hint is a convenience. The SERVER-stored flag remains the authority:
+    // a client that dropped `two=1` still gets SECOND_CODE_REQUIRED and the
+    // field appears then.
+    searchParams = new URLSearchParams('rid=rid-1&semel=482273');
+    completeRecovery.mockRejectedValue(apiError(400, 'SECOND_CODE_REQUIRED'));
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    expect(await screen.findByTestId('reset-password-second-code')).toBeInTheDocument();
+  });
+
+  // M18 — a lockout and an expiry are the same situation for the parent.
+  it('offers a fresh start when the attempts are used up', async () => {
+    // The server deletes the handle on the 6th attempt, so the NEXT call would
+    // answer RECOVERY_SESSION_EXPIRED anyway. Showing an error the parent
+    // cannot act on, and only then the start-again panel, is two screens for
+    // one dead end.
+    completeRecovery.mockRejectedValue(apiError(429, 'RECOVERY_LOCKED'));
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    expect(await screen.findByTestId('reset-password-start-again')).toHaveAttribute(
+      'href',
+      '/auth/forgot-password',
+    );
+  });
+});

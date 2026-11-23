@@ -888,3 +888,85 @@ describe('CredentialRecoveryService review fixes', () => {
     });
   });
 });
+
+describe('CredentialRecoveryService non-axios failures', () => {
+  let service: CredentialRecoveryService;
+
+  const RID = '66666666-6666-4666-8666-666666666666';
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    // Deliberately NOT stubbing `isAxiosError` to true here. Every other
+    // describe in this file does, suite-wide, which means none of them can
+    // exercise the branch where the thrown value is not an axios error at all
+    // -- a `TypeError` inside the client, a thrown string, an aborted promise
+    // rejecting with something unexpected. Those must read as an outage, not as
+    // a bad code.
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    mockRedis.incr.mockResolvedValue(1);
+    mockUpstream.requestRecovery.mockResolvedValue({});
+    mockPrisma.credentialRecoveryAudit.create.mockResolvedValue({});
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue(
+      mockEncryption.encrypt(
+        JSON.stringify({
+          semel: SEMEL,
+          idNumber: ID,
+          channel: 'email',
+          isResettingAndVerifying: false,
+          attempts: 0,
+          poisoned: false,
+        }),
+      ),
+    );
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        CredentialRecoveryService,
+        { provide: RedisService, useValue: mockRedis },
+        { provide: MashovRecoveryService, useValue: mockUpstream },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: MashovSessionService, useValue: mockSession },
+        { provide: EncryptionService, useValue: mockEncryption },
+      ],
+    }).compile();
+
+    service = module.get(CredentialRecoveryService);
+  });
+
+  function complete() {
+    return service.completePassword(
+      RID,
+      { code: 'ABC123', newPassword: GOOD_PASSWORD },
+      IP,
+    );
+  }
+
+  it('treats a plain Error from the client as an outage, not a bad code', async () => {
+    mockUpstream.resetPassword.mockRejectedValue(new TypeError('x is not a function'));
+
+    expect(await thrown(() => complete())).toMatchObject({
+      status: 502,
+      code: 'UPSTREAM_ERROR',
+    });
+  });
+
+  it('treats a thrown non-Error the same way', async () => {
+    mockUpstream.resetPassword.mockRejectedValue('something went wrong');
+
+    expect(await thrown(() => complete())).toMatchObject({
+      status: 502,
+      code: 'UPSTREAM_ERROR',
+    });
+  });
+
+  it('does not fabricate a recovery at step 1 for a non-axios failure', async () => {
+    mockUpstream.requestRecovery.mockRejectedValue(new TypeError('boom'));
+
+    expect(
+      await thrown(() =>
+        service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP),
+      ),
+    ).toMatchObject({ status: 502, code: 'UPSTREAM_ERROR' });
+  });
+});

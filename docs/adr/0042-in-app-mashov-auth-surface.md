@@ -361,6 +361,15 @@ the rule, recorded here rather than silently taken.
   run for a stale connection. **Named debt.**
 - **The password policy is duplicated** (§4), on purpose, held together by a
   table that must be kept identical.
+- **Session eviction after a reset is per process.** `invalidateConnection`
+  clears an in-memory map, which is correct for the single-container deployment
+  this runs on and incomplete the moment there are two app processes: a reset
+  would evict only the cache of the process that served it, and the others would
+  keep their session until it expires upstream. The `credentialStale` banner
+  still fires, and the stored password is still rewritten, so the parent is told
+  the truth either way — but anyone adding a second replica has to move this
+  cache to Redis, or accept a stale session per extra process for up to its
+  upstream lifetime.
 - **The upstream contracts are reverse-engineered, not observed.** Two specific
   guesses are flagged in `apis/`: the recovery channel flag's type
   (`email: boolean` vs. a contact string), and whether `rememberBrowser` really

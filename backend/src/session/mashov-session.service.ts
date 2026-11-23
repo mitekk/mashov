@@ -966,7 +966,17 @@ export class MashovSessionService {
     );
   }
 
-  /** `POST /api/loginDevice`: a session with no password and no MFA challenge. */
+  /**
+   * `POST /api/loginDevice`: a session with no password and no MFA challenge.
+   *
+   * It takes no year, so it cannot be asked for one -- the session it returns is
+   * whatever Mashov considers current. `finishConnectionLogin` therefore
+   * persists the roster under the year the CALLER asked for, which
+   * `reconcileFromLogin` corrects on the next pass if they disagree. Transient
+   * and self-healing, and the password path has the same shape; it is why a
+   * historical backfill is excluded from this route entirely (see
+   * `establishConnectionLogin`), since there the mismatch would be permanent.
+   */
   private async loginWithDevicePass(
     semel: number,
     year: number,

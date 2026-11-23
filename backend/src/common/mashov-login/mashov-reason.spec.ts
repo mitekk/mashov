@@ -22,7 +22,11 @@ const EXPECTED: Record<MashovReason, { code: string; status: number }> = {
   ChangePass: { code: 'PASSWORD_CHANGE_REQUIRED', status: 400 },
   SetUsernameAndPass: { code: 'CREDENTIALS_SETUP_REQUIRED', status: 400 },
   CreateUsername: { code: 'CREDENTIALS_SETUP_REQUIRED', status: 400 },
-  UserSuspended: { code: 'CAPTCHA_REQUIRED', status: 400 },
+  // 422, not 400, and the same on all four surfaces. The request was
+  // understood; it cannot be processed until a challenge is satisfied, which is
+  // what Unprocessable Entity means. The constraint that matters -- never 401 --
+  // holds either way.
+  UserSuspended: { code: 'CAPTCHA_REQUIRED', status: 422 },
   NoChildren: { code: 'NO_CHILDREN', status: 400 },
   NoParentsAccess: { code: 'NO_CHILDREN', status: 400 },
   SchoolClosed: { code: 'SCHOOL_CLOSED', status: 400 },

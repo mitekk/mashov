@@ -253,7 +253,7 @@ function SignInForm() {
                     setOtpRequestId(null);
                     setOtpCode('');
                     setErrorMsg(null);
-    setErrorCode(undefined);
+                    setErrorCode(undefined);
                   }}
                   className={
                     method === value

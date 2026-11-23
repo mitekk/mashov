@@ -1,6 +1,7 @@
 import { HttpException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import axios, { AxiosError, CanceledError } from 'axios';
+import { Prisma } from '@prisma/client';
 import { CredentialSetupService } from './credential-setup.service';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -409,5 +410,87 @@ describe('CredentialSetupService review fixes', () => {
 
     const body = thrownErr?.getResponse() as { error: { challengeId?: string } };
     expect(body.error.challengeId).toBe('ch-9');
+  });
+});
+
+describe('CredentialSetupService username collisions', () => {
+  let service: CredentialSetupService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
+    mockEncryption.hashKey.mockReturnValue(Buffer.from('test-identity-hash-key'));
+    mockUpstream.changePassword.mockResolvedValue(okResult());
+    mockUpstream.changeUsername.mockResolvedValue(okResult());
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockSchoolYear.resolveForSchool.mockResolvedValue({ year: 2027, source: 'calendar' });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        CredentialSetupService,
+        { provide: AuthService, useValue: mockAuth },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: EncryptionService, useValue: mockEncryption },
+        { provide: SchoolYearService, useValue: mockSchoolYear },
+        { provide: MashovRecoveryService, useValue: mockUpstream },
+      ],
+    }).compile();
+
+    service = module.get(CredentialSetupService);
+  });
+
+  it('answers 409 USERNAME_TAKEN when our own unique key collides', async () => {
+    // This is the one path that deliberately CHANGES the username, so a
+    // collision on `@@unique([schoolCode, username])` is foreseeable rather
+    // than a race -- an orphan row from an earlier unlink, or the other parent
+    // at that school. Mashov accepted the rename; our write is what refused.
+    // A raw P2002 reaching the filter is a 500, which tells the parent nothing.
+    mockAuth.persistSessionFromLogin.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('unique constraint', {
+        code: 'P2002',
+        clientVersion: 'test',
+        meta: { target: ['schoolCode', 'username'] },
+      }),
+    );
+
+    let thrownErr: HttpException | undefined;
+    try {
+      await service.setCredentials(
+        {
+          semel: SEMEL,
+          username: USERNAME,
+          password: 'oldpw1',
+          newUsername: 'avocado',
+        },
+        IP,
+      );
+    } catch (err) {
+      thrownErr = err as HttpException;
+    }
+
+    expect(thrownErr?.getStatus()).toBe(409);
+    expect((thrownErr?.getResponse() as { error: { code: string } }).error.code).toBe(
+      'USERNAME_TAKEN',
+    );
+  });
+
+  it('lets an unrelated database failure through rather than mislabelling it', async () => {
+    const boom = new Error('connection pool exhausted');
+    mockAuth.persistSessionFromLogin.mockRejectedValue(boom);
+
+    await expect(
+      service.setCredentials(
+        {
+          semel: SEMEL,
+          username: USERNAME,
+          password: 'oldpw1',
+          newPassword: 'secret1',
+        },
+        IP,
+      ),
+    ).rejects.toThrow('connection pool exhausted');
   });
 });

@@ -57,7 +57,7 @@ function MfaForm() {
     onSuccess: (_data, method) => {
       setSentOn(method);
       setErrorMsg(null);
-    setErrorCode(undefined);
+      setErrorCode(undefined);
     },
     onError: (err) => {
       const read = readAuthError(err);

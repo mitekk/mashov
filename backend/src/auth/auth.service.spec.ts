@@ -1263,9 +1263,12 @@ describe('AuthService login reason signposting', () => {
     expect(body.error.code).toBe('CREDENTIALS_SETUP_REQUIRED');
   });
 
-  it('answers 400 CAPTCHA_REQUIRED on Reason=UserSuspended', async () => {
+  it('answers 422 CAPTCHA_REQUIRED on Reason=UserSuspended', async () => {
+    // One status for one code, across all four surfaces that can emit it. The
+    // sign-in table originally said 400; the recovery, MFA and
+    // credential-change paths all said 422, and 422 is the honest one.
     const { status, body } = await errorBodyFor('UserSuspended');
-    expect(status).toBe(400);
+    expect(status).toBe(422);
     expect(body.error.code).toBe('CAPTCHA_REQUIRED');
   });
 

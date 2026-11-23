@@ -181,3 +181,32 @@ describe('ForgotPasswordPageClient', () => {
     );
   });
 });
+
+describe('ForgotPasswordPageClient minor fixes', () => {
+  it('carries the two-channel answer into the reset form', async () => {
+    // The 202 already says so. Without passing it on, a two-channel parent
+    // submits once, reads SECOND_CODE_REQUIRED, and only then sees the second
+    // field -- a round trip the server already told us was coming.
+    startRecovery.mockResolvedValue({
+      recoveryId: 'rid-2',
+      requiresSecondChannel: true,
+      channel: 'email',
+    });
+    renderPage();
+    await submit();
+
+    await waitFor(() => {
+      expect(push).toHaveBeenCalledWith(
+        `/auth/reset-password?rid=rid-2&semel=${SCHOOL.semel}&two=1`,
+      );
+    });
+  });
+
+  it('omits the flag entirely for a single-channel recovery', async () => {
+    renderPage();
+    await submit();
+
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(String(push.mock.calls[0][0])).not.toContain('two=');
+  });
+});

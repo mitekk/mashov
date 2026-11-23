@@ -330,7 +330,8 @@ test.describe('captcha escape hatch', () => {
     // origin), so we cannot solve the challenge for them. This single link is
     // the fallback, and it must not show in any other state.
     const auth = new AuthPage(page);
-    await routeJson(page, '**/api/v1/auth/login', 400, errorBody('CAPTCHA_REQUIRED'));
+    // 422, matching the one status this code now answers on every surface.
+    await routeJson(page, '**/api/v1/auth/login', 422, errorBody('CAPTCHA_REQUIRED'));
 
     await auth.signIn(SCHOOL.name, SCHOOL.semel, ID_NUMBER, GOOD_PASSWORD);
 

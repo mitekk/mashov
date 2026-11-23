@@ -126,9 +126,16 @@ const LOGIN_CLASSIFICATION: Partial<Record<MashovReason, ClassifiedReason>> = {
   // Mashov escalates to a Cloudflare Turnstile challenge after repeated
   // failures. A server-side axios call cannot solve one, so the only honest
   // answer is to ask the browser for a token.
+  //
+  // 422, not 400, and the same on all four surfaces that can emit this code.
+  // The request was understood; it cannot be processed until a challenge is
+  // satisfied, which is what Unprocessable Entity means. One code answering two
+  // different statuses depending on which route you hit is a trap for the next
+  // reader. The constraint that actually matters -- never 401, because
+  // `apiFetch` hard-redirects on those -- holds either way.
   UserSuspended: {
     code: 'CAPTCHA_REQUIRED',
-    status: 400,
+    status: 422,
     message: 'Mashov is asking for a captcha before this account can sign in',
   },
   NoChildren: {

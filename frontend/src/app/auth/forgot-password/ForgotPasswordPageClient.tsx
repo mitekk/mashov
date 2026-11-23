@@ -51,6 +51,12 @@ function ForgotPasswordForm() {
       const query = new URLSearchParams({
         rid: data.recoveryId,
         semel: String(school?.semel ?? ''),
+        // A hint, not an authority: the server already told us whether Mashov
+        // sent codes to both channels, so the reset form can render both fields
+        // immediately instead of making the parent submit once to find out. The
+        // server-stored flag still decides, so a dropped or forged hint only
+        // costs the round trip this saves.
+        ...(data.requiresSecondChannel ? { two: '1' } : {}),
       });
       router.push(`/auth/reset-password?${query.toString()}`);
     },
@@ -179,6 +185,14 @@ function ForgotPasswordForm() {
             </p>
           )}
 
+          {/*
+            Defensive, and currently unreachable: step 1 folds `UserSuspended`
+            into the indistinguishable 202 on purpose, because Mashov only
+            escalates to a captcha for accounts it RECOGNISES -- so surfacing
+            CAPTCHA_REQUIRED here would be a perfect "does this ID exist"
+            oracle. Kept because the day that fold changes, this screen should
+            not be the one place with no way out.
+          */}
           {errorCode === 'CAPTCHA_REQUIRED' && (
             <CaptchaEscapeHatch testIdPrefix="forgot-password" />
           )}

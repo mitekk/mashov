@@ -11,6 +11,7 @@ import { countAgainstLimit, identityKeyHash } from '../common/mashov-login/rate-
 import { RedisService } from '../redis/redis.service';
 import { EncryptionService } from '../session/encryption.service';
 import { AuthService } from './auth.service';
+import { isTakenUsernameConflict } from '../common/prisma-conflicts';
 import type { MashovLoginPayload } from '../common/mashov-login/mashov-credential-validator.service';
 
 /**
@@ -169,7 +170,8 @@ export class CredentialSetupService {
       );
     }
 
-    return this.authService.persistSessionFromLogin({
+    try {
+      return await this.persistSession({
       semel,
       username,
       // The credential that now works. Storing the old one would break every
@@ -179,12 +181,37 @@ export class CredentialSetupService {
       loginData: payload,
       newUniqueId,
       devicePass,
-      // Mashov accepted the current password on the way to changing it, so
-      // this credential is proven and the stale flag can be cleared.
-      credentialProven: true,
-      ip,
-      existingConnBeforeLogin,
-    });
+        // Mashov accepted the current password on the way to changing it, so
+        // this credential is proven and the stale flag can be cleared.
+        credentialProven: true,
+        ip,
+        existingConnBeforeLogin,
+      });
+    } catch (err) {
+      // Mashov took the rename; OUR unique key refused it. That is the other
+      // parent's account at this school, or an orphan row from an earlier
+      // unlink -- foreseeable on the one path that deliberately changes a
+      // username, and a raw P2002 would reach the exception filter as a 500
+      // that tells the parent nothing.
+      if (isTakenUsernameConflict(err)) {
+        this.logger.warn(
+          `Mashov accepted a username change for semel=${semel} that collides with an existing connection`,
+        );
+        throw envelope(
+          'USERNAME_TAKEN',
+          'That username is already in use for this school.',
+          HttpStatus.CONFLICT,
+        );
+      }
+      throw err;
+    }
+  }
+
+  /** Split out only so the try/catch above reads as one statement. */
+  private persistSession(
+    input: Parameters<AuthService['persistSessionFromLogin']>[0],
+  ): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
+    return this.authService.persistSessionFromLogin(input);
   }
 
   /** Upstream failure → our envelope. Never 401 except a genuine rejection. */
