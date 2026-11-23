@@ -815,3 +815,156 @@ describe('MashovSessionService', () => {
     });
   });
 });
+
+/**
+ * Trusted-device re-login.
+ *
+ * Sixteen cron tasks re-login by decrypting `encryptedPassword`. If every one
+ * of those re-logins re-opened an MFA challenge, MFA-protected accounts would
+ * be structurally incompatible with background sync -- the parent signs in once
+ * and then watches their data go stale overnight, with no error anyone can see.
+ *
+ * Mashov's own answer is the `devicePass` response header plus
+ * `POST /api/loginDevice`: an empty body and that header, and no challenge.
+ * This is the load-bearing half of MFA support.
+ */
+describe('MashovSessionService trusted-device re-login', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    process.env.NODE_ENV = 'development';
+  });
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  function deviceResponse(extraHeaders: Record<string, string | string[]> = {}) {
+    const payload = loginPayload([CHILD]);
+    return {
+      data: payload.data,
+      headers: { ...payload.headers, ...extraHeaders },
+    };
+  }
+
+  it('persists the devicePass a password login hands back, encrypted', async () => {
+    const { service, prisma } = makeHarness();
+    mockHttp.post.mockResolvedValue(deviceResponse({ devicepass: 'dp-raw' }));
+
+    await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+    const update = prisma.householdConnection.update.mock.calls.find(
+      (call) => call[0].data.devicePass !== undefined,
+    );
+    expect(update).toBeDefined();
+    // Encrypted like `encryptedPassword`, never the raw header value.
+    expect(update?.[0].data.devicePass).not.toBe('dp-raw');
+  });
+
+  it('writes no devicePass when Mashov did not send one', async () => {
+    const { service, prisma } = makeHarness();
+    mockHttp.post.mockResolvedValue(deviceResponse());
+
+    await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+    for (const call of prisma.householdConnection.update.mock.calls) {
+      expect(call[0].data).not.toHaveProperty('devicePass');
+    }
+  });
+
+  it('prefers POST /api/loginDevice when a devicePass is stored', async () => {
+    const { service } = makeHarness({
+      connection: { ...CONNECTION, devicePass: 'enc-dp' },
+    });
+    mockHttp.post.mockResolvedValue(deviceResponse());
+
+    await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+    const paths = mockHttp.post.mock.calls.map((call) => call[0] as string);
+    expect(paths[0]).toBe('/api/loginDevice');
+    expect(paths).not.toContain('/api/login');
+  });
+
+  it('sends the decrypted devicePass as a header and an empty body', async () => {
+    const { service } = makeHarness({
+      connection: { ...CONNECTION, devicePass: 'enc-dp' },
+    });
+    mockHttp.post.mockResolvedValue(deviceResponse());
+
+    await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+    const [, body, config] = mockHttp.post.mock.calls[0];
+    expect(body).toEqual({});
+    // `decrypt` is stubbed to 'plain-pw' in the harness.
+    expect((config as { headers: Record<string, string> }).headers.devicePass).toBe(
+      'plain-pw',
+    );
+  });
+
+  it('never sends a password on the loginDevice path', async () => {
+    const { service } = makeHarness({
+      connection: { ...CONNECTION, devicePass: 'enc-dp' },
+    });
+    mockHttp.post.mockResolvedValue(deviceResponse());
+
+    await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'secret');
+
+    expect(JSON.stringify(mockHttp.post.mock.calls[0])).not.toContain('secret');
+  });
+
+  it('falls back to password login when loginDevice fails', async () => {
+    // A rotated-out or revoked devicePass must degrade to the path that still
+    // works, not fail the sync task.
+    const { service } = makeHarness({
+      connection: { ...CONNECTION, devicePass: 'enc-dp' },
+    });
+    mockHttp.post
+      .mockRejectedValueOnce(new Error('devicePass rejected'))
+      .mockResolvedValue(deviceResponse());
+
+    const headers = await service.getAuthHeadersForConnection(
+      'conn-1',
+      1234,
+      2027,
+      'parent',
+      'pw',
+    );
+
+    const paths = mockHttp.post.mock.calls.map((call) => call[0] as string);
+    expect(paths).toEqual(['/api/loginDevice', '/api/login']);
+    expect(headers['X-Csrf-Token']).toBe('csrf-1');
+  });
+
+  it('persists a rotated devicePass from the loginDevice response', async () => {
+    // If Mashov rotates it and we keep the old one, the NEXT re-login fails and
+    // sync silently falls back to a password that may no longer exist.
+    const { service, prisma } = makeHarness({
+      connection: { ...CONNECTION, devicePass: 'enc-dp' },
+    });
+    mockHttp.post.mockResolvedValue(deviceResponse({ devicepass: 'dp-rotated' }));
+
+    await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+    expect(
+      prisma.householdConnection.update.mock.calls.some(
+        (call) => call[0].data.devicePass !== undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it('does not use the trusted-device path for a historical backfill login', async () => {
+    // A backward-reaching login must touch nothing that describes the present,
+    // and `loginDevice` carries no year at all -- it would return the live
+    // session rather than the year the backfill asked for.
+    const { service } = makeHarness({
+      connection: { ...CONNECTION, devicePass: 'enc-dp', schoolYear: 2027 },
+    });
+    mockHttp.post.mockResolvedValue(deviceResponse());
+
+    await service.getAuthHeadersForConnection('conn-1', 1234, 2025, 'parent', 'pw');
+
+    expect(mockHttp.post.mock.calls[0][0]).toBe('/api/login');
+  });
+});

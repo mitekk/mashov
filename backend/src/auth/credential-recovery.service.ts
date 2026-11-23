@@ -7,6 +7,7 @@ import { isUpstreamUnreachable } from '../common/http/mashov-http';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { assertPasswordPolicy } from '../common/mashov-login/password-policy';
 import { readReason, type MashovReason } from '../common/mashov-login/mashov-reason';
+import { MashovSessionService } from '../session/mashov-session.service';
 
 /**
  * In-app Mashov password recovery.
@@ -128,6 +129,7 @@ export class CredentialRecoveryService {
     private readonly redis: RedisService,
     private readonly upstream: MashovRecoveryService,
     private readonly prisma: PrismaService,
+    private readonly sessionService: MashovSessionService,
   ) {}
 
   /**
@@ -300,8 +302,65 @@ export class CredentialRecoveryService {
     // a wrong code leaves the parent able to retry with the right one.
     await this.redis.del(key);
     await this.writeAudit(state, ip);
+    await this.markCredentialStale(state);
 
     return { ok: true, username };
+  }
+
+  /**
+   * The password we have stored for this connection no longer works.
+   *
+   * Without this the breakage is SILENT: the sixteen sync crons keep decrypting
+   * a password Mashov has already replaced, and the parent just sees their data
+   * stop updating with nothing to tell them why.
+   *
+   * Two steps, and the second is the one that is easy to forget. The mark is
+   * what `MeSchool.credentialStale` renders. The eviction is what stops the
+   * crons: the in-memory session cache is keyed `${connectionId}:${year}` and
+   * outlives the reset, so without it they go on using a session authenticated
+   * with a password that no longer exists. `connection.service.ts` already does
+   * the same eviction on unlink.
+   *
+   * Best-effort, and deliberately so: `idNumber` IS the Mashov username for
+   * these accounts (a login response carries `credential.idNumber: 303977367`
+   * next to `accessToken.username: "303977367"`), and `HouseholdConnection` is
+   * uniquely keyed on `[schoolCode, username]` -- but a parent who set a custom
+   * username through `CreateUsername` will not match. Their reset must still
+   * work.
+   *
+   * Never raised. The password has ALREADY changed upstream, on a single-use
+   * code. Failing the request now would tell the parent their reset did not
+   * work when it did, and they could not repeat it.
+   */
+  private async markCredentialStale(state: RecoveryState): Promise<void> {
+    try {
+      const connection = await this.prisma.householdConnection.findUnique({
+        where: {
+          schoolCode_username: { schoolCode: state.semel, username: state.idNumber },
+        },
+        select: { id: true },
+      });
+
+      if (!connection) {
+        this.logger.log(
+          `Reset completed for semel=${state.semel} with no matching connection; nothing to mark`,
+        );
+        return;
+      }
+
+      await this.prisma.householdConnection.update({
+        where: { id: connection.id },
+        data: { credentialStaleAt: new Date() },
+      });
+
+      this.sessionService.invalidateConnection(connection.id);
+    } catch (err) {
+      this.logger.error(
+        `Failed to mark connection stale after a reset for semel=${state.semel}: ${
+          err instanceof Error ? err.message : 'unknown error'
+        }`,
+      );
+    }
   }
 
   /**

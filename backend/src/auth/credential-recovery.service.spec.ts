@@ -5,6 +5,7 @@ import { CredentialRecoveryService } from './credential-recovery.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
+import { MashovSessionService } from '../session/mashov-session.service';
 
 const mockRedis = {
   get: jest.fn(),
@@ -23,6 +24,11 @@ const mockUpstream = {
 
 const mockPrisma = {
   credentialRecoveryAudit: { create: jest.fn() },
+  householdConnection: { findUnique: jest.fn(), update: jest.fn() },
+};
+
+const mockSession = {
+  invalidateConnection: jest.fn(),
 };
 
 const GOOD_PASSWORD = 'secret1';
@@ -80,6 +86,7 @@ describe('CredentialRecoveryService', () => {
         { provide: RedisService, useValue: mockRedis },
         { provide: MashovRecoveryService, useValue: mockUpstream },
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: MashovSessionService, useValue: mockSession },
       ],
     }).compile();
 
@@ -541,5 +548,137 @@ describe('CredentialRecoveryService', () => {
         expect((await thrown(() => complete())).status).not.toBe(401);
       }
     });
+  });
+});
+
+/**
+ * A reset invalidates the stored `encryptedPassword`, and without this the
+ * breakage is SILENT: the sixteen sync crons keep decrypting a password Mashov
+ * has already replaced, and the parent just sees their data stop updating.
+ *
+ * Two things have to happen, and the second is the one that is easy to forget:
+ * mark the connection, and EVICT its in-memory session. The `MashovAuthToken`
+ * cache is keyed `${connectionId}:${year}` and outlives the reset, so without
+ * eviction the crons go on using a session authenticated with a password that
+ * no longer exists.
+ */
+describe('CredentialRecoveryService stale-credential remediation', () => {
+  let service: CredentialRecoveryService;
+
+  const CONN = { id: 'conn-1' };
+  const RID = '22222222-2222-4222-8222-222222222222';
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockRedis.incr.mockResolvedValue(1);
+    mockRedis.get.mockResolvedValue(
+      JSON.stringify({
+        semel: SEMEL,
+        idNumber: ID,
+        channel: 'email',
+        isResettingAndVerifying: false,
+        attempts: 0,
+        poisoned: false,
+      }),
+    );
+    mockUpstream.resetPassword.mockResolvedValue({ username: ID });
+    mockPrisma.credentialRecoveryAudit.create.mockResolvedValue({});
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(CONN);
+    mockPrisma.householdConnection.update.mockResolvedValue(CONN);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        CredentialRecoveryService,
+        { provide: RedisService, useValue: mockRedis },
+        { provide: MashovRecoveryService, useValue: mockUpstream },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: MashovSessionService, useValue: mockSession },
+      ],
+    }).compile();
+
+    service = module.get(CredentialRecoveryService);
+  });
+
+  function complete() {
+    return service.completePassword(
+      RID,
+      { code: 'ABC123', newPassword: GOOD_PASSWORD },
+      IP,
+    );
+  }
+
+  it('finds the connection by (schoolCode, username) with the ID number', async () => {
+    // `idNumber` IS the Mashov username for these accounts: a login response
+    // carries `credential.idNumber: 303977367` next to
+    // `accessToken.username: "303977367"`, and the connection is uniquely
+    // keyed on [schoolCode, username].
+    await complete();
+
+    expect(mockPrisma.householdConnection.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { schoolCode_username: { schoolCode: SEMEL, username: ID } },
+      }),
+    );
+  });
+
+  it('marks the connection stale', async () => {
+    await complete();
+
+    const update = mockPrisma.householdConnection.update.mock.calls[0][0];
+    expect(update.where).toEqual({ id: CONN.id });
+    expect(update.data.credentialStaleAt).toBeInstanceOf(Date);
+  });
+
+  it('evicts the connection session, so no cron keeps using the old password', async () => {
+    await complete();
+    expect(mockSession.invalidateConnection).toHaveBeenCalledWith(CONN.id);
+  });
+
+  it('succeeds anyway when no connection matches', async () => {
+    // Best-effort by design: a parent who set a custom username through
+    // `CreateUsername` will not match, and their reset must still work.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+
+    await expect(complete()).resolves.toEqual({ ok: true, username: ID });
+    expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
+    expect(mockSession.invalidateConnection).not.toHaveBeenCalled();
+  });
+
+  it('still reports success when the marking itself fails', async () => {
+    // The password has ALREADY changed upstream on a single-use code. Failing
+    // the request now would tell the parent their reset did not work when it
+    // did, and they could not repeat it.
+    mockPrisma.householdConnection.update.mockRejectedValue(new Error('db down'));
+
+    await expect(complete()).resolves.toEqual({ ok: true, username: ID });
+  });
+
+  it('marks nothing when the reset did not happen', async () => {
+    mockUpstream.resetPassword.mockRejectedValue(bareError(404));
+
+    await thrown(() => complete());
+
+    expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
+    expect(mockSession.invalidateConnection).not.toHaveBeenCalled();
+  });
+
+  it('marks nothing for a fabricated recovery', async () => {
+    mockRedis.get.mockResolvedValue(
+      JSON.stringify({
+        semel: SEMEL,
+        idNumber: ID,
+        channel: 'email',
+        isResettingAndVerifying: false,
+        attempts: 0,
+        poisoned: true,
+      }),
+    );
+
+    await thrown(() => complete());
+
+    expect(mockPrisma.householdConnection.findUnique).not.toHaveBeenCalled();
+    expect(mockSession.invalidateConnection).not.toHaveBeenCalled();
   });
 });

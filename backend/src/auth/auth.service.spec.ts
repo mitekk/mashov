@@ -1314,3 +1314,98 @@ describe('AuthService login reason signposting', () => {
     );
   });
 });
+
+/**
+ * A password reset through our own recovery flow marks the connection stale.
+ * A sign-in is what heals it, because a sign-in is the one moment we hold the
+ * plaintext password and rewrite `encryptedPassword` -- so the flag has to be
+ * cleared on exactly the same writes, or a parent who has already fixed things
+ * keeps being told their school needs attention.
+ */
+describe('AuthService login clears a stale credential flag', () => {
+  let service: AuthService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
+    mockSchoolYearService.resolveForSchool.mockResolvedValue({
+      year: 2027,
+      source: 'calendar',
+    });
+    mockSchoolYearService.reconcileFromLogin.mockImplementation((candidate: number) => ({
+      year: candidate,
+      changed: false,
+    }));
+    mockSchoolYearService.schoolNameFor.mockResolvedValue(null);
+    mockRedis.incr.mockResolvedValue(1);
+    mockHttp.post = jest.fn().mockResolvedValue({ data: mockLoginResponse });
+    mockPrisma.student.upsert.mockResolvedValue({});
+    mockPrisma.student.updateMany.mockResolvedValue({ count: 0 });
+    mockPrisma.householdConnection.update.mockResolvedValue({ id: 'conn-1' });
+    mockPrisma.householdConnection.create.mockResolvedValue({ id: 'conn-new' });
+    mockPrisma.appUser.upsert.mockResolvedValue({ id: 'user-1', mergedIntoUserId: null });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: AppSessionService, useValue: mockAppSessionService },
+        { provide: EncryptionService, useValue: mockEncryptionService },
+        { provide: ConfigService, useValue: mockConfig },
+        { provide: SchoolYearService, useValue: mockSchoolYearService },
+        { provide: SchoolLinksService, useValue: mockSchoolLinksService },
+        MashovCredentialValidatorService,
+      ],
+    }).compile();
+
+    service = module.get<AuthService>(AuthService);
+  });
+
+  it('clears it on the update branch, beside the rewritten password', async () => {
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-1',
+      mashovUniqueId: null,
+      userId: 'user-1',
+    });
+    mockPrisma.appUser.findUnique.mockResolvedValue({
+      id: 'user-1',
+      mergedIntoUserId: null,
+    });
+
+    await service.login(482273, 'testuser', 'pw', '127.0.0.1');
+
+    const data = mockPrisma.householdConnection.update.mock.calls[0][0].data;
+    expect(data.encryptedPassword).toBe('encrypted-pw');
+    expect(data.credentialStaleAt).toBeNull();
+  });
+
+  it('clears it on the create branch', async () => {
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+
+    await service.login(482273, 'testuser', 'pw', '127.0.0.1');
+
+    const data = mockPrisma.householdConnection.create.mock.calls[0][0].data;
+    expect(data.encryptedPassword).toBe('encrypted-pw');
+    expect(data.credentialStaleAt).toBeNull();
+  });
+
+  it('clears it on the adoption branch too', async () => {
+    // The branch that returns early. Missed here, a parent who reset school B
+    // and then signed in with B's password would still be told B is broken.
+    mockPrisma.householdConnection.findUnique.mockResolvedValue({
+      id: 'conn-b',
+      mashovUniqueId: null,
+      userId: 'household-1',
+    });
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+
+    await service.login(999999, 'parent-b', 'pw', '127.0.0.1');
+
+    const data = mockPrisma.householdConnection.update.mock.calls[0][0].data;
+    expect(data.encryptedPassword).toBe('encrypted-pw');
+    expect(data.credentialStaleAt).toBeNull();
+  });
+});

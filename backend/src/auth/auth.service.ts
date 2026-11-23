@@ -288,6 +288,13 @@ export class AuthService {
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
+          // A sign-in is the one moment we hold the plaintext password, so it
+          // is the only place that can heal a credential a recovery reset
+          // invalidated. Cleared on the same write that rewrites
+          // `encryptedPassword`, on every branch -- missed on one, a parent who
+          // has already fixed things keeps being told their school needs
+          // attention.
+          credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });
@@ -348,6 +355,13 @@ export class AuthService {
           lastLoginAt: new Date(),
           active: true,
           userId: ownerId,
+          // A sign-in is the one moment we hold the plaintext password, so it
+          // is the only place that can heal a credential a recovery reset
+          // invalidated. Cleared on the same write that rewrites
+          // `encryptedPassword`, on every branch -- missed on one, a parent who
+          // has already fixed things keeps being told their school needs
+          // attention.
+          credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });
@@ -363,6 +377,13 @@ export class AuthService {
           lastLoginAt: new Date(),
           active: true,
           userId: ownerId,
+          // A sign-in is the one moment we hold the plaintext password, so it
+          // is the only place that can heal a credential a recovery reset
+          // invalidated. Cleared on the same write that rewrites
+          // `encryptedPassword`, on every branch -- missed on one, a parent who
+          // has already fixed things keeps being told their school needs
+          // attention.
+          credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });

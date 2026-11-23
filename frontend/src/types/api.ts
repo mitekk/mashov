@@ -655,6 +655,16 @@ export interface MeSchool {
   /** Short enough for a chip on a 360px row; resolved server-side. */
   shortLabel: string;
   schoolYear: number;
+  /**
+   * The stored Mashov password no longer works -- today, because a password
+   * reset through the in-app recovery flow succeeded.
+   *
+   * Per school on purpose: reset school B, sign in with school A's password,
+   * and the app has a perfectly valid session while B's background sync is
+   * dead. Cleared by any sign-in for that school, and by re-entering the
+   * password here.
+   */
+  credentialStale: boolean;
 }
 
 export interface AppUser {
@@ -691,6 +701,16 @@ export interface SchoolLink {
   /** `null` means the first sync has not finished yet. */
   lastSyncAt: string | null;
   active: boolean;
+  /**
+   * The stored Mashov password no longer works -- today, because a password
+   * reset through the in-app recovery flow succeeded.
+   *
+   * Per school on purpose: reset school B, sign in with school A's password,
+   * and the app has a perfectly valid session while B's background sync is
+   * dead. Cleared by any sign-in for that school, and by re-entering the
+   * password here.
+   */
+  credentialStale: boolean;
 }
 
 export type SchoolLinksResponse = PaginatedResponse<SchoolLink>;

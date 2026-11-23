@@ -34,3 +34,26 @@ export function deleteSchoolLink(id: string): Promise<void> {
 export function deleteAllSchoolLinks(): Promise<void> {
   return apiFetch<void>('/school-links', { method: 'DELETE' });
 }
+
+export interface UpdateSchoolLinkRequest {
+  username?: string;
+  password?: string;
+}
+
+/**
+ * Re-point one school link at fresh credentials.
+ *
+ * The healing path for `credentialStale`: a password reset done through the
+ * in-app recovery flow leaves the stored `encryptedPassword` dead, and this is
+ * how a parent who is already signed in hands us the new one without signing
+ * out of a household that may hold another school too.
+ */
+export function updateSchoolLink(
+  id: string,
+  body: UpdateSchoolLinkRequest,
+): Promise<SchoolLink> {
+  return apiFetch<SchoolLink>(`/school-links/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}

@@ -34,6 +34,10 @@ import { AppSessionGuard } from '../../backend/src/app-session/app-session.guard
 import { HttpExceptionFilter } from '../../backend/src/common/filters/http-exception.filter';
 import { RedisService } from '../../backend/src/redis/redis.service';
 import { MashovRecoveryService } from '../../backend/src/common/mashov-login/mashov-recovery.service';
+import { MashovSessionService } from '../../backend/src/session/mashov-session.service';
+import { SchoolLinksService } from '../../backend/src/school-links/school-links.service';
+import { MashovSessionModule } from '../../backend/src/session/mashov-session.module';
+import { SchoolLinksModule } from '../../backend/src/school-links/school-links.module';
 
 const SEMEL = 540175;
 const KNOWN_ID = '303977367';
@@ -71,6 +75,8 @@ describe('In-app Mashov password recovery', () => {
   let prisma: PrismaClient;
   let redisService: RedisService;
   let upstream: MashovRecoveryService;
+  let session: MashovSessionService;
+  let schoolLinks: SchoolLinksService;
 
   let requestRecovery: jest.SpyInstance;
   let resetPassword: jest.SpyInstance;
@@ -90,6 +96,8 @@ describe('In-app Mashov password recovery', () => {
         PrismaModule,
         RedisModule,
         AppSessionModule,
+        MashovSessionModule,
+        SchoolLinksModule,
         AuthModule,
         HealthModule,
       ],
@@ -104,6 +112,8 @@ describe('In-app Mashov password recovery', () => {
 
     redisService = module.get(RedisService);
     upstream = module.get(MashovRecoveryService);
+    session = module.get(MashovSessionService);
+    schoolLinks = module.get(SchoolLinksService);
 
     requestRecovery = jest.spyOn(upstream, 'requestRecovery');
     resetPassword = jest.spyOn(upstream, 'resetPassword');
@@ -472,6 +482,121 @@ describe('In-app Mashov password recovery', () => {
       const res = await completeRecovery(body.recoveryId, { code: '   ' });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('stale-credential remediation, end to end', () => {
+    async function seedConnection(username: string) {
+      const user = await prisma.appUser.create({
+        data: {
+          mashovUserId: `mashov-${username}`,
+          semel: SEMEL,
+          username,
+          displayName: 'Parent',
+        },
+      });
+      return prisma.householdConnection.create({
+        data: {
+          schoolCode: SEMEL,
+          schoolYear: 2027,
+          username,
+          encryptedPassword: 'enc-old-password',
+          schoolName: 'Test School',
+          upstreamUserId: `mashov-${username}`,
+          active: true,
+          userId: user.id,
+        },
+      });
+    }
+
+    afterEach(async () => {
+      await prisma.householdConnection.deleteMany({});
+      await prisma.appUser.deleteMany({});
+    });
+
+    it('marks the matching connection stale and evicts its cached session', async () => {
+      // Without the eviction the in-memory MashovAuthToken keyed
+      // `${connectionId}:${year}` outlives the reset, and the sync crons go on
+      // using a session authenticated with a password that no longer exists.
+      const connection = await seedConnection(KNOWN_ID);
+      const evict = jest.spyOn(session, 'invalidateConnection');
+
+      const { body } = await startRecovery();
+      const res = await completeRecovery(body.recoveryId);
+      expect(res.status).toBe(200);
+
+      const after = await prisma.householdConnection.findUnique({
+        where: { id: connection.id },
+      });
+      expect(after?.credentialStaleAt).toBeInstanceOf(Date);
+      expect(evict).toHaveBeenCalledWith(connection.id);
+
+      evict.mockRestore();
+    });
+
+    it('does not touch another school’s connection', async () => {
+      // The flag is per school precisely so a multi-school household is told
+      // WHICH one needs attention.
+      const mine = await seedConnection(KNOWN_ID);
+      const other = await prisma.householdConnection.create({
+        data: {
+          schoolCode: 999999,
+          schoolYear: 2027,
+          username: KNOWN_ID,
+          encryptedPassword: 'enc-other',
+          active: true,
+        },
+      });
+
+      const { body } = await startRecovery();
+      await completeRecovery(body.recoveryId);
+
+      expect(
+        (await prisma.householdConnection.findUnique({ where: { id: mine.id } }))
+          ?.credentialStaleAt,
+      ).toBeInstanceOf(Date);
+      expect(
+        (await prisma.householdConnection.findUnique({ where: { id: other.id } }))
+          ?.credentialStaleAt,
+      ).toBeNull();
+    });
+
+    it('completes the reset even with no connection to mark', async () => {
+      // Best-effort by design: a parent who set a custom username through
+      // `CreateUsername` will not match, and their reset must still work.
+      const res = await completeRecovery(
+        (await startRecovery({ idNumber: '555555555' })).body.recoveryId,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+    });
+
+    it('marks nothing when the reset failed', async () => {
+      const connection = await seedConnection(KNOWN_ID);
+      resetPassword.mockRejectedValue(bareError(404));
+
+      const { body } = await startRecovery();
+      await completeRecovery(body.recoveryId);
+
+      expect(
+        (await prisma.householdConnection.findUnique({ where: { id: connection.id } }))
+          ?.credentialStaleAt,
+      ).toBeNull();
+    });
+
+    it('surfaces the flag on the school link list', async () => {
+      const connection = await seedConnection(KNOWN_ID);
+
+      const { body } = await startRecovery();
+      await completeRecovery(body.recoveryId);
+
+      const links = await schoolLinks.listLinks(connection.userId as string);
+      expect(links).toHaveLength(1);
+      expect(links[0].credentialStale).toBe(true);
+
+      const schools = await schoolLinks.listMeSchools(connection.userId as string);
+      expect(schools[0].credentialStale).toBe(true);
     });
   });
 });
