@@ -196,14 +196,22 @@ const CONVERSATION = {
  * Order matters -- Playwright matches the LAST registered route first -- so the
  * catch-all goes on first and the specific patterns after it.
  *
- * RESPONSE SHAPES ARE NOT UNIFORM and getting one wrong does not fail
- * honestly: `/auth/schools`, `/school-links`, `/settings/profile`,
- * `/children/:guid/releases` and `/children/:guid/school-activities` answer
- * with a BARE ARRAY, while the rest answer `{ data: [...] }`. A `{ data: [] }`
+ * RESPONSE SHAPES ARE NOT UNIFORM, and the API function's return type is NOT
+ * the wire shape -- several of them unwrap. `/auth/schools`,
+ * `/settings/profile`, `/children/:guid/releases` and
+ * `/children/:guid/school-activities` answer with a BARE ARRAY; everything
+ * else, `/school-links` included, answers `{ data: [...] }`. Read the function
+ * body, not its signature: `fetchSchoolLinks(): Promise<SchoolLink[]>` returns
+ * `response.data`.
+ *
+ * Getting it wrong does not fail honestly in either direction. A `{ data: [] }`
  * served where an array is expected reaches `schools.slice(...)` or
- * `activities.filter(...)` and throws "is not a function" during render -- and
- * because the readiness testid may paint before the query resolves, that shows
- * up as a FLAKY test on one project rather than a broken fixture.
+ * `activities.filter(...)` and throws "is not a function" during render --
+ * and because the readiness testid may paint before the query resolves, that
+ * shows up as a FLAKY test on one project rather than a broken fixture. An
+ * array served where `{ data }` is expected is quieter still: the section
+ * simply never renders, and the overflow sweep passes over a page with less on
+ * it than it should have.
  */
 export async function installApiStubs(page: Page): Promise<void> {
   // Catch-all: deliberately a 404 rather than a plausible-looking empty body.
@@ -406,18 +414,21 @@ export async function installApiStubs(page: Page): Promise<void> {
     });
   });
 
-  // Bare array: fetchSchoolLinks() returns SchoolLink[].
+  // `{ data }`, despite fetchSchoolLinks() returning SchoolLink[] -- it
+  // unwraps. The signature is not the wire shape; read the function.
   await page.route('**/api/v1/school-links', async (route) => {
     await route.fulfill({
-      json: SCHOOLS.map((school) => ({
-        id: school.id,
-        semel: school.semel,
-        schoolName: school.schoolName,
-        shortLabel: school.shortLabel,
-        username: 'parent',
-        childrenCount: 1,
-        lastSyncAt: NOW,
-      })),
+      json: {
+        data: SCHOOLS.map((school) => ({
+          id: school.id,
+          semel: school.semel,
+          schoolName: school.schoolName,
+          shortLabel: school.shortLabel,
+          username: 'parent',
+          childrenCount: 1,
+          lastSyncAt: NOW,
+        })),
+      },
     });
   });
 
