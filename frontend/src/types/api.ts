@@ -881,3 +881,68 @@ export interface TelegramLinkState {
 export interface TelegramLinkStateResponse {
   data: TelegramLinkState;
 }
+
+// ─── In-app Mashov auth: recovery, MFA ─────────────────────────────────────
+
+/** Which channel Mashov should send the one-time code on. */
+export type RecoveryChannel = 'email' | 'sms';
+
+export interface StartRecoveryRequest {
+  semel: number;
+  /** The national ID number. Also the Mashov username, for most accounts. */
+  idNumber: string;
+  channel: RecoveryChannel;
+}
+
+/**
+ * Always a 202, for a real account and an unknown one alike — the body is
+ * byte-identical either way, so this response says nothing about whether the
+ * ID number exists. The copy on screen has to be enumeration-safe too: "if the
+ * details are correct, a code was sent", never "a code was sent".
+ */
+export interface StartRecoveryResponse {
+  /**
+   * Opaque, single-use, server-side TTL. Safe in a URL in a way a verification
+   * code is not, which is what lets a refresh of the reset form not strand the
+   * parent.
+   */
+  recoveryId: string;
+  /** Mashov sent a code to BOTH channels and wants both back. Server-decided. */
+  requiresSecondChannel: boolean;
+  channel: RecoveryChannel;
+}
+
+export interface CompleteRecoveryRequest {
+  code: string;
+  /** Only when `requiresSecondChannel` was true. */
+  secondCode?: string;
+  newPassword: string;
+}
+
+export interface CompleteRecoveryResponse {
+  ok: true;
+  /** A parent who forgot their password often forgot the username too. */
+  username: string | null;
+}
+
+export interface SendMfaCodeRequest {
+  method: RecoveryChannel;
+}
+
+export interface CreateMfaSessionRequest {
+  semel: number;
+  username: string;
+  /**
+   * Required. Mashov's own verify route rejects a password and our backend
+   * strips it before calling upstream — but the sync crons re-login by
+   * decrypting a stored credential, so an MFA sign-in with no password would
+   * give a working session and no background sync at all.
+   */
+  password: string;
+  code: string;
+}
+
+export interface CreateMfaSessionResponse {
+  ok: true;
+  isFirstLogin: boolean;
+}
