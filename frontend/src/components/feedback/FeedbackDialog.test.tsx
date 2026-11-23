@@ -77,6 +77,25 @@ describe('FeedbackDialog', () => {
     expect((screen.getByTestId('feedback-subject-select') as HTMLSelectElement).value).toBe('bug');
   });
 
+  /**
+   * Both halves matter and they pull against each other. Autofocusing the
+   * textarea would raise the phone keyboard over the subject picker before the
+   * parent had read it -- but simply preventing the open focus leaves focus on
+   * the launcher button OUTSIDE the dialog, and Radix's focus trap only holds
+   * once focus is inside, so the next Tab walks the page behind the overlay.
+   * So focus lands on the dialog itself.
+   */
+  it('puts focus inside the dialog without landing on a text field', () => {
+    renderDialog();
+
+    const dialog = screen.getByTestId('feedback-dialog');
+    expect(document.activeElement).not.toBeNull();
+    expect(dialog === document.activeElement || dialog.contains(document.activeElement)).toBe(
+      true,
+    );
+    expect(document.activeElement).not.toBe(content());
+  });
+
   it('asks for no free-text label until the subject is אחר', () => {
     renderDialog();
 
@@ -124,6 +143,22 @@ describe('FeedbackDialog', () => {
     type(content(), 'חמש!');
 
     expect(screen.getByTestId('feedback-content-counter').textContent).toContain('4');
+  });
+
+  /**
+   * The whole dialog is `dir="rtl"`, and bidi reorders a bare `0 / 2000` into
+   * `2000 / 0` on screen -- the parent reads the cap as their own count. The
+   * pair has to be isolated LTR; jsdom cannot lay out bidi, so the isolation
+   * attribute is what this asserts.
+   */
+  it('keeps the counter pair from reading backwards in RTL', () => {
+    renderDialog();
+    type(content(), 'ארבע');
+
+    const counter = screen.getByTestId('feedback-content-counter');
+    const isolated = counter.querySelector('[dir="ltr"]');
+    expect(isolated).not.toBeNull();
+    expect(isolated?.textContent?.replace(/\s+/g, ' ').trim()).toBe('4 / 2000');
   });
 
   it('will not send an empty report', () => {

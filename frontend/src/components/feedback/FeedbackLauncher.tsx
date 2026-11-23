@@ -44,9 +44,12 @@ export function FeedbackLauncher() {
           setThanks(false);
           setOpen(true);
         }}
-        // `.icon-button` already composes `.tap-target`; `h-9 -my-1` keeps the
-        // header exactly as tall as it was, per the ReleasesDialog close button.
-        className="icon-button h-9 w-9 -my-1"
+        // `.icon-button` composes `.tap-target`, whose `min-height: 44px` wins
+        // over `h-9` -- so the button really is 44px tall and `-my-2` is what
+        // pulls it back inside the 32px avatar row. Measured: the header row is
+        // 48px with and without this button. The tap area stays 44px; only the
+        // space it claims in the flex row shrinks.
+        className="icon-button h-9 w-9 -my-2"
       >
         <MessageSquarePlus className="h-4 w-4" />
       </button>

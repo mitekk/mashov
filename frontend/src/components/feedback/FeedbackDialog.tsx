@@ -109,6 +109,7 @@ interface FeedbackDialogProps {
  * own test renders with no QueryClientProvider.
  */
 export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
   const { data: profiles } = useProfile();
   const submitMutation = useSubmitFeedback();
@@ -190,15 +191,24 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[1px]" />
         <Dialog.Content
+          ref={contentRef}
           data-testid="feedback-dialog"
           lang="he-IL"
           dir="rtl"
           // `dvh`, not `vh`: `vh` does not shrink when the iOS keyboard rises,
           // so the submit button ends up under it with nothing to scroll.
           className="fixed inset-x-4 top-10 z-50 mx-auto max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-background p-4 shadow-xl sm:inset-x-0"
-          // Autofocusing the textarea would raise the keyboard over the
-          // subject picker before the parent has read it.
-          onOpenAutoFocus={(event) => event.preventDefault()}
+          // Two requirements pulling against each other. Letting the open
+          // focus land on a text field would raise the phone keyboard over the
+          // subject picker before the parent had read it -- but merely
+          // preventing it leaves focus on the launcher button OUTSIDE this
+          // element, and Radix's focus trap only holds once focus is inside,
+          // so the next Tab walks the page behind the overlay. Focusing the
+          // dialog itself satisfies both.
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            contentRef.current?.focus();
+          }}
         >
           <div className="mb-4 flex items-start justify-between gap-2">
             <Dialog.Title className="text-lg font-semibold text-foreground">
@@ -276,7 +286,14 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                 data-testid="feedback-content-counter"
                 className="mt-1 text-xs text-muted-foreground"
               >
-                {content.length} / {FEEDBACK_CONTENT_MAX}
+                {/*
+                  Isolated LTR: in this `dir="rtl"` dialog bidi reorders a bare
+                  `0 / 2000` into `2000 / 0`, so the parent reads the cap as
+                  their own count.
+                */}
+                <span dir="ltr">
+                  {content.length} / {FEEDBACK_CONTENT_MAX}
+                </span>
               </p>
             </div>
 
