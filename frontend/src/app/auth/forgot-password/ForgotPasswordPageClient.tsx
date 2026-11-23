@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import { startRecovery } from '@/api/auth';
 import { SchoolAutocomplete } from '@/components/auth/SchoolAutocomplete';
+import { CaptchaEscapeHatch } from '@/components/auth/CaptchaEscapeHatch';
 import { readAuthError } from '@/lib/authErrors';
 import type { RecoveryChannel, School } from '@/types/api';
 
@@ -30,6 +31,12 @@ function ForgotPasswordForm() {
   const [idNumber, setIdNumber] = useState('');
   const [channel, setChannel] = useState<RecoveryChannel>('email');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /**
+   * The last error's CODE, kept beside its message only so the captcha
+   * escape hatch can be gated on `CAPTCHA_REQUIRED` -- it must never show
+   * in the happy path.
+   */
+  const [errorCode, setErrorCode] = useState<string | undefined>(undefined);
 
   const mutation = useMutation({
     mutationFn: startRecovery,
@@ -47,12 +54,17 @@ function ForgotPasswordForm() {
       });
       router.push(`/auth/reset-password?${query.toString()}`);
     },
-    onError: (err) => setErrorMsg(readAuthError(err).message),
+    onError: (err) => {
+      const read = readAuthError(err);
+      setErrorCode(read.code);
+      setErrorMsg(read.message);
+    },
   });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setErrorMsg(null);
+    setErrorCode(undefined);
 
     if (!school) {
       setErrorMsg('יש לבחור בית ספר');
@@ -165,6 +177,10 @@ function ForgotPasswordForm() {
             >
               {errorMsg}
             </p>
+          )}
+
+          {errorCode === 'CAPTCHA_REQUIRED' && (
+            <CaptchaEscapeHatch testIdPrefix="forgot-password" />
           )}
 
           <button

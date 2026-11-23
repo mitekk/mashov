@@ -282,3 +282,66 @@ describe('SignInPageClient passwordless sign-in', () => {
     expect(code).toHaveAttribute('autoComplete', 'one-time-code');
   });
 });
+
+describe('SignInPageClient captcha escape hatch', () => {
+  it('offers the Mashov link only when Mashov demands a captcha', async () => {
+    // Mashov's Turnstile site key is domain-locked (Cloudflare error 110200 on
+    // our origin), so we cannot solve the challenge for them. A single
+    // escape-hatch link is the fallback; the point of this test is that it
+    // appears HERE and nowhere else.
+    rejectWith(400, 'CAPTCHA_REQUIRED');
+    renderPage();
+    await submitSignIn();
+
+    const link = await screen.findByTestId('sign-in-captcha-escape-link');
+    expect(link).toHaveAttribute('href', 'https://web.mashov.info/students/login');
+  });
+
+  it('shows no Mashov link in the happy path', async () => {
+    login.mockResolvedValue({ ok: true, isFirstLogin: false });
+    renderPage();
+    await submitSignIn();
+
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(screen.queryByTestId('sign-in-captcha-escape')).toBeNull();
+  });
+
+  it('shows no Mashov link for an ordinary wrong password', async () => {
+    rejectWith(401, 'INVALID_CREDENTIALS');
+    renderPage();
+    await submitSignIn();
+
+    await waitFor(() => expect(screen.getByTestId('sign-in-error')).toBeInTheDocument());
+    expect(screen.queryByTestId('sign-in-captcha-escape')).toBeNull();
+  });
+
+  it('is the only place in the app that points at web.mashov.info', async () => {
+    // The never-navigate-away goal, asserted rather than hoped for: the string
+    // may appear in exactly one component.
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+
+    const root = path.resolve(__dirname, '../../..');
+    const offenders: string[] = [];
+
+    async function walk(dir: string): Promise<void> {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry.name)) continue;
+        if (/\.test\.tsx?$/.test(entry.name)) continue;
+        const text = await fs.readFile(full, 'utf8');
+        if (text.includes('web.mashov.info')) {
+          offenders.push(path.relative(root, full));
+        }
+      }
+    }
+
+    await walk(root);
+
+    expect(offenders).toEqual(['components/auth/CaptchaEscapeHatch.tsx']);
+  });
+});

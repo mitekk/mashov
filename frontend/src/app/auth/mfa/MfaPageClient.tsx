@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import { createMfaSession, sendMfaCode } from '@/api/auth';
+import { CaptchaEscapeHatch } from '@/components/auth/CaptchaEscapeHatch';
 import { readAuthError } from '@/lib/authErrors';
 import type { RecoveryChannel } from '@/types/api';
 
@@ -35,6 +36,12 @@ function MfaForm() {
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /**
+   * The last error's CODE, kept beside its message only so the captcha
+   * escape hatch can be gated on `CAPTCHA_REQUIRED` -- it must never show
+   * in the happy path.
+   */
+  const [errorCode, setErrorCode] = useState<string | undefined>(undefined);
   const [sentOn, setSentOn] = useState<RecoveryChannel | null>(null);
 
   const sendMutation = useMutation({
@@ -42,20 +49,30 @@ function MfaForm() {
     onSuccess: (_data, method) => {
       setSentOn(method);
       setErrorMsg(null);
+    setErrorCode(undefined);
     },
-    onError: (err) => setErrorMsg(readAuthError(err).message),
+    onError: (err) => {
+      const read = readAuthError(err);
+      setErrorCode(read.code);
+      setErrorMsg(read.message);
+    },
   });
 
   const submitMutation = useMutation({
     mutationFn: () =>
       createMfaSession(challengeId, { semel, username, password, code }),
     onSuccess: (data) => router.push(data.isFirstLogin ? '/auth/syncing' : '/'),
-    onError: (err) => setErrorMsg(readAuthError(err).message),
+    onError: (err) => {
+      const read = readAuthError(err);
+      setErrorCode(read.code);
+      setErrorMsg(read.message);
+    },
   });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setErrorMsg(null);
+    setErrorCode(undefined);
 
     if (!code.trim()) {
       setErrorMsg('יש להזין את קוד האימות');
@@ -177,6 +194,10 @@ function MfaForm() {
           >
             {errorMsg}
           </p>
+        )}
+
+        {errorCode === 'CAPTCHA_REQUIRED' && (
+          <CaptchaEscapeHatch testIdPrefix="mfa" />
         )}
 
         <button

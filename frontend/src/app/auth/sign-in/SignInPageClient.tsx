@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { createOtpSession, getSchools, login, requestOtp } from '@/api/auth';
 import { SchoolAutocomplete } from '@/components/auth/SchoolAutocomplete';
+import { CaptchaEscapeHatch } from '@/components/auth/CaptchaEscapeHatch';
 import { readAuthError } from '@/lib/authErrors';
 import type { School, SignInMethod } from '@/types/api';
 
@@ -18,6 +19,12 @@ function SignInForm() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /**
+   * The last error's CODE, kept beside its message only so the captcha
+   * escape hatch can be gated on `CAPTCHA_REQUIRED` -- it must never show
+   * in the happy path.
+   */
+  const [errorCode, setErrorCode] = useState<string | undefined>(undefined);
   /**
    * How the parent wants to prove who they are, mirroring Mashov's own
    * `loginMethod`. `email` and `sms` are passwordless.
@@ -103,6 +110,7 @@ function SignInForm() {
         return;
       }
 
+      setErrorCode(code);
       setErrorMsg(message);
     },
   });
@@ -118,7 +126,11 @@ function SignInForm() {
   const otpRequestMutation = useMutation({
     mutationFn: requestOtp,
     onSuccess: (data) => setOtpRequestId(data.otpRequestId),
-    onError: (err) => setErrorMsg(readAuthError(err).message),
+    onError: (err) => {
+      const read = readAuthError(err);
+      setErrorCode(read.code);
+      setErrorMsg(read.message);
+    },
   });
 
   const otpSessionMutation = useMutation({
@@ -135,7 +147,11 @@ function SignInForm() {
         data.isFirstLogin ? '/auth/syncing' : nextPath.startsWith('/auth') ? '/' : nextPath,
       );
     },
-    onError: (err) => setErrorMsg(readAuthError(err).message),
+    onError: (err) => {
+      const read = readAuthError(err);
+      setErrorCode(read.code);
+      setErrorMsg(read.message);
+    },
   });
 
   /** Everything the form collects before a method-specific step. */
@@ -153,6 +169,7 @@ function SignInForm() {
 
   function handleRequestCode() {
     setErrorMsg(null);
+    setErrorCode(undefined);
     const identity = identityOrError();
     if (!identity || method === 'password') return;
     otpRequestMutation.mutate({ ...identity, method });
@@ -161,6 +178,7 @@ function SignInForm() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrorMsg(null);
+    setErrorCode(undefined);
 
     const identity = identityOrError();
     if (!identity) return;
@@ -232,6 +250,7 @@ function SignInForm() {
                     setOtpRequestId(null);
                     setOtpCode('');
                     setErrorMsg(null);
+    setErrorCode(undefined);
                   }}
                   className={
                     method === value
@@ -346,6 +365,10 @@ function SignInForm() {
             >
               {errorMsg}
             </p>
+          )}
+
+          {errorCode === 'CAPTCHA_REQUIRED' && (
+            <CaptchaEscapeHatch testIdPrefix="sign-in" />
           )}
 
           {/* Submit */}

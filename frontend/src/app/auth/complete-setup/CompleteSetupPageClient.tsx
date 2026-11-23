@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import { Check, X } from 'lucide-react';
 import { setCredentials } from '@/api/auth';
+import { CaptchaEscapeHatch } from '@/components/auth/CaptchaEscapeHatch';
 import { readAuthError } from '@/lib/authErrors';
 import { PASSWORD_RULES, brokenRules } from '@/lib/passwordPolicy';
 
@@ -39,6 +40,12 @@ function CompleteSetupForm() {
   const [newPassword, setNewPassword] = useState('');
   const [newUsername, setNewUsername] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /**
+   * The last error's CODE, kept beside its message only so the captcha
+   * escape hatch can be gated on `CAPTCHA_REQUIRED` -- it must never show
+   * in the happy path.
+   */
+  const [errorCode, setErrorCode] = useState<string | undefined>(undefined);
 
   const effectiveUsername = newUsername.trim() || username;
   const broken = brokenRules(newPassword, effectiveUsername);
@@ -56,12 +63,17 @@ function CompleteSetupForm() {
         ...(challengeId ? { challengeId } : {}),
       }),
     onSuccess: (data) => router.push(data.isFirstLogin ? '/auth/syncing' : '/'),
-    onError: (err) => setErrorMsg(readAuthError(err).message),
+    onError: (err) => {
+      const read = readAuthError(err);
+      setErrorCode(read.code);
+      setErrorMsg(read.message);
+    },
   });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setErrorMsg(null);
+    setErrorCode(undefined);
 
     if (!currentPassword) {
       setErrorMsg('יש להזין את הסיסמה הנוכחית');
@@ -168,6 +180,10 @@ function CompleteSetupForm() {
           >
             {errorMsg}
           </p>
+        )}
+
+        {errorCode === 'CAPTCHA_REQUIRED' && (
+          <CaptchaEscapeHatch testIdPrefix="complete-setup" />
         )}
 
         <button
