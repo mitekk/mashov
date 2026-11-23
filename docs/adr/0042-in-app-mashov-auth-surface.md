@@ -106,7 +106,7 @@ An upstream 5xx or an unreachable upstream at step 1 answers **502**, not a
 poisoned 202: fabricating a recovery during a Mashov outage would have the
 parent wait for an email that was never going to be sent.
 
-### 4. Validating the password locally is what makes a 404 mean anything
+### 4. Validating the password locally is what makes a 404 mean anything — and only Mashov gets to call a code wrong
 
 `POST /api/user/reset/{code}` answers **404 for a bad code and for a
 password-policy violation**, indistinguishably. Without local validation, a
@@ -114,7 +114,16 @@ parent holding a *correct* single-use code and a six-letter password is told the
 code was wrong — and the code is single-use, so there is no way back.
 
 So `password-policy.ts` runs before any upstream call, and a 404 from Mashov is
-then unambiguously "wrong code". The same reasoning makes the frontend's
+then unambiguously "wrong code".
+
+A second condition turned out to be just as necessary, and was missed until
+review: the 4xx has to have come from **Mashov's API**. Our egress is a
+residential proxy, and a proxy ACL rejection is a `403` with an HTML body and no
+`Reason` header — which `isUpstreamUnreachable` cannot catch, because it is true
+only when there was *no* response at all. Reported as a bad code, that tells a
+parent their single-use code was wrong after they have already burned it.
+`isMashovRejection` now gates every "that code is not valid" answer on a
+`Reason` header or a JSON content type. The same reasoning makes the frontend's
 `PASSWORD_RULES` a **live checklist** rather than submit-time validation: the
 parent must never be able to press the button on a password that cannot work.
 
@@ -171,13 +180,28 @@ quietly going stale. Four things now happen:
    to forget: the in-memory `MashovAuthToken` is keyed `${connectionId}:${year}`
    and outlives the reset, so without eviction the crons go on using a session
    authenticated with a password that no longer exists.
-3. `AuthService.login` clears the flag on **all three** write branches,
-   including the adoption branch that returns early. Missed on one, a parent who
-   has already fixed things keeps being told their school needs attention.
-4. `MeSchool.credentialStale` renders a per-school banner with a password field
+3. The flag is cleared on **every write that has just had Mashov prove the
+   password**, and on no other: `AuthService.login`'s three branches (including
+   the adoption branch that returns early), `ConnectionService.updateConnection`
+   (the re-enter path below), and the credential change. Missed on one, a parent
+   who has already fixed things keeps being told their school needs attention.
+4. It is cleared on **no** write that proved nothing. `persistSessionFromLogin`
+   takes a `credentialProven` flag, false for the MFA and OTP paths. An OTP
+   sign-in re-stores the password it already had — possibly the dead one — and
+   an MFA sign-in stores one neither side verified, since `mfa/verify` strips it
+   and the screen re-asks for it. Either clearing the flag would delete the only
+   signal saying which school is broken, and leave sync broken with nothing to
+   show for it.
+5. `MeSchool.credentialStale` renders a per-school banner with a password field
    posting to the existing `PUT /school-links/:id`. Per school because that is
    the whole point: reset school B, sign in with A's password, and the app has a
    perfectly valid session while B's sync is dead.
+
+The first review of this branch found the loop open at both ends — the banner's
+own CTA could not clear the flag it raised, and a permitted OTP sign-in cleared
+it while re-storing a known-dead password. Both are fixed; both are the reason
+items 3 and 4 are now stated as a single rule about proof rather than as a list
+of call sites.
 
 Nothing in that chain is ever raised as an error. The password has already
 changed upstream on a single-use code; telling the parent their reset failed
@@ -255,10 +279,26 @@ load-bearing rather than decorative:
   enumerating one victim — plus 5 code attempts per handle, after which the
   state is **deleted** rather than merely refused. The caps protect us from
   being an abuse amplifier as much as they protect the parent.
-- **The per-identity rate-limit key is hashed.** A raw key would park a national
-  ID number under a greppable Redis key, readable by anything with Redis access.
+- **Every route in the surface is metered**, per IP *and* per identity (or per
+  challenge, for MFA). `POST /auth/credentials` and both MFA routes shipped
+  without any limit and were caught in review: the first is an unauthenticated
+  password oracle that routes around `ratelimit:login`, the second lets anyone
+  holding a challenge id spam a victim's phone. One shared
+  `countAgainstLimit` now serves all of them, because four hand-written copies
+  is exactly what let two routes ship with none.
+- **Identity keys are HMACs, not digests.** A bare `sha256` of a 9-digit ID
+  number is a rainbow table away from the original, which would defeat both
+  reasons for hashing it. Keyed under a value derived from `ENCRYPTION_KEY`.
+- **The Redis recovery state is encrypted**, with the same `EncryptionService`
+  that protects `encryptedPassword`. Stored as plain JSON it carried the
+  `idNumber`, so `SCAN recovery:*` plus `GET` would dump every in-flight
+  recovery's national ID to anything with Redis access.
+- **No identity in a URL.** The username is the ID number for these accounts, so
+  the MFA and credential-change screens ask for it rather than receive it in a
+  query string, where it would land in browser history and every reverse-proxy
+  access log.
 - **An audit row per completed reset**, `CredentialRecoveryAudit`, carrying
-  `{schoolCode, sha256(idNumber), ip, at}` and nothing else. It is the trail that
+  `{schoolCode, hmac(idNumber), ip, at}` and nothing else. It is the trail that
   makes an abuse pattern visible after the fact. A failed audit write is logged,
   not raised, for the same reason as §6.
 - **Terms of service.** Automating Mashov's password-reset endpoints from our
@@ -294,9 +334,9 @@ the rule, recorded here rather than silently taken.
 - A reset no longer breaks sync silently; the affected school says so, by name.
 - The login body and the CSRF literal have one home, after existing in four
   copies. The `Reason` classifier is written once.
-- 2090 backend unit tests, 198 frontend tests, 52 integration tests and 41
-  unauthenticated E2E tests pass, including byte-identical-202, no-401 and
-  no-logged-secrets assertions.
+- 2127 backend unit tests, 211 frontend tests, 106 integration tests and 41
+  unauthenticated E2E tests pass, including byte-identical-202, no-401,
+  no-logged-secrets, no-raw-ID-in-Redis and no-bare-sha256 assertions.
 
 ### Bad, or merely accepted
 
@@ -306,6 +346,9 @@ the rule, recorded here rather than silently taken.
 - **Timing and `RECOVERY_THROTTLED` leak** whether an account exists (§3), as
   does `requiresSecondChannel` for a known two-channel victim.
 - **The MFA and credential-change routes accept an unverified password** (§7).
+  Bounded, since an unproven credential can no longer clear the stale flag, so
+  the blast radius of a typo is one household's own sync and a banner that
+  stays up — which is the correct outcome.
 - **`MashovSessionService` and `ConnectionService` keep their own login-body
   copies.** Only `AuthService` was migrated; migrating the other two changes the
   critical sync path, and the `devicePass` work already touched it once. The CSRF
