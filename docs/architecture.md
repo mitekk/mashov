@@ -306,7 +306,7 @@ Tasks are ordered by dependency. Each task is scoped for a single agent session.
 
 ### Frontend — Foundation
 
-41. **[MVP]** Scaffold Next.js 15 project in `frontend/`: TypeScript strict mode, Tailwind CSS, shadcn/ui init, TanStack Query provider, `dir="rtl"` on `<html>`, Hebrew font (Rubik or Assistant from Google Fonts)
+41. **[MVP]** Scaffold Next.js 15 project in `frontend/`: TypeScript strict mode, Tailwind CSS, shadcn/ui init, TanStack Query provider, `dir="rtl"` on `<html>`, Hebrew font (Assistant, self-hosted from `frontend/src/assets/fonts/` — see ADR-0042)
 42. **[MVP]** Create `frontend/src/api/` layer: typed fetch wrappers for each internal API endpoint (one file per resource: `dashboard.ts`, `children.ts`, `mail.ts`, `settings.ts`, `readState.ts`, `sync.ts`)
 43. **[MVP]** Create `frontend/src/types/api.ts`: TypeScript interfaces for all API response shapes
 44. **[MVP]** Create shared layout: bottom navigation bar (Home / Children / Inbox / More), header strip with sync status; wrap each route in `ErrorBoundary`
