@@ -120,7 +120,12 @@ export class FeedbackService {
         userAgent: userAgent ? userAgent.slice(0, FEEDBACK_USER_AGENT_MAX) : null,
         viewportWidth: input.viewportWidth ?? null,
         viewportHeight: input.viewportHeight ?? null,
-        appVersion: input.appVersion ?? null,
+        // The client's NEXT_PUBLIC_APP_VERSION is inlined at BUILD time, so a
+        // build never given one sends nothing. The server's own APP_VERSION is
+        // the fallback: without it this field would read null on every row,
+        // and the field exists to answer "is the bug still in the release we
+        // are running".
+        appVersion: input.appVersion ?? process.env.APP_VERSION ?? null,
         mashovUserId: user.mashovUserId,
         username: user.username,
         // Stripped of the per-school child tag Mashov appends, so one child's

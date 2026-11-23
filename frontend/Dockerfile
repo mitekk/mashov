@@ -4,6 +4,12 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN mkdir -p public
+# Next inlines every NEXT_PUBLIC_* read in a "use client" module at build time,
+# so the version a parent's browser reports has to be known HERE, not at
+# runtime. Empty is fine: the backend stamps its own APP_VERSION onto a
+# feedback row when the client sends none.
+ARG NEXT_PUBLIC_APP_VERSION=""
+ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 RUN npm run build
 
 FROM node:22-alpine AS runner

@@ -248,6 +248,50 @@ describe('FeedbackService', () => {
       expect(since.getTime()).toBeLessThanOrEqual(Date.now() - 3_600_000 + 1_000);
     });
 
+    /**
+     * The client's `NEXT_PUBLIC_APP_VERSION` is inlined at build time, so a
+     * build that was never given one sends nothing. The server knows its own
+     * build, and a null is worse than useless here -- it is the field that
+     * tells us whether the bug is still in the current release.
+     */
+    describe('app version', () => {
+      const original = process.env.APP_VERSION;
+      afterEach(() => {
+        if (original === undefined) delete process.env.APP_VERSION;
+        else process.env.APP_VERSION = original;
+      });
+
+      it('falls back to the version the server knows when the client sends none', async () => {
+        process.env.APP_VERSION = '2026.11.23';
+        const { prisma, create } = makeMockPrisma({});
+        const service = new FeedbackService(prisma);
+
+        await service.create('user-1', input());
+
+        expect(create.mock.calls[0][0].data.appVersion).toBe('2026.11.23');
+      });
+
+      it('prefers what the client actually ran', async () => {
+        process.env.APP_VERSION = '2026.11.23';
+        const { prisma, create } = makeMockPrisma({});
+        const service = new FeedbackService(prisma);
+
+        await service.create('user-1', input({ appVersion: '2026.11.01' }));
+
+        expect(create.mock.calls[0][0].data.appVersion).toBe('2026.11.01');
+      });
+
+      it('stores null when neither side knows the build', async () => {
+        delete process.env.APP_VERSION;
+        const { prisma, create } = makeMockPrisma({});
+        const service = new FeedbackService(prisma);
+
+        await service.create('user-1', input());
+
+        expect(create.mock.calls[0][0].data.appVersion).toBeNull();
+      });
+    });
+
     it('returns the row the parent can be told about, with no stored content echoed', async () => {
       const { prisma } = makeMockPrisma({});
       const service = new FeedbackService(prisma);
