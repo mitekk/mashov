@@ -4,8 +4,16 @@ import { GoogleAnalytics } from '@next/third-parties/google';
 import './globals.css';
 import Providers from './providers';
 
+// `subsets` decides which files get a `<link rel="preload">`, NOT which
+// @font-face blocks exist -- every subset Assistant ships is emitted either
+// way. With `latin` alone the preload went to the subset that renders almost
+// nothing here: this app is `lang="he" dir="rtl"` and effectively all of its
+// visible text is Hebrew, so the file that matters was discovered only after
+// the CSS had been parsed, and `display: 'swap'` showed the fallback until it
+// landed. Hebrew is listed first because it is the primary script; `latin`
+// stays for digits, grades and Latin names mixed into the Hebrew.
 const assistant = Assistant({
-  subsets: ['latin'],
+  subsets: ['hebrew', 'latin'],
   weight: ['300', '400', '500', '600', '700'],
   display: 'swap',
   variable: '--font-assistant',
