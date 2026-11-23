@@ -1,11 +1,12 @@
 import {
   BadGatewayException,
+  HttpException,
   Injectable,
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance } from 'axios';
+import { AxiosInstance } from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
@@ -25,41 +26,18 @@ import {
   visibleStudentWhere,
 } from '../common/student-links';
 import { parentDisplayName } from '../common/parent-name';
+import {
+  MashovCredentialValidatorService,
+  type MashovLoginPayload,
+} from '../common/mashov-login/mashov-credential-validator.service';
+import {
+  classifyLoginReason,
+  readChallengeId,
+  readReason,
+} from '../common/mashov-login/mashov-reason';
 
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SECONDS = 900; // 15 minutes
-
-interface MashovLoginResponse {
-  credential: {
-    userId: string;
-    displayName: string;
-    semel: number;
-    year: number;
-  };
-  accessToken: {
-    userSettings: { detailsState: number };
-    schoolSettings: {
-      schoolName: string;
-      schoolYear: number;
-    };
-    children: Array<{
-      childGuid: string;
-      familyName: string;
-      privateName: string;
-      classCode: string;
-      classNum: number;
-      gender: string;
-      groups: number[];
-    }>;
-    /**
-     * Children no longer enrolled. Element shape is undocumented, so it is
-     * parsed defensively — `childGuid`, else `guid`, else a bare string.
-     */
-    inactiveChildren?: unknown[];
-    userSchoolYears?: number[];
-    username: string;
-  };
-}
 
 @Injectable()
 export class AuthService {
@@ -76,6 +54,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly schoolYearService: SchoolYearService,
     private readonly schoolLinksService: SchoolLinksService,
+    private readonly credentialValidator: MashovCredentialValidatorService,
   ) {
     this.mashovBaseUrl = resolveMashovBaseUrl(
       this.configService.get<string>('MASHOV_BASE_URL'),
@@ -122,17 +101,24 @@ export class AuthService {
     });
 
     let year = candidate.year;
-    let loginData: MashovLoginResponse;
+    let loginData: MashovLoginPayload;
     let newUniqueId: string | undefined;
+    /**
+     * Mashov issues a trusted-device credential on `POST /api/login` too, not
+     * only on `mfa/verify`. Dropped here, the trusted-device re-login path
+     * would only ever be seeded by an MFA sign-in or a cron -- never by the one
+     * sign-in every parent actually performs.
+     */
+    let devicePass: string | undefined;
 
     try {
-      let attempt = await this.postLogin(
-        Number(semel),
+      let attempt = await this.credentialValidator.postLogin({
+        semel: Number(semel),
         year,
         username,
         password,
-        existingConnBeforeLogin?.mashovUniqueId ?? null,
-      );
+        uniqueId: existingConnBeforeLogin?.mashovUniqueId ?? null,
+      });
 
       // Phase 2: Mashov is the authority. Its cookies are year-scoped, so a
       // corrected year needs a fresh login — reusing the first login's cookies
@@ -147,13 +133,13 @@ export class AuthService {
         // full logins against a rate-limited upstream.
         this.schoolYearService.invalidate(Number(semel));
         try {
-          const corrected = await this.postLogin(
-            Number(semel),
-            reconciled.year,
+          const corrected = await this.credentialValidator.postLogin({
+            semel: Number(semel),
+            year: reconciled.year,
             username,
             password,
-            existingConnBeforeLogin?.mashovUniqueId ?? null,
-          );
+            uniqueId: existingConnBeforeLogin?.mashovUniqueId ?? null,
+          });
           year = reconciled.year;
           attempt = corrected;
         } catch (retryErr) {
@@ -171,6 +157,7 @@ export class AuthService {
 
       loginData = attempt.data;
       newUniqueId = attempt.newUniqueId;
+      devicePass = attempt.devicePass;
     } catch (err) {
       // Never report an upstream outage as bad credentials — the user would be
       // sent off to retype a password that was correct all along.
@@ -188,23 +175,121 @@ export class AuthService {
           },
         });
       }
-      if (axios.isAxiosError(err) && err.response?.status === 401) {
+      // Mashov names the real cause in a `Reason` response header. For seven
+      // of those values the password is CORRECT and the account needs a next
+      // step -- an MFA code, a forced password change, a captcha. Collapsing
+      // them into "wrong password" was the worst dead end in the product: the
+      // parent retypes a password that was right until the rate limiter locks
+      // them out. Everything with no signpost of its own keeps the previous
+      // 401 INVALID_CREDENTIALS answer exactly.
+      const classified = classifyLoginReason(readReason(err));
+      const challengeId =
+        classified.code === 'MFA_REQUIRED' ? readChallengeId(err) : undefined;
+
+      // The unsignposted case stays an `UnauthorizedException`, not a generic
+      // 401 `HttpException`: `UnauthorizedException` is what every caller and
+      // every existing test already matches on, and this branch is explicitly
+      // "no behaviour change".
+      if (classified.code === 'INVALID_CREDENTIALS') {
         throw new UnauthorizedException({
           error: {
-            code: 'INVALID_CREDENTIALS',
-            message: 'Invalid credentials, please try again',
+            code: classified.code,
+            message: classified.message,
             details: [],
           },
         });
       }
-      throw new UnauthorizedException({
-        error: {
-          code: 'INVALID_CREDENTIALS',
-          message: 'Invalid credentials, please try again',
-          details: [],
+
+      this.logger.warn(
+        `Mashov declined login for semel=${semel} with reason=${classified.code}`,
+      );
+
+      throw new HttpException(
+        {
+          error: {
+            code: classified.code,
+            message: classified.message,
+            details: [],
+            // Beside the envelope's three fields, not inside `details[]`:
+            // `details` is for field-level validation errors. This is the only
+            // handle on the challenge Mashov just opened, so without it a
+            // MFA_REQUIRED is as much of a dead end as the "wrong password" it
+            // replaces.
+            ...(challengeId ? { challengeId } : {}),
+          },
         },
-      });
+        classified.status,
+      );
     }
+
+    return this.persistSessionFromLogin({
+      semel: Number(semel),
+      username,
+      password,
+      year,
+      loginData,
+      newUniqueId,
+      devicePass,
+      // A password sign-in is the definition of a proven credential.
+      credentialProven: true,
+      ip,
+      existingConnBeforeLogin,
+    });
+  }
+
+  /**
+   * Everything a successful Mashov login does on our side: adoption, the
+   * AppUser upsert, the connection write, the roster, and the session cookie.
+   *
+   * Extracted from `login()` so the MFA challenge path can mint a session the
+   * same way. It is the same session either way -- same adoption rules, same
+   * roster persistence, same `credentialStaleAt` clearing -- and a second copy
+   * of this is how an MFA sign-in would quietly skip adoption and drop a
+   * parent into an empty app.
+   *
+   * `existingConnBeforeLogin` is passed in rather than re-read: adoption turns
+   * on whether the connection existed BEFORE this login, and both callers have
+   * already had to read it to send the stored `uniquId`.
+   */
+  async persistSessionFromLogin(input: {
+    semel: number;
+    username: string;
+    /** Plaintext, encrypted here. The one thing the sync crons cannot work without. */
+    password: string;
+    year: number;
+    loginData: MashovLoginPayload;
+    newUniqueId?: string;
+    /** Mashov's trusted-device credential, when this login produced one. */
+    devicePass?: string;
+    /**
+     * Did Mashov just validate THIS password?
+     *
+     * True for a password sign-in and for a credential change: both post the
+     * password upstream and Mashov accepts or rejects it. False for the MFA and
+     * OTP paths, where the password is either never checked by anyone
+     * (`mfa/verify` strips it) or is simply the one we already had.
+     *
+     * It gates the `credentialStaleAt` clearing, and only that. Clearing the
+     * flag on an unproven password would throw away the one signal saying
+     * which school's sync is broken -- and in the OTP case the password being
+     * re-stored may be exactly the dead one a reset just invalidated.
+     */
+    credentialProven: boolean;
+    ip: string;
+    existingConnBeforeLogin: {
+      id: string;
+      mashovUniqueId: string | null;
+      userId: string | null;
+    } | null;
+  }): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
+    const { semel, username, password, year, loginData, newUniqueId, ip } = input;
+    const existingConnBeforeLogin = input.existingConnBeforeLogin;
+    const devicePassPatch = input.devicePass
+      ? { devicePass: this.encryptionService.encrypt(input.devicePass) }
+      : {};
+    // Spread, not a literal `null`: an unproven sign-in must leave whatever is
+    // there alone rather than overwrite it either way.
+    const stalePatch = input.credentialProven ? { credentialStaleAt: null } : {};
 
     const mashovUserId = loginData.credential?.userId;
     const displayName = loginData.credential?.displayName ?? username;
@@ -280,7 +365,15 @@ export class AuthService {
           upstreamUserId: mashovUserId,
           lastLoginAt: new Date(),
           active: true,
+          // A proven password is the only thing that can heal a credential a
+          // recovery reset invalidated, and it is healed on the same write that
+          // rewrites `encryptedPassword`, on every branch -- missed on one, a
+          // parent who has already fixed things keeps being told their school
+          // needs attention. `credentialProven` is what keeps an MFA or OTP
+          // sign-in, which proves nothing about the password, from clearing it.
+          ...stalePatch,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+          ...devicePassPatch,
         },
       });
 
@@ -340,7 +433,15 @@ export class AuthService {
           lastLoginAt: new Date(),
           active: true,
           userId: ownerId,
+          // A proven password is the only thing that can heal a credential a
+          // recovery reset invalidated, and it is healed on the same write that
+          // rewrites `encryptedPassword`, on every branch -- missed on one, a
+          // parent who has already fixed things keeps being told their school
+          // needs attention. `credentialProven` is what keeps an MFA or OTP
+          // sign-in, which proves nothing about the password, from clearing it.
+          ...stalePatch,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+          ...devicePassPatch,
         },
       });
     } else {
@@ -355,7 +456,15 @@ export class AuthService {
           lastLoginAt: new Date(),
           active: true,
           userId: ownerId,
+          // A proven password is the only thing that can heal a credential a
+          // recovery reset invalidated, and it is healed on the same write that
+          // rewrites `encryptedPassword`, on every branch -- missed on one, a
+          // parent who has already fixed things keeps being told their school
+          // needs attention. `credentialProven` is what keeps an MFA or OTP
+          // sign-in, which proves nothing about the password, from clearing it.
+          ...stalePatch,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+          ...devicePassPatch,
         },
       });
       connectionId = created.id;
@@ -426,7 +535,7 @@ export class AuthService {
    * what a login persists.
    */
   private async persistLoginRoster(
-    loginData: MashovLoginResponse,
+    loginData: MashovLoginPayload,
     connectionId: string,
   ): Promise<void> {
     const children = loginData.accessToken?.children ?? [];
@@ -480,67 +589,6 @@ export class AuthService {
         data: { isActive: false },
       });
     }
-  }
-
-  /**
-   * One `POST /api/login`. Separated out because the year reconciliation may
-   * need to run it twice, and both attempts share the same error handling.
-   */
-  private async postLogin(
-    semel: number,
-    year: number,
-    username: string,
-    password: string,
-    storedUniqueId: string | null,
-  ): Promise<{ data: MashovLoginResponse; newUniqueId: string | undefined }> {
-    const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
-
-    const loginBody = {
-      semel,
-      year,
-      username,
-      password,
-      IsBiometric: false,
-      appName: 'info.mashov.students',
-      apiVersion: '3.20210425',
-      appVersion: 3.20210425,
-      appBuild: 3.20210425,
-      deviceUuid: 'chrome',
-      devicePlatform: 'chrome',
-      deviceManufacturer: 'mac',
-      deviceModel: 'desktop',
-      deviceVersion: '145.0.0.0',
-    };
-
-    const extraHeaders: Record<string, string> = {};
-    if (storedUniqueId) {
-      extraHeaders['Cookie'] = `uniquId=${storedUniqueId}`;
-    }
-
-    const response = await this.http.post<MashovLoginResponse>('/api/login', loginBody, {
-      headers: {
-        'X-Csrf-Token': csrfToken,
-        'Content-Type': 'application/json',
-        Referer: `${this.mashovBaseUrl}/students/login`,
-        ...extraHeaders,
-      },
-    });
-
-    let newUniqueId: string | undefined;
-    const setCookie = response.headers?.['set-cookie'];
-    if (setCookie) {
-      const cookieList = Array.isArray(setCookie) ? setCookie : [setCookie];
-      for (const c of cookieList) {
-        const nameValue = c.split(';')[0] ?? '';
-        const eqIdx = nameValue.indexOf('=');
-        if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
-          newUniqueId = nameValue.substring(eqIdx + 1).trim();
-          break;
-        }
-      }
-    }
-
-    return { data: response.data, newUniqueId };
   }
 
   /** `inactiveChildren` is undocumented; accept every plausible element shape. */
