@@ -293,12 +293,17 @@ export function BehaviorSection({
           subtitle={activeFilter !== 'all' ? 'נסה לשנות את הסינון' : undefined}
         />
       )}
-      {/* One column on a phone, two once the lg sidebar leaves ~888px of
-          content width. A grid, not `.section-stack`: space-y puts margin-top
-          on every child but the first, which in a two-column grid offsets the
-          second column's first row. */}
+      {/* One column until xl, two after it. NOT lg: at exactly 1024 the rail
+          (80), the shell padding (64), the workspace sidebar (224) and its gap
+          (24) leave 632px, so two columns with gap-3 are 310px each -- NARROWER
+          than the 328px the same card gets on a 360px phone. At 1280 with
+          page-shell-wide there is room.
+
+          A grid, not `.section-stack`: space-y puts margin-top on every child
+          but the first, which in a two-column grid offsets the second column's
+          first row. */}
       {filteredItems.length > 0 && (
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-3 xl:grid-cols-2">
           {filteredItems.map((item) => (
             <BehaviorItem
               key={item.id}

@@ -202,8 +202,15 @@ export default function MorePage() {
         {/*
           One column on a phone, content plus an aside at lg. Sync state and
           Telegram go to the aside: they are status and a delivery preference,
-          not things a parent came here to change. Schools, profile and the
-          account actions stay in the main column.
+          not things a parent came here to change.
+
+          The account actions and the version line sit in a THIRD child that
+          spans both columns at lg, rather than at the end of the main column.
+          `.split-pane` is `grid-cols-1` below lg, so a two-child layout stacks
+          the aside AFTER them -- putting sync status and the Telegram
+          preference below "ניתוק מכל בתי הספר" and below the version footer on
+          every phone. Three children keep the phone order exactly as it was
+          and still give the desktop its aside.
         */}
         <div className="split-pane">
         <div className="space-y-7">
@@ -242,6 +249,59 @@ export default function MorePage() {
             </section>
           )}
 
+        </div>
+
+        <aside className="space-y-7 lg:sticky lg:top-4">
+          {/* Source health */}
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              מצב סנכרון
+            </h2>
+            {healthLoading && <LoadingState message="טוען..." />}
+            {healthError && <ErrorState />}
+            {health && (
+              <div className="space-y-3">
+                <ContentFreshnessCard contentFreshness={health.contentFreshness} />
+                <SourceHealthList sources={health.sources} />
+              </div>
+            )}
+          </section>
+
+          {/* Telegram updates. Beside sync state rather than with the account
+              actions: it is a delivery preference, not an account action --
+              disconnecting it removes a chat id, not a household. */}
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              עדכונים בטלגרם
+            </h2>
+            <TelegramCard
+              recipients={digestRecipients ?? []}
+              allChildren={childrenResponse?.data ?? []}
+              pendingToggleId={
+                telegramToggleMutation.isPending
+                  ? (telegramToggleMutation.variables?.id ?? null)
+                  : null
+              }
+              toggleError={telegramToggleError}
+              onToggle={(id, enabled) => {
+                setTelegramToggleError(null);
+                telegramToggleMutation.mutate(
+                  { id, enabled },
+                  {
+                    onError: () =>
+                      setTelegramToggleError('לא הצלחנו לעדכן את ההגדרה. נסו שוב בעוד רגע.'),
+                  },
+                );
+              }}
+              onDisconnect={() => showTelegramDisconnect(true)}
+            />
+          </section>
+
+        </aside>
+
+        {/* Spans both columns at lg; last on a phone, which is where the
+            destructive actions and the version line belong. */}
+        <div className="space-y-7 lg:col-span-2">
           {/* Account actions */}
           <section className="space-y-3">
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -271,54 +331,6 @@ export default function MorePage() {
             </p>
           </section>
         </div>
-
-        <aside className="space-y-7 lg:sticky lg:top-4">
-          {/* Source health */}
-          <section>
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              מצב סנכרון
-            </h2>
-            {healthLoading && <LoadingState message="טוען..." />}
-            {healthError && <ErrorState />}
-            {health && (
-              <div className="space-y-3">
-                <ContentFreshnessCard contentFreshness={health.contentFreshness} />
-                <SourceHealthList sources={health.sources} />
-              </div>
-            )}
-          </section>
-
-          {/* Telegram updates. Between sync state and the account actions: it is
-              a delivery preference, not an account action -- disconnecting it
-              removes a chat id, not a household. */}
-          <section>
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              עדכונים בטלגרם
-            </h2>
-            <TelegramCard
-              recipients={digestRecipients ?? []}
-              allChildren={childrenResponse?.data ?? []}
-              pendingToggleId={
-                telegramToggleMutation.isPending
-                  ? (telegramToggleMutation.variables?.id ?? null)
-                  : null
-              }
-              toggleError={telegramToggleError}
-              onToggle={(id, enabled) => {
-                setTelegramToggleError(null);
-                telegramToggleMutation.mutate(
-                  { id, enabled },
-                  {
-                    onError: () =>
-                      setTelegramToggleError('לא הצלחנו לעדכן את ההגדרה. נסו שוב בעוד רגע.'),
-                  },
-                );
-              }}
-              onDisconnect={() => showTelegramDisconnect(true)}
-            />
-          </section>
-
-        </aside>
         </div>
       </div>
 

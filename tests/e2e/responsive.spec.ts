@@ -4,7 +4,7 @@ import {
   findHorizontalOverflow,
   formatOverflow,
 } from './helpers/overflow';
-import { ROUTES, STUDENT_GUID, installApiStubs } from './helpers/viewports';
+import { CONVERSATION_ID, ROUTES, STUDENT_GUID, installApiStubs } from './helpers/viewports';
 
 /**
  * The adaptive-layout regression suite.
@@ -144,6 +144,68 @@ test.describe('timetable presentation', () => {
       await expect(gridCell).toBeVisible();
       await expect(agendaLesson).toBeHidden();
     }
+  });
+});
+
+test.describe('attachment viewer', () => {
+  test('is full-bleed below lg and a centred panel at lg', async ({ page }, testInfo) => {
+    // Defect 8 had no automated coverage at all: `fixed inset-0` at every
+    // width, and no safe-area padding on its bars. The sweep below cannot
+    // reach it, because the walk deliberately skips `position:fixed` subtrees.
+    await page.goto(`/inbox/${CONVERSATION_ID}`);
+    await expect(page.getByTestId('conversation-page')).toBeVisible({ timeout: 15_000 });
+
+    await page.getByTestId('attachment-item-file-1').click();
+    const viewer = page.getByTestId('attachment-viewer');
+    await expect(viewer).toBeVisible();
+
+    const viewport = page.viewportSize()!;
+    const box = (await viewer.boundingBox())!;
+
+    if (testInfo.project.name === DESKTOP) {
+      // Constrained and centred, not edge to edge: a 1280px desktop does not
+      // need a photo of a permission slip filling the screen.
+      expect(box.width).toBeLessThan(viewport.width);
+      expect(box.height).toBeLessThan(viewport.height);
+      expect(Math.abs(box.x + box.width / 2 - viewport.width / 2)).toBeLessThanOrEqual(2);
+    } else {
+      expect(Math.abs(box.width - viewport.width)).toBeLessThanOrEqual(2);
+      expect(Math.abs(box.height - viewport.height)).toBeLessThanOrEqual(2);
+    }
+
+    // The filename is an LTR island inside an RTL page, and it must not widen
+    // the header whatever its length.
+    const title = (await page.getByTestId('attachment-viewer-title').boundingBox())!;
+    expect(title.x).toBeGreaterThanOrEqual(-1);
+    expect(title.x + title.width).toBeLessThanOrEqual(viewport.width + 1);
+  });
+});
+
+test.describe('school-sent HTML', () => {
+  test('keeps a 900px table and an oversized image inside the viewport', async ({ page }) => {
+    // Defect 3. The table gets its OWN scroller rather than widening the
+    // document, and the image is capped at 100%. The overflow sweep below
+    // skips anything inside a horizontal scroller, so the table is asserted
+    // here, by measuring the scroller itself.
+    await page.goto(`/inbox/${CONVERSATION_ID}`);
+    await expect(page.getByTestId('conversation-page')).toBeVisible({ timeout: 15_000 });
+
+    const viewport = page.viewportSize()!;
+    const table = page.locator('[data-testid="message-thread"] table').first();
+    const image = page.locator('[data-testid="message-thread"] img').first();
+
+    // Polled rather than read once. The body is injected via
+    // dangerouslySetInnerHTML from a client-only DOMPurify pass, so the server
+    // markup carries no table at all and the node is replaced at hydration --
+    // a one-shot boundingBox() after toBeVisible() races that swap and comes
+    // back null.
+    await expect
+      .poll(async () => (await table.boundingBox())?.width ?? Number.POSITIVE_INFINITY)
+      .toBeLessThanOrEqual(viewport.width + 1);
+
+    await expect
+      .poll(async () => (await image.boundingBox())?.width ?? Number.POSITIVE_INFINITY)
+      .toBeLessThanOrEqual(viewport.width + 1);
   });
 });
 

@@ -56,6 +56,20 @@ export function ConfirmDialog({
         <AlertDialog.Content
           dir="rtl"
           data-testid={testId}
+          // Passed explicitly, not left to Radix. DialogTitle spreads caller
+          // props AFTER its own id, so our `titleId` RENAMES the heading while
+          // DialogContent keeps pointing aria-labelledby at a context id that
+          // no longer exists -- three data-deleting confirmations announcing
+          // as an unlabelled alert dialog, plus a console.error from Radix's
+          // (not NODE_ENV-gated) title warning in the production bundle.
+          aria-labelledby={titleId}
+          // Escape is suppressed while the mutation is in flight for the same
+          // reason confirm does not close: the dialog is what holds the error
+          // if the request fails. Closing it mid-flight throws that away while
+          // the mutation keeps running.
+          onEscapeKeyDown={(event) => {
+            if (isPending) event.preventDefault();
+          }}
           className="dialog-panel fixed inset-x-4 top-1/2 z-50 mx-auto w-full max-w-sm -translate-y-1/2 space-y-4 rounded-2xl border border-border bg-card p-6 shadow-xl sm:max-w-md"
         >
           <AlertDialog.Title id={titleId} className="text-base font-bold text-foreground">

@@ -37,13 +37,44 @@ describe('ConfirmDialog', () => {
     expect(screen.getByTestId('settings-unlink-modal')).not.toBeNull();
   });
 
-  it('labels itself with the title, by the id callers rely on', () => {
-    // school-links.spec.ts asserts on `#disconnect-modal-title` directly, so
-    // the id has to land on the heading and not merely in aria-labelledby.
+  it('puts the title id on the heading, where school-links.spec.ts reads it', () => {
     renderDialog({ titleId: 'disconnect-modal-title', title: 'ניתוק מכל בתי הספר' });
 
     const heading = document.getElementById('disconnect-modal-title');
     expect(heading?.textContent).toBe('ניתוק מכל בתי הספר');
+  });
+
+  it('points aria-labelledby at that same heading', () => {
+    // Radix's DialogTitle spreads caller props AFTER its own id, so passing
+    // `id` RENAMES the heading while DialogContent keeps pointing
+    // aria-labelledby at the context id that no longer exists. The dialog then
+    // announces as an unlabelled alert dialog -- on three confirmations that
+    // delete a household's data -- and Radix logs a console.error about it in
+    // the production bundle. The label has to be passed explicitly.
+    renderDialog({ titleId: 'disconnect-modal-title', title: 'ניתוק מכל בתי הספר' });
+
+    const content = screen.getByRole('alertdialog');
+    expect(content.getAttribute('aria-labelledby')).toBe('disconnect-modal-title');
+    expect(document.getElementById('disconnect-modal-title')).not.toBeNull();
+  });
+
+  it('does not let Escape close the dialog mid-mutation', () => {
+    // Confirm deliberately does not close, so a failure can be shown in place.
+    // Escape would throw that away: the mutation keeps running, the dialog is
+    // gone, and the error it was holding never reaches anyone.
+    const { onOpenChange } = renderDialog({ isPending: true });
+
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape', code: 'Escape' });
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it('still closes on Escape when idle', () => {
+    const { onOpenChange } = renderDialog();
+
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape', code: 'Escape' });
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it('announces itself as an alert dialog', () => {

@@ -61,12 +61,30 @@ export const ROUTES: RouteUnderTest[] = [
 
 const NOW = new Date().toISOString();
 
+/**
+ * The ISO date of `schoolDay` (1 = Sunday) in the CURRENT week.
+ *
+ * Plans and lesson history are filtered against `getCurrentWeekDates()`, so a
+ * fixed date would be silently dropped and the notes would never render.
+ */
+function weekDateFor(schoolDay: number): string {
+  const today = new Date();
+  const sunday = new Date(today);
+  sunday.setDate(today.getDate() - today.getDay());
+  sunday.setHours(12, 0, 0, 0);
+  const date = new Date(sunday);
+  date.setDate(sunday.getDate() + (schoolDay - 1));
+  return date.toISOString();
+}
+
 const SCHOOLS = [
   {
     id: 'conn-responsive-1',
     semel: 540175,
     schoolName: 'תיכון עירוני א׳ רמת השרון',
-    shortLabel: 'עירוני א׳',
+    // Deliberately long. The chip rails and SchoolBadge's truncation caps are
+    // the widest things on a 360px screen; a short label tests neither.
+    shortLabel: 'תיכון עירוני א׳ ע״ש רמת השרון',
     schoolYear: 2026,
   },
   {
@@ -162,12 +180,39 @@ const BEHAVIOR_ITEM = {
   syncedAt: NOW,
 };
 
+/**
+ * School-sent HTML as it really arrives: a table pasted out of Office with a
+ * hard pixel width, and an image with fixed `width`/`height` attributes.
+ *
+ * This is the single most likely source of a real 360px overflow, and the
+ * reason `.prose-rtl` grew `:where(img,video,iframe){max-width:100%}` and
+ * `:where(table){display:block;width:max-content;max-width:100%;overflow-x:auto}`.
+ * A fixture of two bare <p>s would load neither guard.
+ */
+const SCHOOL_HTML = [
+  '<p>הורים יקרים,</p>',
+  '<p>הטיול השנתי יתקיים בשבוע הבא. נא לשלוח אישור הורים חתום עד יום חמישי.</p>',
+  '<table border="1" cellpadding="6" style="width:900px;border-collapse:collapse">',
+  '<tr><th>יום</th><th>שעת יציאה</th><th>שעת חזרה</th><th>יעד</th><th>עלות</th><th>הערות</th></tr>',
+  '<tr><td>ראשון</td><td>07:30</td><td>18:00</td><td>מצדה ומצוק הארבל</td><td>180 ש״ח</td>',
+  '<td>יש להביא כובע, שתייה מרובה ונעליים סגורות</td></tr>',
+  '<tr><td>שני</td><td>08:00</td><td>17:30</td><td>עין גדי</td><td>כלול</td>',
+  '<td>בגד ים ומגבת</td></tr>',
+  '</table>',
+  '<p><img src="/favicon.svg" width="1200" height="400" alt="מפת הטיול"></p>',
+].join('');
+
 const CONVERSATION = {
-  id: CONVERSATION_ID,
+  conversationId: CONVERSATION_ID,
   subject: 'הודעה מבית הספר על טיול שנתי',
+  sendTime: NOW,
   isNew: true,
   isArchived: false,
-  hasAttachments: false,
+  hasDrafts: false,
+  hasAttachments: true,
+  preventReply: false,
+  labels: [],
+  lastFetchedAt: NOW,
   messageCount: 1,
   lastMessageAt: NOW,
   schoolId: SCHOOLS[0].id,
@@ -175,13 +220,24 @@ const CONVERSATION = {
   schoolName: SCHOOLS[0].schoolName,
   messages: [
     {
-      id: 'msg-1',
+      messageId: 'msg-1',
+      conversationId: CONVERSATION_ID,
+      senderId: 'sender-1',
       senderName: 'מזכירות בית הספר',
+      subject: 'הודעה מבית הספר על טיול שנתי',
+      // `bodyHtmlSanitized`, not `bodyHtml`: MessageBubble falls back to
+      // "תוכן ההודעה אינו זמין בשלב 1" for anything else, which renders none
+      // of the prose guards above.
+      bodyHtmlSanitized: SCHOOL_HTML,
+      bodyTextPreview: 'הטיול השנתי יתקיים בשבוע הבא.',
       sendTime: NOW,
-      bodyHtml:
-        '<p>הורים יקרים,</p><p>הטיול השנתי יתקיים בשבוע הבא. נא לשלוח אישור הורים.</p>',
-      hasAttachments: false,
-      files: [],
+      isNew: true,
+      recipients: [],
+      files: [{ fileId: 'file-1', fileName: 'אישור-הורים-לטיול-שנתי-2026.pdf' }],
+      hasAttachments: true,
+      preventReply: false,
+      sentViaEmail: false,
+      sentViaSms: false,
     },
   ],
 };
@@ -438,20 +494,62 @@ export async function installApiStubs(page: Page): Promise<void> {
 
   // Bare arrays again, and ChildHeader asks for activities on MOUNT (not when
   // its dialog opens), so an unstubbed one crashes the whole workspace.
+  // Non-empty, so both dialogs have something to show and `.dialog-panel` is
+  // reachable from a test rather than only asserted as a class string.
   await page.route(`**/api/v1/children/${STUDENT_GUID}/school-activities`, async (route) => {
-    await route.fulfill({ json: [] });
+    await route.fulfill({
+      json: [
+        {
+          id: 'activity-1',
+          studentGuid: STUDENT_GUID,
+          title: 'אישור השתתפות בטיול השנתי לאזור ים המלח ומצדה',
+          isAnswered: false,
+          answer: null,
+          dueDate: NOW,
+        },
+      ],
+    });
   });
 
   await page.route(`**/api/v1/children/${STUDENT_GUID}/releases`, async (route) => {
     await route.fulfill({ json: [] });
   });
 
+  // A long plan note on a real lesson, not an empty list. `LessonDetails` is
+  // the thing that inflates a week-grid row at 11px inside a 144px cell -- the
+  // agenda's whole justification, and the only input that exercises the grid's
+  // `md:line-clamp-3 lg:line-clamp-none`.
   await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/plans`, async (route) => {
-    await route.fulfill({ json: { data: [] } });
+    await route.fulfill({
+      json: {
+        data: [
+          {
+            lessondate: weekDateFor(1),
+            lesson: 1,
+            groupid: 101,
+            plan: 'חזרה על כל החומר של הפרק: משוואות ממעלה ראשונה, אי-שוויונות, ובעיות מילוליות. יש להביא מחברת, מחשבון ואת דף הנוסחאות שחולק בשיעור הקודם.',
+          },
+        ],
+      },
+    });
   });
 
   await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/history`, async (route) => {
-    await route.fulfill({ json: { data: [] } });
+    await route.fulfill({
+      json: {
+        data: [
+          {
+            lessonLog: {
+              lessonDate: weekDateFor(1),
+              lesson: 1,
+              groupId: 101,
+              remark: 'התלמידה השתתפה יפה בשיעור והציגה פתרון בפני הכיתה.',
+              homeWork: 'תרגילים 1 עד 14 בעמוד 42, ולהשלים את מה שלא הספקנו בכיתה.',
+            },
+          },
+        ],
+      },
+    });
   });
 
   await page.route('**/api/v1/digest/telegram-links/**', async (route) => {
