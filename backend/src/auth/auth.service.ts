@@ -214,6 +214,55 @@ export class AuthService {
       );
     }
 
+    return this.persistSessionFromLogin({
+      semel: Number(semel),
+      username,
+      password,
+      year,
+      loginData,
+      newUniqueId,
+      ip,
+      existingConnBeforeLogin,
+    });
+  }
+
+  /**
+   * Everything a successful Mashov login does on our side: adoption, the
+   * AppUser upsert, the connection write, the roster, and the session cookie.
+   *
+   * Extracted from `login()` so the MFA challenge path can mint a session the
+   * same way. It is the same session either way -- same adoption rules, same
+   * roster persistence, same `credentialStaleAt` clearing -- and a second copy
+   * of this is how an MFA sign-in would quietly skip adoption and drop a
+   * parent into an empty app.
+   *
+   * `existingConnBeforeLogin` is passed in rather than re-read: adoption turns
+   * on whether the connection existed BEFORE this login, and both callers have
+   * already had to read it to send the stored `uniquId`.
+   */
+  async persistSessionFromLogin(input: {
+    semel: number;
+    username: string;
+    /** Plaintext, encrypted here. The one thing the sync crons cannot work without. */
+    password: string;
+    year: number;
+    loginData: MashovLoginPayload;
+    newUniqueId?: string;
+    /** Mashov's trusted-device credential, when this login produced one. */
+    devicePass?: string;
+    ip: string;
+    existingConnBeforeLogin: {
+      id: string;
+      mashovUniqueId: string | null;
+      userId: string | null;
+    } | null;
+  }): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
+    const { semel, username, password, year, loginData, newUniqueId, ip } = input;
+    const existingConnBeforeLogin = input.existingConnBeforeLogin;
+    const devicePassPatch = input.devicePass
+      ? { devicePass: this.encryptionService.encrypt(input.devicePass) }
+      : {};
+
     const mashovUserId = loginData.credential?.userId;
     const displayName = loginData.credential?.displayName ?? username;
     const schoolSettings = loginData.accessToken?.schoolSettings;
@@ -296,6 +345,7 @@ export class AuthService {
           // attention.
           credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+          ...devicePassPatch,
         },
       });
 
@@ -363,6 +413,7 @@ export class AuthService {
           // attention.
           credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+          ...devicePassPatch,
         },
       });
     } else {
@@ -385,6 +436,7 @@ export class AuthService {
           // attention.
           credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
+          ...devicePassPatch,
         },
       });
       connectionId = created.id;

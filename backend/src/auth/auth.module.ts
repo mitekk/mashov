@@ -10,6 +10,8 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { CredentialRecoveryService } from './credential-recovery.service';
 import { CredentialRecoveryController } from './credential-recovery.controller';
+import { MfaService } from './mfa.service';
+import { MfaController } from './mfa.controller';
 
 @Module({
   imports: [
@@ -21,8 +23,8 @@ import { CredentialRecoveryController } from './credential-recovery.controller';
     SchoolLinksModule,
     MashovLoginModule,
   ],
-  controllers: [AuthController, CredentialRecoveryController],
-  providers: [AuthService, CredentialRecoveryService],
-  exports: [AuthService, CredentialRecoveryService],
+  controllers: [AuthController, CredentialRecoveryController, MfaController],
+  providers: [AuthService, CredentialRecoveryService, MfaService],
+  exports: [AuthService, CredentialRecoveryService, MfaService],
 })
 export class AuthModule {}

@@ -599,4 +599,169 @@ describe('In-app Mashov password recovery', () => {
       expect(schools[0].credentialStale).toBe(true);
     });
   });
+
+  describe('MFA challenge endpoints', () => {
+    const CHALLENGES = '/api/v1/auth/mfa-challenges';
+    const CHALLENGE = 'ch-integration-1';
+
+    let sendMfa: jest.SpyInstance;
+    let verifyMfa: jest.SpyInstance;
+
+    beforeAll(() => {
+      sendMfa = jest.spyOn(upstream, 'sendMfa');
+      verifyMfa = jest.spyOn(upstream, 'verifyMfa');
+    });
+
+    afterAll(() => {
+      sendMfa.mockRestore();
+      verifyMfa.mockRestore();
+    });
+
+    beforeEach(async () => {
+      sendMfa.mockResolvedValue(undefined);
+      verifyMfa.mockResolvedValue({
+        data: {
+          credential: { userId: 'mfa-user-1', displayName: 'MFA Parent' },
+          accessToken: {
+            userSettings: { detailsState: 1 },
+            schoolSettings: { schoolName: 'Test School', schoolYear: 2027 },
+            children: [],
+            username: KNOWN_ID,
+          },
+        },
+        newUniqueId: 'uniq-mfa',
+        csrfToken: 'csrf-mfa',
+        devicePass: 'dp-mfa',
+      });
+      await prisma.appSession.deleteMany({});
+      await prisma.householdConnection.deleteMany({});
+      await prisma.appUser.deleteMany({});
+    });
+
+    afterEach(async () => {
+      await prisma.appSession.deleteMany({});
+      await prisma.householdConnection.deleteMany({});
+      await prisma.appUser.deleteMany({});
+    });
+
+    function sendCode(body: Record<string, unknown> = {}) {
+      return request(app.getHttpServer())
+        .post(`${CHALLENGES}/${CHALLENGE}/code`)
+        .set('X-Forwarded-For', freshIp())
+        .send({ method: 'email', ...body });
+    }
+
+    function createSession(body: Record<string, unknown> = {}) {
+      return request(app.getHttpServer())
+        .post(`${CHALLENGES}/${CHALLENGE}/session`)
+        .set('X-Forwarded-For', freshIp())
+        .send({
+          semel: SEMEL,
+          username: KNOWN_ID,
+          password: 'realpassword1',
+          code: '123456',
+          ...body,
+        });
+    }
+
+    it('sends a code with no mashov_session cookie', async () => {
+      const res = await sendCode();
+      expect(res.status).toBe(202);
+      expect(res.body).toEqual({ ok: true });
+      expect(sendMfa).toHaveBeenCalledWith(CHALLENGE, 'email');
+    });
+
+    it('mints the mashov_session cookie on a correct code', async () => {
+      const res = await createSession();
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      const cookie = res.headers['set-cookie'];
+      expect(String(cookie)).toContain('mashov_session=');
+      expect(String(cookie)).toContain('HttpOnly');
+      expect(String(cookie)).toContain('SameSite=Strict');
+    });
+
+    it('stores the password and the devicePass, so background sync survives', async () => {
+      // The whole reason this route takes a password Mashov's own verify route
+      // rejects: without it the household gets a session and no sync, and
+      // without the devicePass every cron re-login re-opens this challenge.
+      await createSession();
+
+      const connection = await prisma.householdConnection.findFirst({
+        where: { schoolCode: SEMEL, username: KNOWN_ID },
+      });
+      expect(connection?.encryptedPassword).toBeTruthy();
+      expect(connection?.encryptedPassword).not.toBe('realpassword1');
+      expect(connection?.devicePass).toBeTruthy();
+      expect(connection?.devicePass).not.toBe('dp-mfa');
+    });
+
+    it('asks Mashov to remember the browser, whatever the client sent', async () => {
+      await createSession({ rememberBrowser: false });
+      expect(verifyMfa).toHaveBeenCalledWith(
+        expect.objectContaining({ rememberBrowser: true }),
+      );
+    });
+
+    it('sends no password upstream', async () => {
+      await createSession();
+      expect(JSON.stringify(verifyMfa.mock.calls[0][0])).not.toContain('realpassword1');
+    });
+
+    it('refuses a session with no password rather than killing sync silently', async () => {
+      const res = await createSession({ password: '' });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('reports a wrong code as 400, not 401', async () => {
+      verifyMfa.mockRejectedValue(reasonError('MfaInvalidCode'));
+      const res = await createSession();
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_MFA_CODE');
+    });
+
+    it('reports an outage as 502, never as a wrong code', async () => {
+      verifyMfa.mockRejectedValue(new CanceledError('aborted'));
+      const res = await createSession();
+
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('UPSTREAM_ERROR');
+    });
+
+    it('never answers 401 on either route', async () => {
+      const responses: request.Response[] = [];
+
+      sendMfa.mockRejectedValue(bareError(401));
+      responses.push(await sendCode());
+      responses.push(await sendCode({ method: 'telegram' }));
+
+      sendMfa.mockResolvedValue(undefined);
+      verifyMfa.mockRejectedValue(bareError(401));
+      responses.push(await createSession());
+      responses.push(await createSession({ code: '  ' }));
+      responses.push(await createSession({ username: '' }));
+
+      for (const res of responses) {
+        expect(res.status).not.toBe(401);
+      }
+    });
+
+    it('mints no session when Mashov returns no credential', async () => {
+      verifyMfa.mockResolvedValue({
+        data: {},
+        newUniqueId: undefined,
+        csrfToken: undefined,
+        devicePass: undefined,
+      });
+
+      const res = await createSession();
+
+      expect(res.status).toBe(400);
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(await prisma.householdConnection.count()).toBe(0);
+    });
+  });
 });
