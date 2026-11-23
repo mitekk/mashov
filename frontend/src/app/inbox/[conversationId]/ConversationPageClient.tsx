@@ -54,9 +54,13 @@ export default function ConversationPage() {
 
   return (
     <AppShell>
-      <div data-testid="conversation-page" className="page-shell space-y-4">
-        {/* Toolbar */}
-        <div className="flex items-center justify-between gap-2 pt-5">
+      <div data-testid="conversation-page" className="page-shell measure space-y-4">
+        {/*
+          Toolbar. At 360 this was a 40px back button plus two ~100px labelled
+          actions plus two more 40px buttons on one non-wrapping line -- about
+          355px of content in 328px of usable width. Both rows wrap now.
+        */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-5">
           <button
             onClick={() => router.back()}
             aria-label="חזור"
@@ -65,7 +69,7 @@ export default function ConversationPage() {
             <ArrowRight className="h-5 w-5" />
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             {data && (
               <>
                 {!isArchived && (

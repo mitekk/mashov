@@ -313,10 +313,16 @@
      so it is correct under RTL too -- `start-1/2` would not be. */
   .viewer-surface {
     @apply fixed inset-0 z-50;
+    /* The home-indicator inset, on the surface rather than on the scrolling
+       content: as a utility on the content it would be `.pb-safe`, which is
+       emitted after Tailwind's own `lg:pb-3` and would therefore beat it,
+       leaving the panel with no bottom padding at lg. */
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   @media (min-width: 1024px) {
     .viewer-surface {
+      padding-bottom: 0;
       inset: auto;
       left: 50%;
       top: 50%;
@@ -381,6 +387,12 @@
     color: inherit;
     font-family: inherit;
     line-height: inherit;
+    /* Replaces MessageBubble's `[&_*]:max-w-full`, which was the only thing
+       standing between a school email's fixed-width wrapper div and a page
+       wider than the viewport. Here it covers every `.prose-rtl` surface, not
+       just the one component. The `:where(table)` rule below is defined later
+       at equal specificity, so its `width: max-content` still wins. */
+    max-width: 100%;
   }
 
   .prose-rtl :where(h1, h2, h3, h4, h5, h6) {

@@ -12,6 +12,7 @@ import { TelegramCard } from '@/components/more/TelegramCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { ConfirmDialog } from '@/components/more/ConfirmDialog';
 import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSourceHealth, useProfile } from '@/hooks/useSettings';
 import { useSchoolLinks } from '@/hooks/useSchoolLinks';
@@ -198,275 +199,209 @@ export default function MorePage() {
           </div>
         </header>
 
-        {/* Connected schools */}
-        {schoolLinks && schoolLinks.length > 0 && (
+        {/*
+          One column on a phone, content plus an aside at lg. Sync state and
+          Telegram go to the aside: they are status and a delivery preference,
+          not things a parent came here to change. Schools, profile and the
+          account actions stay in the main column.
+        */}
+        <div className="split-pane">
+        <div className="space-y-7">
+
+          {/* Connected schools */}
+          {schoolLinks && schoolLinks.length > 0 && (
+            <section>
+              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                {schoolLinks.length === 1 ? 'בית ספר מחובר' : 'בתי ספר מחוברים'}
+              </h2>
+              <SchoolLinksCard
+                links={schoolLinks}
+                onUnlink={(link) =>
+                  // The last school is the sign-out-and-wipe case, so it routes
+                  // to the bulk confirm, which says so.
+                  schoolLinks.length <= 1 ? showDisconnect(true) : showUnlink(link)
+                }
+              />
+            </section>
+          )}
+
+          {/* Profile -- one card per linked school. `upstreamUserId` is a
+              per-school id, so a two-school parent has two sets of contact
+              details and both are current; one card captioned with one school
+              and filled from the other is B4. */}
+          {profiles && profiles.length > 0 && (
+            <section>
+              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                {profiles.length === 1 ? 'פרטי הורה' : 'פרטי הורה לפי בית ספר'}
+              </h2>
+              <div className="space-y-3">
+                {profiles.map((profile) => (
+                  <ProfileCard key={profile.householdConnectionId} profile={profile} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Account actions */}
+          <section className="space-y-3">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              חשבון
+            </h2>
+            <button
+              data-testid="settings-signout-btn"
+              onClick={() => signOutMutation.mutate()}
+              disabled={signOutMutation.isPending}
+              className="w-full rounded-xl border border-border px-4 py-3 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors disabled:opacity-60"
+            >
+              {signOutMutation.isPending ? 'מתנתק...' : 'התנתקות'}
+            </button>
+            <button
+              data-testid="settings-disconnect-btn"
+              onClick={() => showDisconnect(true)}
+              className="w-full rounded-xl border border-destructive/40 px-4 py-3 text-sm font-medium text-destructive hover:bg-destructive/5 transition-colors"
+            >
+              {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
+            </button>
+          </section>
+
+          {/* App info */}
+          <section>
+            <p className="text-xs text-muted-foreground text-center">
+              מרכז הורים · גרסה {APP_VERSION}
+            </p>
+          </section>
+        </div>
+
+        <aside className="space-y-7 lg:sticky lg:top-4">
+          {/* Source health */}
           <section>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              {schoolLinks.length === 1 ? 'בית ספר מחובר' : 'בתי ספר מחוברים'}
+              מצב סנכרון
             </h2>
-            <SchoolLinksCard
-              links={schoolLinks}
-              onUnlink={(link) =>
-                // The last school is the sign-out-and-wipe case, so it routes
-                // to the bulk confirm, which says so.
-                schoolLinks.length <= 1 ? showDisconnect(true) : showUnlink(link)
+            {healthLoading && <LoadingState message="טוען..." />}
+            {healthError && <ErrorState />}
+            {health && (
+              <div className="space-y-3">
+                <ContentFreshnessCard contentFreshness={health.contentFreshness} />
+                <SourceHealthList sources={health.sources} />
+              </div>
+            )}
+          </section>
+
+          {/* Telegram updates. Between sync state and the account actions: it is
+              a delivery preference, not an account action -- disconnecting it
+              removes a chat id, not a household. */}
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              עדכונים בטלגרם
+            </h2>
+            <TelegramCard
+              recipients={digestRecipients ?? []}
+              allChildren={childrenResponse?.data ?? []}
+              pendingToggleId={
+                telegramToggleMutation.isPending
+                  ? (telegramToggleMutation.variables?.id ?? null)
+                  : null
               }
+              toggleError={telegramToggleError}
+              onToggle={(id, enabled) => {
+                setTelegramToggleError(null);
+                telegramToggleMutation.mutate(
+                  { id, enabled },
+                  {
+                    onError: () =>
+                      setTelegramToggleError('לא הצלחנו לעדכן את ההגדרה. נסו שוב בעוד רגע.'),
+                  },
+                );
+              }}
+              onDisconnect={() => showTelegramDisconnect(true)}
             />
           </section>
-        )}
 
-        {/* Profile -- one card per linked school. `upstreamUserId` is a
-            per-school id, so a two-school parent has two sets of contact
-            details and both are current; one card captioned with one school
-            and filled from the other is B4. */}
-        {profiles && profiles.length > 0 && (
-          <section>
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              {profiles.length === 1 ? 'פרטי הורה' : 'פרטי הורה לפי בית ספר'}
-            </h2>
-            <div className="space-y-3">
-              {profiles.map((profile) => (
-                <ProfileCard key={profile.householdConnectionId} profile={profile} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Source health */}
-        <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            מצב סנכרון
-          </h2>
-          {healthLoading && <LoadingState message="טוען..." />}
-          {healthError && <ErrorState />}
-          {health && (
-            <div className="space-y-3">
-              <ContentFreshnessCard contentFreshness={health.contentFreshness} />
-              <SourceHealthList sources={health.sources} />
-            </div>
-          )}
-        </section>
-
-        {/* Telegram updates. Between sync state and the account actions: it is
-            a delivery preference, not an account action -- disconnecting it
-            removes a chat id, not a household. */}
-        <section>
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            עדכונים בטלגרם
-          </h2>
-          <TelegramCard
-            recipients={digestRecipients ?? []}
-            allChildren={childrenResponse?.data ?? []}
-            pendingToggleId={
-              telegramToggleMutation.isPending
-                ? (telegramToggleMutation.variables?.id ?? null)
-                : null
-            }
-            toggleError={telegramToggleError}
-            onToggle={(id, enabled) => {
-              setTelegramToggleError(null);
-              telegramToggleMutation.mutate(
-                { id, enabled },
-                {
-                  onError: () =>
-                    setTelegramToggleError('לא הצלחנו לעדכן את ההגדרה. נסו שוב בעוד רגע.'),
-                },
-              );
-            }}
-            onDisconnect={() => showTelegramDisconnect(true)}
-          />
-        </section>
-
-        {/* Account actions */}
-        <section className="space-y-3">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            חשבון
-          </h2>
-          <button
-            data-testid="settings-signout-btn"
-            onClick={() => signOutMutation.mutate()}
-            disabled={signOutMutation.isPending}
-            className="w-full rounded-xl border border-border px-4 py-3 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors disabled:opacity-60"
-          >
-            {signOutMutation.isPending ? 'מתנתק...' : 'התנתקות'}
-          </button>
-          <button
-            data-testid="settings-disconnect-btn"
-            onClick={() => showDisconnect(true)}
-            className="w-full rounded-xl border border-destructive/40 px-4 py-3 text-sm font-medium text-destructive hover:bg-destructive/5 transition-colors"
-          >
-            {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
-          </button>
-        </section>
-
-        {/* App info */}
-        <section>
-          <p className="text-xs text-muted-foreground text-center">
-            מרכז הורים · גרסה {APP_VERSION}
-          </p>
-        </section>
+        </aside>
+        </div>
       </div>
 
-      {/* Disconnect confirmation modal */}
-      {pendingUnlink && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="unlink-modal-title"
-          data-testid="settings-unlink-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-        >
-          <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-xl space-y-4">
-            <h2 id="unlink-modal-title" className="text-base font-bold text-foreground">
-              {`לנתק את "${pendingUnlink.schoolName}"?`}
-            </h2>
-            {/* The blast radius, named. The old copy said "כל המידע יימחק",
-                which is now a lie: the other school's data stays. */}
-            <p className="text-sm text-muted-foreground">
+      <ConfirmDialog
+        open={Boolean(pendingUnlink)}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) showUnlink(null);
+        }}
+        testId="settings-unlink-modal"
+        titleId="unlink-modal-title"
+        title={pendingUnlink ? `לנתק את "${pendingUnlink.schoolName}"?` : ''}
+        description={
+          pendingUnlink ? (
+            <>
+              {/* The blast radius, named. The old copy said "כל המידע יימחק",
+                  which is now a lie: the other school's data stays. */}
               {`יימחקו כל הנתונים של ${childrenPhrase(pendingUnlink.childrenCount)} בבית הספר הזה — שיעורי בית, התנהגות, הודעות ודואר.`}
               {remainingSchoolsPhrase(schoolLinks ?? [], pendingUnlink)}
-            </p>
-            {unlinkError && (
-              <p
-                role="alert"
-                data-testid="settings-unlink-error"
-                className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-              >
-                {unlinkError}
-              </p>
-            )}
-            <div className="flex gap-3 pt-1">
-              <button
-                type="button"
-                data-testid="settings-unlink-cancel-btn"
-                onClick={() => showUnlink(null)}
-                className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
-              >
-                ביטול
-              </button>
-              <button
-                data-testid={`settings-unlink-confirm-btn-${pendingUnlink.semel}`}
-                onClick={() => unlinkOneMutation.mutate(pendingUnlink)}
-                disabled={unlinkOneMutation.isPending}
-                className="flex-1 rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground hover:opacity-90 transition-opacity disabled:opacity-60"
-              >
-                {unlinkOneMutation.isPending ? 'מנתק...' : 'ניתוק'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </>
+          ) : null
+        }
+        error={unlinkError}
+        errorTestId="settings-unlink-error"
+        cancelTestId="settings-unlink-cancel-btn"
+        confirmTestId={`settings-unlink-confirm-btn-${pendingUnlink?.semel ?? ''}`}
+        confirmLabel="ניתוק"
+        pendingLabel="מנתק..."
+        isPending={unlinkOneMutation.isPending}
+        onConfirm={() => {
+          if (pendingUnlink) unlinkOneMutation.mutate(pendingUnlink);
+        }}
+      />
 
-      {showTelegramConfirm && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="telegram-disconnect-modal-title"
-          data-testid="telegram-disconnect-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-        >
-          <div className="w-full max-w-sm space-y-4 rounded-2xl bg-card p-6 shadow-xl">
-            <h2
-              id="telegram-disconnect-modal-title"
-              className="text-base font-bold text-foreground"
-            >
-              לנתק את העדכונים בטלגרם?
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              נפסיק לשלוח עדכונים על כל הילדים, והחיבור לטלגרם יימחק. אפשר לחבר מחדש בכל שלב.
-            </p>
-            {telegramDisconnectError && (
-              <p
-                role="alert"
-                data-testid="telegram-disconnect-error"
-                className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-              >
-                {telegramDisconnectError}
-              </p>
-            )}
-            <div className="flex gap-3 pt-1">
-              <button
-                type="button"
-                data-testid="telegram-disconnect-cancel-btn"
-                onClick={() => showTelegramDisconnect(false)}
-                className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-accent/50"
-              >
-                ביטול
-              </button>
-              <button
-                data-testid="telegram-disconnect-confirm-btn"
-                disabled={telegramDisconnectMutation.isPending}
-                onClick={() => {
-                  setTelegramDisconnectError(null);
-                  telegramDisconnectMutation.mutate(undefined, {
-                    onSuccess: () => showTelegramDisconnect(false),
-                    onError: () =>
-                      setTelegramDisconnectError(
-                        'לא הצלחנו לנתק כרגע. נסו שוב בעוד רגע.',
-                      ),
-                  });
-                }}
-                className="flex-1 rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-              >
-                {telegramDisconnectMutation.isPending ? 'מנתק...' : 'ניתוק'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={showTelegramConfirm}
+        onOpenChange={showTelegramDisconnect}
+        testId="telegram-disconnect-modal"
+        titleId="telegram-disconnect-modal-title"
+        title="לנתק את העדכונים בטלגרם?"
+        description="נפסיק לשלוח עדכונים על כל הילדים, והחיבור לטלגרם יימחק. אפשר לחבר מחדש בכל שלב."
+        error={telegramDisconnectError}
+        errorTestId="telegram-disconnect-error"
+        cancelTestId="telegram-disconnect-cancel-btn"
+        confirmTestId="telegram-disconnect-confirm-btn"
+        confirmLabel="ניתוק"
+        pendingLabel="מנתק..."
+        isPending={telegramDisconnectMutation.isPending}
+        onConfirm={() => {
+          setTelegramDisconnectError(null);
+          telegramDisconnectMutation.mutate(undefined, {
+            onSuccess: () => showTelegramDisconnect(false),
+            onError: () =>
+              setTelegramDisconnectError('לא הצלחנו לנתק כרגע. נסו שוב בעוד רגע.'),
+          });
+        }}
+      />
 
-      {showDisconnectConfirm && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="disconnect-modal-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-        >
-          <div className="w-full max-w-sm rounded-2xl bg-card p-6 shadow-xl space-y-4">
-            <h2 id="disconnect-modal-title" className="text-base font-bold text-foreground">
-              {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              {isLastSchool
-                ? 'זה בית הספר היחיד המחובר. ניתוק שלו ימחק את כל המידע ויוציא אותך מהחשבון.'
-                : 'יימחקו כל הנתונים של כל בתי הספר, ותצאו מהחשבון.'}
-            </p>
-            {disconnectError && (
-              <p
-                role="alert"
-                data-testid="settings-disconnect-error"
-                className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-              >
-                {disconnectError}
-              </p>
-            )}
-            <div className="flex gap-3 pt-1">
-              <button
-                type="button"
-                data-testid="settings-disconnect-cancel-btn"
-                onClick={() => showDisconnect(false)}
-                className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors"
-              >
-                ביטול
-              </button>
-              <button
-                data-testid="settings-disconnect-confirm-btn"
-                // Deliberately does NOT close the modal first. The success
-                // path navigates to sign-in and unmounts it anyway, and
-                // closing pre-emptively is what made a failure silent.
-                onClick={() => {
-                  setDisconnectError(null);
-                  disconnectMutation.mutate();
-                }}
-                disabled={disconnectMutation.isPending}
-                className="flex-1 rounded-xl bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground hover:opacity-90 transition-opacity disabled:opacity-60"
-              >
-                {disconnectMutation.isPending ? 'מנתק...' : 'נתק'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={showDisconnectConfirm}
+        onOpenChange={showDisconnect}
+        titleId="disconnect-modal-title"
+        title={isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
+        description={
+          isLastSchool
+            ? 'זה בית הספר היחיד המחובר. ניתוק שלו ימחק את כל המידע ויוציא אותך מהחשבון.'
+            : 'יימחקו כל הנתונים של כל בתי הספר, ותצאו מהחשבון.'
+        }
+        error={disconnectError}
+        errorTestId="settings-disconnect-error"
+        cancelTestId="settings-disconnect-cancel-btn"
+        confirmTestId="settings-disconnect-confirm-btn"
+        confirmLabel="נתק"
+        pendingLabel="מנתק..."
+        isPending={disconnectMutation.isPending}
+        // Deliberately does NOT close first. The success path navigates to
+        // sign-in and unmounts this anyway, and closing pre-emptively is what
+        // made a failure silent.
+        onConfirm={() => {
+          setDisconnectError(null);
+          disconnectMutation.mutate();
+        }}
+      />
+
     </AppShell>
   );
 }
