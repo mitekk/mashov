@@ -5,6 +5,7 @@ import { AppSessionModule } from '../app-session/app-session.module';
 import { MashovSessionModule } from '../session/mashov-session.module';
 import { SchoolYearModule } from '../common/school-year/school-year.module';
 import { SchoolLinksModule } from '../school-links/school-links.module';
+import { MashovLoginModule } from '../common/mashov-login/mashov-login.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 
@@ -16,6 +17,7 @@ import { AuthController } from './auth.controller';
     MashovSessionModule,
     SchoolYearModule,
     SchoolLinksModule,
+    MashovLoginModule,
   ],
   controllers: [AuthController],
   providers: [AuthService],

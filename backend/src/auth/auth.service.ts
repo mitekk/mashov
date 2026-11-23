@@ -25,41 +25,13 @@ import {
   visibleStudentWhere,
 } from '../common/student-links';
 import { parentDisplayName } from '../common/parent-name';
+import {
+  MashovCredentialValidatorService,
+  type MashovLoginPayload,
+} from '../common/mashov-login/mashov-credential-validator.service';
 
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SECONDS = 900; // 15 minutes
-
-interface MashovLoginResponse {
-  credential: {
-    userId: string;
-    displayName: string;
-    semel: number;
-    year: number;
-  };
-  accessToken: {
-    userSettings: { detailsState: number };
-    schoolSettings: {
-      schoolName: string;
-      schoolYear: number;
-    };
-    children: Array<{
-      childGuid: string;
-      familyName: string;
-      privateName: string;
-      classCode: string;
-      classNum: number;
-      gender: string;
-      groups: number[];
-    }>;
-    /**
-     * Children no longer enrolled. Element shape is undocumented, so it is
-     * parsed defensively — `childGuid`, else `guid`, else a bare string.
-     */
-    inactiveChildren?: unknown[];
-    userSchoolYears?: number[];
-    username: string;
-  };
-}
 
 @Injectable()
 export class AuthService {
@@ -76,6 +48,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly schoolYearService: SchoolYearService,
     private readonly schoolLinksService: SchoolLinksService,
+    private readonly credentialValidator: MashovCredentialValidatorService,
   ) {
     this.mashovBaseUrl = resolveMashovBaseUrl(
       this.configService.get<string>('MASHOV_BASE_URL'),
@@ -122,17 +95,17 @@ export class AuthService {
     });
 
     let year = candidate.year;
-    let loginData: MashovLoginResponse;
+    let loginData: MashovLoginPayload;
     let newUniqueId: string | undefined;
 
     try {
-      let attempt = await this.postLogin(
-        Number(semel),
+      let attempt = await this.credentialValidator.postLogin({
+        semel: Number(semel),
         year,
         username,
         password,
-        existingConnBeforeLogin?.mashovUniqueId ?? null,
-      );
+        uniqueId: existingConnBeforeLogin?.mashovUniqueId ?? null,
+      });
 
       // Phase 2: Mashov is the authority. Its cookies are year-scoped, so a
       // corrected year needs a fresh login — reusing the first login's cookies
@@ -147,13 +120,13 @@ export class AuthService {
         // full logins against a rate-limited upstream.
         this.schoolYearService.invalidate(Number(semel));
         try {
-          const corrected = await this.postLogin(
-            Number(semel),
-            reconciled.year,
+          const corrected = await this.credentialValidator.postLogin({
+            semel: Number(semel),
+            year: reconciled.year,
             username,
             password,
-            existingConnBeforeLogin?.mashovUniqueId ?? null,
-          );
+            uniqueId: existingConnBeforeLogin?.mashovUniqueId ?? null,
+          });
           year = reconciled.year;
           attempt = corrected;
         } catch (retryErr) {
@@ -426,7 +399,7 @@ export class AuthService {
    * what a login persists.
    */
   private async persistLoginRoster(
-    loginData: MashovLoginResponse,
+    loginData: MashovLoginPayload,
     connectionId: string,
   ): Promise<void> {
     const children = loginData.accessToken?.children ?? [];
@@ -480,67 +453,6 @@ export class AuthService {
         data: { isActive: false },
       });
     }
-  }
-
-  /**
-   * One `POST /api/login`. Separated out because the year reconciliation may
-   * need to run it twice, and both attempts share the same error handling.
-   */
-  private async postLogin(
-    semel: number,
-    year: number,
-    username: string,
-    password: string,
-    storedUniqueId: string | null,
-  ): Promise<{ data: MashovLoginResponse; newUniqueId: string | undefined }> {
-    const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
-
-    const loginBody = {
-      semel,
-      year,
-      username,
-      password,
-      IsBiometric: false,
-      appName: 'info.mashov.students',
-      apiVersion: '3.20210425',
-      appVersion: 3.20210425,
-      appBuild: 3.20210425,
-      deviceUuid: 'chrome',
-      devicePlatform: 'chrome',
-      deviceManufacturer: 'mac',
-      deviceModel: 'desktop',
-      deviceVersion: '145.0.0.0',
-    };
-
-    const extraHeaders: Record<string, string> = {};
-    if (storedUniqueId) {
-      extraHeaders['Cookie'] = `uniquId=${storedUniqueId}`;
-    }
-
-    const response = await this.http.post<MashovLoginResponse>('/api/login', loginBody, {
-      headers: {
-        'X-Csrf-Token': csrfToken,
-        'Content-Type': 'application/json',
-        Referer: `${this.mashovBaseUrl}/students/login`,
-        ...extraHeaders,
-      },
-    });
-
-    let newUniqueId: string | undefined;
-    const setCookie = response.headers?.['set-cookie'];
-    if (setCookie) {
-      const cookieList = Array.isArray(setCookie) ? setCookie : [setCookie];
-      for (const c of cookieList) {
-        const nameValue = c.split(';')[0] ?? '';
-        const eqIdx = nameValue.indexOf('=');
-        if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
-          newUniqueId = nameValue.substring(eqIdx + 1).trim();
-          break;
-        }
-      }
-    }
-
-    return { data: response.data, newUniqueId };
   }
 
   /** `inactiveChildren` is undocumented; accept every plausible element shape. */

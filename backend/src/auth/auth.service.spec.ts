@@ -9,6 +9,10 @@ import { AppSessionService } from '../app-session/app-session.service';
 import { EncryptionService } from '../session/encryption.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
 import { SchoolLinksService } from '../school-links/school-links.service';
+// Real, not mocked: it is the single `POST /api/login` now, and it builds its
+// client with the same `createMashovAxios` the spec already stubs, so the
+// `mockHttp.post` assertions below still see every login body AuthService sends.
+import { MashovCredentialValidatorService } from '../common/mashov-login/mashov-credential-validator.service';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -117,6 +121,7 @@ describe('AuthService', () => {
         { provide: ConfigService, useValue: mockConfig },
         { provide: SchoolYearService, useValue: mockSchoolYearService },
         { provide: SchoolLinksService, useValue: mockSchoolLinksService },
+        MashovCredentialValidatorService,
       ],
     }).compile();
 
@@ -883,6 +888,7 @@ describe('AuthService login adoption', () => {
         { provide: ConfigService, useValue: mockConfig },
         { provide: SchoolYearService, useValue: mockSchoolYearService },
         { provide: SchoolLinksService, useValue: mockSchoolLinksService },
+        MashovCredentialValidatorService,
       ],
     }).compile();
 
