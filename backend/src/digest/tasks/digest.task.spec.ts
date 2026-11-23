@@ -62,7 +62,7 @@ describe('DigestTask', () => {
     // 11:00 rather than 13:00: DigestDismissalService decides per child now,
     // so the cron only has to be awake early enough for the shortest school
     // day. A first-grader dismissed at 11:20 is reported at ~12:00 rather than
-    // waiting for 13:00 (ADR-0038).
+    // waiting for 13:00 (ADR-0040).
     const metadata = Reflect.getMetadataKeys(DigestTask.prototype.run)
       .map((key) => ({ key, value: Reflect.getMetadata(key, DigestTask.prototype.run) }))
       .find((entry) => typeof entry.value === 'object' && entry.value !== null && 'cronTime' in entry.value);

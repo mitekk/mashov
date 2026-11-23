@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 
 export const TELEGRAM_API_ROOT = 'https://api.telegram.org';
 
@@ -28,11 +28,17 @@ export interface TelegramEnvelope<T> {
  * (see `botPath`). An axios error carries `config.url`, which ends up in logs
  * and error trackers; a token in the base URL would be in every one of them.
  */
-export function createTelegramHttp(options: { timeoutMs?: number } = {}): AxiosInstance {
+export function createTelegramHttp(
+  options: { timeoutMs?: number } & Pick<AxiosRequestConfig, 'maxBodyLength' | 'maxContentLength'> = {},
+): AxiosInstance {
+  const { timeoutMs, ...rest } = options;
   return axios.create({
     baseURL: TELEGRAM_API_ROOT,
-    timeout: options.timeoutMs ?? TELEGRAM_DEFAULT_TIMEOUT_MS,
+    timeout: timeoutMs ?? TELEGRAM_DEFAULT_TIMEOUT_MS,
     proxy: false,
+    // The media sender needs both at Infinity: axios defaults them to 10 MB
+    // and refuses a larger body LOCALLY, before any request is made.
+    ...rest,
   });
 }
 
@@ -70,4 +76,106 @@ export function describeTelegramError(error: unknown): string {
     return [error.code, error.message].filter(Boolean).join(': ') || 'request failed';
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The Bot API's hard ceiling for `sendMessage.text`, in UTF-16 code units --
+ * which is what `String.length` counts, and what Telegram counts too.
+ */
+export const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+/**
+ * What this project actually splits at. Below the ceiling on purpose: the
+ * remaining headroom absorbs anything a caller appends after chunking (a link
+ * line, a part marker) without pushing a part back over the limit.
+ */
+export const TELEGRAM_CHUNK_LIMIT = 4000;
+
+/**
+ * Splits a message into parts Telegram will accept.
+ *
+ * Nothing in this project used to handle the limit at all: an over-long message
+ * failed, the digest's `deliver` threw, the claims were released, and the next
+ * hourly run built the same over-long message and failed identically -- forever.
+ * Mail bodies and a longer report make that reachable, so this is the backstop.
+ * Per-template truncation budgets stay, so reaching it should stay rare.
+ *
+ * Where it cuts, in order of preference: the last blank line inside the window,
+ * so a section is never split from its header; else the last newline; else a
+ * hard cut. A hard cut never lands between the halves of a surrogate pair --
+ * a lone surrogate renders as a replacement character in the parent's chat.
+ *
+ * Trailing whitespace is trimmed from each part and leading newlines from the
+ * next, so a run of blank lines at a boundary cannot produce an empty part --
+ * which Telegram rejects outright.
+ */
+export function chunkTelegramText(text: string, limit = TELEGRAM_CHUNK_LIMIT): string[] {
+  if (limit <= 0 || text.length <= limit) return [text];
+
+  const parts: string[] = [];
+  let rest = text;
+
+  while (rest.length > limit) {
+    const cut = cutPoint(rest, limit);
+    const head = rest.slice(0, cut).replace(/\s+$/, '');
+    if (head.length > 0) parts.push(head);
+    rest = rest.slice(cut).replace(/^\n+/, '');
+  }
+
+  const tail = rest.replace(/\s+$/, '');
+  if (tail.length > 0) parts.push(tail);
+
+  // Only reachable for input that is all whitespace past the limit, which has
+  // no visible content to carry -- return something rather than nothing, so a
+  // caller never silently sends zero messages and reports success.
+  return parts.length > 0 ? parts : [text.slice(0, limit)];
+}
+
+/** Always >= 1, so the loop above cannot fail to make progress. */
+function cutPoint(text: string, limit: number): number {
+  const window = text.slice(0, limit);
+
+  const blankLine = window.lastIndexOf('\n\n');
+  if (blankLine >= 0) return blankLine + 2;
+
+  const newline = window.lastIndexOf('\n');
+  if (newline >= 0) return newline + 1;
+
+  const code = text.charCodeAt(limit - 1);
+  const splitsAPair = code >= 0xd800 && code <= 0xdbff;
+  return splitsAPair && limit > 1 ? limit - 1 : limit;
+}
+
+/**
+ * Descriptions that mean "this chat will never accept another message".
+ *
+ * Matched as substrings because Telegram prefixes them inconsistently
+ * (`Forbidden: `, `Bad Request: `) and this project's senders prefix them
+ * again with their own text.
+ *
+ * Deliberately a closed list of four rather than a heuristic. Everything else
+ * -- a 429, a 502, a timeout, an empty-text rejection -- is transient and must
+ * be retried, and a wrong "permanent" silently stops a parent's digest with no
+ * error anyone sees. A code this list does not know costs one wasted retry per
+ * run; a code it wrongly claims costs a parent the feature.
+ */
+const PERMANENT_TELEGRAM_FAILURES = [
+  'bot was blocked by the user',
+  'chat not found',
+  'user is deactivated',
+  "bot can't initiate conversation",
+];
+
+/**
+ * Whether a failed send should stop being retried and retire the chat.
+ *
+ * A transient failure releases the dedup claims so the next run tries again. A
+ * permanent one must not: the items would be re-claimed, re-summarized (a
+ * model call each time) and re-sent to a chat that cannot receive them, on
+ * every run, forever. So the caller confirms the ledger rows anyway and
+ * disables the recipient.
+ */
+export function isPermanentTelegramFailure(description: string): boolean {
+  const text = description.toLowerCase();
+  return PERMANENT_TELEGRAM_FAILURES.some((phrase) => text.includes(phrase));
 }

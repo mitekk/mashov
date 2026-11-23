@@ -35,6 +35,7 @@ import { DigestDismissalService } from '../../backend/src/digest/digest-dismissa
 import { DigestDeadlineService } from '../../backend/src/digest/digest-deadline.service';
 import { DigestSummarizerService } from '../../backend/src/digest/digest-summarizer.service';
 import { DigestRecipientService } from '../../backend/src/digest/digest-recipient.service';
+import { DigestAttachmentResolver } from '../../backend/src/digest/digest-attachment.resolver';
 import { jerusalemDayBounds } from '../../backend/src/digest/digest-deadline.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { ConfigService } from '../../backend/node_modules/@nestjs/config';
@@ -116,7 +117,11 @@ class CapturingSender implements DigestSender {
 
   async send(address: string, text: string): Promise<void> {
     if (this.failFor === address) {
-      throw new Error('Telegram send failed: bot was blocked by the user');
+      // Transient on purpose. A permanent refusal ("bot was blocked by the
+      // user", "chat not found") confirms the claims and disables the
+      // recipient instead of releasing, so it would prove the opposite of
+      // what the retry test below is about.
+      throw new Error('Telegram send failed: HTTP 502');
     }
     this.sent.push({ address, text });
   }
@@ -166,10 +171,14 @@ function makeService(prisma: PrismaClient, sender: DigestSender) {
     new DigestRecipientService(prismaService),
     // The real service against the real database: these fixtures seed no
     // timetable rows, so the gate opens for every child and the suite reads
-    // exactly as it did before the gate existed (ADR-0038).
+    // exactly as it did before the gate existed (ADR-0040).
     new DigestDismissalService(prismaService, config),
     sender,
     sender,
+    new DigestAttachmentResolver(prismaService),
+    // No media binding: these tests are about the ledger and the text, and the
+    // @Optional() injection falls back to the no-op, so nothing is downloaded
+    // or uploaded. src/telegram-media/** has its own specs.
   );
 }
 

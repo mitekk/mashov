@@ -81,6 +81,50 @@ describe('TelegramSender', () => {
     await expect(makeSender().send('chat-1', 'שלום')).rejects.toThrow(/blocked/);
   });
 
+  it('disables the link preview, so a link line cannot grow a card in the chat', async () => {
+    await makeSender().send('chat-1', 'שלום');
+
+    expect(post.mock.calls[0][1].disable_web_page_preview).toBe(true);
+  });
+
+  it('splits a message past the Bot API limit into sequential parts', async () => {
+    // An over-long message used to fail outright: deliver() threw, the claims
+    // were released, and the next hourly run built the same message and failed
+    // the same way forever.
+    const text = Array.from({ length: 900 }, (_, i) => `שורה מספר ${i}`).join('\n');
+    expect(text.length).toBeGreaterThan(4096);
+
+    await makeSender().send('chat-1', text);
+
+    expect(post.mock.calls.length).toBeGreaterThan(1);
+    for (const [, body] of post.mock.calls) {
+      expect(body.chat_id).toBe('chat-1');
+      expect(String(body.text).length).toBeLessThanOrEqual(4096);
+      expect(body.text.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('sends no parse_mode and no link preview on any part of a split message', async () => {
+    const text = Array.from({ length: 900 }, (_, i) => `להגיש עד 5.11 — *חשוב* ${i}`).join('\n');
+
+    await makeSender().send('chat-1', text);
+
+    expect(post.mock.calls.length).toBeGreaterThan(1);
+    for (const [, body] of post.mock.calls) {
+      expect(body.parse_mode).toBeUndefined();
+      expect(body.disable_web_page_preview).toBe(true);
+    }
+  });
+
+  it('stops at the part Telegram refused rather than sending the rest', async () => {
+    const text = Array.from({ length: 900 }, (_, i) => `שורה מספר ${i}`).join('\n');
+    post.mockResolvedValueOnce({ data: { ok: true } });
+    post.mockResolvedValueOnce({ data: { ok: false, description: 'chat not found' } });
+
+    await expect(makeSender().send('chat-1', text)).rejects.toThrow(/chat not found/);
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
   it('refuses to send when no bot token is configured', async () => {
     await expect(makeSender({ TELEGRAM_BOT_TOKEN: '' }).send('chat-1', 'שלום')).rejects.toThrow(
       /TELEGRAM_BOT_TOKEN/,

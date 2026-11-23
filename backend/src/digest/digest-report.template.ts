@@ -1,6 +1,7 @@
 import {
   DigestActivityFact,
   DigestBehaviorFact,
+  DigestBoardFact,
   DigestHomeworkFact,
   DigestLines,
   DigestPayload,
@@ -38,7 +39,27 @@ export function formatTimeOfDay(raw: string): string {
   return `${match[1].padStart(2, '0')}:${match[2]}`;
 }
 
-export function renderReport(payload: DigestPayload, lines: DigestLines): string {
+/** What the template needs that is neither a fact nor prose. */
+export interface RenderReportOptions {
+  /**
+   * Already validated by `resolvePublicBaseUrl`. Null or absent renders no
+   * link line at all, which is the point: a base of `undefined` would put
+   * "undefined/home" in a parent's chat.
+   */
+  publicBaseUrl?: string | null;
+  /**
+   * Files named in the text because they are NOT being uploaded -- too large,
+   * or past the per-message cap. Silence would make the report quietly less
+   * than the day it describes.
+   */
+  unsentFileNames?: string[];
+}
+
+export function renderReport(
+  payload: DigestPayload,
+  lines: DigestLines,
+  options: RenderReportOptions = {},
+): string {
   // Who and when first: this is what a parent scans for in a list of Telegram
   // chats, and it is the only place the child's name appears.
   const blocks: string[] = [
@@ -46,8 +67,22 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
     lines.headline.trim(),
   ];
 
-  if (payload.behavior.length > 0) {
-    blocks.push(section('התנהגות ונוכחות', lines.behaviorLine));
+  // Two sections from one list. `classification` is written by the sync tasks
+  // and has always been in the payload; until now nothing rendered it, so a
+  // note of praise and an unexcused absence both read "נרשם ...".
+  const attention = payload.behavior.filter((fact) => fact.classification !== 'positive');
+  const positive = payload.behavior.filter((fact) => fact.classification === 'positive');
+
+  if (attention.length > 0) {
+    blocks.push(
+      section('התנהגות ונוכחות', [lines.behaviorLine, unexcusedMarker(attention)]
+        .filter((part) => part.trim().length > 0)
+        .join('\n')),
+    );
+  }
+
+  if (positive.length > 0) {
+    blocks.push(section('חיזוק חיובי', lines.positiveLine));
   }
 
   if (payload.homeworkNew.length > 0) {
@@ -64,6 +99,10 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
     blocks.push(section('אישורים שממתינים לך', lines.activityLine));
   }
 
+  if (payload.board.length > 0) {
+    blocks.push(section('הודעות מלוח המודעות', lines.boardLine));
+  }
+
   if (payload.homeworkDueTomorrow.length > 0) {
     // The one fact the model is not trusted to carry, and now the *only* thing
     // marking this date as derived: the explanatory caveat that used to follow
@@ -76,6 +115,28 @@ export function renderReport(payload: DigestPayload, lines: DigestLines): string
     const label = estimate ? `צפי הגשה: ${formatSchoolDate(estimate)}` : 'צפי הגשה: מחר';
     blocks.push(section('צפי הגשה למחר', `${lines.dueTomorrowLine.trim()} (${label})`.trim()));
   }
+
+  // Last, and a block of its own.
+  //
+  // Identifier-free on purpose. A Telegram chat is a shared, forwardable
+  // artifact, and a studentGuid in someone else's hands outlives the message
+  // it arrived in -- so the link goes to the home page and the parent picks
+  // the child there, rather than carrying the child in the URL.
+  //
+  // At the end rather than under the header so the facts are what shows in the
+  // chat list preview. `disable_web_page_preview` is already set on every
+  // send, so this cannot grow a card.
+  const link = options.publicBaseUrl ? `${options.publicBaseUrl}/home` : null;
+
+  for (const fileName of options.unsentFileNames ?? []) {
+    blocks.push(
+      link
+        ? `קובץ גדול מדי לשליחה: ${fileName} — ניתן לפתוח באתר: ${link}`
+        : `קובץ גדול מדי לשליחה: ${fileName}`,
+    );
+  }
+
+  if (link) blocks.push(link);
 
   return blocks.filter((block) => block.length > 0).join('\n\n');
 }
@@ -108,7 +169,14 @@ function section(title: string, prose: string): string {
 export function deterministicLines(payload: DigestPayload): DigestLines {
   return {
     headline: 'עדכון יומי מבית הספר',
-    behaviorLine: payload.behavior.map(behaviorSentence).join(' '),
+    behaviorLine: payload.behavior
+      .filter((fact) => fact.classification !== 'positive')
+      .map(behaviorSentence)
+      .join(' '),
+    positiveLine: payload.behavior
+      .filter((fact) => fact.classification === 'positive')
+      .map(behaviorSentence)
+      .join(' '),
     homeworkLine:
       payload.homeworkNew.length === 0
         ? ''
@@ -118,11 +186,50 @@ export function deterministicLines(payload: DigestPayload): DigestLines {
         ? ''
         : `מה שצפוי להידרש מחר: ${payload.homeworkDueTomorrow.map(homeworkSentence).join('; ')}.`,
     releaseLine: payload.releases.map(releaseSentence).join(' '),
+    boardLine: payload.board.map((fact) => boardSentence(fact)).join(' '),
     activityLine:
       payload.activities.length === 0
         ? ''
         : `ממתינים לתשובתך: ${payload.activities.map(activitySentence).join('; ')}.`,
   };
+}
+
+/**
+ * Names the events the school does not count as excusing themselves.
+ *
+ * The template's, not the model's -- the same reasoning as the צפי label in
+ * the due-tomorrow section. Whether an absence was excused changes what a
+ * parent does next, so it must not depend on whether the prose happened to
+ * mention it.
+ *
+ * `justifiable` is the school's own policy for the event's code, read from
+ * BehaviorTypeReference by the sync tasks. It defaults to false when that
+ * school's achvas have not synced yet, so the marker can over-report on a
+ * fresh deployment -- which is the safe direction: it reports an absence as
+ * needing attention rather than silently excusing it.
+ */
+function unexcusedMarker(attention: DigestBehaviorFact[]): string {
+  const unexcused = attention.filter((fact) => fact.justifiable === false);
+  if (unexcused.length === 0) return '';
+
+  const named = unexcused
+    .map((fact) => [fact.achvaName, fact.subject].filter((part) => part && part.length > 0).join(' ב'))
+    .join('; ');
+  return `לא מוצדק: ${named}.`;
+}
+
+/**
+ * The notice's own words.
+ *
+ * Not a count and not a summary: the report has no item bullets, so this line
+ * is the only place the notice appears. The expiry date is not printed --
+ * `expirationDate` is when the school takes the notice down, which is rarely
+ * the date the notice is about, and printing it as a deadline would be a
+ * promise nobody made.
+ */
+function boardSentence(fact: DigestBoardFact): string {
+  const text = fact.text.trim().replace(/\s*\n\s*/g, ' ');
+  return text.endsWith('.') ? text : `${text}.`;
 }
 
 function behaviorSentence(fact: DigestBehaviorFact): string {

@@ -12,6 +12,8 @@ import { ConnectionModule } from "./connection/connection.module";
 import { SchoolLinksModule } from "./school-links/school-links.module";
 import { SyncModule } from "./sync/sync.module";
 import { DigestModule } from "./digest/digest.module";
+import { InboxNotifyModule } from "./inbox-notify/inbox-notify.module";
+import { TelegramMediaModule } from "./telegram-media/telegram-media.module";
 import { TelegramModule } from "./telegram/telegram.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { FeedModule } from "./feed/feed.module";
@@ -34,7 +36,13 @@ import { AppSessionGuard } from "./app-session/app-session.guard";
     ConnectionModule,
     SchoolLinksModule,
     SyncModule,
+    // Global, and listed before its consumers for readability only -- the
+    // MEDIA_DELIVERY token reaches DigestModule and InboxNotifyModule without
+    // an import edge, which is what keeps MashovSessionModule out of their
+    // graphs. See src/telegram-media/telegram-media.module.ts.
+    TelegramMediaModule,
     DigestModule,
+    InboxNotifyModule,
     TelegramModule,
     DashboardModule,
     FeedModule,

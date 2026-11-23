@@ -4,6 +4,7 @@ import { SchoolYearModule } from '../common/school-year/school-year.module';
 import { DigestService } from './digest.service';
 import { DigestCheckerService } from './digest-checker.service';
 import { DigestCollectorService } from './digest-collector.service';
+import { DigestAttachmentResolver } from './digest-attachment.resolver';
 import { DigestDeadlineService } from './digest-deadline.service';
 import { DigestDismissalService } from './digest-dismissal.service';
 import { DigestSummarizerService } from './digest-summarizer.service';
@@ -36,6 +37,7 @@ import { DigestController } from './digest.controller';
     DigestService,
     DigestCheckerService,
     DigestCollectorService,
+    DigestAttachmentResolver,
     DigestDeadlineService,
     DigestDismissalService,
     DigestSummarizerService,

@@ -8,6 +8,8 @@ import type { DigestSummarizerService } from './digest-summarizer.service';
 import type { DigestRecipientService } from './digest-recipient.service';
 import type { DigestSender } from './senders/digest-sender.interface';
 import type { DigestDismissalService, DismissalGate } from './digest-dismissal.service';
+import type { DigestAttachmentResolver } from './digest-attachment.resolver';
+import type { MediaDelivery } from '../telegram-media/media-delivery.interface';
 import type { DigestCandidate, DigestPayload } from './digest.types';
 
 const NOW = new Date('2026-11-17T13:00:00Z');
@@ -41,7 +43,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
       {
         id: 'beh-1',
         achvaName: 'איחור',
-        classification: 'negative',
+        classification: 'attention',
         justifiable: true,
         subject: 'מתמטיקה',
         remark: null,
@@ -53,6 +55,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     homeworkDueTomorrow: [],
     releases: [],
     activities: [],
+    board: [],
     ...overrides,
   };
 }
@@ -78,6 +81,7 @@ interface HarnessOptions {
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
   dueTomorrowLine?: string;
   sendImpl?: jest.Mock;
+  publicBaseUrl?: string;
   checkImpl?: jest.Mock;
   dryRunEnv?: string;
   /**
@@ -86,6 +90,8 @@ interface HarnessOptions {
    * as it did before the gate existed.
    */
   gate?: DismissalGate;
+  attachments?: { itemType: 'homework' | 'behavior'; itemId: string; fileId: string; fileName: string }[];
+  media?: Partial<MediaDelivery>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -115,6 +121,8 @@ function makeHarness(options: HarnessOptions = {}) {
   const reportedFindMany = jest
     .fn()
     .mockImplementation(() => ownedHashes.map((contentHash) => ({ contentHash })));
+
+  const recipientUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
 
   const prisma = {
     syncRun: {
@@ -154,6 +162,7 @@ function makeHarness(options: HarnessOptions = {}) {
       ),
     },
     digestRecipient: {
+      updateMany: recipientUpdateMany,
       // Honours the where-clause, as Postgres would: the service relies on
       // `where: { enabled: true, userId }` rather than filtering again in
       // code. The userId arm matters most -- a mock that answered every
@@ -176,6 +185,7 @@ function makeHarness(options: HarnessOptions = {}) {
     get: jest.fn((key: string) => ({
       DIGEST_TIMEZONE: 'Asia/Jerusalem',
       DIGEST_DRY_RUN: options.dryRunEnv ?? 'false',
+      PUBLIC_BASE_URL: options.publicBaseUrl,
     })[key]),
   } as unknown as ConfigService;
 
@@ -227,6 +237,27 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const dismissal = { gateFor } as unknown as DigestDismissalService;
 
+  const resolveAttachments = jest.fn().mockResolvedValue(
+    (options.attachments ?? []).map((row) => ({ ...row, studentGuid: 'stu-1' })),
+  );
+  const attachments = { resolve: resolveAttachments } as unknown as DigestAttachmentResolver;
+
+  const mediaFetch = jest.fn().mockImplementation((_userId, refs) => ({
+    items: refs.map((ref: unknown) => ({
+      ref,
+      file: { fileName: 'f', buffer: Buffer.alloc(4), contentType: null },
+    })),
+    remainingBytes: 1000,
+  }));
+  const mediaSend = jest.fn().mockResolvedValue({ sent: 1, notes: [] });
+  const media = {
+    enabled: true,
+    budgetBytes: () => 50 * 1024 * 1024,
+    fetch: mediaFetch,
+    send: mediaSend,
+    ...options.media,
+  } as unknown as MediaDelivery;
+
   const service = new DigestService(
     prisma,
     config,
@@ -238,6 +269,8 @@ function makeHarness(options: HarnessOptions = {}) {
     dismissal,
     telegram,
     logSender,
+    attachments,
+    media,
   );
 
   return {
@@ -255,6 +288,10 @@ function makeHarness(options: HarnessOptions = {}) {
     deliveryCreate,
     reportedFindMany,
     gateFor,
+    recipientUpdateMany,
+    resolveAttachments,
+    mediaFetch,
+    mediaSend,
   };
 }
 
@@ -293,6 +330,112 @@ describe('DigestService.runAll', () => {
     expect(confirmCalls(harness.updateMany)[0][0].where.contentHash.in).toEqual(['hash-beh']);
   });
 
+  it('puts the configured site link in the message it sends', async () => {
+    const harness = makeHarness({ publicBaseUrl: 'https://mashov.mitya.dev' });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).toContain('https://mashov.mitya.dev/home');
+  });
+
+  it('sends no link when PUBLIC_BASE_URL is unset', async () => {
+    const harness = makeHarness();
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).not.toContain('undefined');
+    expect(harness.send.mock.calls[0][1]).not.toMatch(/https?:\/\//);
+  });
+
+  it('retires a chat Telegram says will never accept another message', async () => {
+    // A blocked bot or a deleted chat is not a transient failure. Releasing the
+    // claims would re-report the same day's items on every run forever, each
+    // with a fresh model call, to a chat that can never receive them.
+    const harness = makeHarness({
+      sendImpl: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('Telegram send failed: Forbidden: bot was blocked by the user'),
+        ),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.recipientUpdateMany).toHaveBeenCalledTimes(1);
+    expect(harness.recipientUpdateMany.mock.calls[0][0]).toMatchObject({
+      where: { userId: USER_A, studentGuid: 'stu-1', channel: 'telegram', address: '12345' },
+      data: { enabled: false },
+    });
+    // Confirmed rather than released: never retried.
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+    expect(harness.deleteMany).not.toHaveBeenCalled();
+    expect(results[0].status).toBe('failed');
+    expect(results[0].error).toContain('blocked');
+  });
+
+  it('releases the claims for a transient failure so the next run retries', async () => {
+    const harness = makeHarness({
+      sendImpl: jest.fn().mockRejectedValue(new Error('Telegram send failed: HTTP 502')),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.recipientUpdateMany).not.toHaveBeenCalled();
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+    expect(results[0].status).toBe('failed');
+  });
+
+  it('still confirms for the chats that did receive it when one is retired', async () => {
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: 'dead', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: 'live', enabled: true, userId: USER_A },
+      ],
+      sendImpl: jest.fn().mockImplementation((address: string) => {
+        if (address === 'dead') {
+          throw new Error('Telegram send failed: Bad Request: chat not found');
+        }
+        return Promise.resolve();
+      }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0]).toMatchObject({ status: 'sent', recipientCount: 1 });
+    expect(harness.recipientUpdateMany.mock.calls[0][0].where.address).toBe('dead');
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+  });
+
+  it('retries when one chat was retired and another failed transiently', async () => {
+    // The guard used to be `retired.length === 0`, which suppressed the throw
+    // as soon as ANY chat refused permanently -- so the live chat's claims were
+    // confirmed and the day's news was buried for it permanently, since
+    // nothing ever re-reports an item already in the ledger.
+    const harness = makeHarness({
+      recipients: [
+        { channel: 'telegram', address: 'blocked', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: 'flaky', enabled: true, userId: USER_A },
+      ],
+      sendImpl: jest.fn().mockImplementation((address: string) => {
+        throw new Error(
+          address === 'blocked'
+            ? 'Telegram send failed: Forbidden: bot was blocked by the user'
+            : 'Telegram send failed: HTTP 502',
+        );
+      }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('failed');
+    // The blocked chat is still retired -- that much was right.
+    expect(harness.recipientUpdateMany.mock.calls[0][0].where.address).toBe('blocked');
+    // But nothing is confirmed, so the next hourly run tries the live chat.
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+  });
+
   it('records a quiet day without calling the model or sending anything', async () => {
     const harness = makeHarness({ candidates: [] });
 
@@ -318,8 +461,10 @@ describe('DigestService.runAll', () => {
   });
 
   it('rolls the claim back when the send fails, so the next hour retries', async () => {
+    // A transient failure on purpose. A permanent one (a blocked bot, a
+    // deleted chat) confirms instead of releasing -- see the retirement tests.
     const harness = makeHarness({
-      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+      sendImpl: jest.fn().mockRejectedValue(new Error('HTTP 502')),
     });
 
     const results = await harness.service.runAll({ now: NOW });
@@ -682,7 +827,7 @@ describe('DigestService.runAll', () => {
         { channel: 'telegram', address: '111', enabled: true },
         { channel: 'telegram', address: '222', enabled: true },
       ],
-      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+      sendImpl: jest.fn().mockRejectedValue(new Error('HTTP 502')),
     });
 
     const results = await harness.service.runAll({ now: NOW });
@@ -949,7 +1094,7 @@ describe('DigestService.runAll', () => {
 
   it('claims, confirms and releases under its own userId', async () => {
     const harness = makeHarness({
-      sendImpl: jest.fn().mockRejectedValue(new Error('chat not found')),
+      sendImpl: jest.fn().mockRejectedValue(new Error('HTTP 502')),
     });
 
     await harness.service.runAll({ now: NOW });
@@ -1392,6 +1537,138 @@ describe('DigestService.runAll', () => {
     expect(harness.deliveryCreate.mock.calls[0][0].data.usedLlm).toBe(false);
   });
 });
+describe('DigestService media', () => {
+  const FILE = {
+    itemType: 'homework' as const,
+    itemId: 'hw-1',
+    fileId: 'f1',
+    fileName: 'דף עבודה.pdf',
+  };
+
+  it('sends the report text first and the files after it', async () => {
+    // The text is the only thing gating ledger confirmation, so it goes out
+    // before anything that can fail.
+    const harness = makeHarness({ attachments: [FILE] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    expect(harness.mediaSend).toHaveBeenCalledTimes(1);
+    expect(harness.send.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.mediaSend.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('resolves attachments only for the items it actually claimed', async () => {
+    const harness = makeHarness({ attachments: [FILE] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.resolveAttachments).toHaveBeenCalledWith('stu-1', [BEHAVIOR_CANDIDATE]);
+  });
+
+  it('downloads as the subscribing parent, with a caption naming the item', async () => {
+    const harness = makeHarness({ attachments: [FILE] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaFetch).toHaveBeenCalledWith(
+      USER_A,
+      [
+        {
+          kind: 'homework',
+          ownerId: 'stu-1',
+          itemId: 'hw-1',
+          fileId: 'f1',
+          fileName: 'דף עבודה.pdf',
+          caption: 'דף עבודה.pdf',
+        },
+      ],
+      expect.any(Number),
+    );
+  });
+
+  it('names a file it could not send in the report text', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      media: {
+        fetch: jest.fn().mockResolvedValue({
+          items: [{ ref: { fileName: 'דף עבודה.pdf' }, tooLarge: true, note: 'too large' }],
+          remainingBytes: 0,
+        }),
+      },
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1]).toContain('קובץ גדול מדי לשליחה: דף עבודה.pdf');
+  });
+
+  it('records a media failure as a note on the delivery row, not as a failed run', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      media: { send: jest.fn().mockResolvedValue({ sent: 0, notes: ['דף עבודה.pdf: HTTP 500'] }) },
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+    expect(harness.deliveryCreate.mock.calls[0][0].data.errorMessage).toContain('HTTP 500');
+  });
+
+  it('sends the files to every chat that received the text', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      recipients: [
+        { channel: 'telegram', address: '111', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: '222', enabled: true, userId: USER_A },
+      ],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaSend.mock.calls.map((call) => call[0]).sort()).toEqual(['111', '222']);
+  });
+
+  it('sends no files to a chat whose text failed', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      recipients: [
+        { channel: 'telegram', address: 'dead', enabled: true, userId: USER_A },
+        { channel: 'telegram', address: 'live', enabled: true, userId: USER_A },
+      ],
+      sendImpl: jest.fn().mockImplementation((address: string) => {
+        if (address === 'dead') throw new Error('Telegram send failed: HTTP 502');
+        return Promise.resolve();
+      }),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaSend.mock.calls.map((call) => call[0])).toEqual(['live']);
+  });
+
+  it('touches no attachment on a dry run', async () => {
+    const harness = makeHarness({ attachments: [FILE], dryRunEnv: 'true' });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaSend).not.toHaveBeenCalled();
+  });
+
+  it('resolves nothing when the media binding is disabled', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      media: { enabled: false, fetch: jest.fn(), send: jest.fn() },
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.resolveAttachments).not.toHaveBeenCalled();
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('DigestService.runAll dismissal gate', () => {
   /** NOW is 13:00Z, which is 15:00 in Jerusalem -- 900 minutes past midnight. */
@@ -1440,7 +1717,7 @@ describe('DigestService.runAll dismissal gate', () => {
   });
 
   it('writes no digest_delivery row for a held tick', async () => {
-    // Deliberate (ADR-0038): a row per child per held hour would add ~3 noise
+    // Deliberate (ADR-0040): a row per child per held hour would add ~3 noise
     // rows a day and drown the skipped_empty / skipped_stale signal that
     // GET /digest/deliveries exists to make readable. The hold is a scheduling
     // decision, not an outcome.

@@ -29,7 +29,11 @@ import { DigestDeadlineService } from '../../backend/src/digest/digest-deadline.
 import { DigestSummarizerService } from '../../backend/src/digest/digest-summarizer.service';
 import { DigestRecipientService } from '../../backend/src/digest/digest-recipient.service';
 import { DigestRetentionService } from '../../backend/src/digest/digest-retention.service';
-import { jerusalemDayBounds, mashovDayFromJsDate } from '../../backend/src/digest/digest-deadline.service';
+import { DigestAttachmentResolver } from '../../backend/src/digest/digest-attachment.resolver';
+import {
+  jerusalemDayBounds,
+  mashovDayFromJsDate,
+} from '../../backend/src/digest/digest-deadline.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { ConfigService } from '../../backend/node_modules/@nestjs/config';
 import type { SchoolYearService } from '../../backend/src/common/school-year/school-year.service';
@@ -91,10 +95,14 @@ function makeService(prisma: PrismaClient, sender: DigestSender) {
     new DigestRecipientService(prismaService),
     // The real service against the real database: these fixtures seed no
     // timetable rows, so the gate opens for every child and the suite reads
-    // exactly as it did before the gate existed (ADR-0038).
+    // exactly as it did before the gate existed (ADR-0040).
     new DigestDismissalService(prismaService, config),
     sender,
     sender,
+    new DigestAttachmentResolver(prismaService),
+    // No media binding: these tests are about the ledger and the text, and the
+    // @Optional() injection falls back to the no-op, so nothing is downloaded
+    // or uploaded. src/telegram-media/** has its own specs.
   );
 }
 

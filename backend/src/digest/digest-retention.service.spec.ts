@@ -11,11 +11,13 @@ function makeHarness() {
   const reportedDelete = jest.fn().mockResolvedValue({ count: 12 });
   const deliveryDelete = jest.fn().mockResolvedValue({ count: 5 });
   const linkCodeDelete = jest.fn().mockResolvedValue({ count: 3 });
+  const mailNotifiedDelete = jest.fn().mockResolvedValue({ count: 7 });
 
   const prisma = {
     digestReportedItem: { deleteMany: reportedDelete },
     digestDelivery: { deleteMany: deliveryDelete },
     telegramLinkCode: { deleteMany: linkCodeDelete },
+    mailNotifiedMessage: { deleteMany: mailNotifiedDelete },
   } as unknown as PrismaService;
 
   return {
@@ -23,6 +25,7 @@ function makeHarness() {
     reportedDelete,
     deliveryDelete,
     linkCodeDelete,
+    mailNotifiedDelete,
     service: new DigestRetentionService(prisma),
   };
 }
@@ -66,7 +69,35 @@ describe('DigestRetentionService.prune', () => {
 
     const result = await harness.service.prune(NOW);
 
-    expect(result).toEqual({ reportedItems: 12, deliveries: 5, linkCodes: 3 });
+    expect(result).toEqual({
+      reportedItems: 12,
+      deliveries: 5,
+      linkCodes: 3,
+      mailNotifications: 7,
+    });
+  });
+
+  it('deletes mail notification ledger rows older than 90 days', async () => {
+    // Its own dedup ledger, so its own prune arm -- without one the table only
+    // ever grows, at up to one row per message per linked chat.
+    const harness = makeHarness();
+
+    await harness.service.prune(NOW);
+
+    expect(harness.mailNotifiedDelete).toHaveBeenCalledWith({
+      where: { notifiedFor: { lt: CUTOFF } },
+    });
+  });
+
+  it('keeps pruning the mail ledger when the link-code delete fails', async () => {
+    const harness = makeHarness();
+    harness.linkCodeDelete.mockRejectedValue(new Error('deadlock detected'));
+
+    const result = await harness.service.prune(NOW);
+
+    expect(harness.mailNotifiedDelete).toHaveBeenCalledTimes(1);
+    expect(result.mailNotifications).toBe(7);
+    expect(result.linkCodes).toBe(0);
   });
 
   it('keeps pruning deliveries when the reported-item delete fails', async () => {
@@ -78,7 +109,7 @@ describe('DigestRetentionService.prune', () => {
     const result = await harness.service.prune(NOW);
 
     expect(harness.deliveryDelete).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ reportedItems: 0, deliveries: 5, linkCodes: 3 });
+    expect(result).toEqual({ reportedItems: 0, deliveries: 5, linkCodes: 3, mailNotifications: 7 });
   });
 
   it('keeps pruning link codes when the delivery delete fails', async () => {
@@ -88,7 +119,7 @@ describe('DigestRetentionService.prune', () => {
     const result = await harness.service.prune(NOW);
 
     expect(harness.linkCodeDelete).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ reportedItems: 12, deliveries: 0, linkCodes: 3 });
+    expect(result).toEqual({ reportedItems: 12, deliveries: 0, linkCodes: 3, mailNotifications: 7 });
   });
 
   it('cuts off on a date boundary, not a timestamp', async () => {

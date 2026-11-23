@@ -17,6 +17,13 @@ import {
 import { canSeeStudent, visibleStudentWhere } from '../common/student-links';
 import { unreadChildActivityCounts } from '../common/child-activity-counts';
 import { buildStudentSchoolMap } from '../common/student-school-map';
+import {
+  AttachmentMeta,
+  extractBehaviorFiles,
+  extractHomeworkFiles,
+  parseAttachmentMeta,
+} from './attachment-parser';
+import { DownloadOptions, downloadTimeoutConfig } from './download-options';
 import { bellScheduleForConnection } from '../common/bells/bells.service';
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
@@ -34,13 +41,6 @@ interface DownloadedFile {
   contentType: string | null;
   contentDisposition: string | null;
   fileName: string | null;
-}
-
-interface AttachmentMeta {
-  fileId: string;
-  fileName: string;
-  url?: string;
-  lessonId?: number;
 }
 
 type ItemStatusFilter = 'new' | 'archived' | 'all';
@@ -410,6 +410,7 @@ export class ChildrenService {
     homeworkId: string,
     fileId: string,
     userId?: string,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     await this.requireStudent(studentGuid, userId);
 
@@ -420,9 +421,7 @@ export class ChildrenService {
       throw new NotFoundException(`Homework not found: ${homeworkId}`);
     }
 
-    const file = this.asArray(homework.files)
-      .map((entry) => this.normalizeAttachmentMeta(entry))
-      .find((entry): entry is AttachmentMeta => Boolean(entry && entry.fileId === fileId));
+    const file = extractHomeworkFiles(homework.files).find((entry) => entry.fileId === fileId);
     if (!file) {
       throw new NotFoundException(`Homework attachment not found: ${fileId}`);
     }
@@ -439,6 +438,7 @@ export class ChildrenService {
       `https://web.mashov.info/students/main/students/${studentGuid}/homework`,
       file.fileName,
       await this.scope.targetForStudent(studentGuid, userId),
+      options,
     );
   }
 
@@ -447,6 +447,7 @@ export class ChildrenService {
     behaviorId: string,
     fileId: string,
     userId?: string,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     await this.requireStudent(studentGuid, userId);
 
@@ -476,6 +477,7 @@ export class ChildrenService {
       `https://web.mashov.info/students/main/students/${studentGuid}/behave`,
       file.fileName,
       await this.scope.targetForStudent(studentGuid, userId),
+      options,
     );
   }
 
@@ -1038,6 +1040,7 @@ export class ChildrenService {
     referer: string,
     fallbackFileName: string,
     target: ConnectionTarget,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     const uniqueCandidates = Array.from(new Set(
       candidates
@@ -1052,6 +1055,7 @@ export class ChildrenService {
           referer,
           fallbackFileName,
           target,
+          options,
         );
       } catch {
         // Try next candidate URL.
@@ -1066,6 +1070,7 @@ export class ChildrenService {
     referer: string,
     fallbackFileName: string,
     target: ConnectionTarget,
+    options?: DownloadOptions,
   ): Promise<DownloadedFile> {
     const response = await this.mashovClient.getResponseForTarget<ArrayBuffer>(
       pathOrUrl,
@@ -1075,6 +1080,10 @@ export class ChildrenService {
         headers: {
           Referer: referer,
         },
+        // A fresh AbortSignal per candidate URL, not per download: a signal
+        // that already fired on the first candidate would abort the retry
+        // before it left the process.
+        ...downloadTimeoutConfig(options),
       },
     );
 
@@ -1090,78 +1099,20 @@ export class ChildrenService {
     };
   }
 
+  /**
+   * Delegates to the shared parser. The key lists moved out because the digest
+   * now needs the same reading to send a file to Telegram, and a second copy
+   * would drift on the next field Mashov renames. See attachment-parser.ts.
+   */
   private extractBehaviorFiles(rawPayload: unknown, fallbackLessonId: number): AttachmentMeta[] {
-    if (!rawPayload || typeof rawPayload !== 'object') return [];
-
-    const payload = rawPayload as Record<string, unknown>;
-    const sources: unknown[] = [];
-    if (Array.isArray(payload.files)) sources.push(...payload.files);
-    if (Array.isArray(payload.attachments)) sources.push(...payload.attachments);
-
-    return sources
-      .map((entry) => this.normalizeAttachmentMeta(entry, fallbackLessonId))
-      .filter((entry): entry is AttachmentMeta => Boolean(entry));
+    return extractBehaviorFiles(rawPayload, fallbackLessonId);
   }
 
   private normalizeAttachmentMeta(
     value: unknown,
     fallbackLessonId?: number,
   ): AttachmentMeta | null {
-    if (!value || typeof value !== 'object') return null;
-
-    const record = value as Record<string, unknown>;
-    const fileId = this.pickFirstString(record, [
-      'fileId',
-      'id',
-      'guid',
-      'attachmentId',
-    ]);
-    if (!fileId) return null;
-
-    const fileName = this.pickFirstString(record, [
-      'fileName',
-      'name',
-      'title',
-      'originalFileName',
-    ]) ?? fileId;
-    const url = this.pickFirstString(record, [
-      'url',
-      'link',
-      'downloadUrl',
-      'href',
-    ]);
-    const lessonId = this.pickFirstNumber(record, ['lessonId']) ?? fallbackLessonId;
-
-    return {
-      fileId,
-      fileName,
-      ...(url ? { url } : {}),
-      ...(typeof lessonId === 'number' ? { lessonId } : {}),
-    };
-  }
-
-  private pickFirstString(record: Record<string, unknown>, keys: string[]): string | null {
-    for (const key of keys) {
-      const value = record[key];
-      if (typeof value === 'string' && value.trim().length > 0) {
-        return value.trim();
-      }
-    }
-    return null;
-  }
-
-  private pickFirstNumber(record: Record<string, unknown>, keys: string[]): number | null {
-    for (const key of keys) {
-      const value = record[key];
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return value;
-      }
-      if (typeof value === 'string' && value.trim().length > 0) {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) return parsed;
-      }
-    }
-    return null;
+    return parseAttachmentMeta(value, fallbackLessonId);
   }
 
   private normalizeUpstreamPath(pathOrUrl: string | null | undefined): string | null {

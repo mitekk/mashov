@@ -89,11 +89,66 @@ services:
       DIGEST_ACTIVITY_WINDOW_DAYS: ${DIGEST_ACTIVITY_WINDOW_DAYS:-7}
       # How long after a child's last lesson ends the register has plausibly
       # been filled in. `0` gates on the bell itself; above 180 is clamped,
-      # because minutes read as milliseconds would stop every digest. ADR-0038.
+      # because minutes read as milliseconds would stop every digest. ADR-0040.
       DIGEST_POST_DISMISSAL_GRACE_MINUTES: ${DIGEST_POST_DISMISSAL_GRACE_MINUTES:-30}
+      # Behaviour event codes the digest never reports. 18 is נוכחות, a
+      # presence row Mashov writes per lesson per day, which tells a parent
+      # nothing. `-` rather than `:-` on purpose: `:-` substitutes the default
+      # for an EMPTY value too, which would make "mute nothing" unreachable
+      # from .env.
+      DIGEST_MUTED_BEHAVIOR_CODES: ${DIGEST_MUTED_BEHAVIOR_CODES-18}
+      # How recently a message-board notice must have been seen for the first
+      # time to count as news. Measured from MessageBoardItem.firstSeenAt:
+      # Mashov sends no creation date and updatedAt churns on every 06:00
+      # upsert, so neither can mean "new".
+      DIGEST_BOARD_LOOKBACK_DAYS: ${DIGEST_BOARD_LOOKBACK_DAYS:-2}
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}
+      # The origin Telegram messages link back to. Must be the same origin the
+      # frontend is served from, because the links are deep links into it
+      # (e.g. https://mashov.mitya.dev). Deliberately NOT named NEXT_PUBLIC_*:
+      # that prefix means "inlined into the browser bundle" in Next, and this
+      # is read by the backend only. Unset -- the default -- means no link line
+      # is rendered at all, which is the right failure: a base of `undefined`
+      # would put "undefined/inbox/<id>" in a parent's chat.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      # Household mail -> Telegram, as its own message. Off by default and
+      # silent even when on, exactly like the digest. The cron fires every ten
+      # minutes; the quiet window HOLDS mail over rather than dropping it, so
+      # a letter that arrives at 02:00 goes out at 07:00. See ADR-0038.
+      INBOX_NOTIFY_ENABLED: ${INBOX_NOTIFY_ENABLED:-false}
+      INBOX_NOTIFY_DRY_RUN: ${INBOX_NOTIFY_DRY_RUN:-true}
+      INBOX_NOTIFY_QUIET_FROM: ${INBOX_NOTIFY_QUIET_FROM:-21:00}
+      INBOX_NOTIFY_QUIET_TO: ${INBOX_NOTIFY_QUIET_TO:-07:00}
+      # Also the carry-over window: shorter than the quiet hours are long would
+      # lose the mail it is meant to hold.
+      INBOX_NOTIFY_LOOKBACK_HOURS: ${INBOX_NOTIFY_LOOKBACK_HOURS:-24}
+      # Above this, one summary message goes out instead of a burst.
+      INBOX_NOTIFY_MAX_PER_RUN: ${INBOX_NOTIFY_MAX_PER_RUN:-5}
+      INBOX_NOTIFY_BODY_CHARS: ${INBOX_NOTIFY_BODY_CHARS:-700}
+      # Mashov attachments forwarded into Telegram. Bounds, not switches: the
+      # bytes are buffered in memory between the download and the upload, and
+      # this cron is the one thing here that can move the process's memory
+      # profile. Telegram's own ceilings are 50 MB for a document and 10 MB for
+      # a photo upload; these sit well inside them. See ADR-0039.
+      TELEGRAM_MEDIA_MAX_BYTES: ${TELEGRAM_MEDIA_MAX_BYTES:-20971520}
+      # Above this a jpeg or png goes as a document instead of a photo:
+      # sendPhoto re-encodes and downscales, so a scanned slip becomes
+      # unreadable.
+      TELEGRAM_PHOTO_MAX_BYTES: ${TELEGRAM_PHOTO_MAX_BYTES:-5242880}
+      # Per-download override of MASHOV_TIMEOUT_MS. 10s is right for a JSON
+      # read and wrong for a multi-megabyte PDF over the residential hop.
+      MEDIA_DOWNLOAD_TIMEOUT_MS: ${MEDIA_DOWNLOAD_TIMEOUT_MS:-45000}
+      # Defaults to TRUE, unlike the digest's own switches: the feature was
+      # asked for, and DIGEST_ENABLED / INBOX_NOTIFY_ENABLED still gate
+      # everything that calls it. Only an explicit `false` turns it off.
+      TELEGRAM_MEDIA_ENABLED: ${TELEGRAM_MEDIA_ENABLED:-true}
+      MEDIA_MAX_FILES_PER_MESSAGE: ${MEDIA_MAX_FILES_PER_MESSAGE:-3}
+      MEDIA_TOTAL_BYTES_PER_RUN: ${MEDIA_TOTAL_BYTES_PER_RUN:-52428800}
+      # Telegram allows roughly one message per second per chat, tighter in
+      # groups, so the uploads are paced rather than burst.
+      MEDIA_SEND_DELAY_MS: ${MEDIA_SEND_DELAY_MS:-1100}
       # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
       # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
       # it starts, and the mint route answers 503.
@@ -221,7 +276,17 @@ services:
       MASHOV_PASSWORD: test
     volumes:
       - ./backend/coverage:/app/coverage
-    command: ["npm", "run", "test:coverage"]
+    # `--maxWorkers=2` is load-bearing, not tuning. Jest defaults to one worker
+    # per core, each a full Node process, and the container has no memory limit
+    # of its own -- so on a machine with many cores the OS OOM killer takes
+    # workers out mid-suite. That surfaces as
+    # "a jest worker process was terminated by another process: signal=SIGKILL"
+    # against suites that are individually fine, and the exit code is non-zero
+    # with ZERO failing tests, which reads like a broken test and is not one.
+    # Reached once the suite count passed ~85. Bounded here rather than in the
+    # package.json script so a developer's own `jest` run keeps full
+    # parallelism.
+    command: ["npm", "run", "test:coverage", "--", "--maxWorkers=2"]
     logging:
       driver: "json-file"
       options:

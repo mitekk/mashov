@@ -1014,7 +1014,7 @@ itself defaults to `true`.
 
 `skipped_before_dismissal` is in the union for completeness but cannot come back from *this*
 endpoint: a manual run bypasses the per-child dismissal gate, because a parent pressing the
-button is asking for the digest now (ADR-0038). It is what the cron's own early ticks report
+button is asking for the digest now (ADR-0040). It is what the cron's own early ticks report
 for a child who is still in class.
 
 ### GET /api/v1/digest/deliveries
@@ -1054,7 +1054,7 @@ further, within the caller's own rows.
 `skipped_before_dismissal` never appears here. The cron's run result carries it, but a held
 tick deliberately writes no delivery row: the hold is a scheduling decision rather than an
 outcome, and a row per child per held hour would add a few noise rows a day and drown the
-`skipped_empty` / `skipped_stale` signal this history exists to make readable (ADR-0038).
+`skipped_empty` / `skipped_stale` signal this history exists to make readable (ADR-0040).
 A held hour also claims nothing, so the next tick reports everything it would have.
 
 `skipped_unowned` is the third: the run was refused at send time because that account no longer

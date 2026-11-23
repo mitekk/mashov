@@ -1893,3 +1893,75 @@ describe('MailService household scoping', () => {
     });
   });
 });
+
+describe('MailService.downloadMessageAttachment timeout override', () => {
+  function makeService(getResponseForTarget: jest.Mock) {
+    return new MailService(
+      makeMockPrisma({
+        conversationFindUnique: jest
+          .fn()
+          .mockResolvedValue(makeConversation({ householdConnectionId: 'conn-1' })),
+        householdFindMany: jest.fn().mockResolvedValue([{ id: 'conn-1' }]),
+        messageFindMany: jest.fn().mockResolvedValue([
+          {
+            messageId: 'msg-1',
+            conversationId: 'conv-upstream-1',
+            senderId: 's',
+            senderName: 'School',
+            subject: 'Trip',
+            bodyHtmlSanitized: '',
+            bodyTextPreview: '',
+            sendTime: NOW,
+            isNew: true,
+            recipients: [],
+            files: [{ fileId: 'file-1', fileName: 'letter.pdf' }],
+            preventReply: false,
+            sentViaEmail: false,
+            sentViaSms: false,
+            householdConnectionId: 'conn-1',
+          },
+        ]),
+      }),
+      makeMockMashovClient({ getResponseForTarget }),
+      makeMockScope(),
+    );
+  }
+
+  it('sets both the per-request timeout and an AbortSignal when given one', async () => {
+    // createMashovAxios bounds every request with `timeout: 10s` AND
+    // `signal ??= AbortSignal.timeout(10s)` with no retry-on-abort. A
+    // multi-megabyte PDF over the residential hop will exceed that, and
+    // overriding only `timeout` leaves the signal aborting at ten seconds.
+    const getResponseForTarget = jest
+      .fn()
+      .mockResolvedValue({ data: new ArrayBuffer(8), headers: { 'content-type': 'application/pdf' } });
+
+    await makeService(getResponseForTarget).downloadMessageAttachment(
+      'conv-upstream-1',
+      'msg-1',
+      'file-1',
+      undefined,
+      { timeoutMs: 45_000 },
+    );
+
+    const config = getResponseForTarget.mock.calls[0][2];
+    expect(config.timeout).toBe(45_000);
+    expect(config.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('leaves the instance bound alone when no override is given', async () => {
+    const getResponseForTarget = jest
+      .fn()
+      .mockResolvedValue({ data: new ArrayBuffer(8), headers: {} });
+
+    await makeService(getResponseForTarget).downloadMessageAttachment(
+      'conv-upstream-1',
+      'msg-1',
+      'file-1',
+    );
+
+    const config = getResponseForTarget.mock.calls[0][2];
+    expect(config.timeout).toBeUndefined();
+    expect(config.signal).toBeUndefined();
+  });
+});

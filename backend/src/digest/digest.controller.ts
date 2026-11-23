@@ -165,7 +165,7 @@ export class DigestController {
         userId: requireUserId(req),
         // A parent pressing the button is asking for the digest *now*. The
         // per-child dismissal gate exists to stop unattended noise from the
-        // hourly cron, not to refuse an explicit request (ADR-0038).
+        // hourly cron, not to refuse an explicit request (ADR-0040).
         ignoreDismissalGate: true,
       }),
     };

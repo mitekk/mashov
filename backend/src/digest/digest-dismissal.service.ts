@@ -70,7 +70,7 @@ const OPEN: DismissalGate = {
  * The digest used to fire on a fixed 13:00-19:00 clock, which meant a child
  * still in class at 13:00 produced a message, then another at 14:00, each one
  * a partial picture of a day the teachers had not finished recording
- * (ADR-0026, ADR-0038). This joins the child's own timetable to their school's
+ * (ADR-0026, ADR-0040). This joins the child's own timetable to their school's
  * bell schedule to answer the question the fixed window could only guess at.
  *
  * Two deliberate properties:

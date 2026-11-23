@@ -19,7 +19,7 @@ import { DigestRetentionService } from '../digest-retention.service';
  * shortest school day -- hence 11:00 rather than 13:00, which gets a
  * first-grader dismissed at 11:20 reported at around 12:00. The 19:00 end
  * stays: a child dismissed at the latest period the default schedule knows
- * about still has four ticks. See ADR-0038.
+ * about still has four ticks. See ADR-0040.
  *
  * `timeZone` is load-bearing and new ground: no existing cron in this repo
  * passes one, and there is no TZ env anywhere, so without it the job would

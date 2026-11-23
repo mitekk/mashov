@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SchoolYearService } from '../common/school-year/school-year.service';
@@ -16,8 +16,18 @@ import { TelegramSender } from './senders/telegram.sender';
 import { LogSender } from './senders/log.sender';
 import { jerusalemClockMinutes, jerusalemDayBounds } from './digest-deadline.service';
 import { DigestDismissalService, DismissalGate } from './digest-dismissal.service';
+import { isPermanentTelegramFailure } from '../telegram/telegram-http';
+import { resolvePublicBaseUrl } from '../telegram/public-base-url';
 import { deterministicLines, renderReport } from './digest-report.template';
 import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
+import { DigestAttachment, DigestAttachmentResolver } from './digest-attachment.resolver';
+import {
+  FetchedMedia,
+  MEDIA_DELIVERY,
+  MediaAttachmentRef,
+  MediaDelivery,
+  NO_MEDIA_DELIVERY,
+} from '../telegram-media/media-delivery.interface';
 
 /**
  * The claimed hashes a child's prose is written from, sorted.
@@ -70,7 +80,7 @@ export type DigestRunStatus =
   | 'skipped_stale'
   /**
    * The child is still at school: held until their last lesson has ended plus
-   * the grace period (ADR-0038). A hold claims nothing and writes no delivery
+   * the grace period (ADR-0040). A hold claims nothing and writes no delivery
    * row, so the next tick reports everything this one would have.
    */
   | 'skipped_before_dismissal'
@@ -152,9 +162,17 @@ export class DigestService {
     // either sender works.
     @Inject(TelegramSender) telegram: DigestSender,
     @Inject(LogSender) private readonly logSender: DigestSender,
+    private readonly attachments: DigestAttachmentResolver,
+    // `@Optional()` so DigestModule still compiles on its own, which is how
+    // digest.module.spec.ts proves the Mashov client is unreachable from this
+    // graph. See src/telegram-media/telegram-media.module.ts.
+    @Optional() @Inject(MEDIA_DELIVERY) media?: MediaDelivery,
   ) {
     this.senders = [telegram, logSender];
+    this.media = media ?? NO_MEDIA_DELIVERY;
   }
+
+  private readonly media: MediaDelivery;
 
   async runAll(options: DigestRunOptions = {}): Promise<DigestRunResult[]> {
     if (this.running) {
@@ -281,7 +299,7 @@ export class DigestService {
       // consume nothing: if it claimed, the items would be marked reported and
       // the post-dismissal tick would find a quiet day, turning a delay into
       // permanent suppression. It also writes no digest_delivery row -- the
-      // hold is a scheduling decision, not an outcome (ADR-0038).
+      // hold is a scheduling decision, not an outcome (ADR-0040).
       if (!options.ignoreDismissalGate) {
         const gate = await this.dismissalGate(studentGuid, schoolYear, defaultReportFor, gates);
         if (gate.releaseAtMinutes !== null && nowMinutes < gate.releaseAtMinutes) {
@@ -373,7 +391,6 @@ export class DigestService {
       }
 
       const lines = linesFor(summary, payload, narrowed);
-      const message = renderReport(narrowed, lines);
 
       const enabled = await this.prisma.digestRecipient.findMany({
         where: { userId, studentGuid, enabled: true },
@@ -391,7 +408,18 @@ export class DigestService {
         return await this.recordEmpty(userId, studentGuid, reportFor, 'no enabled recipient left');
       }
 
-      const { delivered, failures, suppressed } = await this.deliver(
+      // Downloaded BEFORE the text is rendered, because no size is known
+      // anywhere until the bytes arrive and the text has to name what it is
+      // not sending. Skipped entirely on a dry run and when the media binding
+      // is the no-op, so neither pays for the reads.
+      const media = dryRun ? NO_FETCH : await this.fetchMedia(userId, studentGuid, surviving, claimed);
+
+      const message = renderReport(narrowed, lines, {
+        publicBaseUrl: resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL')),
+        unsentFileNames: media.items.filter((item) => item.tooLarge).map((item) => item.ref.fileName),
+      });
+
+      const { delivered, failures, suppressed, retired, reached } = await this.deliver(
         studentGuid,
         enabled,
         message,
@@ -399,7 +427,21 @@ export class DigestService {
         alreadySent,
       );
 
-      if (delivered === 0 && enabled.length > 0) {
+      await this.retireRecipients(userId, studentGuid, retired);
+
+      // The throw is suppressed only when EVERY failure was permanent.
+      //
+      // Throwing releases the claims, which is right for a transient failure
+      // and wrong for a permanent one: the items would come back on every run,
+      // with a fresh model call each time, for chats that have just been
+      // disabled. But `retired.length > 0` was the wrong test. With one
+      // blocked chat and one chat answering 502, it confirmed the claims and
+      // buried the day's news for the chat that was merely flaky -- and
+      // permanently, because nothing ever re-reports an item already in the
+      // ledger. Comparing the counts makes a mixed outcome retry, which is
+      // what the live chat needs.
+      const everyFailurePermanent = retired.length > 0 && retired.length === failures.length;
+      if (delivered === 0 && enabled.length > 0 && !everyFailurePermanent) {
         throw new Error(`no recipient could be reached (${failures.join('; ')})`);
       }
 
@@ -419,6 +461,16 @@ export class DigestService {
         });
       }
 
+      // After the text, and only to the chats the text actually reached. A
+      // failed upload is a note and never a throw, so it can neither fail nor
+      // re-queue the report -- the text remains the only thing gating the
+      // ledger.
+      const mediaNotes = [...media.notes];
+      for (const address of reached) {
+        const result = await this.media.send(address, media.items);
+        mediaNotes.push(...result.notes);
+      }
+
       await this.settleUnsent(
         userId,
         studentGuid,
@@ -431,7 +483,7 @@ export class DigestService {
       await this.confirmClaims(userId, studentGuid, [...surviving], runId);
 
       return await this.record(userId, studentGuid, reportFor, {
-        status: 'sent',
+        status: delivered > 0 ? 'sent' : 'failed',
         itemCount,
         // Chats actually reached. A suppression counts as delivered for the
         // guard above -- otherwise a suppressed-only run throws, releases its
@@ -445,7 +497,7 @@ export class DigestService {
         // A partial failure is recorded but does not undo a real delivery.
         // The suppression note rides on the same field, so support can tell
         // "sent" from "the other parent's run sent this exact text already".
-        errorMessage: deliveryNote(failures, suppressed),
+        errorMessage: deliveryNote(failures, suppressed, mediaNotes),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -633,10 +685,23 @@ export class DigestService {
     message: string,
     dryRun: boolean,
     alreadySent: Set<string>,
-  ): Promise<{ delivered: number; failures: string[]; suppressed: number }> {
+  ): Promise<{
+    delivered: number;
+    failures: string[];
+    suppressed: number;
+    /** Chats Telegram says will never accept another message. */
+    retired: { channel: string; address: string; reason: string }[];
+    /**
+     * The addresses the text actually reached, so the files follow it to
+     * exactly those chats -- a chat whose text failed must get no files.
+     */
+    reached: string[];
+  }> {
     let delivered = 0;
     let suppressed = 0;
     const failures: string[] = [];
+    const retired: { channel: string; address: string; reason: string }[] = [];
+    const reached: string[] = [];
     const digest = createHash('sha256').update(message).digest('hex');
 
     for (const recipient of recipients) {
@@ -661,15 +726,83 @@ export class DigestService {
         const sender = dryRun ? this.logSender : this.senderFor(recipient.channel);
         await sender.send(recipient.address, message);
         delivered += 1;
+        if (!dryRun) reached.push(recipient.address);
         alreadySent.add(fingerprint);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         this.logger.warn(`Digest delivery to ${recipient.channel} failed: ${reason}`);
         failures.push(reason);
+        // A blocked bot or a deleted chat is not worth retrying: the items
+        // would be re-claimed, re-summarized and re-sent on every run forever.
+        // The caller confirms the claims anyway and disables the row.
+        if (!dryRun && isPermanentTelegramFailure(reason)) {
+          retired.push({ channel: recipient.channel, address: recipient.address, reason });
+        }
       }
     }
 
-    return { delivered, failures, suppressed };
+    return { delivered, failures, suppressed, retired, reached };
+  }
+
+  /**
+   * The files on the items this run is about to report, downloaded.
+   *
+   * Only the SURVIVING claims: an item narrowing removed is not in the
+   * message, so its attachment has nothing to be a caption for. The
+   * attachment metadata reaches this through DigestAttachmentResolver rather
+   * than through DigestPayload -- that object feeds buildPrompt, and a
+   * behaviour row's rawPayload carries the reporter's name and the child's
+   * guid. See ADR-0026 and ADR-0039.
+   */
+  private async fetchMedia(
+    userId: string,
+    studentGuid: string,
+    surviving: Set<string>,
+    claimed: DigestCandidate[],
+  ): Promise<{ items: FetchedMedia[]; notes: string[] }> {
+    if (!this.media.enabled) return NO_FETCH;
+
+    const sent = claimed.filter((candidate) => surviving.has(candidate.contentHash));
+    if (sent.length === 0) return NO_FETCH;
+
+    const refs = (await this.attachments.resolve(studentGuid, sent)).map(mediaRefFor);
+    if (refs.length === 0) return NO_FETCH;
+
+    const fetched = await this.media.fetch(userId, refs, this.media.budgetBytes());
+    return {
+      items: fetched.items,
+      notes: fetched.items
+        .map((item) => item.note)
+        .filter((note): note is string => typeof note === 'string' && note.length > 0),
+    };
+  }
+
+  /**
+   * Stops sending to a chat Telegram has refused permanently.
+   *
+   * Scoped to the (child, parent) row rather than the address alone: the same
+   * family group chat can be linked by two parents and for several children,
+   * and the refusal this run saw was for this subscription.
+   */
+  private async retireRecipients(
+    userId: string,
+    studentGuid: string,
+    retired: { channel: string; address: string; reason: string }[],
+  ): Promise<void> {
+    for (const recipient of retired) {
+      this.logger.warn(
+        `Disabling digest recipient ${recipient.channel}/${recipient.address} for ${studentGuid}: ${recipient.reason}`,
+      );
+      await this.prisma.digestRecipient.updateMany({
+        where: {
+          userId,
+          studentGuid,
+          channel: recipient.channel,
+          address: recipient.address,
+        },
+        data: { enabled: false },
+      });
+    }
   }
 
   /**
@@ -988,10 +1121,14 @@ function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPa
   lines.activityLine = fallback.activityLine;
 
   const sections = [
-    ['behaviorLine', after.behavior.length],
+    // Counted per section, not per list: the behaviour list feeds two sections
+    // now, and a blank positiveLine on a day with praise would drop it.
+    ['behaviorLine', after.behavior.filter((fact) => fact.classification !== 'positive').length],
+    ['positiveLine', after.behavior.filter((fact) => fact.classification === 'positive').length],
     ['homeworkLine', after.homeworkNew.length],
     ['dueTomorrowLine', after.homeworkDueTomorrow.length],
     ['releaseLine', after.releases.length],
+    ['boardLine', after.board.length],
   ] as const;
 
   for (const [key, itemCount] of sections) {
@@ -1055,6 +1192,7 @@ function survivingHashes(claimed: DigestCandidate[], narrowed: DigestPayload): S
     ...narrowed.homeworkDueTomorrow.map((fact) => `homework_due:${fact.id}`),
     ...narrowed.releases.map((fact) => `release:${fact.id}`),
     ...narrowed.activities.map((fact) => `activity:${fact.id}`),
+    ...narrowed.board.map((fact) => `message_board:${fact.id}`),
   ]);
 
   return new Set(
@@ -1086,6 +1224,7 @@ function countItems(payload: DigestPayload): number {
     ...payload.homeworkDueTomorrow.map((fact) => `homework:${fact.id}`),
     ...payload.releases.map((fact) => `release:${fact.id}`),
     ...payload.activities.map((fact) => `activity:${fact.id}`),
+    ...payload.board.map((fact) => `board:${fact.id}`),
   ]);
   return ids.size;
 }
@@ -1096,12 +1235,38 @@ function countItems(payload: DigestPayload): number {
  * Partial send failures and suppressions share the column because both are
  * "the row says sent, and here is the asterisk".
  */
-function deliveryNote(failures: string[], suppressed: number): string | undefined {
-  const notes = [...failures];
+function deliveryNote(
+  failures: string[],
+  suppressed: number,
+  mediaNotes: string[] = [],
+): string | undefined {
+  const notes = [...failures, ...mediaNotes];
   if (suppressed > 0) {
     notes.push(
       `suppressed ${suppressed} duplicate send(s): an identical message had already gone to that chat in this run`,
     );
   }
   return notes.length > 0 ? notes.join('; ') : undefined;
+}
+
+/** Nothing fetched, nothing to say about it. */
+const NO_FETCH: { items: FetchedMedia[]; notes: string[] } = { items: [], notes: [] };
+
+/**
+ * One attachment as the media layer wants it.
+ *
+ * The caption is the file name alone. It could carry the subject, but the
+ * report is already headed by the child and the date, the caption cannot be
+ * chunked, and a name is what tells a parent which of three files they are
+ * looking at.
+ */
+function mediaRefFor(attachment: DigestAttachment): MediaAttachmentRef {
+  return {
+    kind: attachment.itemType,
+    ownerId: attachment.studentGuid,
+    itemId: attachment.itemId,
+    fileId: attachment.fileId,
+    fileName: attachment.fileName,
+    caption: attachment.fileName,
+  };
 }

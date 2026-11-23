@@ -1,4 +1,4 @@
-# ADR-0038: The Digest Waits for the Child's Own Last Bell
+# ADR-0040: The Digest Waits for the Child's Own Last Bell
 
 - **Date**: 2026-11-23
 - **Status**: Accepted

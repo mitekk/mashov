@@ -1,7 +1,10 @@
 import axios, { AxiosInstance } from 'axios';
 import {
   TELEGRAM_API_ROOT,
+  TELEGRAM_CHUNK_LIMIT,
   botPath,
+  chunkTelegramText,
+  isPermanentTelegramFailure,
   createTelegramHttp,
   describeTelegramError,
   redact,
@@ -118,5 +121,99 @@ describe('describeTelegramError', () => {
     (mockedAxios.isAxiosError as unknown as jest.Mock).mockReturnValue(false);
 
     expect(describeTelegramError('nope')).toBe('nope');
+  });
+});
+
+/** A high surrogate with no low after it, or a low with no high before it. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+describe('chunkTelegramText', () => {
+  it('returns a short message unchanged as a single part', () => {
+    expect(chunkTelegramText('שלום')).toEqual(['שלום']);
+  });
+
+  it('defaults to a limit below the Bot API ceiling of 4096 code units', () => {
+    expect(TELEGRAM_CHUNK_LIMIT).toBeLessThan(4096);
+  });
+
+  it('keeps every part inside the limit', () => {
+    const parts = chunkTelegramText('x'.repeat(10_000), 1000);
+
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) expect(part.length).toBeLessThanOrEqual(1000);
+  });
+
+  it('splits on the last blank line before the limit, so a section stays whole', () => {
+    const text = ['כותרת\nראשון', 'שני', 'שלישי'].join('\n\n');
+
+    // 20 is past "כותרת\nראשון\n\nשני" (18) and short of the next separator.
+    expect(chunkTelegramText(text, 20)).toEqual(['כותרת\nראשון\n\nשני', 'שלישי']);
+  });
+
+  it('falls back to the last single newline when no blank line fits', () => {
+    const text = 'אחת\nשתיים\nשלוש';
+
+    expect(chunkTelegramText(text, 11)).toEqual(['אחת\nשתיים', 'שלוש']);
+  });
+
+  it('hard-cuts text that carries no newline at all', () => {
+    expect(chunkTelegramText('abcdefgh', 3)).toEqual(['abc', 'def', 'gh']);
+  });
+
+  it('never cuts between the halves of a surrogate pair', () => {
+    // '😀' is two UTF-16 code units, which is what Telegram counts. A cut at
+    // an odd offset would emit a lone surrogate and render as a replacement
+    // character in the parent's chat.
+    const parts = chunkTelegramText('😀😀😀', 3);
+
+    expect(parts).toEqual(['😀', '😀', '😀']);
+    for (const part of parts) expect(part).not.toMatch(LONE_SURROGATE);
+  });
+
+  it('emits no empty part when the split point lands on a run of newlines', () => {
+    const parts = chunkTelegramText('אחת\n\n\n\nשתיים\n\n\n\nשלוש', 12);
+
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) expect(part.trim().length).toBeGreaterThan(0);
+  });
+
+  it('loses no visible content across the parts', () => {
+    const text = Array.from({ length: 400 }, (_, i) => `שורה ${i}`).join('\n');
+
+    const rejoined = chunkTelegramText(text, 500).join('\n');
+
+    expect(rejoined).toBe(text);
+  });
+});
+
+describe('isPermanentTelegramFailure', () => {
+  it.each([
+    'Forbidden: bot was blocked by the user',
+    'Bad Request: chat not found',
+    'Forbidden: user is deactivated',
+    "Forbidden: bot can't initiate conversation with a user",
+  ])('treats %s as permanent, so the item is never retried at that chat', (description) => {
+    expect(isPermanentTelegramFailure(description)).toBe(true);
+  });
+
+  it('still matches once the sender has wrapped the description in its own prefix', () => {
+    expect(
+      isPermanentTelegramFailure('Telegram send failed: Forbidden: bot was blocked by the user'),
+    ).toBe(true);
+  });
+
+  it('matches regardless of the case Telegram used', () => {
+    expect(isPermanentTelegramFailure('CHAT NOT FOUND')).toBe(true);
+  });
+
+  it.each([
+    'HTTP 502',
+    'ECONNABORTED: timeout of 15000ms exceeded',
+    'Too Many Requests: retry after 30',
+    'Bad Request: message text is empty',
+    'Telegram reported ok=false',
+    '',
+  ])('treats %s as transient, so the next run tries again', (description) => {
+    expect(isPermanentTelegramFailure(description)).toBe(false);
   });
 });
