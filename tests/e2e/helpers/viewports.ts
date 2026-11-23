@@ -195,12 +195,25 @@ const CONVERSATION = {
  *
  * Order matters -- Playwright matches the LAST registered route first -- so the
  * catch-all goes on first and the specific patterns after it.
+ *
+ * RESPONSE SHAPES ARE NOT UNIFORM and getting one wrong does not fail
+ * honestly: `/auth/schools`, `/school-links`, `/settings/profile`,
+ * `/children/:guid/releases` and `/children/:guid/school-activities` answer
+ * with a BARE ARRAY, while the rest answer `{ data: [...] }`. A `{ data: [] }`
+ * served where an array is expected reaches `schools.slice(...)` or
+ * `activities.filter(...)` and throws "is not a function" during render -- and
+ * because the readiness testid may paint before the query resolves, that shows
+ * up as a FLAKY test on one project rather than a broken fixture.
  */
 export async function installApiStubs(page: Page): Promise<void> {
-  // Catch-all: an endpoint nobody listed below still gets a well-formed empty
-  // answer rather than a network error that would blank the page.
+  // Catch-all: deliberately a 404 rather than a plausible-looking empty body.
+  // An unstubbed endpoint then renders this app's error state, which is
+  // visible and harmless, instead of handing a component the wrong shape.
   await page.route('**/api/v1/**', async (route) => {
-    await route.fulfill({ json: { data: [] } });
+    await route.fulfill({
+      status: 404,
+      json: { error: { code: 'NOT_FOUND', message: 'not stubbed in viewports.ts', details: [] } },
+    });
   });
 
   await page.route('**/api/v1/auth/me', async (route) => {
@@ -215,11 +228,10 @@ export async function installApiStubs(page: Page): Promise<void> {
     });
   });
 
+  // Bare array: getSchools() returns School[], not { data }.
   await page.route('**/api/v1/auth/schools', async (route) => {
     await route.fulfill({
-      json: {
-        data: SCHOOLS.map((school) => ({ semel: school.semel, name: school.schoolName })),
-      },
+      json: SCHOOLS.map((school) => ({ semel: school.semel, name: school.schoolName })),
     });
   });
 
@@ -378,41 +390,61 @@ export async function installApiStubs(page: Page): Promise<void> {
     });
   });
 
+  // Bare array: fetchProfile() returns ParentProfile[].
   await page.route('**/api/v1/settings/profile', async (route) => {
     await route.fulfill({
-      json: {
-        data: [
-          {
-            householdConnectionId: SCHOOLS[0].id,
-            schoolName: SCHOOLS[0].schoolName,
-            schoolShortLabel: SCHOOLS[0].shortLabel,
-            displayName: 'דמיטרי קורס',
-            email: 'parent@example.com',
-            phone: '050-0000000',
-          },
-        ],
-      },
+      json: [
+        {
+          householdConnectionId: SCHOOLS[0].id,
+          schoolName: SCHOOLS[0].schoolName,
+          schoolShortLabel: SCHOOLS[0].shortLabel,
+          displayName: 'דמיטרי קורס',
+          email: 'parent@example.com',
+          phone: '050-0000000',
+        },
+      ],
     });
   });
 
+  // Bare array: fetchSchoolLinks() returns SchoolLink[].
   await page.route('**/api/v1/school-links', async (route) => {
     await route.fulfill({
-      json: {
-        data: SCHOOLS.map((school) => ({
-          id: school.id,
-          semel: school.semel,
-          schoolName: school.schoolName,
-          shortLabel: school.shortLabel,
-          username: 'parent',
-          childrenCount: 1,
-          lastSyncAt: NOW,
-        })),
-      },
+      json: SCHOOLS.map((school) => ({
+        id: school.id,
+        semel: school.semel,
+        schoolName: school.schoolName,
+        shortLabel: school.shortLabel,
+        username: 'parent',
+        childrenCount: 1,
+        lastSyncAt: NOW,
+      })),
     });
   });
 
   await page.route('**/api/v1/digest/recipients**', async (route) => {
     await route.fulfill({ json: { data: [] } });
+  });
+
+  // Bare arrays again, and ChildHeader asks for activities on MOUNT (not when
+  // its dialog opens), so an unstubbed one crashes the whole workspace.
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/school-activities`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/releases`, async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/plans`, async (route) => {
+    await route.fulfill({ json: { data: [] } });
+  });
+
+  await page.route(`**/api/v1/children/${STUDENT_GUID}/lessons/history`, async (route) => {
+    await route.fulfill({ json: { data: [] } });
+  });
+
+  await page.route('**/api/v1/digest/telegram-links/**', async (route) => {
+    await route.fulfill({ json: { state: 'pending', code: 'e2e-code' } });
   });
 
   await page.route('**/api/v1/sync/status**', async (route) => {
