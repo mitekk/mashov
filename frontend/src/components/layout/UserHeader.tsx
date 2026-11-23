@@ -3,6 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { useMe } from '@/hooks/useAuth';
+import { FeedbackLauncher } from '@/components/feedback/FeedbackLauncher';
 
 function getInitials(displayName: string): string {
   const parts = displayName.trim().split(/\s+/);
@@ -35,7 +36,13 @@ export function UserHeader() {
   const suffix = childrenSuffix(me.childrenCount ?? 0);
 
   return (
-    <div className="flex items-center justify-end px-4 pt-3 pb-1">
+    <div className="flex items-center justify-end gap-2 px-4 pt-3 pb-1">
+      {/*
+        One tap from every authenticated screen. Inside the `!me` guard on
+        purpose: feedback needs a household to attach itself to, so it is
+        absent on `/auth/*` and for the one paint before `me` resolves.
+      */}
+      <FeedbackLauncher />
       <Link
         href="/more"
         aria-label={`${me.displayName ?? 'פרופיל'}${suffix} — הגדרות`}
