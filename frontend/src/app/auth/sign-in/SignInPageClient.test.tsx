@@ -373,3 +373,39 @@ describe('SignInPageClient review fixes', () => {
     expect(url).not.toContain('username');
   });
 });
+
+describe('SignInPageClient page chrome', () => {
+  it('renders the illustration outside the form, so it can be server-rendered', async () => {
+    // The structural reason for the SignInForm/SignInPage split, pinned.
+    // `SignInForm` calls `useSearchParams()`, which makes its Suspense boundary
+    // bail out of SSR -- so an <Image priority> inside it emits no
+    // <link rel="preload"> and waits for hydration, which is the whole point
+    // of `priority` gone. Someone folding the chrome back into the form to
+    // "simplify" it would undo a measured optimisation with no test to notice.
+    renderPage();
+
+    const illustration = await screen.findByTestId('sign-in-illustration');
+    const form = screen.getByTestId('sign-in-submit').closest('form');
+
+    expect(illustration).toBeInTheDocument();
+    expect(form).not.toBeNull();
+    expect(form?.contains(illustration)).toBe(false);
+  });
+
+  it('keeps the illustration decorative, not announced before the form', async () => {
+    renderPage();
+
+    const illustration = await screen.findByTestId('sign-in-illustration');
+    expect(illustration).toHaveAttribute('alt', '');
+  });
+
+  it('still renders the whole page from the default export', async () => {
+    // The merge moved the chrome from SignInForm to SignInPage; the default
+    // export has to keep being the thing that renders both.
+    renderPage();
+
+    expect(await screen.findByTestId('sign-in-illustration')).toBeInTheDocument();
+    expect(screen.getByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(screen.getByTestId('sign-in-forgot-password')).toBeInTheDocument();
+  });
+});
