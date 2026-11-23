@@ -256,7 +256,7 @@ export function BehaviorSection({
         </section>
       )}
       {/* Bucket filter chips */}
-      <div className="flex gap-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+      <div className="rail">
         {FILTER_TABS.map((tab) => (
           <button
             key={tab}

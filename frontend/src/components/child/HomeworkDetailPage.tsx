@@ -174,12 +174,12 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
                 <span className="text-xs text-muted-foreground">שיעור {data.lesson}</span>
               )}
               {data.isNew && (
-                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-3xs font-semibold text-primary">
                   חדש
                 </span>
               )}
               {data.isArchived && (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                <span className="rounded-full bg-muted px-2 py-0.5 text-3xs font-medium text-muted-foreground">
                   בארכיון
                 </span>
               )}

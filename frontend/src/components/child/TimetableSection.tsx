@@ -260,7 +260,7 @@ function BreakRow({ item, columnCount }: BreakRowProps) {
       className="border-b border-border bg-muted/40 last:border-0"
     >
       <td colSpan={columnCount} className="px-3 py-1.5 text-center">
-        <span className="inline-flex flex-wrap items-center justify-center gap-x-2 text-[11px] text-muted-foreground">
+        <span className="inline-flex flex-wrap items-center justify-center gap-x-2 text-2xs text-muted-foreground">
           <span>{breakLabel(item)}</span>
           <ClockRange startTime={item.startTime} endTime={item.endTime} />
         </span>
@@ -276,7 +276,7 @@ interface LessonDetailsProps {
 
 function LessonDetails({ label, text }: LessonDetailsProps) {
   return (
-    <p className="text-[11px] leading-relaxed text-foreground/75 whitespace-pre-wrap">
+    <p className="text-2xs leading-relaxed text-foreground/75 whitespace-pre-wrap">
       <span className="font-semibold text-foreground">{label}: </span>
       {text}
     </p>
@@ -314,12 +314,12 @@ function LessonCell({
             {entry.subjectName}
           </span>
           {firstTeacher && (
-            <span className="text-[11px] text-muted-foreground leading-tight">
+            <span className="text-2xs text-muted-foreground leading-tight">
               {firstTeacher.teacherName}
             </span>
           )}
           {entry.roomNum && (
-            <span className="text-[10px] rounded-full border border-border/60 px-1.5 py-0.5 mt-0.5 inline-block w-fit text-muted-foreground">
+            <span className="text-3xs rounded-full border border-border/60 px-1.5 py-0.5 mt-0.5 inline-block w-fit text-muted-foreground">
               חדר {entry.roomNum}
             </span>
           )}
@@ -457,7 +457,7 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
                         <div className="inline-flex items-center gap-1.5">
                           <span>{DAY_ABBREV[day] ?? String(day)}</span>
                           {isToday && (
-                            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-3xs font-semibold text-primary">
                               היום
                             </span>
                           )}
@@ -489,7 +489,7 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
                                 testId="timetable-lesson-time"
                                 startTime={period.startTime}
                                 endTime={period.endTime}
-                                className="text-[10px] font-normal text-muted-foreground whitespace-nowrap"
+                                className="text-3xs font-normal text-muted-foreground whitespace-nowrap"
                               />
                             )}
                           </span>

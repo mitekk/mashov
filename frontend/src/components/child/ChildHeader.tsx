@@ -170,7 +170,7 @@ export function ChildHeader({
               <span
                 data-testid="child-header-activities-badge"
                 aria-hidden="true"
-                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-white"
+                className="absolute -start-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-attention text-3xs font-bold text-attention-foreground"
               >
                 {pendingCount > 9 ? '9+' : pendingCount}
               </span>

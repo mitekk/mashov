@@ -71,12 +71,12 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
         </span>
       </div>
       {child.latestUpdateAt && (
-        <p className="text-[10px] text-muted-foreground opacity-60">
+        <p className="text-3xs text-muted-foreground opacity-60">
           {formatRelativeHe(child.latestUpdateAt)}
         </p>
       )}
       {!safeHref && (
-        <p className="text-[11px] text-muted-foreground mt-1">
+        <p className="text-2xs text-muted-foreground mt-1">
           קישור זה אינו זמין בשלב 1
         </p>
       )}

@@ -6,9 +6,32 @@ const config: Config = {
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
+    // Inert today -- no hook file contains a class string -- but a hook that
+    // ever returns one would otherwise have its classes purged silently.
+    './src/hooks/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
     extend: {
+      fontSize: {
+        // Retires the ad-hoc `text-[10px]` / `text-[11px]` literals. Declared
+        // as bare sizes, with no paired line-height, so they are exact drop-in
+        // replacements for the arbitrary values they replace -- several call
+        // sites set their own `leading-*` and the rest inherit.
+        '3xs': '0.625rem',
+        '2xs': '0.6875rem',
+      },
+      spacing: {
+        // Width of the side rail the tab bar becomes at `lg`. Naming it makes
+        // the shell offset `lg:ps-rail` -- logical, so RTL puts the rail on the
+        // right with no extra code.
+        //
+        // There is deliberately no `nav: '4rem'` companion: that token would
+        // make Tailwind emit `.pb-nav { padding-bottom: 4rem }`, a second rule
+        // for the hand-written `.pb-nav`, which carries the safe-area inset a
+        // plain spacing token cannot express. Which of the two won would then
+        // be emission order rather than intent.
+        rail: '5rem',
+      },
       fontFamily: {
         sans: ['var(--font-assistant)', 'system-ui', 'sans-serif'],
         display: ['var(--font-assistant)', 'system-ui', 'sans-serif'],
