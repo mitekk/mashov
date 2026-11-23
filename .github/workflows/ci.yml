@@ -44,6 +44,14 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # Mirrors the backend order above: lint, then types. Absent until now,
+      # which meant `frontend/.eslintrc.json` was enforced on developer
+      # machines and nowhere else -- a rule raised to `error` there (see
+      # ADR-0041 on `no-img-element`) could still merge.
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
       - name: Typecheck frontend
         working-directory: frontend
         run: npx tsc --noEmit
