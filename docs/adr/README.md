@@ -48,3 +48,4 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0038](0038-inbox-mail-notifications.md) | Inbox Mail Is Its Own Message, on Its Own Cadence, with Its Own Ledger | Accepted | User, Backend agent | 2026-11-22 |
 | [ADR-0039](0039-mashov-attachments-into-telegram.md) | Mashov Attachment Bytes Leave the Host, into a Telegram Chat | Accepted | User, Backend agent | 2026-11-22 |
 | [ADR-0040](0040-digest-waits-for-the-childs-own-last-bell.md) | The Digest Waits for the Child's Own Last Bell | Accepted | User, Backend agent | 2026-11-23 |
+| [ADR-0041](0041-self-hosted-image-optimization.md) | Self-Hosted Image Optimization — AVIF-First, `sharp` Shipped Explicitly, Cache on a Volume | Accepted | User, Frontend agent | 2026-11-23 |

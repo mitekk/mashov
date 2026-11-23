@@ -207,6 +207,10 @@ services:
       # everywhere else — when enabled, an x-mashov-e2e-auth-bypass header or a
       # mashov-e2e-browser user agent walks straight past the auth guard.
       ENABLE_E2E_AUTH_BYPASS: "${ENABLE_E2E_AUTH_BYPASS:-0}"
+    volumes:
+      # The optimizer re-encodes on every miss and there is no CDN absorbing it,
+      # so the encoded variants must outlive a restart and a redeploy.
+      - frontend_image_cache:/app/.next/cache/images
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     healthcheck:
@@ -350,3 +354,4 @@ services:
 
 volumes:
   db_data:
+  frontend_image_cache:
