@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { getSchools, login } from '@/api/auth';
 import { SchoolAutocomplete } from '@/components/auth/SchoolAutocomplete';
-import { ApiError } from '@/api/client';
+import { readAuthError } from '@/lib/authErrors';
 import type { School } from '@/types/api';
 
 function SignInForm() {
@@ -58,11 +59,27 @@ function SignInForm() {
       }
     },
     onError: (err) => {
-      if (err instanceof ApiError && (err.status === 401 || err.status === 429)) {
-        setErrorMsg('פרטי הכניסה שגויים, נסה שוב');
-      } else {
-        setErrorMsg('אירעה שגיאה, נסה שוב מאוחר יותר');
+      // Mashov distinguishes far more than "wrong password": for seven of its
+      // answers the password is CORRECT and the account needs a next step. The
+      // old two-branch version told all of those parents their password was
+      // wrong, and they retyped it until the rate limiter locked them out.
+      const { code, message, challengeId } = readAuthError(err);
+
+      // An MFA challenge is not an error the parent can act on here, so the
+      // form hands them straight to the code screen. Only with a challenge id:
+      // without one the next screen has nothing to work with, and sending them
+      // there would be a dead end with a spinner.
+      if (code === 'MFA_REQUIRED' && challengeId && selectedSchool) {
+        const query = new URLSearchParams({
+          cid: challengeId,
+          semel: String(selectedSchool.semel),
+          username: username.trim(),
+        });
+        router.push(`/auth/mfa?${query.toString()}`);
+        return;
       }
+
+      setErrorMsg(message);
     },
   });
 
@@ -162,6 +179,20 @@ function SignInForm() {
           >
             {loginMutation.isPending ? 'מתחבר...' : 'כניסה'}
           </button>
+
+          {/*
+            The only path a parent who has forgotten their password had was
+            Mashov's own site. This is what keeps them inside the app.
+          */}
+          <p className="text-center text-sm">
+            <Link
+              href="/auth/forgot-password"
+              data-testid="sign-in-forgot-password"
+              className="font-medium text-primary underline-offset-4 hover:underline"
+            >
+              שכחתי סיסמה
+            </Link>
+          </p>
         </form>
       </div>
     </div>

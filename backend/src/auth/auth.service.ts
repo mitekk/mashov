@@ -1,11 +1,12 @@
 import {
   BadGatewayException,
+  HttpException,
   Injectable,
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance } from 'axios';
+import { AxiosInstance } from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { AppSessionService } from '../app-session/app-session.service';
@@ -29,6 +30,11 @@ import {
   MashovCredentialValidatorService,
   type MashovLoginPayload,
 } from '../common/mashov-login/mashov-credential-validator.service';
+import {
+  classifyLoginReason,
+  readChallengeId,
+  readReason,
+} from '../common/mashov-login/mashov-reason';
 
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SECONDS = 900; // 15 minutes
@@ -161,22 +167,51 @@ export class AuthService {
           },
         });
       }
-      if (axios.isAxiosError(err) && err.response?.status === 401) {
+      // Mashov names the real cause in a `Reason` response header. For seven
+      // of those values the password is CORRECT and the account needs a next
+      // step -- an MFA code, a forced password change, a captcha. Collapsing
+      // them into "wrong password" was the worst dead end in the product: the
+      // parent retypes a password that was right until the rate limiter locks
+      // them out. Everything with no signpost of its own keeps the previous
+      // 401 INVALID_CREDENTIALS answer exactly.
+      const classified = classifyLoginReason(readReason(err));
+      const challengeId =
+        classified.code === 'MFA_REQUIRED' ? readChallengeId(err) : undefined;
+
+      // The unsignposted case stays an `UnauthorizedException`, not a generic
+      // 401 `HttpException`: `UnauthorizedException` is what every caller and
+      // every existing test already matches on, and this branch is explicitly
+      // "no behaviour change".
+      if (classified.code === 'INVALID_CREDENTIALS') {
         throw new UnauthorizedException({
           error: {
-            code: 'INVALID_CREDENTIALS',
-            message: 'Invalid credentials, please try again',
+            code: classified.code,
+            message: classified.message,
             details: [],
           },
         });
       }
-      throw new UnauthorizedException({
-        error: {
-          code: 'INVALID_CREDENTIALS',
-          message: 'Invalid credentials, please try again',
-          details: [],
+
+      this.logger.warn(
+        `Mashov declined login for semel=${semel} with reason=${classified.code}`,
+      );
+
+      throw new HttpException(
+        {
+          error: {
+            code: classified.code,
+            message: classified.message,
+            details: [],
+            // Beside the envelope's three fields, not inside `details[]`:
+            // `details` is for field-level validation errors. This is the only
+            // handle on the challenge Mashov just opened, so without it a
+            // MFA_REQUIRED is as much of a dead end as the "wrong password" it
+            // replaces.
+            ...(challengeId ? { challengeId } : {}),
+          },
         },
-      });
+        classified.status,
+      );
     }
 
     const mashovUserId = loginData.credential?.userId;

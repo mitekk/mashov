@@ -707,6 +707,41 @@ export interface LoginRequest {
   password: string;
 }
 
+/**
+ * Error codes `POST /auth/login` can answer with, derived from Mashov's
+ * `Reason` response header.
+ *
+ * Only `INVALID_CREDENTIALS` is a 401; everything else is 400, 422, 429 or
+ * 502. That is deliberate and load-bearing — `apiFetch` hard-redirects to
+ * `/auth/sign-in` on any 401 whose code is not `INVALID_CREDENTIALS`, so a
+ * signposted failure answered 401 would bounce the parent off the page
+ * carrying the instructions they need.
+ */
+export type AuthErrorCode =
+  | 'INVALID_CREDENTIALS'
+  /** Mashov opened an MFA challenge; `error.challengeId` is the handle on it. */
+  | 'MFA_REQUIRED'
+  | 'PASSWORD_CHANGE_REQUIRED'
+  | 'CREDENTIALS_SETUP_REQUIRED'
+  /** Mashov escalated to a Cloudflare Turnstile challenge. */
+  | 'CAPTCHA_REQUIRED'
+  | 'NO_CHILDREN'
+  | 'SCHOOL_CLOSED'
+  | 'USER_INACTIVE'
+  | 'USE_USERNAME'
+  | 'UPSTREAM_ERROR';
+
+/** The envelope every backend error uses; see `.claude/rules/api.md`. */
+export interface ApiErrorEnvelope {
+  error: {
+    code: string;
+    message: string;
+    details?: Array<{ field: string; message: string }>;
+    /** Only on `MFA_REQUIRED`. Beside the three standard fields, not in `details`. */
+    challengeId?: string;
+  };
+}
+
 export interface LoginResponse {
   ok: boolean;
   isFirstLogin: boolean;

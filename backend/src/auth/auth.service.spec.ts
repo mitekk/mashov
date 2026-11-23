@@ -1,4 +1,8 @@
-import { BadGatewayException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  HttpException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError, CanceledError } from 'axios';
@@ -1168,5 +1172,145 @@ describe('AuthService login adoption', () => {
 
     expect(mockAppSessionService.createSession).not.toHaveBeenCalled();
     expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Mashov answers a failed login with a `Reason` header naming the real cause.
+ * For these values the password is CORRECT and the account needs a next step,
+ * so collapsing them into "wrong password" sends the parent off to retype a
+ * password that was right until the rate limiter locks them out.
+ *
+ * Every signposted answer is a 400, never a 401: `apiFetch` in the frontend
+ * hard-redirects to /auth/sign-in on any 401 whose code is not
+ * INVALID_CREDENTIALS, which would throw the parent off the page carrying the
+ * instructions they need.
+ */
+describe('AuthService login reason signposting', () => {
+  let service: AuthService;
+
+  function reasonFailure(reason: string, data: unknown = {}): AxiosError {
+    const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+    err.response = {
+      status: 403,
+      data,
+      headers: { reason },
+    } as unknown as AxiosError['response'];
+    return err;
+  }
+
+  async function errorBodyFor(reason: string, data: unknown = {}) {
+    jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+    jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+    mockHttp.post = jest.fn().mockRejectedValue(reasonFailure(reason, data));
+
+    try {
+      await service.login(482273, 'user', 'pass', '127.0.0.1');
+    } catch (err) {
+      const http = err as HttpException;
+      return {
+        status: http.getStatus(),
+        body: http.getResponse() as {
+          error: { code: string; details?: unknown[]; challengeId?: string };
+        },
+      };
+    }
+    throw new Error(`login resolved for Reason=${reason}; it must reject`);
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockedAxios.create = jest.fn().mockReturnValue(mockHttp);
+    mockSchoolLinksService.listMeSchools.mockResolvedValue([]);
+    mockSchoolYearService.resolveForSchool.mockResolvedValue({
+      year: 2027,
+      source: 'calendar',
+    });
+    mockSchoolYearService.reconcileFromLogin.mockImplementation((candidate: number) => ({
+      year: candidate,
+      changed: false,
+    }));
+    mockRedis.incr.mockResolvedValue(1);
+    mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
+    mockPrisma.appUser.findUnique.mockResolvedValue(null);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: RedisService, useValue: mockRedis },
+        { provide: AppSessionService, useValue: mockAppSessionService },
+        { provide: EncryptionService, useValue: mockEncryptionService },
+        { provide: ConfigService, useValue: mockConfig },
+        { provide: SchoolYearService, useValue: mockSchoolYearService },
+        { provide: SchoolLinksService, useValue: mockSchoolLinksService },
+        MashovCredentialValidatorService,
+      ],
+    }).compile();
+
+    service = module.get<AuthService>(AuthService);
+  });
+
+  it('answers 400 PASSWORD_CHANGE_REQUIRED on Reason=ChangePass', async () => {
+    const { status, body } = await errorBodyFor('ChangePass');
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('PASSWORD_CHANGE_REQUIRED');
+  });
+
+  it('answers 400 CREDENTIALS_SETUP_REQUIRED on Reason=SetUsernameAndPass', async () => {
+    const { status, body } = await errorBodyFor('SetUsernameAndPass');
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('CREDENTIALS_SETUP_REQUIRED');
+  });
+
+  it('answers 400 CAPTCHA_REQUIRED on Reason=UserSuspended', async () => {
+    const { status, body } = await errorBodyFor('UserSuspended');
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('CAPTCHA_REQUIRED');
+  });
+
+  it('answers 400 NO_CHILDREN on Reason=NoChildren', async () => {
+    const { status, body } = await errorBodyFor('NoChildren');
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('NO_CHILDREN');
+  });
+
+  it('carries the MFA challengeId through so the next screen has a handle', async () => {
+    const { status, body } = await errorBodyFor('MfaRequired', { challengeId: 'ch-77' });
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('MFA_REQUIRED');
+    // Beside the envelope's three fields rather than inside `details[]`:
+    // `details` is for field-level validation errors, and a challenge id
+    // smuggled in as `{field,message}` would be read by nobody.
+    expect(body.error.challengeId).toBe('ch-77');
+  });
+
+  it('still answers MFA_REQUIRED when Mashov sends no challengeId', async () => {
+    const { status, body } = await errorBodyFor('MfaRequired');
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('MFA_REQUIRED');
+    expect(body.error.challengeId).toBeUndefined();
+    expect(body.error.details).toEqual([]);
+  });
+
+  it('keeps INVALID_CREDENTIALS for a Reason with no signpost of its own', async () => {
+    const { status, body } = await errorBodyFor('IdNumberNoMatch');
+    expect(status).toBe(401);
+    expect(body.error.code).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('keeps INVALID_CREDENTIALS for a Reason value it has never seen', async () => {
+    const { status, body } = await errorBodyFor('SomeBrandNewUpstreamReason');
+    expect(status).toBe(401);
+    expect(body.error.code).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('still reports an unreachable upstream as 502, not as a signpost', async () => {
+    jest.spyOn(axios, 'isCancel').mockReturnValue(true);
+    mockHttp.post = jest.fn().mockRejectedValue(new CanceledError('canceled'));
+
+    await expect(service.login(482273, 'user', 'pass', '127.0.0.1')).rejects.toThrow(
+      BadGatewayException,
+    );
   });
 });
