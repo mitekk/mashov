@@ -165,7 +165,14 @@ export function ChildWorkspacePage({
       */}
       <div
         data-testid="child-workspace"
-        className="page-shell space-y-4 pb-6 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6 lg:space-y-0"
+        className={cn(
+          'page-shell space-y-4 pb-6 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6 lg:space-y-0',
+          // The week grid is the one surface here that reads better wider: at
+          // 1280 the extra 8rem takes its columns from ~150px to ~190px. Driven
+          // by the section in the URL, not by a media query, so SSR and the
+          // client agree.
+          activeSection === 'timetable' && 'page-shell-wide',
+        )}
       >
         <div className="lg:col-span-2">
           <ChildHeader
