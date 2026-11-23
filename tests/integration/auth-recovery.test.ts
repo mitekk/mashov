@@ -764,4 +764,235 @@ describe('In-app Mashov password recovery', () => {
       expect(await prisma.householdConnection.count()).toBe(0);
     });
   });
+
+  describe('forced credential change and passwordless OTP', () => {
+    const CREDENTIALS = '/api/v1/auth/credentials';
+    const OTP_REQUESTS = '/api/v1/auth/otp-requests';
+
+    let changePassword: jest.SpyInstance;
+    let changeUsername: jest.SpyInstance;
+    let requestOtp: jest.SpyInstance;
+    let verifyOtp: jest.SpyInstance;
+
+    function loginPayload() {
+      return {
+        data: {
+          credential: { userId: 'setup-user-1', displayName: 'Setup Parent' },
+          accessToken: {
+            userSettings: { detailsState: 1 },
+            schoolSettings: { schoolName: 'Test School', schoolYear: 2027 },
+            children: [],
+            username: KNOWN_ID,
+          },
+        },
+        newUniqueId: 'uniq-setup',
+        csrfToken: 'csrf-setup',
+        devicePass: 'dp-setup',
+      };
+    }
+
+    beforeAll(() => {
+      changePassword = jest.spyOn(upstream, 'changePassword');
+      changeUsername = jest.spyOn(upstream, 'changeUsername');
+      requestOtp = jest.spyOn(upstream, 'requestOtp');
+      verifyOtp = jest.spyOn(upstream, 'verifyOtp');
+    });
+
+    afterAll(() => {
+      changePassword.mockRestore();
+      changeUsername.mockRestore();
+      requestOtp.mockRestore();
+      verifyOtp.mockRestore();
+    });
+
+    beforeEach(async () => {
+      changePassword.mockResolvedValue(loginPayload());
+      changeUsername.mockResolvedValue(loginPayload());
+      requestOtp.mockResolvedValue(undefined);
+      verifyOtp.mockResolvedValue(loginPayload());
+      await redisService.scanDel('ratelimit:otp:*');
+      await redisService.scanDel('otp:*');
+      await prisma.appSession.deleteMany({});
+      await prisma.householdConnection.deleteMany({});
+      await prisma.appUser.deleteMany({});
+    });
+
+    afterEach(async () => {
+      await prisma.appSession.deleteMany({});
+      await prisma.householdConnection.deleteMany({});
+      await prisma.appUser.deleteMany({});
+    });
+
+    async function seedConnection() {
+      const user = await prisma.appUser.create({
+        data: {
+          mashovUserId: 'setup-user-1',
+          semel: SEMEL,
+          username: KNOWN_ID,
+          displayName: 'Setup Parent',
+        },
+      });
+      return prisma.householdConnection.create({
+        data: {
+          schoolCode: SEMEL,
+          schoolYear: 2027,
+          username: KNOWN_ID,
+          // Encrypted with the suite's ENCRYPTION_KEY by the service under
+          // test on the way back out; seeded with a value the real
+          // EncryptionService can decrypt is not needed here, because the OTP
+          // path's decrypt is exercised in the unit spec. This asserts the
+          // route shape and the DI graph.
+          encryptedPassword: 'enc-seed',
+          schoolName: 'Test School',
+          upstreamUserId: 'setup-user-1',
+          active: true,
+          userId: user.id,
+        },
+      });
+    }
+
+    describe('POST /auth/credentials', () => {
+      function setCredentials(body: Record<string, unknown> = {}) {
+        return request(app.getHttpServer())
+          .post(CREDENTIALS)
+          .set('X-Forwarded-For', freshIp())
+          .send({
+            semel: SEMEL,
+            username: KNOWN_ID,
+            password: 'oldpw1',
+            newPassword: 'secret1',
+            ...body,
+          });
+      }
+
+      it('changes the password and signs the parent in', async () => {
+        const res = await setCredentials();
+
+        expect(res.status).toBe(200);
+        expect(String(res.headers['set-cookie'])).toContain('mashov_session=');
+      });
+
+      it('stores the NEW password, so the sync crons use the one that works', async () => {
+        await setCredentials();
+
+        const connection = await prisma.householdConnection.findFirst({
+          where: { schoolCode: SEMEL, username: KNOWN_ID },
+        });
+        expect(connection?.encryptedPassword).toBeTruthy();
+        expect(connection?.encryptedPassword).not.toBe('secret1');
+        expect(connection?.encryptedPassword).not.toBe('oldpw1');
+      });
+
+      it('rejects a weak password 422 before touching Mashov', async () => {
+        const res = await setCredentials({ newPassword: 'abc' });
+
+        expect(res.status).toBe(422);
+        expect(res.body.error.code).toBe('WEAK_PASSWORD');
+        expect(changePassword).not.toHaveBeenCalled();
+      });
+
+      it('reports a taken username as 409', async () => {
+        changeUsername.mockRejectedValue(reasonError('UsernameExists'));
+        const res = await setCredentials({
+          newPassword: undefined,
+          newUsername: 'avocado',
+        });
+
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('USERNAME_TAKEN');
+      });
+
+      it('never answers 401', async () => {
+        const responses: request.Response[] = [];
+        responses.push(await setCredentials({ username: '' }));
+        responses.push(await setCredentials({ newPassword: undefined }));
+
+        changePassword.mockRejectedValue(bareError(401));
+        responses.push(await setCredentials());
+
+        changePassword.mockRejectedValue(new CanceledError('aborted'));
+        responses.push(await setCredentials());
+
+        for (const res of responses) {
+          expect(res.status).not.toBe(401);
+        }
+      });
+    });
+
+    describe('OTP sign-in', () => {
+      function requestCode(body: Record<string, unknown> = {}) {
+        return request(app.getHttpServer())
+          .post(OTP_REQUESTS)
+          .set('X-Forwarded-For', freshIp())
+          .send({ semel: SEMEL, username: KNOWN_ID, method: 'email', ...body });
+      }
+
+      it('refuses, before sending a code, for a school never signed into', async () => {
+        // The constraint is surfaced rather than hidden: an OTP-only household
+        // would have no stored credential and no background sync at all.
+        const res = await requestCode();
+
+        expect(res.status).toBe(409);
+        expect(res.body.error.code).toBe('PASSWORD_SIGN_IN_REQUIRED');
+        expect(requestOtp).not.toHaveBeenCalled();
+      });
+
+      it('issues an opaque handle for a school that has been signed into', async () => {
+        await seedConnection();
+        const res = await requestCode();
+
+        expect(res.status).toBe(202);
+        expect(res.body.otpRequestId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(res.body.method).toBe('email');
+      });
+
+      it('carries neither the school nor the username into step 2', async () => {
+        await seedConnection();
+        const { body } = await requestCode();
+        const stored = await redisService.get(`otp:${body.otpRequestId}`);
+
+        // Both live server-side under the opaque handle, so the step-2 request
+        // body is just a code.
+        expect(stored).toContain(String(SEMEL));
+        expect(body).not.toHaveProperty('username');
+        expect(body).not.toHaveProperty('semel');
+      });
+
+      it('tells the parent to start again on an unknown handle', async () => {
+        const res = await request(app.getHttpServer())
+          .post(`${OTP_REQUESTS}/44444444-4444-4444-8444-444444444444/session`)
+          .set('X-Forwarded-For', freshIp())
+          .send({ code: '123456' });
+
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('OTP_SESSION_EXPIRED');
+      });
+
+      it('rejects a missing code', async () => {
+        const res = await request(app.getHttpServer())
+          .post(`${OTP_REQUESTS}/44444444-4444-4444-8444-444444444444/session`)
+          .set('X-Forwarded-For', freshIp())
+          .send({ code: '   ' });
+
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      });
+
+      it('never answers 401', async () => {
+        const responses: request.Response[] = [];
+        responses.push(await requestCode());
+        responses.push(await requestCode({ method: 'carrier-pigeon' }));
+        responses.push(
+          await request(app.getHttpServer())
+            .post(`${OTP_REQUESTS}/does-not-exist/session`)
+            .set('X-Forwarded-For', freshIp())
+            .send({ code: '123456' }),
+        );
+
+        for (const res of responses) {
+          expect(res.status).not.toBe(401);
+        }
+      });
+    });
+  });
 });

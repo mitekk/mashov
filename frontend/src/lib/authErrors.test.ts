@@ -16,6 +16,10 @@ function apiError(status: number, code: string, extra: Record<string, unknown> =
  * type, and a code added to the union without copy fails the build.
  */
 describe('AUTH_ERROR_COPY', () => {
+  // Every code the whole in-app auth surface can emit, not just sign-in. The
+  // list is duplicated here deliberately: `Object.keys` alone would pass
+  // whatever the map happens to contain, and the point is to notice when a
+  // backend code gains or loses its copy.
   const CODES: AuthErrorCode[] = [
     'INVALID_CREDENTIALS',
     'MFA_REQUIRED',
@@ -27,6 +31,31 @@ describe('AUTH_ERROR_COPY', () => {
     'USER_INACTIVE',
     'USE_USERNAME',
     'UPSTREAM_ERROR',
+    'RECOVERY_THROTTLED',
+    'RECOVERY_SESSION_EXPIRED',
+    'INVALID_RECOVERY_CODE',
+    'RECOVERY_CODE_EXPIRED',
+    'RECOVERY_LOCKED',
+    'SECOND_CODE_REQUIRED',
+    'WEAK_PASSWORD',
+    'INVALID_MFA_CODE',
+    'MFA_CODE_EXPIRED',
+    'MFA_LOCKED',
+    'MFA_RESEND_TOO_SOON',
+    'MFA_CONTACT_MISSING',
+    'USERNAME_TAKEN',
+    'USERNAME_LOCKED',
+    'CREDENTIALS_SETUP_FAILED',
+    'PASSWORD_SIGN_IN_REQUIRED',
+    'INVALID_OTP_CODE',
+    'OTP_CODE_EXPIRED',
+    'OTP_LOCKED',
+    'OTP_RESEND_TOO_SOON',
+    'OTP_CONTACT_MISSING',
+    'OTP_SESSION_EXPIRED',
+    'LOGIN_METHOD_BLOCKED',
+    'VALIDATION_ERROR',
+    'RATE_LIMITED',
   ];
 
   it('has Hebrew copy for every auth error code', () => {

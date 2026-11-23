@@ -158,6 +158,89 @@ export class MashovRecoveryService {
     return { data: response.data, ...readLoginHeaders(response.headers) };
   }
 
+
+  /**
+   * Authenticated password change: the forced-change path.
+   *
+   * Driven by `403 Reason: ChangePass` (or `SetUsernameAndPass`), where the
+   * parent's password is CORRECT but Mashov will not let them in until they
+   * replace it. The login body keeps the CURRENT password -- this route proves
+   * it before changing it -- and the challenge id from that 403 is echoed back
+   * under its request-side name, `mfaChallengeId`.
+   */
+  async changePassword(input: {
+    loginData: Record<string, unknown>;
+    newPassword: string;
+    challengeId?: string;
+  }): Promise<MashovLoginResponseView> {
+    const response = await this.http.post<MashovLoginPayload>(
+      '/api/user/password',
+      {
+        ...input.loginData,
+        newPassword: input.newPassword,
+        ...(input.challengeId ? { mfaChallengeId: input.challengeId } : {}),
+      },
+      { headers: this.headers() },
+    );
+    return { data: response.data, ...readLoginHeaders(response.headers) };
+  }
+
+  /**
+   * Authenticated username change, for `CreateUsername` /
+   * `SetUsernameAndPass`.
+   *
+   * Identical shape to the password change, with the NEW username replacing the
+   * one in the login body -- Mashov reads the field, not a separate parameter.
+   */
+  async changeUsername(input: {
+    loginData: Record<string, unknown>;
+    username: string;
+    challengeId?: string;
+  }): Promise<MashovLoginResponseView> {
+    const response = await this.http.post<MashovLoginPayload>(
+      '/api/user/username',
+      {
+        ...input.loginData,
+        username: input.username,
+        ...(input.challengeId ? { mfaChallengeId: input.challengeId } : {}),
+      },
+      { headers: this.headers() },
+    );
+    return { data: response.data, ...readLoginHeaders(response.headers) };
+  }
+
+  /** Step 1 of passwordless sign-in: ask for a one-time code. */
+  async requestOtp(input: {
+    semel: number;
+    username: string;
+    method: MfaMethod;
+  }): Promise<void> {
+    await this.http.post(
+      '/api/user/otp/request',
+      { semel: Number(input.semel), username: input.username, method: input.method },
+      { headers: this.headers() },
+    );
+  }
+
+  /**
+   * Step 2 of passwordless sign-in: exchange the code for a session.
+   *
+   * The login data is posted with every secret stripped -- there is no password
+   * in this flow by definition, and `stripLoginSecrets` guarantees one cannot
+   * leak in from a caller that built the body carelessly.
+   */
+  async verifyOtp(input: {
+    loginData: Record<string, unknown>;
+    code: string;
+  }): Promise<MashovLoginResponseView> {
+    const response = await this.http.post<MashovLoginPayload>(
+      '/api/user/otp',
+      { ...stripLoginSecrets(input.loginData), code: stripWhitespace(input.code) },
+      { headers: this.headers() },
+    );
+    return { data: response.data, ...readLoginHeaders(response.headers) };
+  }
+
   private headers(
     extra: Record<string, string> = {},
     uniqueId?: string | null,

@@ -252,4 +252,98 @@ describe('MashovRecoveryService', () => {
       }
     });
   });
+
+  describe('changePassword', () => {
+    const loginData = { semel: 482273, year: 2027, username: 'u', password: 'old' };
+
+    it('posts the login data plus the new password', async () => {
+      await service.changePassword({ loginData, newPassword: 'secret1' });
+
+      const { path, body } = lastPost();
+      expect(path).toBe('/api/user/password');
+      expect(body).toMatchObject({
+        semel: 482273,
+        username: 'u',
+        // The CURRENT password stays: this route proves it before changing it.
+        password: 'old',
+        newPassword: 'secret1',
+      });
+    });
+
+    it('echoes the challenge id back as mfaChallengeId', async () => {
+      // The 403 that demanded the change carries it, and Mashov wants it back
+      // under the request-side name.
+      await service.changePassword({
+        loginData,
+        newPassword: 'secret1',
+        challengeId: 'ch-5',
+      });
+
+      expect(lastPost().body).toMatchObject({ mfaChallengeId: 'ch-5' });
+    });
+
+    it('omits mfaChallengeId when there was no challenge', async () => {
+      await service.changePassword({ loginData, newPassword: 'secret1' });
+      expect(lastPost().body).not.toHaveProperty('mfaChallengeId');
+    });
+  });
+
+  describe('changeUsername', () => {
+    const loginData = { semel: 482273, year: 2027, username: 'u', password: 'old' };
+
+    it('posts the login data with the NEW username in place', async () => {
+      await service.changeUsername({ loginData, username: 'newname' });
+
+      const { path, body } = lastPost();
+      expect(path).toBe('/api/user/username');
+      expect(body.username).toBe('newname');
+      expect(body).not.toHaveProperty('newPassword');
+    });
+  });
+
+  describe('requestOtp', () => {
+    it('posts the school, username and channel', async () => {
+      await service.requestOtp({ semel: 482273, username: 'u', method: 'sms' });
+
+      const { path, body } = lastPost();
+      expect(path).toBe('/api/user/otp/request');
+      expect(body).toEqual({ semel: 482273, username: 'u', method: 'sms' });
+    });
+  });
+
+  describe('verifyOtp', () => {
+    const loginData = { semel: 482273, year: 2027, username: 'u' };
+
+    it('posts the login data plus the code', async () => {
+      await service.verifyOtp({ loginData, code: '123456' });
+
+      const { path, body } = lastPost();
+      expect(path).toBe('/api/user/otp');
+      expect(body).toMatchObject({ semel: 482273, username: 'u', code: '123456' });
+    });
+
+    it('strips the code of whitespace', async () => {
+      await service.verifyOtp({ loginData, code: '123 456' });
+      expect(lastPost().body.code).toBe('123456');
+    });
+
+    it('carries no password, by construction', async () => {
+      await service.verifyOtp({
+        loginData: { ...loginData, password: 'leaked' },
+        code: '123456',
+      });
+      expect(lastPost().body).not.toHaveProperty('password');
+    });
+
+    it('captures the session headers so a session can be minted', async () => {
+      mockHttp.post.mockResolvedValue(
+        ok({ credential: { userId: 'u1' } }, { devicepass: 'dp-9' }),
+      );
+
+      const result = await service.verifyOtp({ loginData, code: '123456' });
+
+      expect(result.devicePass).toBe('dp-9');
+      expect(result.data).toMatchObject({ credential: { userId: 'u1' } });
+    });
+  });
 });

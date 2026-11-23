@@ -26,7 +26,57 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
   USER_INACTIVE: 'החשבון אינו פעיל בשנה זו',
   USE_USERNAME: 'יש להתחבר עם שם המשתמש ולא עם מספר הזהות',
   UPSTREAM_ERROR: 'משוב אינו זמין כרגע',
+
+  // Password recovery.
+  RECOVERY_THROTTLED: 'משוב חוסם כרגע שליחת קודים לחשבון הזה. נסה שוב מאוחר יותר',
+  RECOVERY_SESSION_EXPIRED: 'תהליך איפוס הסיסמה פג. יש להתחיל מחדש',
+  INVALID_RECOVERY_CODE: 'קוד האימות שגוי',
+  RECOVERY_CODE_EXPIRED: 'קוד האימות פג. יש להתחיל מחדש',
+  RECOVERY_LOCKED: 'יותר מדי נסיונות. יש להתחיל את האיפוס מחדש',
+  SECOND_CODE_REQUIRED: 'משוב שלח קוד גם לאימייל וגם לטלפון. יש להזין את שני הקודים',
+  WEAK_PASSWORD: 'הסיסמה אינה עומדת בדרישות משוב',
+
+  // MFA.
+  INVALID_MFA_CODE: 'קוד האימות שגוי',
+  MFA_CODE_EXPIRED: 'קוד האימות פג. יש לבקש קוד חדש',
+  MFA_LOCKED: 'יותר מדי נסיונות. נסה שוב מאוחר יותר',
+  MFA_RESEND_TOO_SOON: 'קוד נשלח לפני רגע. יש להמתין לפני בקשת קוד נוסף',
+  MFA_CONTACT_MISSING: 'אין במשוב אימייל או טלפון לחשבון הזה',
+
+  // Forced credential change.
+  USERNAME_TAKEN: 'שם המשתמש הזה כבר תפוס במשוב',
+  USERNAME_LOCKED: 'יותר מדי החלפות שם משתמש. נסה שוב מאוחר יותר',
+  CREDENTIALS_SETUP_FAILED: 'משוב לא אישר את השינוי. נסה שוב',
+
+  // Passwordless sign-in. The first is the sync constraint made visible: it is
+  // the reason an OTP-only household cannot exist.
+  PASSWORD_SIGN_IN_REQUIRED:
+    'הכניסה הראשונה לבית ספר צריכה להיות עם סיסמה, כדי שהנתונים יתעדכנו ברקע',
+  INVALID_OTP_CODE: 'קוד האימות שגוי',
+  OTP_CODE_EXPIRED: 'קוד האימות פג. יש לבקש קוד חדש',
+  OTP_LOCKED: 'יותר מדי נסיונות. יש לבקש קוד חדש',
+  OTP_RESEND_TOO_SOON: 'קוד נשלח לפני רגע. יש להמתין לפני בקשת קוד נוסף',
+  OTP_CONTACT_MISSING: 'אין במשוב אימייל או טלפון לחשבון הזה',
+  OTP_SESSION_EXPIRED: 'תהליך הכניסה פג. יש לבקש קוד חדש',
+  LOGIN_METHOD_BLOCKED: 'בית הספר הזה אינו מאפשר כניסה בלי סיסמה',
+
+  // Shared.
+  VALIDATION_ERROR: 'חסרים פרטים. יש להשלים את כל השדות',
+  RATE_LIMITED: 'יותר מדי נסיונות. נסה שוב בעוד כמה דקות',
 };
+
+/**
+ * The codes whose envelope can carry a `challengeId`.
+ *
+ * All three are cases where Mashov opened something that has to be referenced
+ * back: the MFA challenge, and the forced change, which Mashov wants echoed as
+ * `mfaChallengeId`.
+ */
+const CHALLENGE_BEARING_CODES = new Set<AuthErrorCode>([
+  'MFA_REQUIRED',
+  'PASSWORD_CHANGE_REQUIRED',
+  'CREDENTIALS_SETUP_REQUIRED',
+]);
 
 /** Rate limiting is ours, not Mashov's, so it is not in the Reason table. */
 const TOO_MANY_REQUESTS = 'יותר מדי נסיונות כניסה. נסה שוב בעוד כמה דקות';
@@ -38,7 +88,10 @@ export interface ReadAuthError {
   code: string | undefined;
   /** Hebrew copy, never empty. */
   message: string;
-  /** Present only on MFA_REQUIRED: the handle on the challenge Mashov opened. */
+  /**
+   * The handle on a challenge Mashov opened. Present on `MFA_REQUIRED`, and on
+   * the forced-change codes, which carry one too and must echo it back.
+   */
   challengeId: string | undefined;
 }
 
@@ -62,16 +115,22 @@ export function readAuthError(error: unknown): ReadAuthError {
     ?.error;
   const code = envelope?.code || undefined;
 
-  if (error.status === 429) {
-    return { code, message: TOO_MANY_REQUESTS, challengeId: undefined };
-  }
-
+  // The code lookup comes FIRST, before the 429 fallback: several of our 429s
+  // have copy of their own (RECOVERY_THROTTLED, MFA_LOCKED, OTP_LOCKED), and a
+  // blanket "too many attempts" would throw away the one thing that tells the
+  // parent which limit they hit and what to do about it.
   if (code && isKnownCode(code)) {
     return {
       code,
       message: AUTH_ERROR_COPY[code],
-      challengeId: code === 'MFA_REQUIRED' ? envelope?.challengeId : undefined,
+      challengeId: CHALLENGE_BEARING_CODES.has(code)
+        ? envelope?.challengeId
+        : undefined,
     };
+  }
+
+  if (error.status === 429) {
+    return { code, message: TOO_MANY_REQUESTS, challengeId: undefined };
   }
 
   return { code, message: GENERIC, challengeId: undefined };

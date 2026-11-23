@@ -4,10 +4,10 @@ import React, { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { getSchools, login } from '@/api/auth';
+import { createOtpSession, getSchools, login, requestOtp } from '@/api/auth';
 import { SchoolAutocomplete } from '@/components/auth/SchoolAutocomplete';
 import { readAuthError } from '@/lib/authErrors';
-import type { School } from '@/types/api';
+import type { School, SignInMethod } from '@/types/api';
 
 function SignInForm() {
   const router = useRouter();
@@ -18,6 +18,13 @@ function SignInForm() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /**
+   * How the parent wants to prove who they are, mirroring Mashov's own
+   * `loginMethod`. `email` and `sms` are passwordless.
+   */
+  const [method, setMethod] = useState<SignInMethod>('password');
+  const [otpRequestId, setOtpRequestId] = useState<string | null>(null);
+  const [otpCode, setOtpCode] = useState('');
 
   // Still fetched here, for the last-used-school restore below. The
   // autocomplete runs the same query under the same key, so this is one
@@ -79,33 +86,110 @@ function SignInForm() {
         return;
       }
 
+      // Same shape for the forced change: the parent cannot act on it here,
+      // and their password is correct, so hand them the screen that fixes it
+      // rather than an error they can only reread.
+      if (
+        (code === 'PASSWORD_CHANGE_REQUIRED' || code === 'CREDENTIALS_SETUP_REQUIRED') &&
+        selectedSchool
+      ) {
+        const query = new URLSearchParams({
+          mode: code === 'CREDENTIALS_SETUP_REQUIRED' ? 'credentials' : 'password',
+          semel: String(selectedSchool.semel),
+          username: username.trim(),
+          ...(challengeId ? { cid: challengeId } : {}),
+        });
+        router.push(`/auth/complete-setup?${query.toString()}`);
+        return;
+      }
+
       setErrorMsg(message);
     },
   });
+
+  /**
+   * Passwordless step 1.
+   *
+   * The 409 it can answer is not an error to paper over: our background sync
+   * decrypts a stored password, so a school that has never been signed into
+   * with one cannot be signed into without one. The server checks that BEFORE
+   * sending a code, so the parent is never left holding a code they cannot use.
+   */
+  const otpRequestMutation = useMutation({
+    mutationFn: requestOtp,
+    onSuccess: (data) => setOtpRequestId(data.otpRequestId),
+    onError: (err) => setErrorMsg(readAuthError(err).message),
+  });
+
+  const otpSessionMutation = useMutation({
+    mutationFn: (code: string) => createOtpSession(otpRequestId ?? '', { code }),
+    onSuccess: (data) => {
+      try {
+        if (selectedSchool) {
+          localStorage.setItem('mashov.lastSchoolSemel', String(selectedSchool.semel));
+        }
+      } catch {
+        // localStorage unavailable - ignore
+      }
+      router.push(
+        data.isFirstLogin ? '/auth/syncing' : nextPath.startsWith('/auth') ? '/' : nextPath,
+      );
+    },
+    onError: (err) => setErrorMsg(readAuthError(err).message),
+  });
+
+  /** Everything the form collects before a method-specific step. */
+  function identityOrError(): { semel: number; username: string } | null {
+    if (!selectedSchool) {
+      setErrorMsg('יש לבחור בית ספר');
+      return null;
+    }
+    if (!username.trim()) {
+      setErrorMsg('יש להזין שם משתמש');
+      return null;
+    }
+    return { semel: selectedSchool.semel, username: username.trim() };
+  }
+
+  function handleRequestCode() {
+    setErrorMsg(null);
+    const identity = identityOrError();
+    if (!identity || method === 'password') return;
+    otpRequestMutation.mutate({ ...identity, method });
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErrorMsg(null);
 
-    if (!selectedSchool) {
-      setErrorMsg('יש לבחור בית ספר');
+    const identity = identityOrError();
+    if (!identity) return;
+
+    if (method !== 'password') {
+      if (!otpRequestId) {
+        handleRequestCode();
+        return;
+      }
+      if (!otpCode.trim()) {
+        setErrorMsg('יש להזין את קוד האימות');
+        return;
+      }
+      otpSessionMutation.mutate(otpCode);
       return;
     }
-    if (!username.trim()) {
-      setErrorMsg('יש להזין שם משתמש');
-      return;
-    }
+
     if (!password) {
       setErrorMsg('יש להזין סיסמה');
       return;
     }
 
-    loginMutation.mutate({
-      semel: selectedSchool.semel,
-      username: username.trim(),
-      password,
-    });
+    loginMutation.mutate({ ...identity, password });
   }
+
+  const pending =
+    loginMutation.isPending ||
+    otpRequestMutation.isPending ||
+    otpSessionMutation.isPending;
 
   return (
     <div className="min-h-dvh flex items-center justify-center bg-background px-4">
@@ -119,6 +203,48 @@ function SignInForm() {
           onSubmit={handleSubmit}
           className="rounded-2xl border border-border/60 bg-card p-6 shadow-sm space-y-5"
         >
+          {/*
+            Mirrors Mashov's own `loginMethod`. The passwordless options are
+            offered rather than hidden, with their one real constraint stated
+            below rather than discovered later.
+          */}
+          <fieldset className="space-y-1.5">
+            <legend className="block text-sm font-medium text-foreground">
+              אופן הכניסה
+            </legend>
+            <div className="flex gap-2">
+              {(
+                [
+                  ['password', 'סיסמה'],
+                  ['email', 'קוד לאימייל'],
+                  ['sms', 'קוד בסמס'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-testid={`sign-in-method-${value}`}
+                  aria-pressed={method === value}
+                  onClick={() => {
+                    setMethod(value);
+                    // A method change invalidates a code already requested on
+                    // the other channel.
+                    setOtpRequestId(null);
+                    setOtpCode('');
+                    setErrorMsg(null);
+                  }}
+                  className={
+                    method === value
+                      ? 'flex-1 rounded-xl border border-primary bg-primary/10 px-2 py-2 text-xs font-semibold text-primary'
+                      : 'flex-1 rounded-xl border border-input px-2 py-2 text-xs font-medium text-muted-foreground hover:bg-accent/50 transition-colors'
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
           <SchoolAutocomplete
             value={selectedSchool}
             onSelect={setSelectedSchool}
@@ -143,21 +269,73 @@ function SignInForm() {
             />
           </div>
 
-          {/* Password */}
-          <div className="space-y-1.5">
-            <label htmlFor="password" className="block text-sm font-medium text-foreground">
-              סיסמה
-            </label>
-            <input
-              id="password"
-              type="password"
-              data-testid="sign-in-password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
-            />
-          </div>
+          {method === 'password' ? (
+            <>
+              {/* Password */}
+              <div className="space-y-1.5">
+                <label htmlFor="password" className="block text-sm font-medium text-foreground">
+                  סיסמה
+                </label>
+                <input
+                  id="password"
+                  type="password"
+                  data-testid="sign-in-password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              {/*
+                Stated up front, not discovered after signing in: the
+                sixteen background tasks that keep this data fresh re-login
+                by decrypting a stored password, so a passwordless-only
+                household would see an app that never updates.
+              */}
+              <p
+                data-testid="sign-in-passwordless-note"
+                className="rounded-xl bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground"
+              >
+                כניסה עם קוד חד-פעמי אפשרית לבית ספר שכבר נכנסת אליו עם סיסמה. העדכון
+                האוטומטי של הנתונים ברקע ממשיך להסתמך על הסיסמה השמורה.
+              </p>
+
+              {!otpRequestId ? (
+                <button
+                  type="button"
+                  data-testid="sign-in-request-code"
+                  disabled={pending}
+                  onClick={handleRequestCode}
+                  className="w-full rounded-xl border border-primary px-4 py-2.5 text-sm font-semibold text-primary transition-colors hover:bg-primary/5 disabled:opacity-60"
+                >
+                  {otpRequestMutation.isPending ? 'שולח קוד…' : 'שליחת קוד אימות'}
+                </button>
+              ) : (
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="sign-in-otp-code-input"
+                    className="block text-sm font-medium text-foreground"
+                  >
+                    קוד האימות
+                  </label>
+                  <input
+                    id="sign-in-otp-code-input"
+                    type="text"
+                    data-testid="sign-in-otp-code"
+                    dir="ltr"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value)}
+                    className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm tracking-widest text-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors"
+                  />
+                </div>
+              )}
+            </>
+          )}
 
           {/* Error */}
           {errorMsg && (
@@ -174,10 +352,10 @@ function SignInForm() {
           <button
             type="submit"
             data-testid="sign-in-submit"
-            disabled={loginMutation.isPending}
+            disabled={pending}
             className="w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {loginMutation.isPending ? 'מתחבר...' : 'כניסה'}
+            {pending ? 'מתחבר...' : 'כניסה'}
           </button>
 
           {/*

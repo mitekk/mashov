@@ -749,7 +749,37 @@ export type AuthErrorCode =
   | 'SCHOOL_CLOSED'
   | 'USER_INACTIVE'
   | 'USE_USERNAME'
-  | 'UPSTREAM_ERROR';
+  | 'UPSTREAM_ERROR'
+  // Password recovery.
+  | 'RECOVERY_THROTTLED'
+  | 'RECOVERY_SESSION_EXPIRED'
+  | 'INVALID_RECOVERY_CODE'
+  | 'RECOVERY_CODE_EXPIRED'
+  | 'RECOVERY_LOCKED'
+  | 'SECOND_CODE_REQUIRED'
+  | 'WEAK_PASSWORD'
+  // MFA.
+  | 'INVALID_MFA_CODE'
+  | 'MFA_CODE_EXPIRED'
+  | 'MFA_LOCKED'
+  | 'MFA_RESEND_TOO_SOON'
+  | 'MFA_CONTACT_MISSING'
+  // Forced credential change.
+  | 'USERNAME_TAKEN'
+  | 'USERNAME_LOCKED'
+  | 'CREDENTIALS_SETUP_FAILED'
+  // Passwordless sign-in.
+  | 'PASSWORD_SIGN_IN_REQUIRED'
+  | 'INVALID_OTP_CODE'
+  | 'OTP_CODE_EXPIRED'
+  | 'OTP_LOCKED'
+  | 'OTP_RESEND_TOO_SOON'
+  | 'OTP_CONTACT_MISSING'
+  | 'OTP_SESSION_EXPIRED'
+  | 'LOGIN_METHOD_BLOCKED'
+  // Shared.
+  | 'VALIDATION_ERROR'
+  | 'RATE_LIMITED';
 
 /** The envelope every backend error uses; see `.claude/rules/api.md`. */
 export interface ApiErrorEnvelope {
@@ -943,6 +973,55 @@ export interface CreateMfaSessionRequest {
 }
 
 export interface CreateMfaSessionResponse {
+  ok: true;
+  isFirstLogin: boolean;
+}
+
+// ─── In-app Mashov auth: forced credential change, passwordless OTP ────────
+
+export interface SetCredentialsRequest {
+  semel: number;
+  username: string;
+  /** The CURRENT password. Mashov proves it before changing anything. */
+  password: string;
+  newPassword?: string;
+  newUsername?: string;
+  /** From the 403 that demanded the change. */
+  challengeId?: string;
+}
+
+export interface SetCredentialsResponse {
+  ok: true;
+  isFirstLogin: boolean;
+}
+
+/**
+ * How the parent wants to prove who they are, mirroring Mashov's own
+ * `loginMethod`.
+ *
+ * `email` and `sms` are passwordless, and cannot be the FIRST sign-in for a
+ * school: our background sync needs a stored password, so the server answers
+ * `409 PASSWORD_SIGN_IN_REQUIRED` and the form says so.
+ */
+export type SignInMethod = 'password' | 'email' | 'sms';
+
+export interface RequestOtpRequest {
+  semel: number;
+  username: string;
+  method: RecoveryChannel;
+}
+
+export interface RequestOtpResponse {
+  /** Opaque handle; the school and username stay server-side. */
+  otpRequestId: string;
+  method: RecoveryChannel;
+}
+
+export interface CreateOtpSessionRequest {
+  code: string;
+}
+
+export interface CreateOtpSessionResponse {
   ok: true;
   isFirstLogin: boolean;
 }

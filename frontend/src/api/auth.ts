@@ -11,6 +11,12 @@ import type {
   SendMfaCodeRequest,
   CreateMfaSessionRequest,
   CreateMfaSessionResponse,
+  SetCredentialsRequest,
+  SetCredentialsResponse,
+  RequestOtpRequest,
+  RequestOtpResponse,
+  CreateOtpSessionRequest,
+  CreateOtpSessionResponse,
 } from '@/types/api';
 
 export function getSchools(): Promise<School[]> {
@@ -84,6 +90,48 @@ export function createMfaSession(
 ): Promise<CreateMfaSessionResponse> {
   return apiFetch<CreateMfaSessionResponse>(
     `/auth/mfa-challenges/${encodeURIComponent(challengeId)}/session`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+}
+
+// ─── In-app Mashov auth: forced credential change, passwordless OTP ────────
+
+/**
+ * Satisfy Mashov's forced credential change and sign in.
+ *
+ * Driven by `PASSWORD_CHANGE_REQUIRED` / `CREDENTIALS_SETUP_REQUIRED` from
+ * `POST /auth/login`, where the password is correct and Mashov still refuses.
+ */
+export function setCredentials(
+  body: SetCredentialsRequest,
+): Promise<SetCredentialsResponse> {
+  return apiFetch<SetCredentialsResponse>('/auth/credentials', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Step 1 of passwordless sign-in.
+ *
+ * Answers `409 PASSWORD_SIGN_IN_REQUIRED` for a school that has never been
+ * signed into with a password, BEFORE sending a code -- so the parent is never
+ * left holding a code they cannot use.
+ */
+export function requestOtp(body: RequestOtpRequest): Promise<RequestOtpResponse> {
+  return apiFetch<RequestOtpResponse>('/auth/otp-requests', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** Step 2 of passwordless sign-in. Sets the `mashov_session` cookie. */
+export function createOtpSession(
+  otpRequestId: string,
+  body: CreateOtpSessionRequest,
+): Promise<CreateOtpSessionResponse> {
+  return apiFetch<CreateOtpSessionResponse>(
+    `/auth/otp-requests/${encodeURIComponent(otpRequestId)}/session`,
     { method: 'POST', body: JSON.stringify(body) },
   );
 }

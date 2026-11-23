@@ -12,6 +12,9 @@ import { CredentialRecoveryService } from './credential-recovery.service';
 import { CredentialRecoveryController } from './credential-recovery.controller';
 import { MfaService } from './mfa.service';
 import { MfaController } from './mfa.controller';
+import { CredentialSetupService } from './credential-setup.service';
+import { OtpService } from './otp.service';
+import { CredentialSetupController } from './credential-setup.controller';
 
 @Module({
   imports: [
@@ -23,8 +26,25 @@ import { MfaController } from './mfa.controller';
     SchoolLinksModule,
     MashovLoginModule,
   ],
-  controllers: [AuthController, CredentialRecoveryController, MfaController],
-  providers: [AuthService, CredentialRecoveryService, MfaService],
-  exports: [AuthService, CredentialRecoveryService, MfaService],
+  controllers: [
+    AuthController,
+    CredentialRecoveryController,
+    MfaController,
+    CredentialSetupController,
+  ],
+  providers: [
+    AuthService,
+    CredentialRecoveryService,
+    MfaService,
+    CredentialSetupService,
+    OtpService,
+  ],
+  exports: [
+    AuthService,
+    CredentialRecoveryService,
+    MfaService,
+    CredentialSetupService,
+    OtpService,
+  ],
 })
 export class AuthModule {}
