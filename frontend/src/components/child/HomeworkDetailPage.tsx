@@ -81,7 +81,7 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
 
   return (
     <AppShell>
-      <div data-testid="homework-detail-page" className="page-shell space-y-4">
+      <div data-testid="homework-detail-page" className="page-shell measure space-y-4">
         <div className="flex items-center justify-between gap-2 pt-5">
           <button
             type="button"

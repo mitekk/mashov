@@ -293,8 +293,12 @@ export function BehaviorSection({
           subtitle={activeFilter !== 'all' ? 'נסה לשנות את הסינון' : undefined}
         />
       )}
+      {/* One column on a phone, two once the lg sidebar leaves ~888px of
+          content width. A grid, not `.section-stack`: space-y puts margin-top
+          on every child but the first, which in a two-column grid offsets the
+          second column's first row. */}
       {filteredItems.length > 0 && (
-        <div className="section-stack">
+        <div className="grid gap-3 lg:grid-cols-2">
           {filteredItems.map((item) => (
             <BehaviorItem
               key={item.id}

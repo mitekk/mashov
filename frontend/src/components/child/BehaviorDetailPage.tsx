@@ -84,7 +84,7 @@ export function BehaviorDetailPage({ studentGuid, behaviorId }: BehaviorDetailPa
 
   return (
     <AppShell>
-      <div data-testid="behavior-detail-page" className="page-shell space-y-4">
+      <div data-testid="behavior-detail-page" className="page-shell measure space-y-4">
         <div className="flex items-center justify-between gap-2 pt-5">
           <button
             type="button"

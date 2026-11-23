@@ -76,8 +76,15 @@ export function ChildHeader({
 
   return (
     <header className="card-base px-4 py-5">
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div>
+      {/*
+        Defect 12, the 360px overflow: this row held a title whose select was
+        capped at a floor-less `max-w-xs` (320px) next to four 40px icon
+        buttons, inside `card-base px-4` -- about 296px of usable width for
+        roughly 480px of content, on a single non-wrapping line. It now wraps,
+        the identity block can shrink, and the name truncates.
+      */}
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div data-testid="child-header-identity" className="min-w-0 flex-1">
           <h1 className="m-0 text-2xl font-semibold tracking-tight text-foreground leading-tight">
             <Select
               value={selectedChildGuid}
@@ -89,9 +96,9 @@ export function ChildHeader({
                 id="child-header-selector"
                 aria-label="בחר ילד"
                 data-testid="child-header-selector"
-                className="tap-target h-auto w-auto max-w-xs border-transparent bg-transparent px-0 text-inherit shadow-none hover:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 gap-2 items-center font-inherit"
+                className="tap-target h-auto w-auto max-w-[min(100%,20rem)] border-transparent bg-transparent px-0 text-inherit shadow-none hover:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 gap-2 items-center font-inherit"
               >
-                <span>{student.fullName}</span>
+                <span className="truncate">{student.fullName}</span>
               </SelectTrigger>
               <SelectContent align="start" className="max-h-72">
                 <div className="space-y-1">
@@ -141,7 +148,10 @@ export function ChildHeader({
             )}
           </p>
         </div>
-        <div className="flex items-start gap-2">
+        <div
+          data-testid="child-header-actions"
+          className="flex flex-wrap items-start justify-end gap-2"
+        >
           {!student.isActive && (
             <span className="mt-1 flex-shrink-0 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
               לא פעיל

@@ -250,7 +250,11 @@
   }
 
   /* Column of reading-width content. Wider than that and a message list turns
-     into a line the eye has to track across. */
+     into a line the eye has to track across.
+     KEEP THIS AFTER `.page-shell`: both set max-width in @layer components, and
+     between two rules in one layer the later one wins whatever the specificity.
+     Reorder them and every `.page-shell measure` page widens back to 64rem.
+     src/app/globals.test.ts asserts the order. */
   .measure {
     @apply w-full max-w-3xl;
   }

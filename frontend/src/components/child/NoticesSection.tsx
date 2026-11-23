@@ -34,8 +34,12 @@ export function NoticesSection({ studentGuid }: NoticesSectionProps) {
           title="אין הודעות"
         />
       )}
+      {/* One column on a phone, two once the lg sidebar leaves ~888px of
+          content width. A grid, not `.section-stack`: space-y puts margin-top
+          on every child but the first, which in a two-column grid offsets the
+          second column's first row. */}
       {data && data.data.length > 0 && (
-        <div className="space-y-3">
+        <div className="grid gap-3 lg:grid-cols-2">
           {data.data.map((notice) => (
             <div key={notice.id} className="card-base p-4">
               <p className="text-xs text-muted-foreground mb-2">

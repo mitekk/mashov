@@ -59,6 +59,18 @@ describe('globals.css and tailwind.config.ts', () => {
     }
   });
 
+  it('defines the narrowing primitives after the ones they narrow', () => {
+    // `.page-shell measure` and `.page-shell page-shell-wide` are both pairs of
+    // @layer components classes setting max-width. Between two rules in one
+    // layer the later one wins regardless of specificity, so this order IS the
+    // behaviour: flip it and every `.measure` page silently widens to 64rem.
+    const order = (cls: string) => css.indexOf(`.${cls} {`);
+
+    expect(order('page-shell')).toBeGreaterThan(-1);
+    expect(order('measure')).toBeGreaterThan(order('page-shell'));
+    expect(order('page-shell-wide')).toBeGreaterThan(order('page-shell'));
+  });
+
   it('defines the one scrollbar-hiding utility that files already reference', () => {
     expect(css).toContain('.scrollbar-hide');
     expect(css).toMatch(/\.scrollbar-hide::-webkit-scrollbar\s*\{\s*display:\s*none/);
