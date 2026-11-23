@@ -12,6 +12,7 @@ import {
   resolveMashovBaseUrl,
 } from '../http/mashov-http';
 import { MASHOV_CSRF_TOKEN, buildLoginBody } from './mashov-login-body';
+import { readLoginHeaders } from './mashov-login-headers';
 
 /** What Mashov tells us about an account when the credentials are good. */
 export interface MashovLoginResult {
@@ -159,12 +160,7 @@ export class MashovCredentialValidatorService {
       },
     });
 
-    return {
-      data: response.data,
-      newUniqueId: readUniqueIdCookie(response.headers?.['set-cookie']),
-      csrfToken: readHeader(response.headers, 'x-csrf-token'),
-      devicePass: readHeader(response.headers, 'devicepass'),
-    };
+    return { data: response.data, ...readLoginHeaders(response.headers) };
   }
 
   /** True when an error is an upstream outage rather than a rejection. */
@@ -176,40 +172,4 @@ export class MashovCredentialValidatorService {
   isRejection(error: unknown): boolean {
     return axios.isAxiosError(error) && error.response?.status === 401;
   }
-}
-
-/** The `uniquId` Mashov sets, if it set one. */
-function readUniqueIdCookie(setCookie: string | string[] | undefined): string | undefined {
-  if (!setCookie) return undefined;
-  const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-  for (const cookie of cookies) {
-    const nameValue = cookie.split(';')[0] ?? '';
-    const eqIdx = nameValue.indexOf('=');
-    if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
-      return nameValue.substring(eqIdx + 1).trim();
-    }
-  }
-  return undefined;
-}
-
-/**
- * One response header, whatever case the server or the transport chose.
- *
- * Axios lowercases header names on the Node adapter but not everywhere, and
- * `devicePass` is spelled mixed-case in Mashov's own bundle. A case-sensitive
- * read here would silently return `undefined` and quietly disable the
- * trusted-device path, which fails as "MFA accounts stop syncing" a day later
- * rather than as an error anyone can see.
- */
-function readHeader(
-  headers: Record<string, unknown> | undefined,
-  lowercaseName: string,
-): string | undefined {
-  if (!headers) return undefined;
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() !== lowercaseName) continue;
-    if (typeof value === 'string' && value.length > 0) return value;
-    if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
-  }
-  return undefined;
 }
