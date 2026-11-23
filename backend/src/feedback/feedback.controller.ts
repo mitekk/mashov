@@ -1,0 +1,143 @@
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsEmail,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
+import type { Request } from 'express';
+import {
+  FEEDBACK_SUBJECTS,
+  FeedbackService,
+  type FeedbackReceipt,
+  type FeedbackSubject,
+} from './feedback.service';
+
+/** `{ data: … }`, the envelope the digest and telegram routes return. */
+interface FeedbackResponse {
+  data: FeedbackReceipt;
+}
+
+class CreateFeedbackDto {
+  @IsIn(FEEDBACK_SUBJECTS)
+  subject!: FeedbackSubject;
+
+  /**
+   * The parent's own wording, required only behind `אחר`.
+   *
+   * `@ValidateIf` SKIPS the field for every other subject rather than
+   * rejecting it, and `whitelist: true` strips only undecorated properties --
+   * so a stray value still reaches the service, which nulls it.
+   */
+  @ValidateIf((dto: CreateFeedbackDto) => dto.subject === 'other')
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @MinLength(1)
+  @MaxLength(80)
+  subjectOther?: string;
+
+  /** Pre-filled from the Mashov profile and editable, so optional. */
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(254)
+  contactEmail?: string;
+
+  /**
+   * Trimmed BEFORE the length rules, so a textarea holding only spaces is a
+   * 400 rather than a stored blank report.
+   */
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @MinLength(1)
+  @MaxLength(2000)
+  content!: string;
+
+  /** Path only; the client strips query and hash, which can carry a guid. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  pagePath?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  viewportWidth?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  viewportHeight?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  appVersion?: string;
+}
+
+/**
+ * The parent feedback channel. Write-only on purpose: there is no read path,
+ * no reply thread and no notification -- whoever reads the table runs SQL.
+ *
+ * Behind the global `AppSessionGuard` like every other Phase 2 route, so a
+ * report always has a household to snapshot.
+ */
+@Controller('feedback')
+export class FeedbackController {
+  constructor(private readonly feedbackService: FeedbackService) {}
+
+  /**
+   * Send one report.
+   *
+   * The `@Throttle` here is a crude per-IP backstop only. The limit that
+   * matters is counted per user in the service: this one would lock out a
+   * whole school NAT or both parents of one household.
+   */
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  async create(
+    @Body() body: CreateFeedbackDto,
+    @Req() req: Request,
+  ): Promise<FeedbackResponse> {
+    const userId = this.requireUserId(req);
+
+    // From the header, not the body: the client has no reason to be trusted
+    // with the one field whose purpose is telling us what it actually is.
+    const userAgent = req.headers['user-agent'];
+
+    return {
+      data: await this.feedbackService.create(
+        userId,
+        body,
+        typeof userAgent === 'string' ? userAgent : undefined,
+      ),
+    };
+  }
+
+  private requireUserId(req: Request): string {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new UnauthorizedException({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated', details: [] },
+      });
+    }
+    return userId;
+  }
+}
