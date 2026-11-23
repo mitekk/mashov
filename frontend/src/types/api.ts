@@ -826,3 +826,50 @@ export interface TelegramLinkState {
 export interface TelegramLinkStateResponse {
   data: TelegramLinkState;
 }
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+/**
+ * The subjects `POST /feedback` accepts.
+ *
+ * Duplicated from `FEEDBACK_SUBJECTS` in
+ * `backend/src/feedback/feedback.service.ts` -- separate tsconfig roots, no
+ * shared package, the same lane as `lib/school-link-errors.ts`. Declared as a
+ * union rather than an array so the Hebrew label map can be typed
+ * `Record<FeedbackSubject, string>`: a subject added on one side without a
+ * label fails `tsc` instead of rendering blank.
+ */
+export type FeedbackSubject =
+  | 'bug'
+  | 'suggestion'
+  | 'data'
+  | 'account'
+  | 'notifications'
+  | 'timetable'
+  | 'other';
+
+export interface CreateFeedbackBody {
+  subject: FeedbackSubject;
+  /** Required only when `subject` is `'other'`; max 80 characters. */
+  subjectOther?: string;
+  contactEmail?: string;
+  content: string;
+  /** Path only -- never the query or hash, which can carry a child guid. */
+  pagePath?: string;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  appVersion?: string;
+}
+
+/** What the server confirms. Nothing the parent wrote is echoed back. */
+export interface FeedbackReceipt {
+  id: string;
+  subject: string;
+  createdAt: string;
+}
+
+export interface FeedbackResponse {
+  data: FeedbackReceipt;
+}
