@@ -94,6 +94,29 @@ function sendErrorMessage(error: unknown): string {
   return 'לא הצלחנו לשלוח את המשוב. נסו שוב';
 }
 
+/**
+ * One field's error, inline and owned by that field.
+ *
+ * `.claude/rules/frontend.md` asks for field-level errors: an aggregated
+ * first-error-only line costs a parent with two bad fields a second round
+ * trip, and gives a screen-reader user no way to tell which control a bare
+ * sentence belongs to. The id is what `aria-describedby` points at.
+ */
+function FieldError({ id, testId, message }: { id: string; testId: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <p id={id} data-testid={testId} className="mt-1 text-xs text-destructive">
+      {message}
+    </p>
+  );
+}
+
+/** `aria-describedby` takes a space-separated list; absent beats empty. */
+function describedBy(...ids: (string | false | undefined)[]): string | undefined {
+  const present = ids.filter((id): id is string => Boolean(id));
+  return present.length > 0 ? present.join(' ') : undefined;
+}
+
 interface FeedbackDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -119,7 +142,7 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
     handleSubmit,
     watch,
     setValue,
-    formState: { errors },
+    formState: { errors, dirtyFields },
   } = useForm<FeedbackForm>({
     resolver: zodResolver(schema),
     defaultValues: { subject: 'bug', subjectOther: '', contactEmail: '', content: '' },
@@ -141,22 +164,23 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
     [profiles],
   );
 
-  // Once, and only into an untouched field: the profile query can resolve
-  // after the parent has already typed or cleared their own address.
+  // Once, and only into an untouched field. The ref alone is not enough: on a
+  // cold load the profile query resolves AFTER the parent has started typing,
+  // and without the dirty check this effect would replace their own address
+  // with the Mashov one -- silently, and a reply would go somewhere they chose
+  // not to use. `dirtyFields` also covers the parent who deliberately cleared
+  // it.
   const prefilled = useRef(false);
+  const emailTouched = Boolean(dirtyFields.contactEmail);
   useEffect(() => {
-    if (prefilled.current || !prefillEmail) return;
+    if (prefilled.current || emailTouched || !prefillEmail) return;
     prefilled.current = true;
     setValue('contactEmail', prefillEmail);
-  }, [prefillEmail, setValue]);
+  }, [emailTouched, prefillEmail, setValue]);
 
-  const firstFieldError =
-    errors.subjectOther?.message ??
-    errors.contactEmail?.message ??
-    errors.content?.message ??
-    errors.subject?.message;
-  const errorMessage =
-    firstFieldError ?? (submitMutation.isError ? sendErrorMessage(submitMutation.error) : null);
+  // The banner is for the SEND failure only -- the one thing no field owns.
+  // Every validation message renders under its own input instead.
+  const sendError = submitMutation.isError ? sendErrorMessage(submitMutation.error) : null;
 
   const onValid = (values: FeedbackForm) => {
     const body: CreateFeedbackBody = {
@@ -215,7 +239,12 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
               שליחת משוב
             </Dialog.Title>
             <Dialog.Close asChild>
-              <button type="button" aria-label="סגור" className="icon-button h-9 w-9">
+              <button
+                type="button"
+                data-testid="feedback-close-button"
+                aria-label="סגור"
+                className="icon-button h-9 w-9"
+              >
                 <X className="h-4 w-4" />
               </button>
             </Dialog.Close>
@@ -241,6 +270,8 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                 id="feedback-subject"
                 data-testid="feedback-subject-select"
                 className={`${FIELD_CLASS} h-11`}
+                aria-invalid={errors.subject ? true : undefined}
+                aria-describedby={describedBy(errors.subject && 'feedback-subject-error')}
                 {...register('subject')}
               >
                 {SUBJECT_ORDER.map((code) => (
@@ -249,6 +280,11 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                   </option>
                 ))}
               </select>
+              <FieldError
+                id="feedback-subject-error"
+                testId="feedback-subject-error"
+                message={errors.subject?.message}
+              />
             </div>
 
             {subject === 'other' && (
@@ -265,7 +301,16 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                   type="text"
                   maxLength={SUBJECT_OTHER_MAX}
                   className={`${FIELD_CLASS} h-11`}
+                  aria-invalid={errors.subjectOther ? true : undefined}
+                  aria-describedby={describedBy(
+                    errors.subjectOther && 'feedback-subject-other-error',
+                  )}
                   {...register('subjectOther')}
+                />
+                <FieldError
+                  id="feedback-subject-other-error"
+                  testId="feedback-subject-other-error"
+                  message={errors.subjectOther?.message}
                 />
               </div>
             )}
@@ -280,9 +325,18 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                 rows={5}
                 maxLength={FEEDBACK_CONTENT_MAX}
                 className={FIELD_CLASS}
+                aria-invalid={errors.content ? true : undefined}
+                // The counter is in here too: `maxLength` truncates a long
+                // paste silently, so a screen-reader user who is not told the
+                // limit has no way to learn it.
+                aria-describedby={describedBy(
+                  'feedback-content-counter',
+                  errors.content && 'feedback-content-error',
+                )}
                 {...register('content')}
               />
               <p
+                id="feedback-content-counter"
                 data-testid="feedback-content-counter"
                 className="mt-1 text-xs text-muted-foreground"
               >
@@ -295,6 +349,11 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                   {content.length} / {FEEDBACK_CONTENT_MAX}
                 </span>
               </p>
+              <FieldError
+                id="feedback-content-error"
+                testId="feedback-content-error"
+                message={errors.content?.message}
+              />
             </div>
 
             <div>
@@ -309,17 +368,24 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                 autoComplete="email"
                 maxLength={EMAIL_MAX}
                 className={`${FIELD_CLASS} h-11`}
+                aria-invalid={errors.contactEmail ? true : undefined}
+                aria-describedby={describedBy(errors.contactEmail && 'feedback-email-error')}
                 {...register('contactEmail')}
+              />
+              <FieldError
+                id="feedback-email-error"
+                testId="feedback-email-error"
+                message={errors.contactEmail?.message}
               />
             </div>
 
-            {errorMessage && (
+            {sendError && (
               <p
                 role="alert"
                 data-testid="feedback-error"
                 className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
               >
-                {errorMessage}
+                {sendError}
               </p>
             )}
 

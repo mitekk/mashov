@@ -7,6 +7,9 @@ import { FeedbackDialog } from './FeedbackDialog';
 /** Long enough to read in a second language, short enough not to linger. */
 export const FEEDBACK_THANKS_MS = 10_000;
 
+/** One string, so the live region and the visible banner cannot disagree. */
+const THANKS_TEXT = 'תודה! המשוב נשלח ונקרא על ידינו';
+
 /**
  * The feedback entry point: a header icon, and nothing else until it is
  * pressed.
@@ -59,9 +62,22 @@ export function FeedbackLauncher() {
         <FeedbackDialog open={open} onOpenChange={setOpen} onSent={() => setThanks(true)} />
       )}
 
+      {/*
+        Always in the tree, text toggled inside it. A live region inserted at
+        the same moment as its content is frequently not announced at all
+        (NVDA, VoiceOver) -- the parent would tap send, the dialog would close,
+        and a blind parent would be told nothing, then send again into the
+        hourly limit.
+      */}
+      <div role="status" data-testid="feedback-thanks-live" lang="he-IL" className="sr-only">
+        {thanks ? THANKS_TEXT : ''}
+      </div>
+
       {thanks && (
         <div
-          role="status"
+          // Visual only: the region above is what gets announced, and reading
+          // the same sentence twice is worse than once.
+          aria-hidden="true"
           data-testid="feedback-thanks"
           lang="he-IL"
           dir="rtl"
@@ -71,7 +87,7 @@ export function FeedbackLauncher() {
           className="pb-nav fixed inset-x-0 bottom-0 z-[60] flex items-center justify-between gap-3 px-4"
         >
           <span className="mx-auto flex w-full max-w-md items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm text-foreground shadow-lg">
-            תודה! המשוב נשלח ונקרא על ידינו
+            {THANKS_TEXT}
             <button
               type="button"
               data-testid="feedback-thanks-dismiss"

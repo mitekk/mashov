@@ -114,9 +114,54 @@ describe('FeedbackDialog', () => {
     fireEvent.click(submit());
 
     await waitFor(() => {
-      expect(screen.getByTestId('feedback-error').textContent).toContain('נושא');
+      expect(screen.getByTestId('feedback-subject-other-error').textContent).toContain('נושא');
     });
+    // The banner is for send failures; a field's own message sits under it.
+    expect(screen.queryByTestId('feedback-error')).toBeNull();
     expect(submitFeedback).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `.claude/rules/frontend.md`: "show field-level errors inline". One
+   * aggregated first-error-only line costs a parent with two bad fields a
+   * second round trip, and a screen-reader user hears a sentence with no way
+   * to tell which of the four controls it belongs to.
+   */
+  it('marks every offending field, not just the first', async () => {
+    renderDialog();
+    type(screen.getByTestId('feedback-subject-select'), 'other');
+    type(screen.getByTestId('feedback-email-input'), 'not-an-email');
+    type(content(), 'משהו');
+
+    fireEvent.click(submit());
+
+    await waitFor(() => {
+      expect(screen.getByTestId('feedback-subject-other-error')).not.toBeNull();
+    });
+    expect(screen.getByTestId('feedback-email-error')).not.toBeNull();
+  });
+
+  it('points each invalid input at its own message', async () => {
+    renderDialog();
+    type(screen.getByTestId('feedback-email-input'), 'not-an-email');
+    type(content(), 'משהו');
+
+    fireEvent.click(submit());
+
+    const email = screen.getByTestId('feedback-email-input');
+    await waitFor(() => expect(email.getAttribute('aria-invalid')).toBe('true'));
+    const describedBy = email.getAttribute('aria-describedby') ?? '';
+    const message = screen.getByTestId('feedback-email-error');
+    expect(describedBy.split(/\s+/)).toContain(message.id);
+  });
+
+  it('tells a screen reader the content limit, not only a sighted one', () => {
+    renderDialog();
+
+    const textarea = content();
+    const counter = screen.getByTestId('feedback-content-counter');
+    expect(counter.id).not.toBe('');
+    expect((textarea.getAttribute('aria-describedby') ?? '').split(/\s+/)).toContain(counter.id);
   });
 
   it('sends אחר once the label is filled', async () => {
@@ -258,6 +303,56 @@ describe('FeedbackDialog', () => {
     expect((screen.getByTestId('feedback-email-input') as HTMLInputElement).value).toBe('');
   });
 
+  /**
+   * The profile query can resolve AFTER the parent has typed. Without a dirty
+   * check the prefill effect replaces their correction with the Mashov
+   * address, silently, and the reply goes to the one they chose not to use.
+   */
+  it('does not overwrite an address the parent typed before the profile arrived', () => {
+    useProfile.mockReturnValue({ data: undefined });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <FeedbackDialog open onOpenChange={vi.fn()} onSent={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    type(screen.getByTestId('feedback-email-input'), 'mum.work@example.com');
+
+    // The query settles a moment later, as it does on a cold load.
+    useProfile.mockReturnValue({ data: [profile({ email: 'mashov@example.com' })] });
+    rerender(
+      <QueryClientProvider client={client}>
+        <FeedbackDialog open onOpenChange={vi.fn()} onSent={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect((screen.getByTestId('feedback-email-input') as HTMLInputElement).value).toBe(
+      'mum.work@example.com',
+    );
+  });
+
+  it('still prefills a late profile into a field the parent has not touched', () => {
+    useProfile.mockReturnValue({ data: undefined });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <FeedbackDialog open onOpenChange={vi.fn()} onSent={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    useProfile.mockReturnValue({ data: [profile({ email: 'mashov@example.com' })] });
+    rerender(
+      <QueryClientProvider client={client}>
+        <FeedbackDialog open onOpenChange={vi.fn()} onSent={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect((screen.getByTestId('feedback-email-input') as HTMLInputElement).value).toBe(
+      'mashov@example.com',
+    );
+  });
+
   it('refuses an address that is not an address', async () => {
     renderDialog();
     type(screen.getByTestId('feedback-email-input'), 'not-an-email');
@@ -265,7 +360,7 @@ describe('FeedbackDialog', () => {
 
     fireEvent.click(submit());
 
-    await waitFor(() => expect(screen.getByTestId('feedback-error')).not.toBeNull());
+    await waitFor(() => expect(screen.getByTestId('feedback-email-error')).not.toBeNull());
     expect(submitFeedback).not.toHaveBeenCalled();
   });
 

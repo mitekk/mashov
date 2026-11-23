@@ -281,6 +281,33 @@ describe('FeedbackService', () => {
         expect(create.mock.calls[0][0].data.appVersion).toBe('2026.11.01');
       });
 
+      /**
+       * `docker-compose.yml` sets `APP_VERSION: ${APP_VERSION:-}`, so on a
+       * stack whose operator never set the variable the backend receives a SET
+       * empty string -- which `??` passes straight through. Every row would
+       * then carry `''`, and a reader filtering `appVersion IS NULL` would
+       * find nothing and could not tell "unknown" from "known to be blank".
+       */
+      it('stores null when the environment sets an empty version', async () => {
+        process.env.APP_VERSION = '';
+        const { prisma, create } = makeMockPrisma({});
+        const service = new FeedbackService(prisma);
+
+        await service.create('user-1', input());
+
+        expect(create.mock.calls[0][0].data.appVersion).toBeNull();
+      });
+
+      it('stores null when the client sends an empty version', async () => {
+        delete process.env.APP_VERSION;
+        const { prisma, create } = makeMockPrisma({});
+        const service = new FeedbackService(prisma);
+
+        await service.create('user-1', input({ appVersion: '' }));
+
+        expect(create.mock.calls[0][0].data.appVersion).toBeNull();
+      });
+
       it('stores null when neither side knows the build', async () => {
         delete process.env.APP_VERSION;
         const { prisma, create } = makeMockPrisma({});

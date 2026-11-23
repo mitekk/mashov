@@ -125,7 +125,11 @@ export class FeedbackService {
         // the fallback: without it this field would read null on every row,
         // and the field exists to answer "is the bug still in the release we
         // are running".
-        appVersion: input.appVersion ?? process.env.APP_VERSION ?? null,
+        // `||`, not `??`: docker-compose sets `APP_VERSION: ${APP_VERSION:-}`,
+        // so an operator who never set the variable hands this a SET empty
+        // string. `??` would pass it through and file every row under `''`,
+        // which a reader cannot tell from a build that is genuinely blank.
+        appVersion: input.appVersion || process.env.APP_VERSION || null,
         mashovUserId: user.mashovUserId,
         username: user.username,
         // Stripped of the per-school child tag Mashov appends, so one child's
