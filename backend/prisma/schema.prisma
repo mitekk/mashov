@@ -966,10 +966,25 @@ model Feedback {
   schoolsSnapshot Json     @default("[]")
   createdAt       DateTime @default(now())
 
+  /// Outbox state for the operator notification. Null = not yet delivered.
+  notifiedAt      DateTime?
+  /// Delivery attempts spent. Retired at FEEDBACK_NOTIFY_MAX_ATTEMPTS (3).
+  notifyAttempts  Int       @default(0)
+  /// Last failure, for the admin detail view. Token already redacted by the
+  /// sender.
+  notifyError     String?
+  /// Triage state: stamped the first time an operator opens the detail view.
+  /// See ADR-0045.
+  readAt          DateTime?
+  /// Triage state: set explicitly when an operator has answered the parent.
+  respondedAt     DateTime?
+
   /// The per-user rate limit counts a user's rows in the last hour.
   @@index([userId, createdAt])
   /// Reading the table is "newest first".
   @@index([createdAt])
+  /// The outbox scan: undelivered rows, oldest first.
+  @@index([notifiedAt, createdAt])
   @@map("feedback")
 }
 

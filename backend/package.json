@@ -36,6 +36,7 @@
     "helmet": "^8.1.0",
     "https-proxy-agent": "^7.0.6",
     "ioredis": "^5.10.0",
+    "jose": "^5.10.0",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1",
     "sanitize-html": "2.17.5"

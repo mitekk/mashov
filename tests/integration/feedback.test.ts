@@ -60,6 +60,13 @@ describe('POST /api/v1/feedback', () => {
   let prisma: PrismaClient;
 
   beforeAll(async () => {
+    // Pinned rather than trusted from config: `.env` leaks into the
+    // integration container, and a real chat id present on the dev machine
+    // would turn these tests into live Telegram sends. Unset is also the state
+    // this file asserts about -- the write path must be complete and
+    // unaffected with no notifier configured.
+    delete process.env.FEEDBACK_TELEGRAM_CHAT_ID;
+
     prisma = new PrismaClient();
     await prisma.$connect();
 
@@ -379,6 +386,29 @@ describe('POST /api/v1/feedback', () => {
     // The other parent, on the same IP, is unaffected.
     const neighbour = await send({ subject: 'bug', content: 'שלי' }, OTHER_TOKEN);
     expect(neighbour.status).toBe(201);
+  });
+
+  /**
+   * The outbox columns, as a new row actually lands.
+   *
+   * The write path gained a notifier and must be unchanged by it: the report
+   * is stored, the parent gets their 201, and nothing in the request sends
+   * anything. The row is left pending for the cron to pick up, which is the
+   * whole point of the outbox -- `create()` has no hook point at all.
+   */
+  it('writes a new report as pending delivery, untriaged, with no chat configured', async () => {
+    const response = await send({ subject: 'bug', content: 'דיווח חדש' });
+    expect(response.status).toBe(201);
+
+    const row = await prisma.feedback.findUniqueOrThrow({
+      where: { id: response.body.data.id },
+    });
+
+    expect(row.notifiedAt).toBeNull();
+    expect(row.notifyAttempts).toBe(0);
+    expect(row.notifyError).toBeNull();
+    expect(row.readAt).toBeNull();
+    expect(row.respondedAt).toBeNull();
   });
 
   it('counts only the last hour', async () => {

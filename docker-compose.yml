@@ -161,6 +161,28 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       SESSION_LIFETIME_DAYS: ${SESSION_LIFETIME_DAYS:-30}
       SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
+      # Operator feedback delivery (ADR-0045). The chat id is the ONLY switch:
+      # unset means the notifier is off, silently, and the two-minute cron does
+      # no work and writes no line. There is deliberately no second
+      # FEEDBACK_NOTIFY_ENABLED var -- see the doc comment on
+      # FeedbackNotifierService.
+      FEEDBACK_TELEGRAM_CHAT_ID: ${FEEDBACK_TELEGRAM_CHAT_ID:-}
+      FEEDBACK_NOTIFY_MAX_PER_RUN: ${FEEDBACK_NOTIFY_MAX_PER_RUN:-20}
+      # Operator-only admin surface (ADR-0045). `verify` is the default, and
+      # without ACCESS_AUD and ACCESS_TEAM_DOMAIN it closes the surface rather
+      # than opening it: every /api/v1/admin/* call answers 403. So an ordinary
+      # dev stack boots with the admin API shut, and a prod deploy that forgets
+      # the Access vars serves no reports. `insecure-dev` turns verification
+      # off and is therefore the one combination that refuses to boot unless
+      # ENABLE_E2E_AUTH_BYPASS=1 is also set below -- two independent switches,
+      # both default off.
+      ADMIN_AUTH_MODE: ${ADMIN_AUTH_MODE:-verify}
+      ACCESS_AUD: ${ACCESS_AUD:-}
+      ACCESS_TEAM_DOMAIN: ${ACCESS_TEAM_DOMAIN:-}
+      # Opt-in only, same flag the frontend reads; must stay 0 everywhere but
+      # the e2e run. Here it is the second switch ADMIN_AUTH_MODE=insecure-dev
+      # needs before it is accepted.
+      ENABLE_E2E_AUTH_BYPASS: "${ENABLE_E2E_AUTH_BYPASS:-0}"
       FEATURE_DAILY_BEHAVE: ${FEATURE_DAILY_BEHAVE:-false}
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
       # The build this process is. Stamped onto a feedback row when the client

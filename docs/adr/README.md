@@ -52,3 +52,4 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0042](0042-in-app-mashov-auth-surface.md) | The Whole Mashov Auth Surface Lives In Our App — Except the Captcha, Which Cannot | Accepted | User, Backend agent, Frontend agent | 2026-11-23 |
 | [ADR-0043](0043-self-hosted-font.md) | Assistant Is Committed to the Repo — One `next/font/local` Call per Subset, All Sharing One Family Name | Accepted | User, Frontend agent | 2026-11-23 |
 | [ADR-0044](0044-feedback-rows-are-self-contained.md) | A Feedback Row Is a Self-Contained Snapshot, Not a Set of References | Accepted | User, Backend agent, Frontend agent | 2026-11-24 |
+| [ADR-0045](0045-operator-feedback-delivery-and-admin-access.md) | A Cron Outbox Delivers Each Report, and the Admin Surface Is Gated by a JWT We Verify Ourselves | Accepted | User, Backend agent, Frontend agent | 2026-11-24 |

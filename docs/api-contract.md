@@ -52,11 +52,21 @@
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
 | GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | planned |
 | POST | `/api/v1/feedback` | Yes | `{ subject: FeedbackSubject, subjectOther?: string, contactEmail?: string, content: string, pagePath?: string, viewportWidth?: number, viewportHeight?: number, appVersion?: string }` | `{ data: { id: string, subject: string, createdAt: string } }` | 201, 400, 401, 429 | implemented |
+| GET | `/api/v1/admin/feedback` | Operator | `filter=all\|new\|awaiting` (default `all`), `page` (default 1), `limit` (default 20, max 100) | `{ data: AdminFeedbackListItem[], pagination: { page, limit, total, totalPages } }` | 200, 400, 403 | implemented |
+| GET | `/api/v1/admin/feedback/:id` | Operator | — | `{ data: AdminFeedbackDetail }` | 200, 403, 404 | implemented |
+| POST | `/api/v1/admin/feedback/:id/response` | Operator | — | `{ data: AdminFeedbackDetail }` | 200, 403, 404 | implemented |
 
 ### POST /api/v1/feedback
 
-Write-only. There is no read path, no reply thread and no operator notification — whoever
-reads the reports runs SQL against `feedback`.
+Write-only **for a parent**. There is still no reply thread and no email sending —
+`contactEmail` is a way to reach a parent by hand, not a channel the app operates.
+
+What ADR-0044 left absent now exists, and neither part changes this route. A two-minute cron
+outbox (`FeedbackNotifyTask`) delivers one Telegram message per new row, retrying up to three
+attempts before retiring it, and the operator reads the reports on `/admin/feedback` through
+the three `GET`/`POST` routes above. `create()` itself is untouched: it writes the row and
+returns, with no send in the request path and no added latency. The notifier is gated on
+`FEEDBACK_TELEGRAM_CHAT_ID` alone — unset means no messages, silently. See ADR-0045.
 
 `subject` is one of seven codes, and the list is the server's (`FEEDBACK_SUBJECTS` in
 `backend/src/feedback/feedback.service.ts`). The Hebrew labels live in the client, typed
@@ -128,6 +138,79 @@ parents of one household. The same reasoning `POST /school-links` follows. Over 
 route answers `429 RATE_LIMIT_EXCEEDED`; the route's `@Throttle` decorator is a crude per-IP
 backstop on top. No new error codes: validation failures are the envelope's usual
 `400 VALIDATION_ERROR`.
+
+### GET /api/v1/admin/feedback
+
+Operator-only triage over the same table. **Not** behind the parent session: an operator has
+no `mashov_session` and no household, so the controller is `@Public()` to stand
+`AppSessionGuard` down and `CloudflareAccessGuard` is its real gate. `Auth: Operator` in the
+table above means a valid Cloudflare Access JWT in `Cf-Access-Jwt-Assertion`, verified
+in-process (`jose`, `RS256` pinned, audience `ACCESS_AUD`, issuer `ACCESS_TEAM_DOMAIN`).
+
+**Every refusal is 403, never 401.** `frontend/src/api/client.ts` turns a 401 into a hard
+redirect to the parent sign-in page, so a 401 here would bounce the operator into a Mashov
+login they have no account for. Missing, malformed, expired, wrong-audience and
+unreachable-JWKS all collapse to the same `403 FORBIDDEN`, and the underlying reason is never
+surfaced.
+
+`filter` is one of three lenses, and an unrecognised value is a `400` rather than a silent
+fall back to `all`:
+
+| Filter | Predicate | Means |
+|---|---|---|
+| `all` | — | every report, newest first |
+| `new` | `readAt IS NULL` | nobody has opened it yet |
+| `awaiting` | `contactEmail IS NOT NULL AND respondedAt IS NULL` | answerable, and no answer recorded |
+
+`awaiting` requires a reply address on purpose: a report with no `contactEmail` can never be
+answered and must not sit in that lens forever.
+
+Pagination is the standard offset envelope, counted **over the filtered set** so the totals
+describe the page rather than the table. `totalPages` is `0` for an empty view, not `1`.
+
+**`AdminFeedbackListItem`** omits `content` — the detail carries it, and a page of fifty rows
+should not ship fifty 2000-character bodies. It carries `hasContactEmail` rather than the
+address itself, which is what makes the `awaiting` lens legible without putting a parent's
+email on screen fifty times:
+
+```
+{ id, subject, subjectOther, displayName, username, hasContactEmail,
+  schools: string[],          // pre-rendered "label (semel)" from the row's own snapshot
+  createdAt, notifiedAt, readAt, respondedAt }
+```
+
+**`AdminFeedbackDetail`** adds the whole row, delivery state included — `notifyAttempts` and
+`notifyError` (bot token already redacted by the sender), so a report the outbox gave up on
+is visible on the screen that replaced the notification:
+
+```
+{ ...AdminFeedbackListItem, contactEmail, content, pagePath, userAgent,
+  viewportWidth, viewportHeight, appVersion, mashovUserId,
+  notifyAttempts, notifyError }
+```
+
+All timestamps are ISO-8601 UTC; nulls are included explicitly rather than omitted; ids are
+strings.
+
+### GET /api/v1/admin/feedback/:id
+
+**This GET has a side effect**: the first open stamps `readAt`, which is what makes a report
+leave the `new` lens. Written once and never rewritten, so it stays the answer to *when a
+human first saw this*. The alternative — a `PATCH` the client must remember to fire — makes
+the `new` filter's correctness depend on the UI, and a report that stays "new" because a
+render path changed is exactly the failure this feature exists to prevent.
+
+`404 NOT_FOUND` for an id that does not exist.
+
+### POST /api/v1/admin/feedback/:id/response
+
+Records that this parent has been answered. `POST …/response`, not `…/mark-responded`:
+`.claude/rules/api.md` allows no verb in a path. `200` rather than `201` — it creates no
+addressable resource, it records a state transition and hands back the row it changed.
+
+Idempotent, keeping the **original** timestamp: the field answers "when was this parent
+answered", and a second click must not rewrite that to today. It also stamps `readAt` when
+that is somehow still null, so a row can never be both answered and unread.
 
 ### School identity on the data
 

@@ -322,6 +322,7 @@ jobs:
           FEATURE_DAILY_BEHAVE=false
           FEATURE_OUT_BEHAVE=false
           ENABLE_E2E_AUTH_BYPASS=1
+          ADMIN_AUTH_MODE=insecure-dev
           EOF
 
       # `playwright_args` is a positional spec-file filter. The selector always
