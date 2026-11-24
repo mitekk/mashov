@@ -913,6 +913,66 @@ model DigestDelivery {
   @@map("digest_delivery")
 }
 
+/// A parent's feedback report. Write-only: there is no read path in the app,
+/// and nothing here is ever shown back to the parent.
+///
+/// Every row is a self-contained SNAPSHOT, not a set of references. The merge
+/// retires an `app_user` into another household (ADR-0029) and unlink clears
+/// `HouseholdConnection.userId` (ADR-0032), so a row holding only ids stops
+/// being interpretable exactly when a two-school household is involved -- the
+/// case most worth reading. Hence the denormalized copies of the parent
+/// (`mashovUserId`, `username`, `displayName`) and of their schools
+/// (`schoolsSnapshot`). See ADR-0044.
+///
+/// Deliberately FK-free, with no back-relation on AppUser: production boots
+/// with `prisma db push`, so the committed migration.sql must be idempotent,
+/// and Postgres has no `ADD CONSTRAINT IF NOT EXISTS`. An FK would also block
+/// deleting an `app_user` whose snapshot is the whole point. Precedent:
+/// `MailNotifiedMessage.userId`.
+model Feedback {
+  id              String   @id @default(uuid())
+  /// The AppUser who sent it. A plain String, see above.
+  userId          String
+  /// One of FEEDBACK_SUBJECTS in src/feedback/feedback.service.ts.
+  subject         String
+  /// The parent's own wording, only when `subject` is 'other'. The service
+  /// nulls it for every other subject so a stray client value cannot persist.
+  subjectOther    String?
+  /// Where to reply, pre-filled from the Mashov profile and editable. Null
+  /// when the parent cleared it.
+  contactEmail    String?
+  content         String
+  /// Reproduction context, captured by the client. Path only -- the client
+  /// sends no query or hash. The path itself does carry a child guid on the
+  /// child routes (`/children/<guid>`), deliberately: it is the reporting
+  /// parent's own child, and without it a report names no child at all.
+  pagePath        String?
+  /// Read from the request header, not from the body. Truncated to 512 chars.
+  userAgent       String?
+  viewportWidth   Int?
+  viewportHeight  Int?
+  /// The build the parent was running. Null when neither the client nor the
+  /// server knows it.
+  appVersion      String?
+  mashovUserId    String
+  username        String
+  /// `parentDisplayName()`'s output, so one child's class tag is not persisted
+  /// into every row of a multi-child household.
+  displayName     String
+  /// The parent's active connections at send time:
+  /// `[{ id, schoolCode, schoolName, label, schoolYear }]`. Json rather than a
+  /// typed array to match HouseholdConnection.schoolYears and stay additive
+  /// for `db push`; defaulted so reads never handle null.
+  schoolsSnapshot Json     @default("[]")
+  createdAt       DateTime @default(now())
+
+  /// The per-user rate limit counts a user's rows in the last hour.
+  @@index([userId, createdAt])
+  /// Reading the table is "newest first".
+  @@index([createdAt])
+  @@map("feedback")
+}
+
 /// One row per COMPLETED password reset driven through our recovery flow.
 ///
 /// We are mutating a password on a third-party system on behalf of someone we

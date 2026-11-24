@@ -163,6 +163,15 @@ services:
       SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
       FEATURE_DAILY_BEHAVE: ${FEATURE_DAILY_BEHAVE:-false}
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
+      # The build this process is. Stamped onto a feedback row when the client
+      # sends none.
+      #
+      # Pass-through (no value), NOT `${APP_VERSION:-}`: the latter sets the
+      # variable to an empty string whenever the operator has not exported one,
+      # which would override the version CI baked into the image and send the
+      # backend back to its package.json version. With no value, compose
+      # forwards it only when it is actually set, and the baked ENV survives.
+      APP_VERSION:
     restart: unless-stopped
     ports:
       # Parameterised for the same reason as DB_PORT above: a hardcoded publish
@@ -185,7 +194,19 @@ services:
 
   frontend:
     image: mashov-frontend:latest
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # A BUILD arg, not only an environment variable: Next inlines every
+        # NEXT_PUBLIC_* read in a "use client" module at build time, and both
+        # readers (the /more footer and the feedback dialog) are client
+        # components. Setting it at runtime alone would leave them with
+        # `undefined`.
+        #
+        # Optional. Unset, next.config.ts falls back to frontend/package.json's
+        # version, so nothing here must be configured for the app to report a
+        # version. Set it to stamp a real build -- a tag, a git sha.
+        APP_VERSION: ${APP_VERSION:-}
     depends_on:
       backend:
         condition: service_healthy

@@ -4,6 +4,12 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN mkdir -p public
+# Next inlines every NEXT_PUBLIC_* read in a "use client" module at build time,
+# so the version a parent's browser reports has to be known HERE, not at
+# runtime. Optional: next.config.ts falls back to this package's own version,
+# so an unset APP_VERSION still produces a real string rather than ''.
+ARG APP_VERSION=""
+ENV APP_VERSION=$APP_VERSION
 RUN npm run build
 
 FROM node:22-alpine AS runner

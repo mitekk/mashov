@@ -18,6 +18,7 @@
     "audit:fix": "npm run audit:fix:backend && npm run audit:fix:frontend",
     "audit:fix:backend": "npm --prefix backend audit fix",
     "audit:fix:frontend": "npm --prefix frontend audit fix",
+    "stack:up": "APP_VERSION=$(git rev-parse --short=12 HEAD) docker compose -f docker-compose.yml up --build -d --wait",
     "test:unit": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from unit unit",
     "test:integration": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from integration integration",
     "test:e2e": "ENABLE_E2E_AUTH_BYPASS=1 docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from e2e e2e",
