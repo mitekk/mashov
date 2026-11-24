@@ -56,7 +56,7 @@ export function HomeworkItem({
           </span>
         )}
         {item.isNew && (
-          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-3xs font-semibold text-primary">
             חדש
           </span>
         )}
@@ -119,7 +119,7 @@ export function HomeworkItem({
           // nothing. The badge says why it is here instead (ADR-0036).
           <span
             data-testid={`homework-past-year-${item.id}`}
-            className="text-[10px] leading-tight text-muted-foreground whitespace-nowrap px-1"
+            className="text-3xs leading-tight text-muted-foreground whitespace-nowrap px-1"
           >
             שנה קודמת
           </span>

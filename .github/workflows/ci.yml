@@ -5,13 +5,114 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # Unconditional full run: the selector forces `full: true` on this event, so
+  # nothing here depends on change detection or on .github/e2e-map.json being
+  # up to date. That is the point -- a narrowed run never re-validates a layer
+  # no recent diff touched, and only a full run enforces the 80% backend
+  # coverage threshold (narrowed unit runs pass `--coverage=false`).
+  # 02:30 and not 02:00 because on-the-hour schedules queue behind everyone
+  # else's and get delayed.
+  schedule:
+    - cron: "30 2 * * *"
+  # The same forced full run, on demand, from Actions -> CI -> Run workflow.
+  workflow_dispatch:
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
+  # 0. CHANGES — decide which layers this diff actually needs
+  #
+  # Single source of truth is scripts/select-tests.mjs, shared with the local
+  # `npm run test:pr` loop. Anything it does not recognise, plus every
+  # dependency/Docker/prisma/config change and any `[ci full]` commit, forces a
+  # full run -- a silent skip is a false negative that ships a bug, a needless
+  # full run only costs minutes.
+  # ────────────────────────────────────────────────────────────────────────────
+  changes:
+    name: Select Tests
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.select.outputs.full }}
+      reason: ${{ steps.select.outputs.reason }}
+      vitest: ${{ steps.select.outputs.vitest }}
+      unit: ${{ steps.select.outputs.unit }}
+      integration: ${{ steps.select.outputs.integration }}
+      e2e: ${{ steps.select.outputs.e2e }}
+      vitest_args: ${{ steps.select.outputs.vitest_args }}
+      jest_args: ${{ steps.select.outputs.jest_args }}
+      integration_args: ${{ steps.select.outputs.integration_args }}
+      playwright_args: ${{ steps.select.outputs.playwright_args }}
+      e2e_shards: ${{ steps.select.outputs.e2e_shards }}
+      e2e_shard_total: ${{ steps.select.outputs.e2e_shard_total }}
+    steps:
+      # fetch-depth: 0 is mandatory, not tidiness. The default shallow checkout
+      # has no common ancestor with the base branch, so `git merge-base` fails
+      # and the selector cannot resolve a base ref.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Test the selector
+        run: node --test scripts/select-tests.test.mjs
+
+      # `github.event.before` must be passed through explicitly. There is no
+      # GITHUB_EVENT_BEFORE default environment variable -- the previous sha
+      # lives only in the event payload -- so without this the selector's push
+      # branch silently fell back to HEAD~1. On a merge commit that happens to
+      # be right (HEAD~1 is the first parent, i.e. the old master tip), but a
+      # direct push of several commits would diff only the last one and skip
+      # layers the earlier commits needed: a false negative, which is the one
+      # direction this design must never fail in.
+      - name: Select relevant layers
+        id: select
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: node scripts/select-tests.mjs
+
+      # Values go through `env`, never straight into the shell: `reason` and the
+      # arg strings contain git-supplied file paths.
+      - name: Summary
+        env:
+          FULL: ${{ steps.select.outputs.full }}
+          REASON: ${{ steps.select.outputs.reason }}
+          VITEST: ${{ steps.select.outputs.vitest }}
+          VITEST_ARGS: ${{ steps.select.outputs.vitest_args }}
+          UNIT: ${{ steps.select.outputs.unit }}
+          JEST_ARGS: ${{ steps.select.outputs.jest_args }}
+          INTEGRATION: ${{ steps.select.outputs.integration }}
+          INTEGRATION_ARGS: ${{ steps.select.outputs.integration_args }}
+          E2E: ${{ steps.select.outputs.e2e }}
+          PLAYWRIGHT_ARGS: ${{ steps.select.outputs.playwright_args }}
+          E2E_SHARDS: ${{ steps.select.outputs.e2e_shards }}
+        run: |
+          {
+            echo "### Test selection"
+            echo ""
+            echo "- full run: \`$FULL\`"
+            echo "- reason: $REASON"
+            echo "- e2e shards: \`$E2E_SHARDS\`"
+            echo ""
+            echo "| layer | run | args |"
+            echo "|---|---|---|"
+            echo "| vitest | $VITEST | \`$VITEST_ARGS\` |"
+            echo "| unit | $UNIT | \`$JEST_ARGS\` |"
+            echo "| integration | $INTEGRATION | \`$INTEGRATION_ARGS\` |"
+            echo "| e2e | $E2E | \`$PLAYWRIGHT_ARGS\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
   # 1. LINT — fast feedback on code quality and TypeScript types
+  #
+  # Lint and typecheck always run, whatever the diff: they are cheap, and a type
+  # error anywhere is a real failure regardless of which layer owns the file.
+  # Only the vitest step is gated.
   # ────────────────────────────────────────────────────────────────────────────
   lint:
     name: Lint & Typecheck
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -60,16 +161,30 @@ jobs:
       # job rather than `unit-test` because that job runs the backend suite
       # inside Docker, and these need no container -- the frontend deps are
       # already installed two steps above.
+      #
+      # `vitest_args` carries the subcommand as well as the flags: either plain
+      # `run`, or `related --run <files> --passWithNoTests` with the file list
+      # the selector derived, paths relative to this directory.
+      #
+      # An explicit file list, NOT `--changed <base>`: this job checks out at
+      # the default shallow depth (only `changes` uses fetch-depth 0), so the
+      # base sha is not in this clone and vitest's own `git diff <base>...HEAD`
+      # fails with "Invalid symmetric difference expression".
       - name: Unit test frontend
+        if: needs.changes.outputs.vitest == 'true'
         working-directory: frontend
-        run: npm test
+        env:
+          VITEST_ARGS: ${{ needs.changes.outputs.vitest_args }}
+        # Unquoted on purpose: the shell must word-split the argument list.
+        run: npx vitest $VITEST_ARGS
 
   # ────────────────────────────────────────────────────────────────────────────
   # 2. UNIT TESTS — run inside Docker container
   # ────────────────────────────────────────────────────────────────────────────
   unit-test:
     name: Unit Tests
-    needs: lint
+    needs: [changes, lint]
+    if: needs.changes.outputs.unit == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -81,11 +196,16 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Run unit tests with coverage
+        env:
+          JEST_ARGS: ${{ needs.changes.outputs.jest_args }}
         run: npm run test:unit
 
+      # Only on a full run. A narrowed run passes `--coverage=false` (a subset
+      # cannot clear backend/package.json's 80% global threshold), so there is
+      # no report to upload and a partial one would be misleading.
       - name: Upload coverage report
         uses: actions/upload-artifact@v6
-        if: always()
+        if: always() && needs.changes.outputs.full == 'true'
         with:
           name: coverage-report
           path: backend/coverage/
@@ -96,10 +216,15 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # 3. INTEGRATION TESTS — run inside Docker container
+  #
+  # `needs: lint`, deliberately NOT `needs: unit-test`. The two layers share
+  # nothing but the db-test service, and they run in separate jobs on separate
+  # runners -- chaining them only serialised wall-clock for no benefit.
   # ────────────────────────────────────────────────────────────────────────────
   integration-test:
     name: Integration Tests
-    needs: unit-test
+    needs: [changes, lint]
+    if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -111,6 +236,8 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Run integration tests
+        env:
+          INTEGRATION_ARGS: ${{ needs.changes.outputs.integration_args }}
         run: npm run test:integration
 
       - name: Stop Docker stack
@@ -119,15 +246,20 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # 4. E2E TESTS — full Dockerized stack with Playwright container
+  #
+  # The `always() && … && !failure() && !cancelled()` form is required, not
+  # belt-and-braces: a *skipped* upstream layer must not skip e2e (which plain
+  # `needs` would do), while a *failed* one still must.
   # ────────────────────────────────────────────────────────────────────────────
   e2e:
-    name: E2E Tests (Shard ${{ matrix.shard }}/2)
-    needs: integration-test
+    name: E2E Tests (Shard ${{ matrix.shard }}/${{ needs.changes.outputs.e2e_shard_total }})
+    needs: [changes, unit-test, integration-test]
+    if: always() && needs.changes.outputs.e2e == 'true' && !failure() && !cancelled()
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: ${{ fromJSON(needs.changes.outputs.e2e_shards) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -140,6 +272,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # Both images carry the commit they were built from. Without it they fall
+      # back to their package.json version, which is not bumped per release --
+      # so every feedback row would report the same string and `appVersion`
+      # could not tell two deployments apart.
+      #
+      # Short, not the full `github.sha`: the client-sent `appVersion` is capped
+      # at 40 characters by the DTO, and 40 of 40 leaves no room for a prefix.
+      - name: Resolve the build version
+        id: app_version
+        run: echo "value=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build backend image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -147,6 +290,8 @@ jobs:
           file: ./backend/Dockerfile
           load: true
           tags: mashov-backend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-backend
           cache-to: type=gha,mode=max,scope=mashov-backend
 
@@ -157,6 +302,8 @@ jobs:
           file: ./frontend/Dockerfile
           load: true
           tags: mashov-frontend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-frontend
           cache-to: type=gha,mode=max,scope=mashov-frontend
 
@@ -177,10 +324,15 @@ jobs:
           ENABLE_E2E_AUTH_BYPASS=1
           EOF
 
+      # `playwright_args` is a positional spec-file filter. The selector always
+      # prepends auth.setup.ts to it so a narrowed run never depends on
+      # Playwright exempting dependency projects from positional filters -- it
+      # does today (verified on 1.58), and if that changed the failure would be
+      # a silently unwritten tests/e2e/.auth/session.json.
       - name: Run Playwright E2E tests
         env:
           PLAYWRIGHT_WORKERS: "2"
-          PLAYWRIGHT_ARGS: --shard=${{ matrix.shard }}/2
+          PLAYWRIGHT_ARGS: ${{ needs.changes.outputs.playwright_args }} --shard=${{ matrix.shard }}/${{ needs.changes.outputs.e2e_shard_total }}
         run: docker compose -f docker-compose.yml --profile test up --abort-on-container-exit --exit-code-from e2e e2e
 
       - name: Dump Docker health and logs on failure
@@ -202,16 +354,31 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # 5. BUILD — verify Docker images build successfully
+  #
+  # Full runs only. On a narrowed run this is pure duplicate work: the `e2e` job
+  # above already builds both images from the identical `type=gha` cache scopes.
   # ────────────────────────────────────────────────────────────────────────────
   build:
     name: Docker Build
-    needs: e2e
+    needs: [changes, e2e]
+    if: always() && needs.changes.outputs.full == 'true' && !failure() && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      # Both images carry the commit they were built from. Without it they fall
+      # back to their package.json version, which is not bumped per release --
+      # so every feedback row would report the same string and `appVersion`
+      # could not tell two deployments apart.
+      #
+      # Short, not the full `github.sha`: the client-sent `appVersion` is capped
+      # at 40 characters by the DTO, and 40 of 40 leaves no room for a prefix.
+      - name: Resolve the build version
+        id: app_version
+        run: echo "value=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build backend image (cached)
         uses: docker/build-push-action@v7
@@ -220,6 +387,8 @@ jobs:
           file: ./backend/Dockerfile
           load: true
           tags: mashov-backend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-backend
           cache-to: type=gha,mode=max,scope=mashov-backend
 
@@ -230,5 +399,130 @@ jobs:
           file: ./frontend/Dockerfile
           load: true
           tags: mashov-frontend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-frontend
           cache-to: type=gha,mode=max,scope=mashov-frontend
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 6. CI OK — the single required status check
+  #
+  # Branch protection on `master` must require ONLY this check, and the string
+  # to enter is `CI OK` -- the job's `name:`, which is what GitHub matches on,
+  # not the `ci-ok` job id.
+  #
+  # The reason is the dynamic matrix, NOT skipped jobs. Measured against a real
+  # protection rule: a job skipped by a job-level `if:` still reports a check
+  # run whose conclusion is `skipped`, and GitHub counts that as satisfying a
+  # required check -- `["CI OK", "Unit Tests"]` left a docs-only PR with
+  # `Unit Tests` skipped in state `clean`. Only a context that never reports at
+  # all blocks; `["CI OK", "Never Reported Check"]` gave `blocked`. (The
+  # "skipped jobs block forever" folklore is about workflow-level `paths:`
+  # filters, where the workflow never runs and no check is ever created.)
+  #
+  # What cannot be a required check is e2e, because its name carries the shard
+  # count: `E2E Tests (Shard 1/1)` on a narrowed run, `Shard 1/2` + `Shard 2/2`
+  # on a full one. Requiring either name makes it a never-reported context on
+  # the other kind of run -- the `blocked` case above. One aggregate job is the
+  # only stable name to gate on, and it also keeps the rule from needing an
+  # edit every time a job is added or renamed.
+  #
+  # This job collapses the graph into one verdict: failure/cancelled anywhere
+  # fails, success or skipped passes.
+  # ────────────────────────────────────────────────────────────────────────────
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [changes, lint, unit-test, integration-test, e2e, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream job results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s' "$NEEDS" | node -e '
+            const needs = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            for (const [name, job] of Object.entries(needs)) {
+              console.log(`${name}: ${job.result}`);
+            }
+            const bad = Object.entries(needs).filter(([, job]) =>
+              ["failure", "cancelled"].includes(job.result),
+            );
+            if (bad.length) {
+              console.error(`failed: ${bad.map(([name]) => name).join(", ")}`);
+              process.exit(1);
+            }
+            console.log("all upstream jobs succeeded or were skipped");
+          '
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 7. NIGHTLY ALERT — a failing nightly must not go unnoticed
+  #
+  # Scheduled runs have no author watching them: nobody gets the red-X email a
+  # push or PR run sends, so without this a nightly failure is invisible. Gated
+  # on `github.event_name == 'schedule'` only -- a manual workflow_dispatch
+  # failure is already visible to whoever clicked it, and filing an issue for it
+  # would be noise.
+  #
+  # Deduped by title search rather than by label: `gh label list` shows only the
+  # GitHub defaults in this repo, and `gh issue create --label` fails outright
+  # on a label that does not exist.
+  # ────────────────────────────────────────────────────────────────────────────
+  nightly-alert:
+    name: Nightly Failure Alert
+    needs: [changes, lint, unit-test, integration-test, e2e, build, ci-ok]
+    if: always() && github.event_name == 'schedule' && needs.ci-ok.result != 'success'
+    runs-on: ubuntu-latest
+    # The repo default for GITHUB_TOKEN is read-only, so this must be explicit:
+    # without it the gh calls below fail with 403.
+    permissions:
+      issues: write
+    steps:
+      # The failed job names go in the body so the notification email alone is
+      # enough to triage from. Same toJSON(needs) + node -e pattern as `ci-ok`.
+      - name: File or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          failed=$(printf '%s' "$NEEDS" | node -e '
+            const needs = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const bad = Object.entries(needs)
+              .filter(([, job]) => ["failure", "cancelled"].includes(job.result))
+              .map(([name, job]) => `- \`${name}\`: ${job.result}`);
+            process.stdout.write(bad.length ? bad.join("\n") : "- (no job reported failure; see the run)");
+          ')
+
+          title="Nightly CI failure on master"
+
+          # Deliberately ONE long line, not wrapped to fit the editor: GitHub
+          # renders a single newline in an issue body as a hard <br>, so a
+          # wrapped source paragraph displays as ragged short lines. The list
+          # items above DO want their own lines; this prose does not.
+          explainer="The nightly ignores change detection entirely (the selector forces a full run on the \`schedule\` event), so a failure here can be in a layer no recent diff touched, in the 80% backend coverage gate, or in an e2e spec \`.github/e2e-map.json\` has stopped selecting."
+
+          body=$(printf '%s\n' \
+            "The nightly full run failed." \
+            "" \
+            "- run: $RUN_URL" \
+            "- commit: \`$GITHUB_SHA\`" \
+            "" \
+            "Failed jobs:" \
+            "$failed" \
+            "" \
+            "$explainer")
+
+          existing=$(gh issue list --state open --search "in:title \"$title\"" \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            echo "commenting on existing issue #$existing"
+            gh issue comment "$existing" --body "$body"
+          else
+            echo "filing a new issue"
+            gh issue create --title "$title" --body "$body"
+          fi

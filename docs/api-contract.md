@@ -51,6 +51,7 @@
 | POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 422, 429, 502 | implemented |
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | implemented |
 | GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | implemented |
+| POST | `/api/v1/feedback` | Yes | `{ subject: FeedbackSubject, subjectOther?: string, contactEmail?: string, content: string, pagePath?: string, viewportWidth?: number, viewportHeight?: number, appVersion?: string }` | `{ data: { id: string, subject: string, createdAt: string } }` | 201, 400, 401, 429 | implemented |
 
 ### Phase 2 — In-app Mashov auth: MFA, recovery, credential setup
 
@@ -150,6 +151,82 @@ mint a session (the response is a cookie plus a flag, not a created resource
 the client can fetch), and 200 for `DELETE /auth/session` so the client can
 distinguish a real sign-out from a proxy swallowing the request. Noted here
 rather than left to disagree silently.
+
+### POST /api/v1/feedback
+
+Write-only. There is no read path, no reply thread and no operator notification — whoever
+reads the reports runs SQL against `feedback`.
+
+`subject` is one of seven codes, and the list is the server's (`FEEDBACK_SUBJECTS` in
+`backend/src/feedback/feedback.service.ts`). The Hebrew labels live in the client, typed
+`Record<FeedbackSubject, string>` so a code added on one side without a label fails `tsc`:
+
+| Code | Label |
+|---|---|
+| `bug` | תקלה |
+| `suggestion` | הצעה לשיפור |
+| `data` | נתון שגוי או חסר |
+| `account` | התחברות וחשבון |
+| `notifications` | טלגרם והתראות |
+| `timetable` | מערכת שעות |
+| `other` | אחר — and only then is `subjectOther` required (max 80) |
+
+`subjectOther` is **nulled by the server for every other subject**. `whitelist: true` strips
+only undecorated properties and `@ValidateIf` merely skips the field, so a stray label would
+otherwise persist against a subject it does not belong to.
+
+Field rules: `content` is trimmed before its length check (so whitespace alone is a 400) and
+capped at 2000; `contactEmail` is optional and must be an email, max 254; `pagePath` max 200;
+`appVersion` max 40; the viewport fields are non-negative integers.
+
+**What the client sends versus what the server captures.** The client sends the page path
+(path only — never the query or hash), the viewport, and the build from
+`NEXT_PUBLIC_APP_VERSION`. Note the path itself **does** carry a child guid on the child
+routes (`/children/<guid>`), deliberately: it is the reporting parent's own child, and
+without it a report like "the timetable is wrong" names no child. The server adds, and the client cannot influence:
+
+- the `user-agent` request header, truncated to 512 characters — the one field whose purpose
+  is saying what the client actually is;
+- `appVersion` from its own build when the client sends none;
+- `mashovUserId`, `username` and `displayName` from the caller's `app_user` row, the name
+  stripped of its `[child class]` group by `common/parent-name.ts`;
+- `schoolsSnapshot` — every **active** connection as
+  `{ id, schoolCode, schoolName, label, schoolYear }`, with `label` resolved over the whole
+  set, so two schools in one cluster carry both full names rather than one colliding short
+  one.
+
+**Which build a row records.** Nothing has to be configured: the client inlines its version
+at build time from `next.config.ts`, and the server falls back to its own
+(`backend/src/common/app-version.ts`), so `appVersion` is never null. Both derive from their
+`package.json` version unless `APP_VERSION` is set, which overrides both.
+
+In practice it is always set, because the package.json versions are not bumped per release and
+so distinguish nothing on their own. Two places stamp the commit:
+
+- **CI** resolves `git rev-parse --short=12 HEAD` once per job and passes it as a `build-args`
+  to every image it builds, in both the `e2e` and `build` jobs.
+- **`npm run stack:up`** does the same for a real deployment, which is where it actually
+  matters: CI builds with `load: true` and pushes nothing, so a CI-only stamp never reaches a
+  running stack, and compose cannot shell out for a sha on its own.
+
+The backend image **bakes** `APP_VERSION` as an `ENV`, since it reads the value at runtime.
+That is why `docker-compose.yml` passes the variable through (`APP_VERSION:`, no value) rather
+than as `${APP_VERSION:-}` — the latter sets an empty string whenever nobody exported one,
+which would silently override the baked value and send the backend back to its package.json
+version. `backend/src/common/app-version-build.spec.ts` asserts all of this, because every part
+of it fails silently: the fallback always produces *a* string, so a dropped stamp breaks
+nothing and is invisible until someone reads the column.
+
+Each row is a self-contained snapshot with no foreign key, because the household merge
+(ADR-0029) and the connection unlink (ADR-0032) make pure references uninterpretable exactly
+when a two-school household is involved. See ADR-0044.
+
+**Rate limit: 10 reports per hour per user** — counted as rows in `feedback`, not by the
+global `ThrottlerGuard`, which keys on IP and would lock out a whole school NAT or both
+parents of one household. The same reasoning `POST /school-links` follows. Over the limit the
+route answers `429 RATE_LIMIT_EXCEEDED`; the route's `@Throttle` decorator is a crude per-IP
+backstop on top. No new error codes: validation failures are the envelope's usual
+`400 VALIDATION_ERROR`.
 
 ### School identity on the data
 

@@ -40,14 +40,63 @@ tests/
 ## Golden Commands
 
 ```bash
-docker compose up --build    # Lift full stack
-npm run dev                  # Frontend dev server
-npm run test                 # Unit + integration tests
-npm run test:coverage        # With coverage report
-npx playwright test          # E2E suite
-npm run lint                 # Lint check
-npm run typecheck            # TypeScript check
+docker compose up --build         # Lift full stack
+npm --prefix frontend run dev     # Frontend dev server
+
+npm run test:pr                   # Only the layers this diff touches (see below)
+npm run test:pr:dry               # What test:pr would run, and why
+
+npm run test:unit                 # Backend jest suite, in Docker
+npm run test:integration          # Integration suite, in Docker
+npm run test:e2e                  # Playwright suite against the Docker stack
+npm run test:e2e:fast             # Same, skipping the image rebuild
+npm run test:selector             # Tests for the selector itself
+
+npm run lint                      # Lint + typecheck, backend and frontend
+npm run audit                     # Dependency CVE scan
 ```
+
+### PR-relevant test selection
+
+`scripts/select-tests.mjs` is the single source of truth for "which layers does
+this diff need?", shared by `npm run test:pr` and the `changes` job in CI. It
+diffs against the merge-base, maps the changed paths to layers, and narrows
+inside them (`jest --findRelatedTests`, `vitest related`, and
+`.github/e2e-map.json` for Playwright, which has no dependency graph). Both
+dependency-graph layers get an explicit file list rather than a git ref: the
+unit container has no repo mount, and CI checks out shallow everywhere except
+the `changes` job.
+
+- Anything it does not recognise forces a **full run** — a silent skip is a
+  false negative, a needless full run only costs minutes.
+- Dependency, Docker, prisma and config changes force a full run too.
+- `[ci full]` in the head commit message forces a full run on demand.
+- Adding a feature directory means adding it to `.github/e2e-map.json`;
+  until then it defaults to running every spec.
+
+```bash
+npm run test:pr:dry -- --base origin/master     # against a branch point
+npm run test:pr:dry -- --base <sha>~1 --head <sha>
+```
+
+### Nightly full run
+
+Narrowing means nothing re-validates the whole estate: a push to `master` gets
+the same narrowed selection its PR got, so a regression in a layer no recent
+diff touched can sit undetected. A **nightly run at 02:30 UTC** closes that
+gap — the selector forces `full: true` on the `schedule` and
+`workflow_dispatch` events and never looks at the diff at all, so the nightly
+also ignores `.github/e2e-map.json` (hand-maintained, and the only thing that
+catches a spec the map has stopped selecting).
+
+- The nightly is what enforces the **80% backend coverage gate**: narrowed unit
+  runs pass `--coverage=false`, because a subset cannot clear the threshold in
+  `backend/package.json`.
+- The same full run is available on demand: **Actions → CI → Run workflow**.
+- A failing nightly files a GitHub issue (`nightly-alert`, deduped by title and
+  commented on while it stays open). Scheduled runs email nobody, so without it
+  a red nightly is invisible. The job is gated on the `schedule` event only — a
+  manual run's failure is already visible to whoever started it.
 
 ## Interview Workflow
 

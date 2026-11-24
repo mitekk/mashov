@@ -16,6 +16,7 @@ import type { School } from '@/types/api';
 // /public is matched by the auth guard and would 307 to this very page for
 // the signed-out visitor who is looking at it.
 import signInIllustration from '@/assets/images/sign-in-illustration.png';
+import { CenteredShell } from '@/components/layout/CenteredShell';
 
 /**
  * The form only -- no page chrome.
@@ -263,8 +264,11 @@ export default function SignInPage() {
   // first response; only the form, which genuinely needs the query string,
   // waits.
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm">
+    // At 1280 a 320px card floating in whitespace is not a layout, it is an
+    // accident. From lg the illustration moves beside the form instead of
+    // above it, so `panelClassName` widens the panel to hold two columns.
+    <CenteredShell panelClassName="lg:grid lg:max-w-4xl lg:grid-cols-2 lg:items-center lg:gap-10">
+      <div className="lg:order-last">
         {/* alt="" on purpose: this is decoration. A screen reader announcing a
             description of the artwork before the login form would be noise, and
             the heading below already says what the page is.
@@ -273,17 +277,21 @@ export default function SignInPage() {
             cap -- below it the rendered width really is 60vw, above it the
             image is a fixed 320px however wide the viewport gets. Describing it
             as 320px everywhere would make a 390px phone fetch a 1080w variant
-            to paint 234 CSS px. `priority` is this route's one LCP element. */}
+            to paint 234 CSS px. The third stop is the lg two-column layout,
+            where the image fills a ~420px grid column instead. `priority` is
+            this route's one LCP element. */}
         <Image
           src={signInIllustration}
           alt=""
           priority
-          sizes="(max-width: 533px) 60vw, 320px"
-          className="mx-auto mb-6 h-auto w-[60vw] max-w-[320px]"
+          sizes="(max-width: 533px) 60vw, (max-width: 1023px) 320px, 420px"
+          className="mx-auto mb-6 h-auto w-[60vw] max-w-[320px] lg:mb-0 lg:w-full"
           data-testid="sign-in-illustration"
         />
+      </div>
 
-        <div className="mb-8 text-center">
+      <div>
+        <div className="mb-8 text-center lg:text-start">
           <h1 className="text-2xl font-bold text-foreground">כניסה למרכז הורים</h1>
           <p className="mt-1 text-sm text-muted-foreground">הכנס את פרטי החשבון שלך</p>
         </div>
@@ -309,6 +317,6 @@ export default function SignInPage() {
           <SignInForm />
         </Suspense>
       </div>
-    </div>
+    </CenteredShell>
   );
 }

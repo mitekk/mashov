@@ -34,8 +34,17 @@ export function NoticesSection({ studentGuid }: NoticesSectionProps) {
           title="אין הודעות"
         />
       )}
+      {/* One column until xl, two after it. NOT lg: at exactly 1024 the rail
+          (80), the shell padding (64), the workspace sidebar (224) and its gap
+          (24) leave 632px, so two columns with gap-3 are 310px each -- NARROWER
+          than the 328px the same card gets on a 360px phone. At 1280 with
+          page-shell-wide there is room.
+
+          A grid, not `.section-stack`: space-y puts margin-top on every child
+          but the first, which in a two-column grid offsets the second column's
+          first row. */}
       {data && data.data.length > 0 && (
-        <div className="space-y-3">
+        <div className="grid gap-3 xl:grid-cols-2">
           {data.data.map((notice) => (
             <div key={notice.id} className="card-base p-4">
               <p className="text-xs text-muted-foreground mb-2">

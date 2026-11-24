@@ -146,9 +146,16 @@ export function AttachmentViewer({
           lang="he-IL"
           dir="rtl"
           onKeyDown={handleKeyDown}
-          className="fixed inset-0 z-50 flex flex-col bg-background"
+          // Full-bleed below lg, a centred constrained panel from lg: a
+          // 1440px desktop does not need a photo of a permission slip edge to
+          // edge. The lg centring is physical but symmetric (a half-width
+          // offset plus a half-width translate back), so it is correct under
+          // RTL too, where the logical inline-start equivalent would not be.
+          className="viewer-surface flex flex-col bg-background lg:border lg:border-border lg:shadow-2xl"
         >
-          <header className="flex items-start gap-2 border-b border-border px-3 py-2">
+          {/* Safe-area padding only while the viewer is full-bleed: once it is
+              a centred panel the insets belong to the page behind it. */}
+          <header className="viewer-bar-top flex items-start gap-2 border-b border-border px-3 py-2">
             <div className="min-w-0 flex-1">
               <Dialog.Title
                 data-testid="attachment-viewer-title"
@@ -225,7 +232,7 @@ export function AttachmentViewer({
           {files.length > 1 && (
             // dir="rtl": the first child sits on the right. Previous is the
             // right-hand chevron, next the left-hand one.
-            <nav className="flex items-center justify-between border-t border-border px-3 py-2">
+            <nav className="viewer-bar-bottom flex items-center justify-between border-t border-border px-3 py-2">
               <button
                 type="button"
                 onClick={goPrevious}

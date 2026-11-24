@@ -67,10 +67,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
       {/* Body */}
       <div
+        // `prose prose-sm` were no-ops: @tailwindcss/typography is not
+        // installed, so school-sent HTML rendered unstyled and its wide
+        // tables and fixed-width images pushed the page. `.prose-rtl` is this
+        // project's real implementation and carries the overflow guards.
+        // `max-w-none` IS a real utility and stays -- it releases the cap that
+        // would otherwise narrow the body inside `.measure`.
         className={cn(
-          'prose prose-sm max-w-none text-foreground rtl',
+          'prose-rtl max-w-none text-foreground',
           '[&_a]:text-primary [&_a]:underline',
-          '[&_*]:max-w-full',
         )}
         dir="rtl"
         dangerouslySetInnerHTML={{ __html: sanitizedHtml }}

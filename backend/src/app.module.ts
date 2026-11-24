@@ -21,6 +21,7 @@ import { ChildrenModule } from "./children/children.module";
 import { MailModule } from "./mail/mail.module";
 import { SettingsModule } from "./settings/settings.module";
 import { HealthModule } from "./health/health.module";
+import { FeedbackModule } from "./feedback/feedback.module";
 import { AppSessionGuard } from "./app-session/app-session.guard";
 
 @Module({
@@ -50,6 +51,7 @@ import { AppSessionGuard } from "./app-session/app-session.guard";
     MailModule,
     SettingsModule,
     HealthModule,
+    FeedbackModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

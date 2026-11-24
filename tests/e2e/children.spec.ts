@@ -1155,7 +1155,7 @@ test.describe('Child workspace page', () => {
     await expect(page.getByTestId('timetable-schedule-approximate')).toHaveCount(0);
   });
 
-  test('timetable highlights today and auto-scrolls horizontal table on narrow viewport', async ({ page }) => {
+  test('timetable preselects today in the day agenda on a narrow viewport', async ({ page }) => {
     const fixedNow = '2026-03-18T09:00:00';
     await page.addInitScript((isoNow: string) => {
       const OriginalDate = Date;
@@ -1224,14 +1224,29 @@ test.describe('Child workspace page', () => {
     const workspace = new ChildWorkspacePage(page);
     await workspace.navigate(STUDENT_GUID, 'timetable', 'all');
 
-    const todayHeader = page.locator('th').filter({ hasText: 'היום' }).first();
-    await expect(todayHeader).toBeVisible();
-    await expect(todayHeader).toHaveClass(/min-w-\[196px\]/);
+    // 2026-03-18 is a Wednesday, so getDay() is 3 and the school day is 4.
+    // Below md the week grid is replaced by the day agenda, and "today is the
+    // selected tab" takes over from "auto-scroll a 950px table to today".
+    const agenda = page.getByTestId('timetable-agenda');
+    await expect(agenda).toBeVisible();
 
-    const overflow = page.locator('[data-testid="timetable-section"] .overflow-x-auto').first();
-    await expect(overflow).toBeVisible();
-    const horizontalOffset = await overflow.evaluate((el) => Math.abs((el as HTMLElement).scrollLeft));
-    expect(horizontalOffset).toBeGreaterThan(0);
+    const todayChip = page.getByTestId('timetable-agenda-day-4');
+    await expect(todayChip).toBeVisible();
+    await expect(todayChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(todayChip).toContainText('היום');
+
+    // Only today's lesson is listed, and it is the one for day 4.
+    await expect(page.getByTestId('timetable-agenda-lesson')).toHaveCount(1);
+    await expect(page.getByTestId('timetable-agenda-lesson')).toContainText('Subject 4');
+    await expect(page.getByTestId('timetable-agenda-lesson')).toContainText('Teacher 4');
+
+    // Another day's chip switches the column; today's lessons go away.
+    await page.getByTestId('timetable-agenda-day-1').click();
+    await expect(page.getByTestId('timetable-agenda-lesson')).toContainText('Subject 1');
+
+    // The week grid is in the DOM but hidden at this width -- which is what
+    // keeps its testids from resolving twice under strict mode.
+    await expect(page.getByTestId('timetable-lesson-cell').first()).toBeHidden();
   });
 
   test('homework item opens dedicated detail page', async ({ page }) => {
