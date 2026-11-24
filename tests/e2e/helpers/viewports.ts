@@ -36,14 +36,17 @@ export const ROUTES: RouteUnderTest[] = [
     path: '/auth/forgot-password',
     readyTestId: 'forgot-password-id-number',
   },
+  // `rid` and `cid`, not the longhand the page objects' METHOD names suggest:
+  // both screens fall through to their "this is no longer valid" state on any
+  // other key, which renders no form at all.
   {
     name: 'reset password',
-    path: '/auth/reset-password?recoveryId=e2e-recovery-1&semel=540175',
+    path: '/auth/reset-password?rid=e2e-recovery-1&semel=540175',
     readyTestId: 'reset-password-code',
   },
   {
     name: 'mfa',
-    path: '/auth/mfa?challengeId=e2e-challenge-1&semel=540175',
+    path: '/auth/mfa?cid=e2e-challenge-1&semel=540175',
     readyTestId: 'mfa-code',
   },
   {
