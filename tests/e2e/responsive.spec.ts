@@ -16,6 +16,24 @@ import { CONVERSATION_ID, ROUTES, STUDENT_GUID, installApiStubs } from './helper
  *
  * Playwright's `testProject` is how one spec asserts different things per
  * width without a `useMediaQuery` of its own.
+ *
+ * Two deliberate departures from .claude/rules/testing.md, recorded here
+ * rather than left to be rediscovered:
+ *
+ * 1. It addresses the DOM with `getByTestId` instead of the page objects in
+ *    tests/e2e/pages/. Those classes model one route's behaviour each; this
+ *    spec sweeps thirteen routes asserting one geometric property apiece, and
+ *    threading it through thirteen page objects would add indirection without
+ *    adding meaning. The testids it uses are the same ones those classes wrap.
+ *
+ * 2. It stubs every `/api/v1/**` call in the browser rather than exercising
+ *    the Dockerized backend, so it would stay green against a broken one. That
+ *    is the point: layout at a given width must not depend on which rows a
+ *    seeded database happens to hold, and there is no fixture that puts all
+ *    thirteen routes into a rendered state. The other twelve specs cover the
+ *    stack; this one covers geometry, and `installApiStubs` is tuned to the
+ *    hard case -- two schools, long labels, a 900px table -- precisely because
+ *    fixtures are the only lever it has.
  */
 
 const MOBILE = 'mobile-360';

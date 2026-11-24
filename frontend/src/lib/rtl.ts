@@ -18,7 +18,10 @@
  * than just oddly aligned.
  */
 export function getTextDir(text: string): 'rtl' | 'ltr' | 'auto' {
-  const hebrewCount = (text.match(/[֐-׿]/g) ?? []).length;
+  // Escaped, not literal: U+0590 and U+05FF are unassigned codepoints that
+  // render as tofu, so a literal range here is unreadable and silently
+  // mangled by an editor or formatter that normalises it.
+  const hebrewCount = (text.match(/[\u0590-\u05FF]/g) ?? []).length;
   const latinCount = (text.match(/[a-zA-Z]/g) ?? []).length;
 
   if (hebrewCount > latinCount) return 'rtl';

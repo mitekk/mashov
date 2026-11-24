@@ -148,9 +148,9 @@ export function AttachmentViewer({
           onKeyDown={handleKeyDown}
           // Full-bleed below lg, a centred constrained panel from lg: a
           // 1440px desktop does not need a photo of a permission slip edge to
-          // edge. The lg centring is physical but symmetric (left-1/2 plus
-          // -translate-x-1/2), so it is correct under RTL too, where
-          // `start-1/2` would not be.
+          // edge. The lg centring is physical but symmetric (a half-width
+          // offset plus a half-width translate back), so it is correct under
+          // RTL too, where the logical inline-start equivalent would not be.
           className="viewer-surface flex flex-col bg-background lg:border lg:border-border lg:shadow-2xl"
         >
           {/* Safe-area padding only while the viewer is full-bleed: once it is

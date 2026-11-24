@@ -128,6 +128,29 @@ describe('TimetableDayAgenda', () => {
     expect(breaks[0].textContent).toContain('09:00–09:10');
   });
 
+  it('keeps the break out of the preceding lesson list item', () => {
+    // Sharing an <li> with the lesson above it makes a screen reader read
+    // "lesson ... break ..." as one item. The break gets its own
+    // presentational <li> instead, so it is still a sibling in source order
+    // but is not counted as a lesson.
+    renderAgenda({ todaySchoolDay: 1 });
+
+    const breakEl = screen.getAllByTestId('timetable-agenda-break')[0];
+    const item = breakEl.closest('li');
+
+    expect(item).not.toBeNull();
+    expect(item?.querySelector('[data-testid="timetable-agenda-lesson"]')).toBeNull();
+    expect(item?.getAttribute('role')).toBe('presentation');
+  });
+
+  it('counts only lessons as list items', () => {
+    renderAgenda({ todaySchoolDay: 1 });
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(
+      screen.getAllByTestId('timetable-agenda-lesson').length,
+    );
+  });
+
   it('omits a trailing break after the day last lesson', () => {
     // The gap after the child's last period is the end of their day, not a
     // recess they stay at school for.

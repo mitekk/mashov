@@ -35,7 +35,9 @@ describe('CenteredShell', () => {
     expect(top.firstElementChild?.className).toContain('pt-safe');
   });
 
-  it('centres the panel vertically by default', () => {
+  it('asks for centring by default', () => {
+    // Class-string only: jsdom computes no layout, so the actual centring
+    // is not observable here.
     const { container } = render(<CenteredShell>x</CenteredShell>);
 
     expect(container.firstElementChild?.className).toContain('place-items-center');
@@ -47,7 +49,7 @@ describe('CenteredShell', () => {
     expect(container.firstElementChild?.className).not.toContain('place-items-center');
   });
 
-  it('widens the panel past the 320px phone card from md up', () => {
+  it('carries both the phone cap and its md widening', () => {
     const { container } = render(<CenteredShell>x</CenteredShell>);
     const panel = container.querySelector('[data-shell-panel]');
 

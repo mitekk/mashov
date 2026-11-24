@@ -116,60 +116,69 @@ export function TimetableDayAgenda({
           const color = subjectColor(row.entry.subjectName);
 
           return (
-            <li key={row.lesson}>
-              <article
-                data-testid="timetable-agenda-lesson"
-                className="card-base flex gap-3 p-3"
-              >
-                <div className="flex w-14 flex-shrink-0 flex-col items-center gap-0.5 text-center">
-                  <span className="text-xs font-medium text-muted-foreground">{row.lesson}</span>
-                  {row.period && (
-                    <ClockRange
-                      startTime={row.period.startTime}
-                      endTime={row.period.endTime}
-                      className="text-3xs text-muted-foreground"
-                    />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 space-y-1.5 text-start">
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                    <span className="text-sm font-semibold leading-tight" style={{ color }}>
-                      {row.entry.subjectName}
-                    </span>
-                    {firstTeacher && (
-                      <span className="text-2xs text-muted-foreground">
-                        {firstTeacher.teacherName}
-                      </span>
-                    )}
-                    {row.entry.roomNum && (
-                      <span className="text-3xs rounded-full border border-border/60 px-1.5 py-0.5 text-muted-foreground">
-                        חדר {row.entry.roomNum}
-                      </span>
+            <React.Fragment key={row.lesson}>
+              <li>
+                <article
+                  data-testid="timetable-agenda-lesson"
+                  className="card-base flex gap-3 p-3"
+                >
+                  <div className="flex w-14 flex-shrink-0 flex-col items-center gap-0.5 text-center">
+                    <span className="text-xs font-medium text-muted-foreground">{row.lesson}</span>
+                    {row.period && (
+                      <ClockRange
+                        startTime={row.period.startTime}
+                        endTime={row.period.endTime}
+                        className="text-3xs text-muted-foreground"
+                      />
                     )}
                   </div>
-                  {plan && <LessonDetails label="תכנון" text={plan} />}
-                  {history?.remark && <LessonDetails label="הערה" text={history.remark} />}
-                  {history?.homeWork && (
-                    <LessonDetails label="שיעורי בית" text={history.homeWork} />
-                  )}
-                </div>
-              </article>
+                  <div className="min-w-0 flex-1 space-y-1.5 text-start">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="text-sm font-semibold leading-tight" style={{ color }}>
+                        {row.entry.subjectName}
+                      </span>
+                      {firstTeacher && (
+                        <span className="text-2xs text-muted-foreground">
+                          {firstTeacher.teacherName}
+                        </span>
+                      )}
+                      {row.entry.roomNum && (
+                        <span className="text-3xs rounded-full border border-border/60 px-1.5 py-0.5 text-muted-foreground">
+                          חדר {row.entry.roomNum}
+                        </span>
+                      )}
+                    </div>
+                    {plan && <LessonDetails label="תכנון" text={plan} />}
+                    {history?.remark && <LessonDetails label="הערה" text={history.remark} />}
+                    {history?.homeWork && (
+                      <LessonDetails label="שיעורי בית" text={history.homeWork} />
+                    )}
+                  </div>
+                </article>
+              </li>
 
               {row.breakAfter && (
-                // The week grid's BreakRow as a slim divider: same content, a
-                // <div> rather than a <tr>, because there is no table here.
-                <div
-                  data-testid="timetable-agenda-break"
-                  className="flex flex-wrap items-center justify-center gap-x-2 py-1.5 text-2xs text-muted-foreground"
-                >
-                  <span>{breakLabel(row.breakAfter)}</span>
-                  <ClockRange
-                    startTime={row.breakAfter.startTime}
-                    endTime={row.breakAfter.endTime}
-                  />
-                </div>
+                // The week grid's BreakRow as a slim divider: same content, in
+                // a list item rather than a <tr>, because there is no table
+                // here. Its OWN item, not tucked inside the lesson above it --
+                // sharing that <li> would have a screen reader read
+                // "lesson ... break ..." as one thing. `role="presentation"`
+                // keeps it out of the item count, so the list still reports as
+                // many items as the day has lessons.
+                <li role="presentation">
+                  <div
+                    data-testid="timetable-agenda-break"
+                    className="flex flex-wrap items-center justify-center gap-x-2 py-1.5 text-2xs text-muted-foreground"
+                  >
+                    <span>{breakLabel(row.breakAfter)}</span>
+                    <ClockRange
+                      startTime={row.breakAfter.startTime}
+                      endTime={row.breakAfter.endTime}
+                    />
+                  </div>
+                </li>
               )}
-            </li>
+            </React.Fragment>
           );
         })}
       </ol>

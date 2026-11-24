@@ -28,9 +28,13 @@ describe('SchoolBadge', () => {
     expect(screen.getByTestId('school-badge').getAttribute('title')).toBe('אורט רעננה');
   });
 
-  it('relaxes the truncation cap as the viewport grows', () => {
-    // A hard max-w-[6rem] at every width truncated Hebrew school names on a
-    // 1280px desktop that had room for all of them.
+  it('carries a truncation cap that relaxes at sm and lifts at lg', () => {
+    // A class-string check, not a rendered-width one: jsdom applies no
+    // stylesheet, so nothing here can observe the truncation itself. The
+    // widths are measured at 360/768/1280 by the overflow sweep in
+    // tests/e2e/responsive.spec.ts. What this pins is that the cap is
+    // viewport-dependent at all -- a hard max-w-[6rem] truncated Hebrew
+    // school names on a desktop with room for all of them.
     const cls = render(<SchoolBadge schoolShortLabel="אורט" />).container.querySelector(
       '[data-testid="school-badge"]',
     )?.className;

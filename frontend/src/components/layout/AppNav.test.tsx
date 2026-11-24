@@ -99,7 +99,10 @@ describe('AppNav', () => {
     expect(screen.getByTestId('nav-inbox').textContent).not.toMatch(/\d/);
   });
 
-  it('keeps every destination a tap target at phone width', () => {
+  it('marks every destination with the tap-target class', () => {
+    // The 44x44 that class stands for is measured for real by
+    // tests/e2e/responsive.spec.ts at all three widths; jsdom loads no
+    // stylesheet, so this only pins that the class is still applied.
     render(<AppNav />);
 
     for (const item of NAV_ITEMS) {

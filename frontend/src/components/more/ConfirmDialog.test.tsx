@@ -126,13 +126,15 @@ describe('ConfirmDialog', () => {
     expect(screen.queryByTestId('settings-unlink-error')).toBeNull();
   });
 
-  it('caps its height so a long description cannot clip on iOS', () => {
+  it('keeps the dialog-panel class on the panel', () => {
+    // That class is where `max-height: min(80svh, 46rem)` lives. jsdom
+    // never evaluates it, so this pins the wiring, not the cap.
     renderDialog();
 
     expect(screen.getByTestId('settings-unlink-modal').className).toContain('dialog-panel');
   });
 
-  it('keeps both buttons tap targets', () => {
+  it('marks both buttons with the tap-target class', () => {
     renderDialog();
 
     expect(screen.getByTestId('settings-unlink-cancel-btn').className).toContain('tap-target');

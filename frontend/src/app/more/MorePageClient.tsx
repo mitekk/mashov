@@ -213,124 +213,121 @@ export default function MorePage() {
           and still give the desktop its aside.
         */}
         <div className="split-pane">
-        <div className="space-y-7">
+          <div className="space-y-7">
+            {/* Connected schools */}
+            {schoolLinks && schoolLinks.length > 0 && (
+              <section>
+                <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  {schoolLinks.length === 1 ? 'בית ספר מחובר' : 'בתי ספר מחוברים'}
+                </h2>
+                <SchoolLinksCard
+                  links={schoolLinks}
+                  onUnlink={(link) =>
+                    // The last school is the sign-out-and-wipe case, so it routes
+                    // to the bulk confirm, which says so.
+                    schoolLinks.length <= 1 ? showDisconnect(true) : showUnlink(link)
+                  }
+                />
+              </section>
+            )}
 
-          {/* Connected schools */}
-          {schoolLinks && schoolLinks.length > 0 && (
+            {/* Profile -- one card per linked school. `upstreamUserId` is a
+                per-school id, so a two-school parent has two sets of contact
+                details and both are current; one card captioned with one school
+                and filled from the other is B4. */}
+            {profiles && profiles.length > 0 && (
+              <section>
+                <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  {profiles.length === 1 ? 'פרטי הורה' : 'פרטי הורה לפי בית ספר'}
+                </h2>
+                <div className="space-y-3">
+                  {profiles.map((profile) => (
+                    <ProfileCard key={profile.householdConnectionId} profile={profile} />
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
+
+          <aside className="space-y-7 lg:sticky lg:top-4">
+            {/* Source health */}
             <section>
               <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                {schoolLinks.length === 1 ? 'בית ספר מחובר' : 'בתי ספר מחוברים'}
+                מצב סנכרון
               </h2>
-              <SchoolLinksCard
-                links={schoolLinks}
-                onUnlink={(link) =>
-                  // The last school is the sign-out-and-wipe case, so it routes
-                  // to the bulk confirm, which says so.
-                  schoolLinks.length <= 1 ? showDisconnect(true) : showUnlink(link)
+              {healthLoading && <LoadingState message="טוען..." />}
+              {healthError && <ErrorState />}
+              {health && (
+                <div className="space-y-3">
+                  <ContentFreshnessCard contentFreshness={health.contentFreshness} />
+                  <SourceHealthList sources={health.sources} />
+                </div>
+              )}
+            </section>
+
+            {/* Telegram updates. Beside sync state rather than with the account
+                actions: it is a delivery preference, not an account action --
+                disconnecting it removes a chat id, not a household. */}
+            <section>
+              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                עדכונים בטלגרם
+              </h2>
+              <TelegramCard
+                recipients={digestRecipients ?? []}
+                allChildren={childrenResponse?.data ?? []}
+                pendingToggleId={
+                  telegramToggleMutation.isPending
+                    ? (telegramToggleMutation.variables?.id ?? null)
+                    : null
                 }
+                toggleError={telegramToggleError}
+                onToggle={(id, enabled) => {
+                  setTelegramToggleError(null);
+                  telegramToggleMutation.mutate(
+                    { id, enabled },
+                    {
+                      onError: () =>
+                        setTelegramToggleError('לא הצלחנו לעדכן את ההגדרה. נסו שוב בעוד רגע.'),
+                    },
+                  );
+                }}
+                onDisconnect={() => showTelegramDisconnect(true)}
               />
             </section>
-          )}
+          </aside>
 
-          {/* Profile -- one card per linked school. `upstreamUserId` is a
-              per-school id, so a two-school parent has two sets of contact
-              details and both are current; one card captioned with one school
-              and filled from the other is B4. */}
-          {profiles && profiles.length > 0 && (
-            <section>
+          {/* Spans both columns at lg; last on a phone, which is where the
+              destructive actions and the version line belong. */}
+          <div className="space-y-7 lg:col-span-2">
+            {/* Account actions */}
+            <section className="space-y-3">
               <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                {profiles.length === 1 ? 'פרטי הורה' : 'פרטי הורה לפי בית ספר'}
+                חשבון
               </h2>
-              <div className="space-y-3">
-                {profiles.map((profile) => (
-                  <ProfileCard key={profile.householdConnectionId} profile={profile} />
-                ))}
-              </div>
+              <button
+                data-testid="settings-signout-btn"
+                onClick={() => signOutMutation.mutate()}
+                disabled={signOutMutation.isPending}
+                className="w-full rounded-xl border border-border px-4 py-3 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors disabled:opacity-60"
+              >
+                {signOutMutation.isPending ? 'מתנתק...' : 'התנתקות'}
+              </button>
+              <button
+                data-testid="settings-disconnect-btn"
+                onClick={() => showDisconnect(true)}
+                className="w-full rounded-xl border border-destructive/40 px-4 py-3 text-sm font-medium text-destructive hover:bg-destructive/5 transition-colors"
+              >
+                {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
+              </button>
             </section>
-          )}
 
-        </div>
-
-        <aside className="space-y-7 lg:sticky lg:top-4">
-          {/* Source health */}
-          <section>
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              מצב סנכרון
-            </h2>
-            {healthLoading && <LoadingState message="טוען..." />}
-            {healthError && <ErrorState />}
-            {health && (
-              <div className="space-y-3">
-                <ContentFreshnessCard contentFreshness={health.contentFreshness} />
-                <SourceHealthList sources={health.sources} />
-              </div>
-            )}
-          </section>
-
-          {/* Telegram updates. Beside sync state rather than with the account
-              actions: it is a delivery preference, not an account action --
-              disconnecting it removes a chat id, not a household. */}
-          <section>
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              עדכונים בטלגרם
-            </h2>
-            <TelegramCard
-              recipients={digestRecipients ?? []}
-              allChildren={childrenResponse?.data ?? []}
-              pendingToggleId={
-                telegramToggleMutation.isPending
-                  ? (telegramToggleMutation.variables?.id ?? null)
-                  : null
-              }
-              toggleError={telegramToggleError}
-              onToggle={(id, enabled) => {
-                setTelegramToggleError(null);
-                telegramToggleMutation.mutate(
-                  { id, enabled },
-                  {
-                    onError: () =>
-                      setTelegramToggleError('לא הצלחנו לעדכן את ההגדרה. נסו שוב בעוד רגע.'),
-                  },
-                );
-              }}
-              onDisconnect={() => showTelegramDisconnect(true)}
-            />
-          </section>
-
-        </aside>
-
-        {/* Spans both columns at lg; last on a phone, which is where the
-            destructive actions and the version line belong. */}
-        <div className="space-y-7 lg:col-span-2">
-          {/* Account actions */}
-          <section className="space-y-3">
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              חשבון
-            </h2>
-            <button
-              data-testid="settings-signout-btn"
-              onClick={() => signOutMutation.mutate()}
-              disabled={signOutMutation.isPending}
-              className="w-full rounded-xl border border-border px-4 py-3 text-sm font-medium text-foreground hover:bg-accent/50 transition-colors disabled:opacity-60"
-            >
-              {signOutMutation.isPending ? 'מתנתק...' : 'התנתקות'}
-            </button>
-            <button
-              data-testid="settings-disconnect-btn"
-              onClick={() => showDisconnect(true)}
-              className="w-full rounded-xl border border-destructive/40 px-4 py-3 text-sm font-medium text-destructive hover:bg-destructive/5 transition-colors"
-            >
-              {isLastSchool ? 'ניתוק מבית הספר' : 'ניתוק מכל בתי הספר'}
-            </button>
-          </section>
-
-          {/* App info */}
-          <section>
-            <p className="text-xs text-muted-foreground text-center">
-              מרכז הורים · גרסה {APP_VERSION}
-            </p>
-          </section>
-        </div>
+            {/* App info */}
+            <section>
+              <p className="text-xs text-muted-foreground text-center">
+                מרכז הורים · גרסה {APP_VERSION}
+              </p>
+            </section>
+          </div>
         </div>
       </div>
 

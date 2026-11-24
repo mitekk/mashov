@@ -207,18 +207,18 @@ export default function SignInPage() {
         <div className="mb-8 text-center lg:text-start">
           <h1 className="text-2xl font-bold text-foreground">כניסה למרכז הורים</h1>
           <p className="mt-1 text-sm text-muted-foreground">הכנס את פרטי החשבון שלך</p>
-      </div>
+        </div>
 
-      {/* Card-shaped so hydration does not move the illustration above it. */}
-      <Suspense
-        fallback={
-          <div className="flex min-h-[19rem] items-center justify-center rounded-2xl border border-border/60 bg-card p-6 shadow-sm">
-            <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
-          </div>
-        }
-      >
-        <SignInForm />
-      </Suspense>
+        {/* Card-shaped so hydration does not move the illustration above it. */}
+        <Suspense
+          fallback={
+            <div className="flex min-h-[19rem] items-center justify-center rounded-2xl border border-border/60 bg-card p-6 shadow-sm">
+              <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+            </div>
+          }
+        >
+          <SignInForm />
+        </Suspense>
       </div>
     </CenteredShell>
   );

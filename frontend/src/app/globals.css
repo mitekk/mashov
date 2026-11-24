@@ -310,13 +310,21 @@
 
   /* Full-bleed media viewer below `lg`; a centred, constrained panel from `lg`.
      The centring is physical but symmetric (`left-1/2` + `-translate-x-1/2`),
-     so it is correct under RTL too -- `start-1/2` would not be. */
+     so it is correct under RTL too, where the logical inline-start equivalent
+     would not be. (Deliberately not spelling that class name: Tailwind's
+     content scanner reads comments too, and a class named only in prose is
+     still compiled into the bundle.) */
   .viewer-surface {
     @apply fixed inset-0 z-50;
     /* The home-indicator inset, on the surface rather than on the scrolling
-       content: as a utility on the content it would be `.pb-safe`, which is
-       emitted after Tailwind's own `lg:pb-3` and would therefore beat it,
-       leaving the panel with no bottom padding at lg. */
+       content, so the same rule that applies it can cancel it at lg below --
+       the content keeps its own padding untouched at every width.
+
+       (An earlier comment here claimed a utility `.pb-safe` would beat a
+       sibling `lg:pb-3`. It would not: hand-written @layer utilities rules are
+       emitted among the UNPREFIXED utilities, before every media-variant
+       block, so any `lg:pb-*` wins. That is exactly why AppNav and AppShell
+       can write `.pb-safe lg:pb-0`.) */
     padding-bottom: env(safe-area-inset-bottom);
   }
 
@@ -498,11 +506,6 @@
 
   .pb-safe {
     padding-bottom: env(safe-area-inset-bottom);
-  }
-
-  .px-safe {
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
   }
 
   /* Animation for staggered entry */
