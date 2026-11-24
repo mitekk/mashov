@@ -164,9 +164,9 @@ services:
       FEATURE_DAILY_BEHAVE: ${FEATURE_DAILY_BEHAVE:-false}
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
       # The build this process is. Stamped onto a feedback row when the client
-      # sends none -- a browser whose bundle was built without
-      # NEXT_PUBLIC_APP_VERSION knows nothing about its own version, and a null
-      # here defeats the point of the field.
+      # sends none. Optional: unset, the backend falls back to its own
+      # package.json version (src/common/app-version.ts), so the column is
+      # never null. Set it to stamp a real build -- a tag, a git sha.
       APP_VERSION: ${APP_VERSION:-}
     restart: unless-stopped
     ports:
@@ -198,7 +198,11 @@ services:
         # readers (the /more footer and the feedback dialog) are client
         # components. Setting it at runtime alone would leave them with
         # `undefined`.
-        NEXT_PUBLIC_APP_VERSION: ${APP_VERSION:-}
+        #
+        # Optional. Unset, next.config.ts falls back to frontend/package.json's
+        # version, so nothing here must be configured for the app to report a
+        # version. Set it to stamp a real build -- a tag, a git sha.
+        APP_VERSION: ${APP_VERSION:-}
     depends_on:
       backend:
         condition: service_healthy
@@ -216,10 +220,6 @@ services:
       PROXY_ATTACHMENT_TIMEOUT_MS: ${PROXY_ATTACHMENT_TIMEOUT_MS:-}
       NEXT_PUBLIC_API_URL: /api/v1
       NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
-      # Also at runtime, for server components (the same way
-      # NEXT_PUBLIC_GA_MEASUREMENT_ID is read in app/layout.tsx). The client
-      # bundle takes its copy from the build arg above.
-      NEXT_PUBLIC_APP_VERSION: ${APP_VERSION:-}
       # Opt-in only. Set to 1 by the e2e test commands and CI; must stay 0
       # everywhere else — when enabled, an x-mashov-e2e-auth-bypass header or a
       # mashov-e2e-browser user agent walks straight past the auth guard.

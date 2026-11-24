@@ -33,10 +33,9 @@ import { useSelectedChild } from '@/hooks/useSelectedChild';
 import type { ChildrenResponse, SchoolLink } from '@/types/api';
 import { signOut } from '@/api/auth';
 
-// `||`, not `??`: the Dockerfile declares NEXT_PUBLIC_APP_VERSION as a build
-// ARG, so the variable is always PRESENT at build time and Next inlines `''`
-// rather than leaving it undefined when the operator never set APP_VERSION.
-// `??` would then render "גרסה " with nothing after it.
+// Set for every real build by next.config.ts, which derives it from
+// APP_VERSION or frontend/package.json. The fallback is for environments that
+// do not load the Next config at all, such as the vitest component tests.
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '1.0.0';
 
 export default function MorePage() {

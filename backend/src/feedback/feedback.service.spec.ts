@@ -1,5 +1,6 @@
 import { HttpException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PACKAGE_VERSION } from '../common/app-version';
 import {
   FEEDBACK_MAX_PER_HOUR,
   FEEDBACK_SUBJECTS,
@@ -337,34 +338,39 @@ describe('FeedbackService', () => {
        * then carry `''`, and a reader filtering `appVersion IS NULL` would
        * find nothing and could not tell "unknown" from "known to be blank".
        */
-      it('stores null when the environment sets an empty version', async () => {
+      it('ignores the empty string compose sets and uses the package version', async () => {
         process.env.APP_VERSION = '';
         const { prisma, create } = makeMockPrisma({});
         const service = new FeedbackService(prisma);
 
         await service.create('user-1', input());
 
-        expect(create.mock.calls[0][0].data.appVersion).toBeNull();
+        expect(create.mock.calls[0][0].data.appVersion).toBe(PACKAGE_VERSION);
       });
 
-      it('stores null when the client sends an empty version', async () => {
+      it('ignores an empty version from the client and uses what it knows', async () => {
         delete process.env.APP_VERSION;
         const { prisma, create } = makeMockPrisma({});
         const service = new FeedbackService(prisma);
 
         await service.create('user-1', input({ appVersion: '' }));
 
-        expect(create.mock.calls[0][0].data.appVersion).toBeNull();
+        expect(create.mock.calls[0][0].data.appVersion).toBe(PACKAGE_VERSION);
       });
 
-      it('stores null when neither side knows the build', async () => {
+      /**
+       * No configuration at all still records something: the backend's own
+       * package.json version is the floor, so the column is never null on a
+       * stack nobody configured. See common/app-version.ts.
+       */
+      it('falls back to the package version when nothing is configured', async () => {
         delete process.env.APP_VERSION;
         const { prisma, create } = makeMockPrisma({});
         const service = new FeedbackService(prisma);
 
         await service.create('user-1', input());
 
-        expect(create.mock.calls[0][0].data.appVersion).toBeNull();
+        expect(create.mock.calls[0][0].data.appVersion).toBe(PACKAGE_VERSION);
       });
     });
 

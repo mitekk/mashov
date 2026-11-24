@@ -88,13 +88,21 @@ without it a report like "the timetable is wrong" names no child. The server add
 
 - the `user-agent` request header, truncated to 512 characters — the one field whose purpose
   is saying what the client actually is;
-- `appVersion` from its own `APP_VERSION` when the client sends none;
+- `appVersion` from its own build when the client sends none;
 - `mashovUserId`, `username` and `displayName` from the caller's `app_user` row, the name
   stripped of its `[child class]` group by `common/parent-name.ts`;
 - `schoolsSnapshot` — every **active** connection as
   `{ id, schoolCode, schoolName, label, schoolYear }`, with `label` resolved over the whole
   set, so two schools in one cluster carry both full names rather than one colliding short
   one.
+
+**Which build a row records.** Nothing has to be configured: the client inlines its version
+at build time from `next.config.ts`, and the server falls back to its own
+(`backend/src/common/app-version.ts`), so `appVersion` is never null. Both derive from their
+`package.json` version unless `APP_VERSION` is set, which overrides both and is how CI or ops
+stamp a real build — a tag, a git sha. **The package.json versions are not bumped per
+release**, so the default distinguishes nothing: set `APP_VERSION` if you need to tell two
+deployments apart.
 
 Each row is a self-contained snapshot with no foreign key, because the household merge
 (ADR-0029) and the connection unlink (ADR-0032) make pure references uninterpretable exactly

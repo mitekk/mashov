@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { appVersion } from '../common/app-version';
 import { parentDisplayName } from '../common/parent-name';
 import { resolveSchoolLabels } from '../common/school-label';
 
@@ -125,11 +126,11 @@ export class FeedbackService {
         // the fallback: without it this field would read null on every row,
         // and the field exists to answer "is the bug still in the release we
         // are running".
-        // `||`, not `??`: docker-compose sets `APP_VERSION: ${APP_VERSION:-}`,
-        // so an operator who never set the variable hands this a SET empty
-        // string. `??` would pass it through and file every row under `''`,
-        // which a reader cannot tell from a build that is genuinely blank.
-        appVersion: input.appVersion || process.env.APP_VERSION || null,
+        // What the client ran, else what this server is. `appVersion()` takes
+        // APP_VERSION when it is set and the backend's own package.json
+        // version otherwise, so a stack nobody configured still records
+        // something rather than a column of nulls.
+        appVersion: input.appVersion?.trim() || appVersion(),
         mashovUserId: user.mashovUserId,
         username: user.username,
         // Stripped of the per-school child tag Mashov appends, so one child's
