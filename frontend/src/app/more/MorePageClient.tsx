@@ -11,9 +11,7 @@ import { SchoolLinksCard } from '@/components/more/SchoolLinksCard';
 import { TelegramCard } from '@/components/more/TelegramCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { ConfirmDialog } from '@/components/more/ConfirmDialog';
-import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSourceHealth, useProfile } from '@/hooks/useSettings';
 import { useSchoolLinks } from '@/hooks/useSchoolLinks';
 import { useChildren } from '@/hooks/useChildren';
@@ -196,10 +194,6 @@ export default function MorePage() {
       <div data-testid="more-page" className="page-shell space-y-7">
         <header className="page-header">
           <h1 className="page-title">עוד</h1>
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <RefreshButton />
-          </div>
         </header>
 
         {/*
@@ -252,7 +246,9 @@ export default function MorePage() {
             )}
           </div>
 
-          <aside className="space-y-7 lg:sticky lg:top-4">
+          {/* `.sticky-under-header` replaces `lg:top-4`, which being a
+              utility would win over it. See globals.css. */}
+          <aside className="sticky-under-header space-y-7 lg:sticky">
             {/* Source health */}
             <section>
               <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">

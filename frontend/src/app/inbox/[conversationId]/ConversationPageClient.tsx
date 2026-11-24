@@ -7,8 +7,6 @@ import { AppShell } from '@/components/layout/AppShell';
 import { MessageThread } from '@/components/conversation/MessageThread';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { RefreshButton } from '@/components/ui/RefreshButton';
 import {
   useArchiveConversation,
   useConversation,
@@ -119,8 +117,6 @@ export default function ConversationPage() {
                 )}
               </>
             )}
-            <ThemeToggle />
-            <RefreshButton />
           </div>
         </div>
 

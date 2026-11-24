@@ -6,8 +6,6 @@ import { ChildQuickCard } from '@/components/home/ChildQuickCard';
 import { LatestFeed } from '@/components/home/LatestFeed';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useDashboard } from '@/hooks/useDashboard';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { formatRelativeHe } from '@/lib/dates';
@@ -128,10 +126,6 @@ function HomePageContent() {
                 סונכרן {formatRelativeHe(dashboard.freshness.lastSyncAt)}
               </p>
             )}
-          </div>
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <RefreshButton />
           </div>
         </header>
 

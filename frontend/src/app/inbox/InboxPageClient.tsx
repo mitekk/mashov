@@ -8,8 +8,6 @@ import { UnreadBadge } from '@/components/inbox/UnreadBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { RefreshButton } from '@/components/ui/RefreshButton';
 import {
   useArchive,
   useConversations,
@@ -201,9 +199,10 @@ function InboxPageContent() {
     <div data-testid="inbox-page" className="page-shell space-y-5">
       {/*
         At 360 this row was a title plus a three-segment filter (~190px) plus
-        two 40px buttons, all on one non-wrapping line. `.page-header` now
-        wraps below sm, and the control group wraps within itself so the filter
-        and the two buttons can take separate lines rather than overflow.
+        two 40px buttons, all on one non-wrapping line. The buttons are the app
+        header's now, and `.page-header` wraps below sm regardless -- the
+        filter group is still ~190px beside a title, and the wrapping is what
+        keeps that off one line.
       */}
       <header className="page-header items-center">
         <div className="flex min-w-0 items-center gap-2">
@@ -253,8 +252,6 @@ function InboxPageContent() {
               הכל
             </button>
           </div>
-          <ThemeToggle />
-          <RefreshButton />
         </div>
       </header>
 
@@ -285,7 +282,10 @@ function InboxPageContent() {
       {hasSelection && (
         <section
           data-testid="inbox-bulk-actions"
-          className="card-base flex flex-wrap items-center gap-2 px-3 py-2.5 lg:sticky lg:top-4 lg:z-10"
+          // `.sticky-under-header` replaces `lg:top-4`: it tracks the app
+          // header rather than parking behind it. A `top-*` utility here would
+          // win over it -- see globals.css.
+          className="card-base sticky-under-header flex flex-wrap items-center gap-2 px-3 py-2.5 lg:sticky lg:z-10"
         >
           <span className="text-sm font-medium text-foreground">
             נבחרו {selectedConversationIds.length}

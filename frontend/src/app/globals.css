@@ -45,6 +45,36 @@
     --info-subtle: 210 80% 94%;
 
     --radius: 16px;
+
+    /* The app header's own geometry, read by `.app-header` and
+       `.sticky-under-header` in @layer components.
+
+       Deliberately plain custom properties and NOT `spacing` tokens in
+       tailwind.config.ts. A spacing token emits a whole family of utilities
+       (`.pt-*`, `.top-*`, ...), and where one of those collides with a
+       hand-written utility of the same name the winner is emission order
+       rather than intent -- the trap src/app/globals.test.ts guards for the
+       utilities that already exist. Custom properties emit nothing, so they
+       cannot join that collision at all. */
+    /* `h-14` PLUS the notch, because `pt-safe` lives on the header itself.
+       Leave the inset out and `.sticky-under-header` offsets by 56px against a
+       header that is really 56px + inset tall -- the child workspace tab rail
+       is `sticky` at EVERY width, so on a notched iPhone it parks behind the
+       header, half-covered and partly unclickable. Cancelled at `lg` below,
+       tracking the header's own `lg:pt-0`. */
+    --app-header-h: calc(3.5rem + env(safe-area-inset-top));
+    /* 0 = header fully visible, 1 = fully faded out. Written on
+       `document.documentElement` by useHeaderScroll, outside React, so the
+       scroll fade costs no re-renders. */
+    --app-header-p: 0;
+  }
+
+  /* The header drops its `pt-safe` at `lg` (`lg:pt-0`), so the height every
+     sticky element offsets from has to drop the inset in the same breath. */
+  @media (min-width: 1024px) {
+    :root {
+      --app-header-h: 3.5rem;
+    }
   }
 
   .dark {
@@ -249,9 +279,10 @@
   }
 
   .page-header {
-    /* Wraps by default so a title plus a filter group plus two icon buttons
-       cannot force a 360px row wider than the viewport; a no-op from `sm` up,
-       where the row already fits. */
+    /* Wraps by default so a title plus a filter group cannot force a 360px row
+       wider than the viewport; a no-op from `sm` up, where the row already
+       fits. (The theme and sync buttons that used to sit here too are
+       `AppHeader`'s now.) */
     @apply flex flex-wrap items-start justify-between gap-3 pt-5 sm:flex-nowrap;
   }
 
@@ -503,6 +534,43 @@
     .pb-nav {
       padding-bottom: 2rem;
     }
+  }
+
+  /* The app-wide sticky header, and whatever tucks under it.
+
+     No `transition` on either rule: `--app-header-p` is already a continuous
+     function of the scroll offset, and a transition would make the header lag
+     the finger. */
+  .app-header {
+    opacity: calc(1 - var(--app-header-p));
+    /* Percent, so nothing has to measure the header's height in JS.
+
+       It is also the half that actually gets the header out of the way:
+       opacity alone would leave an invisible but still hit-testable 56px box
+       over the top of the page for every p <= 0.99, where `inert` has not
+       taken over yet. tests/e2e/header.spec.ts asserts the matrix.
+
+       NOTE: a transform makes this element a containing block for any
+       `position: fixed` descendant. Nothing fixed lives in the header today --
+       the feedback dialog and its banner are DOM siblings via the provider,
+       and the overflow menu is portaled to <body> -- but a fixed child added
+       later would position against the header instead of the viewport.
+
+       No `will-change`: the transform already promotes this to its own layer,
+       and `will-change` here is never released, so it would hold a composited
+       layer with a backdrop-filter for the lifetime of every page. */
+    transform: translateY(calc(var(--app-header-p) * -100%));
+  }
+
+  /* For `position: sticky` elements that would otherwise park behind the
+     header: they sit below it while it is there and ride up into its place as
+     it leaves, ending flush where they sat before the header existed.
+
+     Sets `top` directly rather than composing with Tailwind's `top-*`: those
+     live in @layer utilities, which wins over this layer, so an element using
+     this class must not also carry a `top-*` utility. */
+  .sticky-under-header {
+    top: calc(var(--app-header-h) * (1 - var(--app-header-p)) + 0.5rem);
   }
 
   /* Content safe area */
