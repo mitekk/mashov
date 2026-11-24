@@ -42,7 +42,7 @@ test('a frontend page change selects vitest + e2e only, with auth.setup.ts first
   assert.ok(specs.includes('home.spec.ts'));
   assert.ok(!specs.includes('children.spec.ts'));
 
-  assert.equal(d.vitest_args, `--changed ${BASE} --passWithNoTests`);
+  assert.equal(d.vitest_args, 'related --run src/app/inbox/page.tsx --passWithNoTests');
   assert.equal(d.jest_args, '');
 });
 
@@ -126,6 +126,7 @@ test('a lockfile change forces a full run', () => {
   assert.equal(d.integration, true);
   assert.equal(d.e2e, true);
   assert.equal(d.jest_args, '', 'a full run must not narrow');
+  assert.equal(d.vitest_args, 'run');
   assert.equal(d.playwright_args, '');
   assert.equal(d.e2e_shards, '[1,2]');
   assert.match(d.reason, /full-run pattern/);
@@ -190,7 +191,25 @@ test('a deleted frontend file un-narrows vitest', () => {
     deleted: ['frontend/src/app/inbox/Old.tsx'],
   });
   assert.equal(d.vitest, true);
-  assert.equal(d.vitest_args, '');
+  assert.equal(d.vitest_args, 'run', 'whole layer, and still a valid vitest invocation');
+});
+
+test('vitest paths drop the frontend/ prefix and carry no git ref', () => {
+  // `vitest --changed <base>` died in CI: only the `changes` job checks out
+  // with fetch-depth 0, so the base sha is absent from the lint job's clone.
+  const d = run(['frontend/src/components/layout/AppNav.tsx']);
+  assert.equal(
+    d.vitest_args,
+    'related --run src/components/layout/AppNav.tsx --passWithNoTests',
+  );
+  assert.ok(!d.vitest_args.includes('frontend/'));
+  assert.ok(!d.vitest_args.includes(BASE), 'must not depend on a git ref');
+});
+
+test('a non-traceable frontend file runs the whole vitest layer', () => {
+  const d = run(['frontend/public/icon.png']);
+  assert.equal(d.vitest, true);
+  assert.equal(d.vitest_args, 'run');
 });
 
 test('a non-traceable backend file runs the whole unit layer', () => {
