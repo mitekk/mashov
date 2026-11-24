@@ -141,6 +141,43 @@ Build a mobile-first household command center that syncs data from the Mashov sc
    → Repeat steps 1–2 before retrying
 ```
 
+### In-app Mashov auth: when `POST /api/login` refuses
+
+Added in Phase 2. A correct password is not enough — Mashov answers `403` with a
+`Reason` header for five distinct situations, and each used to surface to the
+parent as "wrong password" with nowhere to go. The full rationale is
+[ADR-0042](adr/0042-in-app-mashov-auth-surface.md); the routes and their error
+codes are in [`api-contract.md`](api-contract.md).
+
+| `Reason` | What it means | In-app answer |
+|---|---|---|
+| `MfaRequired` | A one-time code is needed | `/auth/mfa` → `POST /auth/mfa-challenges/:id/{code,session}` |
+| `ChangePass` | Password correct, must be replaced before entry | `/auth/complete-setup?mode=password` → `POST /auth/credentials` |
+| `CreateUsername` / `SetUsernameAndPass` | A username must be set | `/auth/complete-setup?mode=credentials` → same route |
+| `UserSuspended` | A captcha is wanted | A link out to Mashov's own page; we do not solve it |
+| — (parent forgot it) | No usable password at all | `/auth/forgot-password` → `POST /auth/credential-recoveries` |
+
+Three properties shape the design:
+
+- **No route here may answer 401.** `apiFetch` hard-redirects on any 401 whose
+  code is not `INVALID_CREDENTIALS`, which would throw the parent off the
+  screen holding their one-time code. Everything is 400/409/422/429/502.
+- **Every flow must end with a password we can store.** The sixteen sync crons
+  re-login by decrypting a stored credential, so a sign-in that leaves us
+  without one produces a working session and no background updates at all.
+  That is why MFA verify takes a password Mashov itself rejects, and why the
+  first sign-in per school cannot be passwordless.
+- **Recovery must not become an ID-number oracle.** `POST /credential-recoveries`
+  answers an identical 202 for an unknown national ID as for a real one and
+  marks the fabricated handle `poisoned`. The response is indistinguishable;
+  the server log is not, which is a distinction the first implementation got
+  wrong in the other direction (ADR-0042 §11).
+
+Passwordless sign-in by one-time code is built, served and switched off at the
+UI (`frontend/src/lib/featureFlags.ts`): its upstream contract was read from
+Mashov's Angular bundle rather than observed, and Mashov refuses it in
+production.
+
 ### Cron Schedule
 
 | Source | Cron Expression | Cadence |

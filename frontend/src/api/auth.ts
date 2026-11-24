@@ -118,6 +118,10 @@ export function setCredentials(
  * signed into with a password, BEFORE sending a code -- so the parent is never
  * left holding a code they cannot use.
  */
+// NOTE: gated off. `PASSWORDLESS_SIGN_IN_ENABLED` in `@/lib/featureFlags` is
+// `false`, so nothing below reaches a parent today -- the upstream contract was
+// never observed and Mashov refuses step 1. Kept, not deleted, because the
+// backend routes are live and a capture may make it work. See ADR-0042 §11.
 export function requestOtp(body: RequestOtpRequest): Promise<RequestOtpResponse> {
   return apiFetch<RequestOtpResponse>('/auth/otp-requests', {
     method: 'POST',
@@ -126,6 +130,10 @@ export function requestOtp(body: RequestOtpRequest): Promise<RequestOtpResponse>
 }
 
 /** Step 2 of passwordless sign-in. Sets the `mashov_session` cookie. */
+// NOTE: gated off. `PASSWORDLESS_SIGN_IN_ENABLED` in `@/lib/featureFlags` is
+// `false`, so nothing below reaches a parent today -- the upstream contract was
+// never observed and Mashov refuses step 1. Kept, not deleted, because the
+// backend routes are live and a capture may make it work. See ADR-0042 §11.
 export function createOtpSession(
   otpRequestId: string,
   body: CreateOtpSessionRequest,

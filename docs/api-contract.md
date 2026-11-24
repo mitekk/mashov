@@ -47,10 +47,105 @@
 
 | Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
 |--------|------|-------|----------------------------|---------------|-------------|--------|
-| GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | planned |
-| POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
-| DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
-| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | planned |
+| GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | implemented |
+| POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 422, 429, 502 | implemented |
+| DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | implemented |
+| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | implemented |
+
+### Phase 2 — In-app Mashov auth: MFA, recovery, credential setup, passwordless
+
+Mashov can refuse a correct password for five different reasons, each of which
+used to surface as "wrong password" and a dead end. These routes are the in-app
+answer to each. Rationale and trade-offs: [ADR-0042](adr/0042-in-app-mashov-auth-surface.md).
+
+| Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
+|--------|------|-------|----------------------------|---------------|-------------|--------|
+| POST | `/api/v1/auth/mfa-challenges/:challengeId/code` | No | `{ method: "email" \| "sms" }` | `{ ok: true }` | 202, 400, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/mfa-challenges/:challengeId/session` | No | `{ semel: number, username: string, password: string, code: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/credential-recoveries` | No | `{ semel: number, idNumber: string, channel: "email" \| "sms" }` | `{ recoveryId: string, requiresSecondChannel: boolean, channel: "email" \| "sms" }` | 202, 400, 429, 502 | implemented |
+| POST | `/api/v1/auth/credential-recoveries/:recoveryId/password` | No | `{ code: string, secondCode?: string, newPassword: string }` | `{ ok: true, username?: string }` | 200, 400, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/credentials` | No | `{ semel: number, username: string, password: string, newPassword?: string, newUsername?: string, challengeId?: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 409, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/otp-requests` | No | `{ semel: number, username: string, method: "email" \| "sms" }` | `{ otpRequestId: string, method: "email" \| "sms" }` | 202, 400, 409, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/otp-requests/:otpRequestId/session` | No | `{ code: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 409, 422, 429, 502 | implemented |
+
+Three conventions hold across all seven, and each is load-bearing rather than
+stylistic.
+
+**None of these routes may answer 401 — ever.** `apiFetch`
+(`frontend/src/api/client.ts`) hard-redirects to `/auth/sign-in` on any 401
+whose code is not `INVALID_CREDENTIALS`. A 401 from any route here would throw
+the parent off the very screen carrying their one-time code, mid-sign-in.
+Failures are 400, 409, 422, 429 or 502. `POST /auth/credentials` reports a
+rejected *current* password as `400 INVALID_CREDENTIALS` for this reason, not
+401.
+
+**The 202s are anti-enumeration, not asynchrony.** `POST /credential-recoveries`
+answers 202 with a `recoveryId` for an unknown ID number exactly as it does for
+a real one — byte-identical body, same Redis state shape — because anything
+else turns the route into an oracle for "does this national ID belong to a
+parent at this school". The fabricated recovery is marked `poisoned`
+server-side and fails at step 2 like a wrong code. `/otp-requests` and
+`/mfa-challenges/:id/code` are 202 because the code is sent by Mashov, not by
+us, so we cannot report delivery.
+
+**`:challengeId` and `:recoveryId` are not authorisation.** Mashov issues the
+`challengeId` in the 403 that opens the challenge; the one-time code is what
+authorises. Both are rate-limited on their own key as well as per IP, because
+anyone holding a `challengeId` could otherwise text a victim repeatedly.
+
+#### Failures, with the Hebrew the parent sees
+
+Copy lives in `frontend/src/lib/authErrors.ts`; the code union is
+`AuthErrorCode` in `frontend/src/types/api.ts`. An unknown code falls back to a
+generic message, so the frontend degrades safely if the backend ships first.
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `MFA_REQUIRED` | 400 | Mashov wants a one-time code. Carries `challengeId`; without it the parent reaches a screen that knows a code is needed and has no handle to ask for one. |
+| `INVALID_MFA_CODE` | 400 | The code was wrong. Only ever at the verify stage. |
+| `MFA_CODE_EXPIRED` | 400 | The code or the challenge expired. Ask for a new one. |
+| `MFA_SEND_REFUSED` | 422 | Mashov refused to send a code. **Not** a code error — at the send stage no code exists yet. |
+| `MFA_RESEND_TOO_SOON` | 429 | Mashov's own resend brake. |
+| `MFA_CONTACT_MISSING` | 422 | Mashov holds no email or phone for the account. Nothing we can retry. |
+| `PASSWORD_CHANGE_REQUIRED` | 400 | Password correct, but Mashov will not let the parent in until they replace it. Routes to `/auth/complete-setup`. |
+| `CREDENTIALS_SETUP_REQUIRED` | 400 | Same, for a username Mashov wants set. |
+| `USERNAME_TAKEN` | 409 | The requested username already exists in Mashov. |
+| `USERNAME_LOCKED` | 429 | Too many username changes. |
+| `CREDENTIALS_SETUP_FAILED` | 400 | Mashov did not accept the change. |
+| `WEAK_PASSWORD` | 422 | Fails Mashov's own policy. The only auth code carrying `details[]` field errors. |
+| `RECOVERY_THROTTLED` | 429 | Mashov is rate limiting recovery for this account. |
+| `RECOVERY_SESSION_EXPIRED` | 400 | The 15-minute recovery handle is gone. |
+| `INVALID_RECOVERY_CODE` | 400 | Wrong code — **or** a fabricated recovery for an ID Mashov does not know. Deliberately the same answer. |
+| `RECOVERY_CODE_EXPIRED` | 400 | The emailed code expired. |
+| `RECOVERY_LOCKED` | 429 | Too many wrong codes; the handle is burned. |
+| `SECOND_CODE_REQUIRED` | 400 | Mashov sent codes on **both** channels and wants both. Decided server-side, never trusted from the client. |
+| `PASSWORD_SIGN_IN_REQUIRED` | 409 | The first sign-in for a school must use a password: background sync re-logins decrypt a stored one, so an OTP-only household would see data that never updates. |
+| `INVALID_OTP_CODE` | 400 | The code was wrong. Only ever at the verify stage. |
+| `OTP_REQUEST_REFUSED` | 422 | Mashov refused to send a code. **Not** a code error. This is the one that used to read "that code is not valid" before any code had been sent — see ADR-0042 §11. |
+| `OTP_CODE_EXPIRED` | 400 | Ask for a new code. |
+| `OTP_LOCKED` | 429 | Too many attempts on one handle. |
+| `OTP_RESEND_TOO_SOON` | 429 | A code was just sent. |
+| `OTP_CONTACT_MISSING` | 422 | Mashov holds no email or phone. There is deliberately no destination input: Mashov sends to the contact it already has. |
+| `OTP_SESSION_EXPIRED` | 400 | The handle is gone or already used. Single-use by design. |
+| `LOGIN_METHOD_BLOCKED` | 422 | The school does not permit passwordless sign-in. |
+| `CAPTCHA_REQUIRED` | 422 | Mashov wants a captcha. The UI offers a link out to Mashov's own page rather than pretending to solve it. |
+| `RATE_LIMITED` | 429 | Our own per-IP or per-identity budget. |
+| `UPSTREAM_ERROR` | 502 | Mashov unreachable, or an answer that did not come from Mashov's API (a proxy ACL or WAF). Never reported as a bad code. |
+
+**Passwordless sign-in is served but not offered.** All three OTP routes are
+live, metered and tested, and `PASSWORDLESS_SIGN_IN_ENABLED` in
+`frontend/src/lib/featureFlags.ts` is `false`, so the sign-in page renders
+password-only. The upstream contract was read out of Mashov's Angular bundle
+and never observed, and Mashov refuses step 1 in production. The backend stays
+reachable because verifying a corrected contract needs it. See ADR-0042 §11.
+
+**Status codes here deviate from `.claude/rules/api.md` deliberately.** That
+rule says Create → 201 and Delete → 204-no-body. This surface uses 202 for the
+three send-a-code routes (see anti-enumeration above), 200 for the four that
+mint a session (the response is a cookie plus a flag, not a created resource
+the client can fetch), and 200 for `DELETE /auth/session` so the client can
+distinguish a real sign-out from a proxy swallowing the request. Noted here
+rather than left to disagree silently.
 
 ### School identity on the data
 

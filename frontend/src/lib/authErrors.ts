@@ -51,6 +51,12 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
 
   // Passwordless sign-in. The first is the sync constraint made visible: it is
   // the reason an OTP-only household cannot exist.
+  //
+  // Gated off: `PASSWORDLESS_SIGN_IN_ENABLED` is `false`, so the OTP_* strings
+  // below are unreachable from the UI today. They stay because the backend
+  // routes are live and a wire capture may make the flow work; marked here so
+  // the next reader does not take their presence as proof the path ships.
+  // See ADR-0042 §11.
   PASSWORD_SIGN_IN_REQUIRED:
     'הכניסה הראשונה לבית ספר צריכה להיות עם סיסמה, כדי שהנתונים יתעדכנו ברקע',
   INVALID_OTP_CODE: 'קוד האימות שגוי',
