@@ -37,6 +37,7 @@ import { MashovRecoveryService } from '../../backend/src/common/mashov-login/mas
 import { MashovSessionService } from '../../backend/src/session/mashov-session.service';
 import { SchoolLinksService } from '../../backend/src/school-links/school-links.service';
 import { AuthService } from '../../backend/src/auth/auth.service';
+import { EncryptionService } from '../../backend/src/session/encryption.service';
 import { MashovSessionModule } from '../../backend/src/session/mashov-session.module';
 import { SchoolLinksModule } from '../../backend/src/school-links/school-links.module';
 
@@ -100,6 +101,7 @@ describe('In-app Mashov password recovery', () => {
   let session: MashovSessionService;
   let schoolLinks: SchoolLinksService;
   let authService: AuthService;
+  let encryption: EncryptionService;
 
   let requestRecovery: jest.SpyInstance;
   let resetPassword: jest.SpyInstance;
@@ -138,6 +140,10 @@ describe('In-app Mashov password recovery', () => {
     session = module.get(MashovSessionService);
     schoolLinks = module.get(SchoolLinksService);
     authService = module.get(AuthService);
+    // Needed for a connection whose stored password actually decrypts; see
+    // `seedConnection`. Exported by MashovSessionModule, which this test
+    // module already imports.
+    encryption = module.get(EncryptionService);
 
     requestRecovery = jest.spyOn(upstream, 'requestRecovery');
     resetPassword = jest.spyOn(upstream, 'resetPassword');
@@ -868,12 +874,18 @@ describe('In-app Mashov password recovery', () => {
           schoolCode: SEMEL,
           schoolYear: 2027,
           username: KNOWN_ID,
-          // Encrypted with the suite's ENCRYPTION_KEY by the service under
-          // test on the way back out; seeded with a value the real
-          // EncryptionService can decrypt is not needed here, because the OTP
-          // path's decrypt is exercised in the unit spec. This asserts the
-          // route shape and the DI graph.
-          encryptedPassword: 'enc-seed',
+          // A password that actually decrypts, which this used to not be.
+          //
+          // The previous comment argued the gap away -- "the OTP path's
+          // decrypt is exercised in the unit spec" -- but that spec mocks the
+          // upstream, so NO test at any layer reached
+          // `OtpService.createSession`'s `this.encryption.decrypt(...)`. With
+          // a literal 'enc-seed' (no ':' separators) `EncryptionService.decrypt`
+          // throws 'Invalid encrypted text format' inside the request, i.e. a
+          // 500 -- so the step-2 success path was not merely untested, it was
+          // unreachable. That is the exact shape of gap the stage-blind
+          // classifier bug lived in.
+          encryptedPassword: encryption.encrypt('oldpw1'),
           schoolName: 'Test School',
           upstreamUserId: 'setup-user-1',
           active: true,
@@ -987,6 +999,64 @@ describe('In-app Mashov password recovery', () => {
         expect(stored).toContain(String(SEMEL));
         expect(body).not.toHaveProperty('username');
         expect(body).not.toHaveProperty('semel');
+      });
+
+      /**
+       * The success path, reachable for the first time.
+       *
+       * Everything it touches was unexecuted by any route-level test: the
+       * decrypt of the stored credential, `persistSessionFromLogin` with
+       * `credentialProven: false`, the single-use `redis.del` of the handle,
+       * and the session cookie's options.
+       */
+      it('exchanges a code for a session and consumes the handle', async () => {
+        await seedConnection();
+        const { body } = await requestCode();
+
+        const res = await request(app.getHttpServer())
+          .post(`${OTP_REQUESTS}/${body.otpRequestId}/session`)
+          .set('X-Forwarded-For', freshIp())
+          .send({ code: '123456' });
+
+        expect(res.status).toBe(200);
+        expect(String(res.headers['set-cookie'])).toContain('mashov_session=');
+        // Single use: the handle is gone, so a replay cannot mint a second
+        // session from one code.
+        expect(await redisService.get(`otp:${body.otpRequestId}`)).toBeNull();
+      });
+
+      it('sends no password upstream, since this flow has none by definition', async () => {
+        await seedConnection();
+        const { body } = await requestCode();
+
+        await request(app.getHttpServer())
+          .post(`${OTP_REQUESTS}/${body.otpRequestId}/session`)
+          .set('X-Forwarded-For', freshIp())
+          .send({ code: '123456' });
+
+        const sent = verifyOtp.mock.calls[0][0];
+        expect(sent.loginData).not.toHaveProperty('password');
+        // The stored device cookie, which this flow used to read and drop.
+        expect(sent.uniqueId).toBeDefined();
+      });
+
+      it('refuses a replayed handle', async () => {
+        await seedConnection();
+        const { body } = await requestCode();
+        const url = `${OTP_REQUESTS}/${body.otpRequestId}/session`;
+
+        await request(app.getHttpServer())
+          .post(url)
+          .set('X-Forwarded-For', freshIp())
+          .send({ code: '123456' });
+
+        const replay = await request(app.getHttpServer())
+          .post(url)
+          .set('X-Forwarded-For', freshIp())
+          .send({ code: '123456' });
+
+        expect(replay.status).toBe(400);
+        expect(replay.body.error.code).toBe('OTP_SESSION_EXPIRED');
       });
 
       it('tells the parent to start again on an unknown handle', async () => {
