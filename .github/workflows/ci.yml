@@ -356,12 +356,28 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # 6. CI OK — the single required status check
   #
-  # A skipped job reports neither success nor failure to branch protection, so
-  # with per-job required checks a docs-only PR (where every test job is
-  # legitimately skipped) would block forever. This job collapses the graph into
-  # one verdict: failure/cancelled anywhere fails, success or skipped passes.
+  # Branch protection on `master` must require ONLY this check, and the string
+  # to enter is `CI OK` -- the job's `name:`, which is what GitHub matches on,
+  # not the `ci-ok` job id.
   #
-  # Branch protection on `master` must require ONLY this check.
+  # The reason is the dynamic matrix, NOT skipped jobs. Measured against a real
+  # protection rule: a job skipped by a job-level `if:` still reports a check
+  # run whose conclusion is `skipped`, and GitHub counts that as satisfying a
+  # required check -- `["CI OK", "Unit Tests"]` left a docs-only PR with
+  # `Unit Tests` skipped in state `clean`. Only a context that never reports at
+  # all blocks; `["CI OK", "Never Reported Check"]` gave `blocked`. (The
+  # "skipped jobs block forever" folklore is about workflow-level `paths:`
+  # filters, where the workflow never runs and no check is ever created.)
+  #
+  # What cannot be a required check is e2e, because its name carries the shard
+  # count: `E2E Tests (Shard 1/1)` on a narrowed run, `Shard 1/2` + `Shard 2/2`
+  # on a full one. Requiring either name makes it a never-reported context on
+  # the other kind of run -- the `blocked` case above. One aggregate job is the
+  # only stable name to gate on, and it also keeps the rule from needing an
+  # edit every time a job is added or renamed.
+  #
+  # This job collapses the graph into one verdict: failure/cancelled anywhere
+  # fails, success or skipped passes.
   # ────────────────────────────────────────────────────────────────────────────
   ci-ok:
     name: CI OK
