@@ -21,7 +21,11 @@
     "test:unit": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from unit unit",
     "test:integration": "docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from integration integration",
     "test:e2e": "ENABLE_E2E_AUTH_BYPASS=1 docker compose -f docker-compose.yml --profile test up --build --abort-on-container-exit --exit-code-from e2e e2e",
-    "test:e2e:fast": "ENABLE_E2E_AUTH_BYPASS=1 docker compose -f docker-compose.yml --profile test up --abort-on-container-exit --exit-code-from e2e e2e"
+    "test:e2e:fast": "ENABLE_E2E_AUTH_BYPASS=1 docker compose -f docker-compose.yml --profile test up --abort-on-container-exit --exit-code-from e2e e2e",
+    "test:select": "node scripts/select-tests.mjs",
+    "test:selector": "node --test scripts/select-tests.test.mjs",
+    "test:pr": "node scripts/select-tests.mjs --run",
+    "test:pr:dry": "node scripts/select-tests.mjs --print"
   },
   "overrides": {
     "multer": ">=2.1.1",

@@ -278,6 +278,12 @@ services:
       MASHOV_SEMEL: "0"
       MASHOV_USERNAME: test
       MASHOV_PASSWORD: test
+      # Extra jest flags, used by the PR-relevant test selection (see
+      # scripts/select-tests.mjs). Empty here runs the whole suite exactly as
+      # before; a narrowed run passes
+      # `--findRelatedTests <files> --coverage=false --passWithNoTests`, with
+      # paths relative to THIS directory -- /app is backend/, not the repo root.
+      JEST_ARGS: ${JEST_ARGS:-}
     volumes:
       - ./backend/coverage:/app/coverage
     # `--maxWorkers=2` is load-bearing, not tuning. Jest defaults to one worker
@@ -290,7 +296,8 @@ services:
     # Reached once the suite count passed ~85. Bounded here rather than in the
     # package.json script so a developer's own `jest` run keeps full
     # parallelism.
-    command: ["npm", "run", "test:coverage", "--", "--maxWorkers=2"]
+    # Shell form, not exec form, so ${JEST_ARGS} actually expands.
+    command: ["sh", "-c", "npm run test:coverage -- --maxWorkers=2 ${JEST_ARGS:-}"]
     logging:
       driver: "json-file"
       options:
@@ -315,13 +322,17 @@ services:
       MASHOV_SEMEL: "0"
       MASHOV_USERNAME: test
       MASHOV_PASSWORD: test
+      # Which integration specs to run, used by the PR-relevant test selection
+      # (see scripts/select-tests.mjs). Empty falls back to the whole
+      # `tests/integration` directory, exactly as before.
+      INTEGRATION_ARGS: ${INTEGRATION_ARGS:-}
     volumes:
       - ./:/work
     command:
       [
         "sh",
         "-c",
-        "apk add --no-cache openssl >/dev/null && cd backend && npm ci && npx prisma db push --force-reset --skip-generate && cd .. && npm ci && npx jest tests/integration --runInBand --testEnvironment=node --forceExit --testTimeout=30000 --testPathIgnorePatterns=/node_modules/ --testPathIgnorePatterns=worktrees/",
+        "apk add --no-cache openssl >/dev/null && cd backend && npm ci && npx prisma db push --force-reset --skip-generate && cd .. && npm ci && npx jest ${INTEGRATION_ARGS:-tests/integration} --runInBand --testEnvironment=node --forceExit --testTimeout=30000 --testPathIgnorePatterns=/node_modules/ --testPathIgnorePatterns=worktrees/",
       ]
     logging:
       driver: "json-file"
