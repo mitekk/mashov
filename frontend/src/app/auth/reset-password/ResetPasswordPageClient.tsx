@@ -8,6 +8,7 @@ import { Check, X } from 'lucide-react';
 import { completeRecovery, login } from '@/api/auth';
 import { authErrorText, readAuthError } from '@/lib/authErrors';
 import { PASSWORD_RULES, brokenRules } from '@/lib/passwordPolicy';
+import { CenteredShell } from '@/components/layout/CenteredShell';
 
 /**
  * Step 2 of password recovery: the code, and the new password.
@@ -311,16 +312,14 @@ function CodeField({
 
 function Shell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold text-foreground">{title}</h1>
-        </div>
-        <div className="rounded-2xl border border-border/60 bg-card p-6 shadow-sm">
-          {children}
-        </div>
+    <CenteredShell>
+      <div className="mb-8 text-center">
+        <h1 className="text-2xl font-bold text-foreground">{title}</h1>
       </div>
-    </div>
+      <div className="rounded-2xl border border-border/60 bg-card p-6 shadow-sm">
+        {children}
+      </div>
+    </CenteredShell>
   );
 }
 
@@ -328,9 +327,9 @@ export default function ResetPasswordPageClient() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-dvh flex items-center justify-center bg-background">
-          <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
-        </div>
+        <CenteredShell>
+          <div className="mx-auto h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+        </CenteredShell>
       }
     >
       <ResetPasswordForm />

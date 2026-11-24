@@ -119,9 +119,9 @@ export function SchoolAutocomplete({
                 }
               >
                 <span className="font-medium">{school.name}</span>
-                <span className="mr-2 text-xs text-muted-foreground">{school.semel}</span>
+                <span className="ms-2 text-xs text-muted-foreground">{school.semel}</span>
                 {isDisabled && (
-                  <span className="mr-2 text-xs text-muted-foreground">({disabledHint})</span>
+                  <span className="ms-2 text-xs text-muted-foreground">({disabledHint})</span>
                 )}
               </li>
             );

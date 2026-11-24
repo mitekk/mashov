@@ -137,10 +137,12 @@ export const metadata: Metadata = {
   },
 };
 
+// No `maximumScale` and no `userScalable: false`: capping the scale at 1 blocks
+// pinch-zoom, which is a WCAG 1.4.4 failure. The iOS focus-zoom it was probably
+// there to stop is handled by `-webkit-text-size-adjust` plus >=16px inputs.
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
   themeColor: '#4f85bb',
 };
 

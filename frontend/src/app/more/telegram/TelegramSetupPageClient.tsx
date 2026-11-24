@@ -11,6 +11,7 @@ import { useCreateTelegramLink, useTelegramLinkState } from '@/hooks/useTelegram
 import { ApiError } from '@/api/client';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { CenteredShell } from '@/components/layout/CenteredShell';
 import type { ChildListItem, TelegramLink } from '@/types/api';
 
 type Step = 'intro' | 'children' | 'start' | 'done';
@@ -171,58 +172,56 @@ export default function TelegramSetupPageClient() {
   }
 
   return (
-    <div data-testid="telegram-setup-page" className="min-h-dvh bg-background px-4 py-6">
-      <div className="mx-auto w-full max-w-sm">
-        <button
-          type="button"
-          data-testid="telegram-back-btn"
-          onClick={() => router.back()}
-          className="mb-4 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowRight className="w-4 h-4" aria-hidden="true" />
-          חזרה
-        </button>
+    <CenteredShell align="top" data-testid="telegram-setup-page">
+      <button
+        type="button"
+        data-testid="telegram-back-btn"
+        onClick={() => router.back()}
+        className="mb-4 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ArrowRight className="w-4 h-4" aria-hidden="true" />
+        חזרה
+      </button>
 
-        {view === 'loading' && <LoadingState message="טוען..." />}
-        {view === 'error' && <ErrorState />}
+      {view === 'loading' && <LoadingState message="טוען..." />}
+      {view === 'error' && <ErrorState />}
 
-        {view === 'step' && step === 'intro' && (
-          <IntroStep onContinue={() => setStep('children')} />
-        )}
+      {view === 'step' && step === 'intro' && (
+        <IntroStep onContinue={() => setStep('children')} />
+      )}
 
-        {view === 'step' && step === 'children' && (
-          <ChildrenStep
-            items={children ?? []}
-            ticked={ticked}
-            showSchoolLabels={schoolCount > 1}
-            pending={mint.isPending}
-            error={mintError}
-            onToggle={toggle}
-            onContinue={requestLink}
-          />
-        )}
+      {view === 'step' && step === 'children' && (
+        <ChildrenStep
+          items={children ?? []}
+          ticked={ticked}
+          showSchoolLabels={schoolCount > 1}
+          pending={mint.isPending}
+          error={mintError}
+          onToggle={toggle}
+          onContinue={requestLink}
+        />
+      )}
 
-        {view === 'step' && step === 'start' && link && (
-          <StartStep
-            link={link}
-            expired={linkState?.status === 'expired'}
-            retrying={mint.isPending}
-            error={mintError}
-            onRetry={requestLink}
-          />
-        )}
+      {view === 'step' && step === 'start' && link && (
+        <StartStep
+          link={link}
+          expired={linkState?.status === 'expired'}
+          retrying={mint.isPending}
+          error={mintError}
+          onRetry={requestLink}
+        />
+      )}
 
-        {view === 'step' && step === 'done' && (
-          <DoneStep
-            items={subscribedChildren}
-            deliveryEnabled={linkState?.deliveryEnabled ?? false}
-            confirmationSent={linkState?.confirmationSent ?? false}
-            confirmationPending={linkState?.confirmationPending ?? false}
-            confirmationError={linkState?.confirmationError ?? null}
-          />
-        )}
-      </div>
-    </div>
+      {view === 'step' && step === 'done' && (
+        <DoneStep
+          items={subscribedChildren}
+          deliveryEnabled={linkState?.deliveryEnabled ?? false}
+          confirmationSent={linkState?.confirmationSent ?? false}
+          confirmationPending={linkState?.confirmationPending ?? false}
+          confirmationError={linkState?.confirmationError ?? null}
+        />
+      )}
+    </CenteredShell>
   );
 }
 

@@ -162,7 +162,7 @@ export function SchoolActivitiesDialog({
           data-testid="school-activities-dialog"
           lang="he-IL"
           dir="rtl"
-          className="fixed inset-x-4 top-12 z-50 mx-auto max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-background p-4 shadow-xl sm:inset-x-0"
+          className="dialog-panel fixed inset-x-4 top-12 z-50 mx-auto w-full max-w-2xl rounded-2xl border border-border bg-background p-4 shadow-xl sm:inset-x-0"
         >
           <div className="mb-4 flex items-start justify-between gap-2">
             <Dialog.Title className="text-lg font-semibold text-foreground">

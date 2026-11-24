@@ -133,7 +133,7 @@ export function FeedItem({
               </p>
             )}
             {item.hasAttachments && (
-              <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 inline-flex items-center gap-1 text-2xs text-muted-foreground">
                 <Paperclip className="h-3 w-3" />
                 <span>קבצים מצורפים</span>
               </p>
@@ -163,12 +163,12 @@ export function FeedItem({
               </p>
             )}
             {item.hasAttachments && (
-              <p className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 inline-flex items-center gap-1 text-2xs text-muted-foreground">
                 <Paperclip className="h-3 w-3" />
                 <span>קבצים מצורפים</span>
               </p>
             )}
-            <p className="text-[11px] text-muted-foreground mt-1">
+            <p className="text-2xs text-muted-foreground mt-1">
               קישור זה אינו זמין בשלב 1
             </p>
           </div>

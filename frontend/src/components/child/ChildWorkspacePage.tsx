@@ -153,19 +153,41 @@ export function ChildWorkspacePage({
 
   return (
     <AppShell>
-      <div data-testid="child-workspace" className="page-shell space-y-4 pb-6">
-        <ChildHeader
-          student={data.student}
-          summary={summary}
-          lastSyncAt={data.lastSyncAt}
-          childOptions={childOptions}
-          selectedChildGuid={data.student.studentGuid}
-          onChildChange={handleChildChange}
-          studentGuid={data.student.studentGuid}
-        />
+      {/*
+        One shell, three shapes, all by CSS: a stacked column on a phone, the
+        same column with a wrapping tab row at md, and a two-column grid at lg
+        where the tabs are a vertical sidebar and the header spans both.
 
-        <div className="sticky top-2 z-10 rounded-2xl border border-border/80 bg-background/85 backdrop-blur">
-          <div className="flex gap-2 overflow-x-auto px-3 py-2.5 scrollbar-hide">
+        There is no second set of tab buttons for the sidebar: a `section-tab-*`
+        testid rendered twice resolves twice under Playwright's strict mode even
+        when one copy is display:none, and a `useMediaQuery` switch would let SSR
+        pick one arm and the client flip it.
+      */}
+      <div
+        data-testid="child-workspace"
+        className={cn(
+          'page-shell space-y-4 pb-6 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6 lg:space-y-0',
+          // The week grid is the one surface here that reads better wider: at
+          // 1280 the extra 8rem takes its columns from ~150px to ~190px. Driven
+          // by the section in the URL, not by a media query, so SSR and the
+          // client agree.
+          activeSection === 'timetable' && 'page-shell-wide',
+        )}
+      >
+        <div className="lg:col-span-2">
+          <ChildHeader
+            student={data.student}
+            summary={summary}
+            lastSyncAt={data.lastSyncAt}
+            childOptions={childOptions}
+            selectedChildGuid={data.student.studentGuid}
+            onChildChange={handleChildChange}
+            studentGuid={data.student.studentGuid}
+          />
+        </div>
+
+        <div className="sticky top-2 z-10 rounded-2xl border border-border/80 bg-background/85 backdrop-blur lg:self-start">
+          <div className="rail px-3 py-2.5 md:flex-wrap md:overflow-visible lg:flex-col lg:items-stretch">
             {SECTIONS.map((section) => {
               return (
                 <button
@@ -177,6 +199,10 @@ export function ChildWorkspacePage({
                   aria-pressed={activeSection === section.id}
                   className={cn(
                     'tap-target inline-flex flex-shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors',
+                    // Centred as a chip in a row, start-aligned as a row in a
+                    // sidebar. On the button, not the container: it is a
+                    // utility either way, so there is no layer fight.
+                    'justify-center lg:w-full lg:justify-start',
                     activeSection === section.id
                       ? 'border-primary bg-primary text-primary-foreground'
                       : 'border-border/80 bg-card/90 text-muted-foreground hover:bg-accent hover:text-foreground',
@@ -190,23 +216,25 @@ export function ChildWorkspacePage({
           </div>
         </div>
 
-        {activeSection === 'homework' && (
-          <HomeworkSection
-            studentGuid={studentGuid}
-          />
-        )}
-        {activeSection === 'behavior' && (
-          <BehaviorSection
-            studentGuid={studentGuid}
-            activeFilter={activeBehaviorFilter}
-            onFilterChange={handleBehaviorFilterChange}
-            statusFilter={behaviorStatusFilter}
-            onStatusFilterChange={setBehaviorStatusFilter}
-          />
-        )}
-        {activeSection === 'subjects' && <SubjectsSection studentGuid={studentGuid} />}
-        {activeSection === 'notices' && <NoticesSection studentGuid={studentGuid} />}
-        {activeSection === 'timetable' && <TimetableSection studentGuid={studentGuid} />}
+        <div className="space-y-4">
+          {activeSection === 'homework' && (
+            <HomeworkSection
+              studentGuid={studentGuid}
+            />
+          )}
+          {activeSection === 'behavior' && (
+            <BehaviorSection
+              studentGuid={studentGuid}
+              activeFilter={activeBehaviorFilter}
+              onFilterChange={handleBehaviorFilterChange}
+              statusFilter={behaviorStatusFilter}
+              onStatusFilterChange={setBehaviorStatusFilter}
+            />
+          )}
+          {activeSection === 'subjects' && <SubjectsSection studentGuid={studentGuid} />}
+          {activeSection === 'notices' && <NoticesSection studentGuid={studentGuid} />}
+          {activeSection === 'timetable' && <TimetableSection studentGuid={studentGuid} />}
+        </div>
       </div>
     </AppShell>
   );

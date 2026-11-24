@@ -111,7 +111,9 @@ export function LatestFeed({ items }: LatestFeedProps) {
   };
 
   return (
-    <section data-testid="latest-feed" className="section-stack">
+    // `.measure` caps the column at reading width: past ~3xl the eye has to
+    // track a feed headline across the whole desktop and loses the line.
+    <section data-testid="latest-feed" className="section-stack measure">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-foreground">
           עדכונים אחרונים
