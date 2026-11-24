@@ -169,6 +169,10 @@ describe('OtpService', () => {
         semel: SEMEL,
         username: USERNAME,
         method: 'email',
+        // The stored device cookie. Password sign-in has always sent it; this
+        // flow read it out of the database and dropped it, which is the
+        // leading candidate for why Mashov refuses step 1.
+        uniqueId: CONNECTION.mashovUniqueId,
       });
     });
 
@@ -233,7 +237,7 @@ describe('OtpService', () => {
       it('answers OTP_REQUEST_REFUSED for a Reason-less JSON 4xx', async () => {
         mockUpstream.requestOtp.mockRejectedValue(bareError(400));
         expect(await thrown(() => request())).toEqual({
-          status: 400,
+          status: 422,
           code: 'OTP_REQUEST_REFUSED',
         });
       });
@@ -244,7 +248,7 @@ describe('OtpService', () => {
         // mapped on no branch of this switch, so it fell to the same fallback.
         mockUpstream.requestOtp.mockRejectedValue(reasonError('NotAuthenticated'));
         expect(await thrown(() => request())).toEqual({
-          status: 400,
+          status: 422,
           code: 'OTP_REQUEST_REFUSED',
         });
       });
@@ -254,7 +258,7 @@ describe('OtpService', () => {
         // value arrived here indistinguishable from no Reason at all.
         mockUpstream.requestOtp.mockRejectedValue(reasonError('SomeNewReason'));
         expect(await thrown(() => request())).toEqual({
-          status: 400,
+          status: 422,
           code: 'OTP_REQUEST_REFUSED',
         });
       });
@@ -266,7 +270,7 @@ describe('OtpService', () => {
         it(`does not pass ${reason} through as a code error`, async () => {
           mockUpstream.requestOtp.mockRejectedValue(reasonError(reason));
           expect(await thrown(() => request())).toEqual({
-            status: 400,
+            status: 422,
             code: 'OTP_REQUEST_REFUSED',
           });
         });

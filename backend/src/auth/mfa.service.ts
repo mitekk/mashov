@@ -141,8 +141,24 @@ export class MfaService {
     );
 
     // Read BEFORE the login, like `AuthService.login` does: adoption turns on
-    // whether the connection existed beforehand, and the stored `uniquId` makes
-    // Mashov recognise a known device.
+    // whether the connection existed beforehand.
+    //
+    // This comment used to go on to say "and the stored `uniquId` makes Mashov
+    // recognise a known device", which was false — `verifyMfa` has never sent
+    // it, and `VerifyMfaInput` has no field for it. The omission turns out to
+    // be right, so it is now deliberate rather than accidental:
+    //
+    // TODO(capture): when `/api/login` answers `403 Reason: MfaRequired`, axios
+    // throws, so `readLoginHeaders` never runs and the `Set-Cookie: uniquId` on
+    // that 403 is discarded. `mashovUniqueId` below is therefore an OLDER
+    // session's cookie. If Mashov binds a challenge to its session cookie,
+    // sending a stale one is strictly worse than sending none, so this flow
+    // keeps sending none until a wire capture answers two questions: does the
+    // triggering 403 carry a `Set-Cookie: uniquId`, and does `mfa/verify`
+    // echo back a different one? If yes, the fix is to carry the challenge's
+    // OWN cookie — keyed by `challengeId` in Redis — not the stored one.
+    // The other three flows (`requestOtp`, `verifyOtp`, credential-setup) do
+    // send it; see `MashovRecoveryService.headers()` for why they are safe.
     const existingConnBeforeLogin = await this.prisma.householdConnection.findUnique({
       where: { schoolCode_username: { schoolCode: semel, username: input.username } },
       select: { id: true, mashovUniqueId: true, userId: true },
@@ -307,11 +323,14 @@ export class MfaService {
       // same defect this flow shipped with on the OTP surface. Its own code
       // rather than INVALID_MFA_CODE, because the parent is sitting on an open
       // challenge and needs to know the resend failed, not that they mistyped.
+      //
+      // 422 for the same reason as `OTP_REQUEST_REFUSED`: understood, cannot
+      // be fulfilled, and nothing was typed to be malformed.
       if (stage === 'send') {
         return envelope(
           'MFA_SEND_REFUSED',
           'Mashov would not send a code for this account.',
-          HttpStatus.BAD_REQUEST,
+          HttpStatus.UNPROCESSABLE_ENTITY,
         );
       }
 

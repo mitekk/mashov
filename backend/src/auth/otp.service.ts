@@ -96,14 +96,16 @@ export class OtpService {
     );
 
     // Checked BEFORE a code is sent, so the parent is never left holding a
-    // code they cannot use.
-    await this.requireExistingConnection(semel, input.username);
+    // code they cannot use. Its return value was discarded until now, which is
+    // how the stored device cookie came to be read and dropped.
+    const connection = await this.requireExistingConnection(semel, input.username);
 
     try {
       await this.upstream.requestOtp({
         semel,
         username: input.username,
         method: input.method,
+        uniqueId: connection.mashovUniqueId,
       });
     } catch (err) {
       throw this.classify(err, 'request', semel);
@@ -169,6 +171,7 @@ export class OtpService {
           username: state.username,
         }),
         code: input.code,
+        uniqueId: connection.mashovUniqueId,
       });
     } catch (err) {
       throw this.classify(err, 'verify', state.semel);
@@ -354,11 +357,15 @@ export class OtpService {
       // false -- and it was what the parent saw on both channels. The honest
       // answer names the one thing they can still do.
       //
-      // 400 rather than 401: `apiFetch` hard-redirects on any 401 whose code is
-      // not INVALID_CREDENTIALS, which would throw the parent off the page
-      // carrying their instructions. And not 502: `isMashovRejection` being
-      // true is positive evidence Mashov's API did answer, so an outage would
-      // be the same category of lie, inverted.
+      // 422, not 400: the request was understood and simply cannot be
+      // fulfilled -- nothing was typed, so "what you sent is malformed"
+      // describes the wrong thing. It matches `LOGIN_METHOD_BLOCKED` and
+      // `OTP_CONTACT_MISSING`, which are already 422 and are the same shape.
+      // Not 401: `apiFetch` hard-redirects on any 401 whose code is not
+      // INVALID_CREDENTIALS, which would throw the parent off the page
+      // carrying their instructions. Not 502: `isMashovRejection` being true
+      // is positive evidence Mashov's API did answer, so an outage would be
+      // the same category of lie, inverted.
       //
       // This leaks nothing new: it is reachable only after
       // `requireExistingConnection` has passed, i.e. only for an identity whose
@@ -368,7 +375,7 @@ export class OtpService {
         return envelope(
           'OTP_REQUEST_REFUSED',
           'Mashov would not send a code for this account.',
-          HttpStatus.BAD_REQUEST,
+          HttpStatus.UNPROCESSABLE_ENTITY,
         );
       }
 

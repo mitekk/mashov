@@ -155,7 +155,7 @@ describe('MfaService', () => {
       it('answers MFA_SEND_REFUSED for a Reason-less JSON 4xx', async () => {
         mockUpstream.sendMfa.mockRejectedValue(bareError(400));
         expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
-          status: 400,
+          status: 422,
           code: 'MFA_SEND_REFUSED',
         });
       });
@@ -163,7 +163,7 @@ describe('MfaService', () => {
       it('answers MFA_SEND_REFUSED for a recognised but unmapped Reason', async () => {
         mockUpstream.sendMfa.mockRejectedValue(reasonError('NotAuthenticated'));
         expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
-          status: 400,
+          status: 422,
           code: 'MFA_SEND_REFUSED',
         });
       });
@@ -171,7 +171,7 @@ describe('MfaService', () => {
       it('does not pass MfaInvalidCode through as a code error', async () => {
         mockUpstream.sendMfa.mockRejectedValue(reasonError('MfaInvalidCode'));
         expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
-          status: 400,
+          status: 422,
           code: 'MFA_SEND_REFUSED',
         });
       });

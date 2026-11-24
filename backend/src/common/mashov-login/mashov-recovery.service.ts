@@ -172,6 +172,8 @@ export class MashovRecoveryService {
     loginData: Record<string, unknown>;
     newPassword: string;
     challengeId?: string;
+    /** See `uniqueId` on `headers()` below. */
+    uniqueId?: string | null;
   }): Promise<MashovLoginResponseView> {
     const response = await this.http.post<MashovLoginPayload>(
       '/api/user/password',
@@ -180,7 +182,7 @@ export class MashovRecoveryService {
         newPassword: input.newPassword,
         ...(input.challengeId ? { mfaChallengeId: input.challengeId } : {}),
       },
-      { headers: this.headers() },
+      { headers: this.headers({}, input.uniqueId) },
     );
     return { data: response.data, ...readLoginHeaders(response.headers) };
   }
@@ -196,6 +198,8 @@ export class MashovRecoveryService {
     loginData: Record<string, unknown>;
     username: string;
     challengeId?: string;
+    /** See `uniqueId` on `headers()` below. */
+    uniqueId?: string | null;
   }): Promise<MashovLoginResponseView> {
     const response = await this.http.post<MashovLoginPayload>(
       '/api/user/username',
@@ -204,7 +208,7 @@ export class MashovRecoveryService {
         username: input.username,
         ...(input.challengeId ? { mfaChallengeId: input.challengeId } : {}),
       },
-      { headers: this.headers() },
+      { headers: this.headers({}, input.uniqueId) },
     );
     return { data: response.data, ...readLoginHeaders(response.headers) };
   }
@@ -214,11 +218,13 @@ export class MashovRecoveryService {
     semel: number;
     username: string;
     method: MfaMethod;
+    /** See `uniqueId` on `headers()` below. */
+    uniqueId?: string | null;
   }): Promise<void> {
     await this.http.post(
       '/api/user/otp/request',
       { semel: Number(input.semel), username: input.username, method: input.method },
-      { headers: this.headers() },
+      { headers: this.headers({}, input.uniqueId) },
     );
   }
 
@@ -232,15 +238,39 @@ export class MashovRecoveryService {
   async verifyOtp(input: {
     loginData: Record<string, unknown>;
     code: string;
+    /** See `uniqueId` on `headers()` below. */
+    uniqueId?: string | null;
   }): Promise<MashovLoginResponseView> {
     const response = await this.http.post<MashovLoginPayload>(
       '/api/user/otp',
       { ...stripLoginSecrets(input.loginData), code: stripWhitespace(input.code) },
-      { headers: this.headers() },
+      { headers: this.headers({}, input.uniqueId) },
     );
     return { data: response.data, ...readLoginHeaders(response.headers) };
   }
 
+  /**
+   * `uniqueId` is Mashov's `uniquId` session cookie, stored per connection.
+   *
+   * A real browser sends it on every same-origin request, so Mashov's own
+   * Angular client sends it on all of these routes unconditionally — a server
+   * that broke on receiving it would break its own client. We were sending it
+   * on `POST /api/login` only (`mashov-credential-validator.service.ts:150`),
+   * while three other flows read `mashovUniqueId` out of the database,
+   * documented why it mattered, and dropped it. `HouseholdConnection` is
+   * uniquely keyed `[schoolCode, username]`, so the value always belongs to
+   * the same Mashov account we are calling about.
+   *
+   * **`verifyMfa` deliberately does NOT pass it, and that is not an
+   * oversight.** When `/api/login` answers `403 Reason: MfaRequired`, axios
+   * throws, so `readLoginHeaders` never runs and the `Set-Cookie: uniquId` on
+   * that 403 is discarded. The value we hold is therefore an OLDER session's
+   * cookie, not the one Mashov minted for this challenge — and if Mashov binds
+   * a challenge to its session cookie, sending a stale one is strictly worse
+   * than sending none. The right fix is to capture the cookie off the
+   * triggering 403 and send that back; it needs the wire capture to confirm,
+   * and it is a different change from this one.
+   */
   private headers(
     extra: Record<string, string> = {},
     uniqueId?: string | null,
