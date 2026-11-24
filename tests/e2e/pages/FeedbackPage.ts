@@ -4,8 +4,15 @@ import { Page, Locator, expect } from '@playwright/test';
  * The feedback channel: a header icon on every authenticated screen, and the
  * dialog behind it.
  *
- * There is no route of its own -- the launcher lives in `UserHeader` -- so this
- * object takes whichever page the parent is already on rather than navigating.
+ * There is no route of its own -- the launcher lives in `AppHeader`, the
+ * app-wide sticky header -- so this object takes whichever page the parent is
+ * already on rather than navigating.
+ *
+ * `launcherButton` is the inline trigger, visible from `sm` up. Below `sm` the
+ * same dialog is opened from `header-menu-feedback` inside the header's
+ * overflow menu; both reach one dialog and one thank-you banner, because the
+ * state lives in `FeedbackDialogProvider`. Every spec using this class runs in
+ * the 1280 `chromium` project, so the inline trigger is the one it needs.
  */
 export class FeedbackPage {
   readonly page: Page;

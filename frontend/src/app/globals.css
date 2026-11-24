@@ -263,9 +263,10 @@
   }
 
   .page-header {
-    /* Wraps by default so a title plus a filter group plus two icon buttons
-       cannot force a 360px row wider than the viewport; a no-op from `sm` up,
-       where the row already fits. */
+    /* Wraps by default so a title plus a filter group cannot force a 360px row
+       wider than the viewport; a no-op from `sm` up, where the row already
+       fits. (The theme and sync buttons that used to sit here too are
+       `AppHeader`'s now.) */
     @apply flex flex-wrap items-start justify-between gap-3 pt-5 sm:flex-nowrap;
   }
 

@@ -141,6 +141,79 @@ test.describe('tap targets at every width', () => {
   });
 });
 
+test.describe('app header', () => {
+  test('collapses its controls into one menu below sm', async ({ page }, testInfo) => {
+    // The header's three app-wide buttons plus an avatar do not fit beside a
+    // page title at 360, so below `sm` they become one overflow menu. Both
+    // branches are in the DOM at every width -- Tailwind hides one -- which is
+    // why each control still resolves to exactly one node.
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    const trigger = page.getByTestId('header-menu-trigger');
+    const inline = page.getByTestId('theme-toggle');
+
+    await expect(trigger).toHaveCount(1);
+    await expect(inline).toHaveCount(1);
+
+    if (testInfo.project.name === MOBILE) {
+      await expect(trigger).toBeVisible();
+      await expect(inline).toBeHidden();
+      await expect(page.getByTestId('refresh-button')).toBeHidden();
+      await expect(page.getByTestId('feedback-launcher-button')).toBeHidden();
+    } else {
+      await expect(trigger).toBeHidden();
+      await expect(inline).toBeVisible();
+      await expect(page.getByTestId('refresh-button')).toBeVisible();
+    }
+  });
+
+  test('keeps the overflow trigger a 44x44 tap target', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== MOBILE, 'The trigger is hidden from sm up.');
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    const box = await page.getByTestId('header-menu-trigger').boundingBox();
+    expect(box, 'header-menu-trigger has no box').not.toBeNull();
+    expect(box!.width, 'header-menu-trigger width').toBeGreaterThanOrEqual(MIN_TAP_TARGET);
+    expect(box!.height, 'header-menu-trigger height').toBeGreaterThanOrEqual(MIN_TAP_TARGET);
+  });
+
+  test('toggles the theme from the overflow menu', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== MOBILE, 'The menu exists only below sm.');
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    const wasDark = await page.evaluate(() =>
+      document.documentElement.classList.contains('dark'),
+    );
+
+    await page.getByTestId('header-menu-trigger').click();
+    await expect(page.getByTestId('header-menu-theme')).toBeVisible();
+    await page.getByTestId('header-menu-theme').click();
+
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')))
+      .toBe(!wasDark);
+  });
+
+  test('offers feedback and sync from the overflow menu', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== MOBILE, 'The menu exists only below sm.');
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    await page.getByTestId('header-menu-trigger').click();
+
+    // None of these reuses an inline testid: strict mode counts hidden
+    // matches, so a duplicate would resolve two nodes everywhere.
+    await expect(page.getByTestId('header-menu-feedback')).toBeVisible();
+    await expect(page.getByTestId('header-menu-refresh')).toBeVisible();
+
+    await page.getByTestId('header-menu-feedback').click();
+    await expect(page.getByTestId('feedback-dialog')).toBeVisible();
+  });
+});
+
 test.describe('timetable presentation', () => {
   test('is the day agenda below md and the week grid at md and up', async ({ page }, testInfo) => {
     // The assertion that proves the CSS flip landed -- and the one that would

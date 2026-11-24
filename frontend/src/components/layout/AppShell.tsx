@@ -20,8 +20,17 @@ export function AppShell({ children }: AppShellProps) {
     <div className="flex min-h-dvh flex-col lg:ps-rail">
       {/* Above the header and deliberately NOT sticky: it scrolls away, and
           the header then sticks to the viewport top with no geometry to keep
-          in sync between the two. */}
-      <FreshnessBar />
+          in sync between the two.
+
+          The slot carries the notch padding only while there is a banner in
+          it. `StaleIndicator` returns null in the fresh and syncing states, so
+          `:empty` matches and `empty:pt-0` hands the inset back to the header,
+          which is where it belongs the rest of the time. Without the modifier
+          this div would reserve a safe-area strip above a header that already
+          pads itself -- the inset twice, on every screen. */}
+      <div className="pt-safe empty:pt-0 lg:pt-0">
+        <FreshnessBar />
+      </div>
       <AppHeader />
       {/*
         No `overflow-y-auto` here. It made `<main>` a second scroller inside a

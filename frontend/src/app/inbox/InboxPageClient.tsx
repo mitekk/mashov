@@ -199,9 +199,10 @@ function InboxPageContent() {
     <div data-testid="inbox-page" className="page-shell space-y-5">
       {/*
         At 360 this row was a title plus a three-segment filter (~190px) plus
-        two 40px buttons, all on one non-wrapping line. `.page-header` now
-        wraps below sm, and the control group wraps within itself so the filter
-        and the two buttons can take separate lines rather than overflow.
+        two 40px buttons, all on one non-wrapping line. The buttons are the app
+        header's now, and `.page-header` wraps below sm regardless -- the
+        filter group is still ~190px beside a title, and the wrapping is what
+        keeps that off one line.
       */}
       <header className="page-header items-center">
         <div className="flex min-w-0 items-center gap-2">
