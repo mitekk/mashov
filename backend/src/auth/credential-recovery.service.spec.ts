@@ -763,6 +763,287 @@ describe('CredentialRecoveryService', () => {
       });
     });
 
+    /**
+     * Step 2's answer is the one the live report arrived as, and step 2 emitted
+     * no log line at all.
+     *
+     * Three different causes collapsed into the same `INVALID_RECOVERY_CODE`
+     * and left no trace: a `poisoned` step-1 handle (which answers without
+     * calling Mashov), an upstream 404, and `Reason: MfaInvalidCode`. Step 1
+     * got this treatment in 2e34067; step 2 never did, which is why a report of
+     * "the code Mashov sent me is rejected" could not be answered from the
+     * evidence.
+     *
+     * The RESPONSE is unchanged by any of this -- ADR-0042's indistinguishable
+     * answer is the point -- and the tests above pin that. Only telemetry moves.
+     */
+    describe('the log that makes step 2 diagnosable', () => {
+      let warn: jest.SpyInstance;
+      let log: jest.SpyInstance;
+      let error: jest.SpyInstance;
+
+      beforeEach(() => {
+        warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+        error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+      });
+
+      const lines = (spy: jest.SpyInstance) =>
+        spy.mock.calls.map(([first]) => String(first)).join('\n');
+
+      it('records that a poisoned handle was refused without calling Mashov', async () => {
+        // The cause that is invisible from upstream logs, because there is no
+        // upstream call: the parent typo'd their email address at step 1, got a
+        // fabricated handle, and is now holding a code from somewhere else --
+        // or no code at all -- while being told it is not valid.
+        stateIs({ poisoned: true });
+        await thrown(() => complete());
+
+        const line = lines(warn);
+        expect(line).toContain(`semel=${SEMEL}`);
+        expect(line).toContain('attempt=1');
+        expect(line).toContain('poisoned');
+      });
+
+      it('still makes no upstream call while logging it', async () => {
+        stateIs({ poisoned: true });
+        await thrown(() => complete());
+        expect(mockUpstream.resetPassword).not.toHaveBeenCalled();
+        expect(mockUpstream.resetPasswordVerify).not.toHaveBeenCalled();
+      });
+
+      it('reports the attempt number, so a burnt budget is readable', async () => {
+        stateIs({ poisoned: true, attempts: 3 });
+        await thrown(() => complete());
+        expect(lines(warn)).toContain('attempt=4');
+      });
+
+      it('records a mapped upstream refusal with the failure description', async () => {
+        mockUpstream.resetPassword.mockRejectedValue(reasonError('MfaInvalidCode'));
+        await thrown(() => complete());
+
+        const line = lines(warn);
+        expect(line).toContain('reason=MfaInvalidCode');
+        expect(line).toContain('status=403');
+        expect(line).toContain('stage=reset');
+        expect(line).toContain('INVALID_RECOVERY_CODE');
+      });
+
+      it('distinguishes a bare 404 from a signed refusal', async () => {
+        mockUpstream.resetPassword.mockRejectedValue(bareError(404));
+        await thrown(() => complete());
+
+        const line = lines(warn);
+        expect(line).toContain('status=404');
+        expect(line).toContain('reason=none');
+        expect(line).toContain('INVALID_RECOVERY_CODE');
+      });
+
+      it('records which of the two reset routes was called', async () => {
+        // "We posted the single-code route for a two-channel account" is one of
+        // the three candidate causes, and nothing else distinguishes it.
+        mockUpstream.resetPassword.mockRejectedValue(bareError(404));
+        await thrown(() => complete());
+        expect(lines(warn)).toContain('path=/api/user/reset/{code}');
+
+        warn.mockClear();
+        stateIs({ isResettingAndVerifying: true });
+        mockUpstream.resetPasswordVerify.mockRejectedValue(bareError(404));
+        await thrown(() => complete({ secondCode: 'DEF456' }));
+        expect(lines(warn)).toContain('path=/api/user/reset/verify/{code}');
+      });
+
+      it('records a success, including whether Mashov named the username', async () => {
+        mockUpstream.resetPassword.mockResolvedValue({});
+        await complete();
+
+        const line = lines(log);
+        expect(line).toContain(`semel=${SEMEL}`);
+        expect(line).toContain('twoChannel=false');
+        expect(line).toContain('upstreamUsername=absent');
+      });
+
+      it('marks a username Mashov did report as present', async () => {
+        mockUpstream.resetPassword.mockResolvedValue({ username: ID });
+        await complete();
+        expect(lines(log)).toContain('upstreamUsername=present');
+      });
+
+      /**
+       * The non-negotiable half. `MashovRecoveryService` deliberately has no
+       * logger at all; this class's logger is limited to counts and codes of
+       * our own.
+       */
+      it('never logs the code, the new password or the ID number, on any path', async () => {
+        const arrangements: Array<() => void> = [
+          () => mockUpstream.resetPassword.mockResolvedValue({}),
+          () => mockUpstream.resetPassword.mockResolvedValue({ username: ID }),
+          () => mockUpstream.resetPassword.mockRejectedValue(bareError(404)),
+          () => mockUpstream.resetPassword.mockRejectedValue(reasonError('MfaInvalidCode')),
+          () => mockUpstream.resetPassword.mockRejectedValue(reasonError('MfaLocked')),
+          () => mockUpstream.resetPassword.mockRejectedValue(bareError(502)),
+          () => stateIs({ poisoned: true }),
+        ];
+
+        for (const arrange of arrangements) {
+          warn.mockClear();
+          log.mockClear();
+          error.mockClear();
+          stateIs();
+          arrange();
+          await complete().catch(() => undefined);
+
+          // `error` included deliberately. The first version of this test read
+          // `warn` and `log` only, and every line that interpolates a
+          // free-form string is an `error` line -- so the one level where a
+          // secret could actually appear was the one it did not look at.
+          const everything = lines(warn) + lines(log) + lines(error);
+          // Positive assertion first: without it, deleting every log line in
+          // the class would make this suite pass.
+          expect(everything).not.toBe('');
+          // The single-use recovery code. It is in the request PATH, which is
+          // why the log line is built from a literal and never from
+          // `err.config?.url`.
+          expect(everything).not.toContain('ABC123');
+          expect(everything).not.toContain(GOOD_PASSWORD);
+          // An Israeli national ID number. Not an HMAC of it either: the key
+          // lives in this process and the domain is ~10^9.
+          expect(everything).not.toContain(ID);
+        }
+      });
+
+      /**
+       * The hole the "on any path" test above could not see: it reads `warn`
+       * and `log`, and every line that interpolates a free-form string is an
+       * `error` line.
+       *
+       * Both of these catches sit on a Prisma call whose ARGUMENTS carry the
+       * identity -- `markCredentialStale` looks up
+       * `schoolCode_username: { username: state.idNumber }`, and `writeAudit`
+       * writes `idNumberHash`. A `PrismaClientValidationError` renders the whole
+       * invocation, argument values included, so interpolating `err.message`
+       * puts a raw Israeli national ID number (or the HMAC the constraint also
+       * forbids) into a log line.
+       */
+      it('keeps the ID number out of the stale-credential failure line', async () => {
+        const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+        mockPrisma.householdConnection.findUnique.mockRejectedValue(
+          // The shape Prisma actually produces: the failing invocation, with
+          // argument values in it.
+          new Error(
+            `Invalid \`prisma.householdConnection.findUnique()\` invocation:\n` +
+              `{ where: { schoolCode_username: { schoolCode: ${SEMEL}, username: "${ID}" } } }`,
+          ),
+        );
+
+        await complete();
+
+        const lines = error.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(lines).toContain(`semel=${SEMEL}`);
+        expect(lines).not.toContain(ID);
+      });
+
+      it('keeps the identity hash out of the audit failure line', async () => {
+        const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+        mockPrisma.credentialRecoveryAudit.create.mockRejectedValue(
+          new Error(
+            `Invalid \`prisma.credentialRecoveryAudit.create()\` invocation:\n` +
+              `{ data: { idNumberHash: "deadbeef", ip: "${IP}" } }`,
+          ),
+        );
+
+        await complete();
+
+        const lines = error.mock.calls.map(([first]) => String(first)).join('\n');
+        // Not even an HMAC: the key lives in this process and the domain is ~10^9.
+        expect(lines).not.toContain('deadbeef');
+      });
+
+      it('keeps a transport error message out of the unreachable line', async () => {
+        // An axios message is normally bounded, but it is the one unbounded
+        // interpolation left on a path that handles a live recovery code.
+        const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+        jest.spyOn(axios, 'isCancel').mockReturnValue(true);
+        const err = new CanceledError('aborted while POSTing /api/user/reset/ABC123');
+        mockUpstream.resetPassword.mockRejectedValue(err);
+
+        await thrown(() => complete());
+
+        const lines = error.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(lines).toContain(`semel=${SEMEL}`);
+        expect(lines).not.toContain('ABC123');
+      });
+
+      it('builds the failure line from a literal path, not the request URL', async () => {
+        // `err.config.url` carries the live recovery code. A log line built
+        // from it would write single-use codes to disk.
+        const err = reasonError('MfaInvalidCode');
+        (err as { config?: unknown }).config = {
+          url: '/api/user/reset/ABC123',
+        };
+        mockUpstream.resetPassword.mockRejectedValue(err);
+        await thrown(() => complete());
+        expect(lines(warn)).not.toContain('ABC123');
+      });
+    });
+
+    /**
+     * The capture records an EMPTY response body on a successful reset -- not
+     * `{}` with a username, nothing at all. So `result.username` is `undefined`
+     * on every real success, which silently broke two things that read fine:
+     * the client's auto sign-in is gated on it, and so is the "your username
+     * is..." line.
+     */
+    describe('the username on an empty upstream body', () => {
+      it('treats an empty 200 body as a success', async () => {
+        mockUpstream.resetPassword.mockResolvedValue({});
+        await expect(complete()).resolves.toMatchObject({ ok: true });
+      });
+
+      it('falls back to the ID number, which IS the Mashov username here', async () => {
+        mockUpstream.resetPassword.mockResolvedValue({});
+        await expect(complete()).resolves.toEqual({ ok: true, username: ID });
+      });
+
+      it('prefers a username Mashov did report over the derived one', async () => {
+        // The `CreateUsername` caveat: a parent who set a custom username is
+        // the case the fallback gets wrong, so an upstream answer wins.
+        mockUpstream.resetPassword.mockResolvedValue({ username: 'custom-name' });
+        await expect(complete()).resolves.toEqual({ ok: true, username: 'custom-name' });
+      });
+
+      it('falls back on the two-channel route too', async () => {
+        stateIs({ isResettingAndVerifying: true });
+        mockUpstream.resetPasswordVerify.mockResolvedValue({});
+        await expect(complete({ secondCode: 'DEF456' })).resolves.toEqual({
+          ok: true,
+          username: ID,
+        });
+      });
+
+      it('still consumes the state and writes the audit row', async () => {
+        // An empty body must not look like a half-success.
+        mockUpstream.resetPassword.mockResolvedValue({});
+        await complete();
+        expect(mockRedis.del).toHaveBeenCalledWith(`recovery:${RID}`);
+        expect(mockPrisma.credentialRecoveryAudit.create).toHaveBeenCalled();
+      });
+
+      it('never reads a field to decide success, so a dead connection is not one', async () => {
+        // An empty body is BOTH the happy path and the shape of a dead
+        // connection. Only the status separates them, and axios throws on a
+        // non-2xx -- so success is "we got here", never "a field was present".
+        jest.spyOn(axios, 'isCancel').mockReturnValue(true);
+        mockUpstream.resetPassword.mockRejectedValue(new CanceledError('aborted'));
+        expect(await thrown(() => complete())).toMatchObject({
+          status: 502,
+          code: 'UPSTREAM_ERROR',
+        });
+        expect(mockRedis.del).not.toHaveBeenCalled();
+        expect(mockPrisma.credentialRecoveryAudit.create).not.toHaveBeenCalled();
+      });
+    });
+
     it('never answers 401 on any path', async () => {
       // `apiFetch` hard-redirects to /auth/sign-in on any 401 whose code is not
       // INVALID_CREDENTIALS, which would wipe the half-filled reset form.

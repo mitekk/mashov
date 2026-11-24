@@ -49,6 +49,21 @@ import { MashovSessionService } from '../session/mashov-session.service';
  * real recovery sends an email), and `RECOVERY_THROTTLED`, because hiding a
  * channel lockout leaves a locked-out parent retrying forever.
  *
+ * **Three more are NOT accounted for, and the claim below that step 1's body is
+ * byte-identical for an unknown ID is therefore too strong.** Found in review,
+ * recorded rather than fixed because closing them changes step 1's response
+ * semantics and wants an ADR-0042 amendment of its own:
+ *   1. `requiresSecondChannel` is only ever `true` for a real two-channel
+ *      account -- a poisoned handle always carries `false`, since the flag is
+ *      assigned inside the `try`. `true` is a positive existence oracle.
+ *   2. Derived from the same flag: step 2 with one code answers
+ *      `SECOND_CODE_REQUIRED` for a real two-channel identity and
+ *      `INVALID_RECOVERY_CODE` for a poisoned one, at no attempt cost.
+ *   3. `RECOVERY_CODE_EXPIRED`, `CAPTCHA_REQUIRED` and an early
+ *      `RECOVERY_LOCKED` are reachable only on a non-poisoned handle; a
+ *      poisoned one emits nothing but `INVALID_RECOVERY_CODE` until the local
+ *      budget is spent.
+ *
  * ## Secrecy
  *
  * Codes and passwords are never persisted -- not in Redis, not in a log line,
@@ -65,6 +80,21 @@ const RECOVERY_TTL_SECONDS = 900;
  * URL would write live recovery codes to disk.
  */
 const RECOVER_PATH = '/api/user/recover';
+
+/**
+ * The two step-2 paths, as literals with the code elided.
+ *
+ * Same reasoning as `RECOVER_PATH`, and it matters more here: the single-use
+ * recovery code is IN the path on both of these routes, so a log line built
+ * from `err.config?.url` would write live codes to disk. `{code}` is a
+ * placeholder, never interpolated.
+ *
+ * Which of the two appears in a log line is itself a diagnostic: posting the
+ * single-code route for an account Mashov wants two codes for is one of the
+ * candidate causes of a 404, and nothing else distinguishes it.
+ */
+const RESET_PATH = '/api/user/reset/{code}';
+const RESET_VERIFY_PATH = '/api/user/reset/verify/{code}';
 
 const IP_LIMIT = 3;
 const IP_WINDOW_SECONDS = 900;
@@ -123,8 +153,18 @@ export interface CompletePasswordInput {
 
 export interface CompletePasswordResult {
   ok: true;
-  /** Mashov's username for the account. A parent who forgot the password often forgot this too. */
-  username: string | undefined;
+  /**
+   * Mashov's username for the account. A parent who forgot the password often
+   * forgot this too.
+   *
+   * Always set, and usually DERIVED rather than reported: the capture of
+   * `POST /api/user/reset/{code}` returned an empty body, so upstream names the
+   * username on no observed success. `completePassword` falls back to the
+   * recovering `idNumber`, which IS the Mashov username for these accounts.
+   * Not `| undefined` any more, because a client that gates on it was gating on
+   * something that never arrived.
+   */
+  username: string;
 }
 
 /**
@@ -392,11 +432,33 @@ export class CredentialRecoveryService {
 
     await this.writeState(recoveryId, { ...state, attempts: state.attempts + 1 });
 
+    const attempt = state.attempts + 1;
+    const path = state.isResettingAndVerifying ? RESET_VERIFY_PATH : RESET_PATH;
+
     if (state.poisoned) {
+      // The cause that is invisible from Mashov's side, because there is no
+      // call to Mashov: step 1 refused this identity, answered an
+      // indistinguishable 202 with a fabricated handle, and step 2 now refuses
+      // every code against it. A parent who typo'd their email address is told
+      // "that code is not valid" about a code they may genuinely be holding.
+      //
+      // The RESPONSE stays indistinguishable -- that is ADR-0042's deliberate
+      // anti-enumeration choice. The LOG does not: the silence here protected
+      // nobody and left three different causes looking identical. Same split
+      // step 1 made in 2e34067.
+      //
+      // `semel` and the attempt number only. Never `idNumber`, and not an HMAC
+      // of it: see the reasoning at the step-1 refusal log above.
+      this.logger.warn(
+        `Mashov reset refused without calling Mashov: the step-1 handle is ` +
+          `poisoned (unknown identity or an upstream refusal at step 1), so no ` +
+          `code can ever match it; semel=${state.semel} attempt=${attempt}/` +
+          `${MAX_CODE_ATTEMPTS} path=${path}`,
+      );
       throw invalidRecoveryCode();
     }
 
-    let username: string | undefined;
+    let upstreamUsername: string | undefined;
     try {
       const result = state.isResettingAndVerifying
         ? await this.upstream.resetPasswordVerify(
@@ -405,16 +467,45 @@ export class CredentialRecoveryService {
             input.newPassword,
           )
         : await this.upstream.resetPassword(input.code, input.newPassword);
-      username = result.username;
+      upstreamUsername = result.username;
     } catch (err) {
-      throw this.classifyResetFailure(err, state.semel);
+      throw this.classifyResetFailure(err, state.semel, path, attempt);
     }
+
+    // Reaching here IS the success signal, and deliberately not a field read.
+    // The capture records an EMPTY response body on a successful reset, and an
+    // empty body is also exactly the shape of a dead connection -- only the
+    // status separates them, and axios has already thrown on a non-2xx.
+    //
+    // `username` therefore falls back to the ID number. The reasoning is the
+    // one `markCredentialStale` already relies on: `idNumber` IS the Mashov
+    // username for these accounts, and `HouseholdConnection` is uniquely keyed
+    // `[schoolCode, username]` on that basis. Same `CreateUsername` caveat --
+    // a parent who set a custom username will get the ID number instead -- so
+    // an upstream answer always wins when there is one. DERIVED, not reported.
+    //
+    // Without the fallback the client's auto sign-in, which is gated on this
+    // field, never fires on any real reset, and the "your username is..." line
+    // never renders.
+    const username = upstreamUsername ?? state.idNumber;
 
     // Single use: the state is consumed only once the reset actually landed, so
     // a wrong code leaves the parent able to retry with the right one.
     await this.redis.del(key);
     await this.writeAudit(state, ip);
     await this.markCredentialStale(state);
+
+    // The counter-intuitive half, as at step 1: a success leaves a trace too.
+    // `upstreamUsername` is the one thing here that is a fact about the wire
+    // rather than about us, and it is how we learn whether the capture's empty
+    // body is universal or specific to that account.
+    this.logger.log(
+      `Mashov reset accepted: semel=${state.semel} ` +
+        `twoChannel=${state.isResettingAndVerifying} path=${path} ` +
+        `attempt=${attempt} upstreamUsername=${
+          upstreamUsername === undefined ? 'absent' : 'present'
+        }`,
+    );
 
     return { ok: true, username };
   }
@@ -468,9 +559,8 @@ export class CredentialRecoveryService {
       this.sessionService.invalidateConnection(connection.id);
     } catch (err) {
       this.logger.error(
-        `Failed to mark connection stale after a reset for semel=${state.semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Failed to mark connection stale after a reset for ` +
+          `semel=${state.semel} ${describeLocalFailure(err)}`,
       );
     }
   }
@@ -482,58 +572,98 @@ export class CredentialRecoveryService {
    * invalid code. The parent has already burned a single-use code, so a false
    * "wrong code" is unrecoverable — they cannot ask for that code again.
    */
-  private classifyResetFailure(err: unknown, semel: number): HttpException {
+  private classifyResetFailure(
+    err: unknown,
+    semel: number,
+    path: string,
+    attempt: number,
+  ): HttpException {
     if (isUpstreamUnreachable(err)) {
       this.logger.error(
-        `Mashov reset unreachable for semel=${semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Mashov reset unreachable for semel=${semel} path=${path} ` +
+          `attempt=${attempt} ${describeLocalFailure(err)}`,
       );
       return upstreamError();
     }
 
+    const outcome = this.mapResetFailure(err);
+
+    // The line step 2 never had. Three causes -- a poisoned handle, a bare
+    // upstream 404, and `Reason: MfaInvalidCode` -- all render as
+    // INVALID_RECOVERY_CODE, and until now none of them left a trace, so a
+    // report of "the code Mashov sent me is rejected" could not be answered.
+    //
+    // `path` is the LITERAL constant above, never the failed request's own URL:
+    // the single-use code is in the request path, so a line built from the URL
+    // would write live codes to disk. `describeMashovFailure` structurally
+    // cannot reach the code, the password or the ID number.
+    this.logger.warn(
+      `Mashov reset refused, answering ${outcome.code}: ${describeMashovFailure(err, {
+        stage: 'reset',
+        semel,
+        path,
+      })} attempt=${attempt}/${MAX_CODE_ATTEMPTS}`,
+    );
+
+    return outcome.exception;
+  }
+
+  /**
+   * The mapping itself, split out so the log line above can name the outcome
+   * it is about to return without the switch having to log in six places.
+   */
+  private mapResetFailure(err: unknown): { code: string; exception: HttpException } {
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
     const reason = readReason(err);
 
     switch (reason) {
       case 'MfaCodeExpired':
       case 'MfaExpired':
-        return new HttpException(
-          {
-            error: {
-              code: 'RECOVERY_CODE_EXPIRED',
-              message: 'That code has expired. Please start the recovery again.',
-              details: [],
+        return {
+          code: 'RECOVERY_CODE_EXPIRED',
+          exception: new HttpException(
+            {
+              error: {
+                code: 'RECOVERY_CODE_EXPIRED',
+                message: 'That code has expired. Please start the recovery again.',
+                details: [],
+              },
             },
-          },
-          HttpStatus.BAD_REQUEST,
-        );
+            HttpStatus.BAD_REQUEST,
+          ),
+        };
       case 'MfaInvalidCode':
-        return invalidRecoveryCode();
+        return { code: 'INVALID_RECOVERY_CODE', exception: invalidRecoveryCode() };
       case 'MfaLocked':
-        return new HttpException(
-          {
-            error: {
-              code: 'RECOVERY_LOCKED',
-              message: 'Too many attempts. Please start the recovery again.',
-              details: [],
+        return {
+          code: 'RECOVERY_LOCKED',
+          exception: new HttpException(
+            {
+              error: {
+                code: 'RECOVERY_LOCKED',
+                message: 'Too many attempts. Please start the recovery again.',
+                details: [],
+              },
             },
-          },
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
+            HttpStatus.TOO_MANY_REQUESTS,
+          ),
+        };
       case 'UserSuspended':
         // Unlike step 1, this is NOT an oracle: the caller already holds a
         // recoveryId, so they learn nothing new about whether the ID exists.
-        return new HttpException(
-          {
-            error: {
-              code: 'CAPTCHA_REQUIRED',
-              message: 'Mashov is asking for a captcha before this reset can complete',
-              details: [],
+        return {
+          code: 'CAPTCHA_REQUIRED',
+          exception: new HttpException(
+            {
+              error: {
+                code: 'CAPTCHA_REQUIRED',
+                message: 'Mashov is asking for a captcha before this reset can complete',
+                details: [],
+              },
             },
-          },
-          HttpStatus.UNPROCESSABLE_ENTITY,
-        );
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          ),
+        };
       default:
         break;
     }
@@ -550,10 +680,10 @@ export class CredentialRecoveryService {
       status < 500 &&
       isMashovRejection(err)
     ) {
-      return invalidRecoveryCode();
+      return { code: 'INVALID_RECOVERY_CODE', exception: invalidRecoveryCode() };
     }
 
-    return upstreamError();
+    return { code: 'UPSTREAM_ERROR', exception: upstreamError() };
   }
 
   private async checkIpRateLimit(ip: string): Promise<void> {
@@ -640,9 +770,8 @@ export class CredentialRecoveryService {
       // now would tell the parent their reset did not work when it did, and
       // the code is single-use, so they could not repeat it.
       this.logger.error(
-        `Failed to write the recovery audit row for semel=${state.semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Failed to write the recovery audit row for ` +
+          `semel=${state.semel} ${describeLocalFailure(err)}`,
       );
     }
   }
@@ -650,6 +779,30 @@ export class CredentialRecoveryService {
 
 function stateKey(recoveryId: string): string {
   return `recovery:${recoveryId}`;
+}
+
+/**
+ * A LOCAL failure, described without its message.
+ *
+ * `err.message` is the one unbounded string these catches can reach, and two of
+ * the three sit on a Prisma call whose ARGUMENTS are the identity:
+ * `markCredentialStale` looks up `username: state.idNumber`, `writeAudit` writes
+ * `idNumberHash`. Prisma renders the failing invocation, argument values
+ * included, so `${err.message}` put a raw Israeli national ID number -- or the
+ * HMAC that ADR-0042 §9 also forbids in plaintext -- straight into a log line.
+ *
+ * The class name and the error code are what actually identify the fault
+ * (`P2002`, `ECONNREFUSED`, `PrismaClientValidationError`), and neither can
+ * carry a value. The message is dropped, not truncated: a prefix of a Prisma
+ * invocation is still a prefix of the arguments.
+ */
+function describeLocalFailure(err: unknown): string {
+  if (!(err instanceof Error)) return 'kind=unknown';
+  const code = (err as { code?: unknown }).code;
+  return (
+    `kind=${err.name}` +
+    (typeof code === 'string' || typeof code === 'number' ? ` code=${code}` : '')
+  );
 }
 
 

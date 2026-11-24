@@ -32,7 +32,21 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
   RECOVERY_SESSION_EXPIRED: 'תהליך איפוס הסיסמה פג. יש להתחיל מחדש',
   INVALID_RECOVERY_CODE: 'קוד האימות שגוי',
   RECOVERY_CODE_EXPIRED: 'קוד האימות פג. יש להתחיל מחדש',
-  RECOVERY_LOCKED: 'יותר מדי נסיונות. יש להתחיל את האיפוס מחדש',
+  // Names the address deliberately. A step-1 request for an address the school
+  // does not hold answers an indistinguishable 202 (ADR-0042) and step 2 then
+  // refuses every code against the fabricated handle, so a parent holding a
+  // real code can burn all five attempts on a typo they have no way to suspect.
+  // The response stays indistinguishable; once the budget is spent there is
+  // nothing left to protect, and "start again" on its own sends them round the
+  // same loop with the same wrong address.
+  //
+  // The address advice is CONDITIONAL ("if the code never arrived") because
+  // this one code covers two causes: our own attempt budget, and Mashov's own
+  // `Reason: MfaLocked`. The second is reachable only on a handle Mashov
+  // accepted, so the address was fine — unconditional advice would be telling
+  // that parent to go and fix something that is demonstrably not wrong.
+  RECOVERY_LOCKED:
+    'יותר מדי נסיונות. יש להתחיל את האיפוס מחדש. אם הקוד לא הגיע כלל, כדאי לבדוק שכתובת האימייל או מספר הטלפון שהוזנו רשומים במשוב',
   SECOND_CODE_REQUIRED: 'משוב שלח קוד גם לאימייל וגם לטלפון. יש להזין את שני הקודים',
   WEAK_PASSWORD: 'הסיסמה אינה עומדת בדרישות משוב',
 

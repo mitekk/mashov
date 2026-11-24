@@ -34,7 +34,17 @@ one-segment path, not an empty trailing segment.
 | X-Csrf-Token | {CSRF_TOKEN} |
 | Content-Type | application/json |
 | Accept | application/json, text/plain, */* |
-| Referer | https://web.mashov.info/students/login |
+| Referer | https://web.mashov.info/students/reset |
+
+> The `Referer` here is **not captured** — this whole file is bundle-derived.
+> It previously read `/students/login`, copied from the sibling file before that
+> one was captured. Our client sends `/students/reset`, matching the captured
+> single-channel route: this is step 2 of the same flow, reached from the same
+> `/students/reset` page, and a parent on the two-code form is on that page.
+> Worth confirming if this route is ever captured.
+
+No cookie is sent, for the same reason as the single-channel route: the codes
+are the whole authorisation.
 
 ### Body
 ```json
@@ -52,7 +62,7 @@ one-segment path, not an empty trailing segment.
 ### Schema
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| username | string | no | The Mashov username the new password now belongs to. |
+| username | string | no | The Mashov username the new password now belongs to. Bundle-derived, **never observed on the wire.** |
 
 ### Example
 ```json
@@ -60,6 +70,12 @@ one-segment path, not an empty trailing segment.
   "username": "303977367"
 }
 ```
+
+> ⚠️ The sibling single-channel route
+> [post-api-user-reset-token.md](post-api-user-reset-token.md) was captured on
+> 2026-11-24 and returned an **empty body** — no `username`. This route reads
+> `username` from the same bundle code, so assume it behaves the same way until
+> captured: drive success off the status code, treat `username` as absent.
 
 ## Errors
 Same ambiguity as `POST /api/user/reset/{code}`: **`404` covers both a bad code
@@ -75,7 +91,7 @@ single-code route for an account Mashov wants two codes for.
 ```bash
 curl -X POST 'https://web.mashov.info/api/user/reset/verify/{CODE}/{CODE2}' \
   -H 'X-Csrf-Token: {CSRF_TOKEN}' \
-  -H 'Referer: https://web.mashov.info/students/login' \
+  -H 'Referer: https://web.mashov.info/students/reset' \
   -H 'Accept: application/json, text/plain, */*' \
   -H 'Content-Type: application/json' \
   -d '{ "newPassword": "{NEW_PASSWORD}" }'
