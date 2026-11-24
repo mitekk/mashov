@@ -130,6 +130,30 @@ describe('MashovRecoveryService', () => {
       await service.resetPassword('a/b?c#d', 'secret1');
       expect(lastPost().path).toBe('/api/user/reset/a%2Fb%3Fc%23d');
     });
+
+    /**
+     * Captured 2026-11-24 from the browser, against
+     * `https://web.mashov.info/students/reset`. Every method on this class used
+     * to send `/students/login`, which is the page the parent is NOT on for a
+     * reset. See `apis/post-api-user-reset-token.md`.
+     */
+    it('sends the reset page as the Referer, not the login page', async () => {
+      await service.resetPassword('ABC123', 'secret1');
+      expect(lastPost().config.headers.Referer).toBe(
+        'https://web.mashov.info/students/reset',
+      );
+    });
+
+    /**
+     * The capture records NO cookie on this route: it is genuinely
+     * unauthenticated and the single-use code is the whole authorisation. So
+     * the `uniquId` gap documented on `headers()` does not apply here, and a
+     * cookie would be a header asserting a session this call does not have.
+     */
+    it('sends no Cookie at all, because the code is the authorisation', async () => {
+      await service.resetPassword('ABC123', 'secret1');
+      expect(lastPost().config.headers.Cookie).toBeUndefined();
+    });
   });
 
   describe('resetPasswordVerify', () => {
@@ -152,6 +176,64 @@ describe('MashovRecoveryService', () => {
       // `/verify/AAA111/` is a different upstream route from `/verify/AAA111`.
       await service.resetPasswordVerify('AAA111', '   ', 'secret1');
       expect(lastPost().path).toBe('/api/user/reset/verify/AAA111');
+    });
+
+    it('sends the reset page as the Referer, like its single-channel sibling', async () => {
+      // Not itself captured -- `apis/post-api-user-reset-verify.md` is read off
+      // the bundle -- but it is step 2 of the same flow, reached from the same
+      // `/students/reset` page. A parent on the two-code form is on that page.
+      await service.resetPasswordVerify('AAA111', 'BBB222', 'secret1');
+      expect(lastPost().config.headers.Referer).toBe(
+        'https://web.mashov.info/students/reset',
+      );
+    });
+
+    it('sends no Cookie either, for the same reason', async () => {
+      await service.resetPasswordVerify('AAA111', 'BBB222', 'secret1');
+      expect(lastPost().config.headers.Cookie).toBeUndefined();
+    });
+  });
+
+  /**
+   * The `Referer` is per-route, not per-class.
+   *
+   * It used to be `/students/login` for every method here. That is what the
+   * login and session routes are observed to send, and what they keep sending;
+   * the two reset routes are reached from `/students/reset` instead.
+   */
+  describe('the Referer each route sends', () => {
+    const LOGIN_REFERER = 'https://web.mashov.info/students/login';
+
+    it('keeps the login page for the recovery request itself', async () => {
+      // Step 1 is submitted from the login page's forgot-password form.
+      await service.requestRecovery({ semel: 1, idNumber: '1', email: 'p@example.com' });
+      expect(lastPost().config.headers.Referer).toBe(LOGIN_REFERER);
+    });
+
+    it.each([
+      ['sendMfa', () => service.sendMfa('ch-1', 'sms')],
+      [
+        'verifyMfa',
+        () =>
+          service.verifyMfa({
+            loginData: {},
+            challengeId: 'ch-1',
+            code: '123456',
+            rememberBrowser: true,
+          }),
+      ],
+      ['loginDevice', () => service.loginDevice('dp-1')],
+      [
+        'changePassword',
+        () => service.changePassword({ loginData: {}, newPassword: 'secret1' }),
+      ],
+      [
+        'changeUsername',
+        () => service.changeUsername({ loginData: {}, username: 'parent' }),
+      ],
+    ])('keeps the login page for %s', async (_name, call) => {
+      await call();
+      expect(lastPost().config.headers.Referer).toBe(LOGIN_REFERER);
     });
   });
 

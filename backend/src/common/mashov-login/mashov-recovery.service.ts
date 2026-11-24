@@ -69,12 +69,23 @@ export class MashovRecoveryService {
    * Step 2, single channel. `404` from here means a bad code — but only
    * because the caller already enforced the password policy, since Mashov
    * answers 404 for a policy violation too.
+   *
+   * **Deliberately cookie-less.** The 2026-11-24 capture records no `Cookie`
+   * header on this route: it is genuinely unauthenticated and the single-use
+   * code is the whole authorisation. So the `uniquId` gap documented on
+   * `headers()` below does NOT apply here, and this is not an instance of it —
+   * sending a session cookie would assert a session this call does not have.
+   * Nothing to re-open.
+   *
+   * `response.data ?? {}` is load-bearing: the capture returned an EMPTY body
+   * on success, so there is no field to read. The caller decides success from
+   * the status code — axios throws on a non-2xx, so reaching here IS the 2xx.
    */
   async resetPassword(code: string, newPassword: string): Promise<ResetResult> {
     const response = await this.http.post<ResetResult>(
       `/api/user/reset/${pathSegment(code)}`,
       { newPassword },
-      { headers: this.headers() },
+      { headers: this.headers({}, undefined, RESET_REFERER_PATH) },
     );
     return response.data ?? {};
   }
@@ -98,7 +109,7 @@ export class MashovRecoveryService {
     const response = await this.http.post<ResetResult>(
       path,
       { newPassword },
-      { headers: this.headers() },
+      { headers: this.headers({}, undefined, RESET_REFERER_PATH) },
     );
     return response.data ?? {};
   }
@@ -238,16 +249,34 @@ export class MashovRecoveryService {
   private headers(
     extra: Record<string, string> = {},
     uniqueId?: string | null,
+    refererPath: string = LOGIN_REFERER_PATH,
   ): Record<string, string> {
     return {
       'X-Csrf-Token': MASHOV_CSRF_TOKEN,
       'Content-Type': 'application/json',
-      Referer: `${this.baseUrl}/students/login`,
+      Referer: `${this.baseUrl}${refererPath}`,
       ...(uniqueId ? { Cookie: `uniquId=${uniqueId}` } : {}),
       ...extra,
     };
   }
 }
+
+/**
+ * The `Referer` is per-route, because the parent is on a different page.
+ *
+ * Both are the page Mashov's own client was observed to send from, and they are
+ * named constants so a reader can check them against the captures in `apis/`:
+ * `/students/login` for login, MFA, trusted-device and the authenticated
+ * change routes (and for recovery step 1, submitted from the login page's
+ * forgot-password form), `/students/reset` for the two step-2 reset routes —
+ * `apis/post-api-user-reset-token.md`, captured 2026-11-24.
+ *
+ * Mashov has not been observed to reject a mismatched `Referer` on these
+ * routes, so this is not by itself the cause of a refusal; send the page the
+ * parent is actually on regardless.
+ */
+const LOGIN_REFERER_PATH = '/students/login';
+const RESET_REFERER_PATH = '/students/reset';
 
 export type MfaMethod = 'email' | 'sms';
 
