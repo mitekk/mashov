@@ -1,4 +1,4 @@
-import { HttpException } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import axios, { AxiosError, CanceledError } from 'axios';
 import { OtpService } from './otp.service';
@@ -52,6 +52,21 @@ function bareError(status: number): AxiosError {
     status,
     data: {},
     headers: { 'content-type': 'application/json' },
+  } as unknown as AxiosError['response'];
+  return err;
+}
+
+/**
+ * What a proxy ACL rejection looks like: a 4xx with an HTML body and no
+ * `Reason`. Our egress is a residential proxy, so this is not hypothetical, and
+ * it must never be reported as anything about the parent's input.
+ */
+function proxyError(status: number): AxiosError {
+  const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+  err.response = {
+    status,
+    data: '<html><body>Access denied</body></html>',
+    headers: { 'content-type': 'text/html' },
   } as unknown as AxiosError['response'];
   return err;
 }
@@ -198,6 +213,121 @@ describe('OtpService', () => {
       expect(await thrown(() => request())).toEqual({
         status: 502,
         code: 'UPSTREAM_ERROR',
+      });
+    });
+
+    /**
+     * The hole this flow shipped through.
+     *
+     * `classify` took a `stage` argument and used it only in a log message, so
+     * an unmapped Mashov 4xx on the SEND-ME-A-CODE call answered
+     * `INVALID_OTP_CODE` -- "that code is not valid" -- to a parent who had not
+     * been given a code, let alone typed one. It reproduced identically on
+     * email and sms, and because the code input only renders once this call
+     * succeeds, it also looked like a missing form field.
+     *
+     * Three different upstream answers reach this point, and all three were
+     * mis-reported, so all three are asserted here.
+     */
+    describe('an unmapped refusal is never reported as a bad code', () => {
+      it('answers OTP_REQUEST_REFUSED for a Reason-less JSON 4xx', async () => {
+        mockUpstream.requestOtp.mockRejectedValue(bareError(400));
+        expect(await thrown(() => request())).toEqual({
+          status: 400,
+          code: 'OTP_REQUEST_REFUSED',
+        });
+      });
+
+      it('answers OTP_REQUEST_REFUSED for a recognised but unmapped Reason', async () => {
+        // The single most likely live cause: we send a hard-coded CSRF literal
+        // and no cookie at all. `NotAuthenticated` is in MASHOV_REASONS but is
+        // mapped on no branch of this switch, so it fell to the same fallback.
+        mockUpstream.requestOtp.mockRejectedValue(reasonError('NotAuthenticated'));
+        expect(await thrown(() => request())).toEqual({
+          status: 400,
+          code: 'OTP_REQUEST_REFUSED',
+        });
+      });
+
+      it('answers OTP_REQUEST_REFUSED for a Reason we have never seen', async () => {
+        // `readReason` drops anything outside MASHOV_REASONS, so an unknown
+        // value arrived here indistinguishable from no Reason at all.
+        mockUpstream.requestOtp.mockRejectedValue(reasonError('SomeNewReason'));
+        expect(await thrown(() => request())).toEqual({
+          status: 400,
+          code: 'OTP_REQUEST_REFUSED',
+        });
+      });
+
+      // The three code-validity Reasons are as meaningless here as the bare
+      // 4xx was: there is no code at this stage for Mashov to have an opinion
+      // about.
+      for (const reason of ['MfaInvalidCode', 'MfaCodeExpired', 'MfaExpired']) {
+        it(`does not pass ${reason} through as a code error`, async () => {
+          mockUpstream.requestOtp.mockRejectedValue(reasonError(reason));
+          expect(await thrown(() => request())).toEqual({
+            status: 400,
+            code: 'OTP_REQUEST_REFUSED',
+          });
+        });
+      }
+
+      it('still answers 502 for a proxy ACL page, not a refusal', async () => {
+        // The `isMashovRejection` gate must not have been loosened to reach
+        // the new code: only Mashov's own API gets to refuse an account.
+        mockUpstream.requestOtp.mockRejectedValue(proxyError(403));
+        expect(await thrown(() => request())).toEqual({
+          status: 502,
+          code: 'UPSTREAM_ERROR',
+        });
+      });
+    });
+
+    it('never answers 401 on any path', async () => {
+      // The verify stage has had this assertion since it shipped; step 1 never
+      // did, which is part of why the above went unnoticed. `apiFetch`
+      // hard-redirects on any 401 whose code is not INVALID_CREDENTIALS, which
+      // would throw the parent off the page mid-sign-in.
+      for (const arrange of [
+        () => mockUpstream.requestOtp.mockRejectedValue(bareError(401)),
+        () => mockUpstream.requestOtp.mockRejectedValue(reasonError('NotAuthenticated', 401)),
+        () => mockPrisma.householdConnection.findUnique.mockResolvedValue(null),
+      ]) {
+        jest.clearAllMocks();
+        jest.spyOn(axios, 'isCancel').mockReturnValue(false);
+        jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+        mockPrisma.householdConnection.findUnique.mockResolvedValue(CONNECTION);
+        arrange();
+        expect((await thrown(() => request())).status).not.toBe(401);
+      }
+    });
+
+    describe('the log line that makes one production repro enough', () => {
+      it('records the status and the raw Reason, including one we do not know', async () => {
+        const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        mockUpstream.requestOtp.mockRejectedValue(reasonError('SomeNewReason'));
+        await thrown(() => request());
+
+        const line = warn.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(line).toContain('stage=request');
+        expect(line).toContain('status=403');
+        // The whole point: `readReason` would have discarded this value, and
+        // an unrecognised Reason is exactly the evidence worth having.
+        expect(line).toContain('reason=SomeNewReason');
+        expect(line).toContain('path=/api/user/otp/request');
+      });
+
+      it('logs no identity and no secret', async () => {
+        const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        mockUpstream.requestOtp.mockRejectedValue(bareError(400));
+        await thrown(() => request());
+
+        const line = warn.mock.calls.map(([first]) => String(first)).join('\n');
+        // USERNAME is a realistic national ID number, which is what it is for
+        // these accounts -- the thing ADR-0042 §9's HMAC'd keys exist to keep
+        // out of plaintext. `semel` is a public school code and is fine.
+        expect(line).not.toContain(USERNAME);
+        expect(line).toContain(`semel=${SEMEL}`);
       });
     });
   });

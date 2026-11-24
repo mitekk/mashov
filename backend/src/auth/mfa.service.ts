@@ -8,7 +8,12 @@ import {
   MashovRecoveryService,
   type MfaMethod,
 } from '../common/mashov-login/mashov-recovery.service';
-import { isMashovRejection, readReason } from '../common/mashov-login/mashov-reason';
+import {
+  describeMashovFailure,
+  isMashovRejection,
+  readReason,
+  type MashovReason,
+} from '../common/mashov-login/mashov-reason';
 import { countAgainstLimit } from '../common/mashov-login/rate-limit';
 import { RedisService } from '../redis/redis.service';
 import { AuthService } from './auth.service';
@@ -41,6 +46,28 @@ const IP_WINDOW_SECONDS = 900;
  */
 const CHALLENGE_LIMIT = 10;
 const CHALLENGE_WINDOW_SECONDS = 900;
+
+/**
+ * The upstream paths, as literals for the log line. Never read from
+ * `err.config?.url` -- see `describeMashovFailure`.
+ */
+const SEND_PATH = '/api/login/mfa/send';
+const VERIFY_PATH = '/api/login/mfa/verify';
+
+/**
+ * Reasons that say something about a code the parent typed, and therefore
+ * cannot be true at the send stage, where there is no code yet.
+ *
+ * `MfaExpired` is deliberately NOT here, and that is the difference from the
+ * OTP surface: a resend acts on a challenge that already exists, so the
+ * challenge really can have expired by the time the parent asks again, and
+ * `MFA_CODE_EXPIRED` ("ask for a new one") is the right answer. OTP step 1 has
+ * no prior challenge, so there all three are nonsense.
+ */
+const CODE_VALIDITY_REASONS = new Set<MashovReason>([
+  'MfaInvalidCode',
+  'MfaCodeExpired',
+]);
 
 @Injectable()
 export class MfaService {
@@ -142,7 +169,7 @@ export class MfaService {
         rememberBrowser: true,
       });
     } catch (err) {
-      throw this.classify(err, 'verify');
+      throw this.classify(err, 'verify', semel);
     }
 
     if (!result.data?.credential?.userId) {
@@ -189,7 +216,13 @@ export class MfaService {
    * blames the parent for an outage: a one-time code they cannot immediately
    * replace is at stake.
    */
-  private classify(err: unknown, stage: 'send' | 'verify'): HttpException {
+  private classify(
+    err: unknown,
+    stage: 'send' | 'verify',
+    // Absent on the resend route, which holds only a `challengeId` -- a bearer
+    // handle for someone else's challenge, so not a substitute.
+    semel?: number,
+  ): HttpException {
     if (isUpstreamUnreachable(err)) {
       this.logger.error(
         `Mashov MFA ${stage} unreachable: ${
@@ -203,7 +236,14 @@ export class MfaService {
       );
     }
 
-    switch (readReason(err)) {
+    const reason = readReason(err);
+
+    // No code exists at the send stage, so nothing Mashov says about one can
+    // be true of anything the parent did.
+    const codeValidityAtSendStage =
+      stage === 'send' && reason !== undefined && CODE_VALIDITY_REASONS.has(reason);
+
+    switch (codeValidityAtSendStage ? undefined : reason) {
       case 'MfaInvalidCode':
         return envelope(
           'INVALID_MFA_CODE',
@@ -245,6 +285,14 @@ export class MfaService {
         break;
     }
 
+    this.logger.warn(
+      `Mashov MFA ${stage} unmapped: ${describeMashovFailure(err, {
+        stage,
+        semel,
+        path: stage === 'send' ? SEND_PATH : VERIFY_PATH,
+      })}`,
+    );
+
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
     if (
       status !== undefined &&
@@ -255,6 +303,18 @@ export class MfaService {
       // replace.
       isMashovRejection(err)
     ) {
+      // At the send stage no code exists yet, so blaming one is false -- the
+      // same defect this flow shipped with on the OTP surface. Its own code
+      // rather than INVALID_MFA_CODE, because the parent is sitting on an open
+      // challenge and needs to know the resend failed, not that they mistyped.
+      if (stage === 'send') {
+        return envelope(
+          'MFA_SEND_REFUSED',
+          'Mashov would not send a code for this account.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       // Includes an upstream 401. Rendered as 400 deliberately -- see the class
       // docblock on why nothing here may answer 401.
       return envelope(

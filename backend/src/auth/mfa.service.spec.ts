@@ -1,4 +1,4 @@
-import { HttpException } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import axios, { AxiosError, CanceledError } from 'axios';
 import { MfaService } from './mfa.service';
@@ -142,6 +142,61 @@ describe('MfaService', () => {
       expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
         status: 502,
         code: 'UPSTREAM_ERROR',
+      });
+    });
+
+    /**
+     * The same defect the OTP surface shipped with: `classify` took a `stage`
+     * and used it only in a log line, so an unmapped Mashov 4xx on the
+     * SEND-ME-A-CODE call answered `INVALID_MFA_CODE` -- "that code is not
+     * valid" -- about a code that did not exist yet.
+     */
+    describe('an unmapped refusal is never reported as a bad code', () => {
+      it('answers MFA_SEND_REFUSED for a Reason-less JSON 4xx', async () => {
+        mockUpstream.sendMfa.mockRejectedValue(bareError(400));
+        expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
+          status: 400,
+          code: 'MFA_SEND_REFUSED',
+        });
+      });
+
+      it('answers MFA_SEND_REFUSED for a recognised but unmapped Reason', async () => {
+        mockUpstream.sendMfa.mockRejectedValue(reasonError('NotAuthenticated'));
+        expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
+          status: 400,
+          code: 'MFA_SEND_REFUSED',
+        });
+      });
+
+      it('does not pass MfaInvalidCode through as a code error', async () => {
+        mockUpstream.sendMfa.mockRejectedValue(reasonError('MfaInvalidCode'));
+        expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
+          status: 400,
+          code: 'MFA_SEND_REFUSED',
+        });
+      });
+
+      it('still reports an expired challenge as expired, not refused', async () => {
+        // The asymmetry versus OTP step 1: a resend acts on a challenge that
+        // already exists, so `MfaExpired` is true of something real here.
+        mockUpstream.sendMfa.mockRejectedValue(reasonError('MfaExpired'));
+        expect(await thrown(() => service.sendCode(CHALLENGE, 'email', IP))).toEqual({
+          status: 400,
+          code: 'MFA_CODE_EXPIRED',
+        });
+      });
+
+      it('logs the status and raw Reason without the challenge id', async () => {
+        const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        mockUpstream.sendMfa.mockRejectedValue(reasonError('SomeNewReason'));
+        await thrown(() => service.sendCode(CHALLENGE, 'email', IP));
+
+        const line = warn.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(line).toContain('stage=send');
+        expect(line).toContain('reason=SomeNewReason');
+        expect(line).toContain('path=/api/login/mfa/send');
+        // A bearer handle for someone else's challenge. Not a diagnostic.
+        expect(line).not.toContain(CHALLENGE);
       });
     });
 

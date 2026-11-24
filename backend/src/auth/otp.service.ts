@@ -11,7 +11,12 @@ import {
   MashovRecoveryService,
   type MfaMethod,
 } from '../common/mashov-login/mashov-recovery.service';
-import { isMashovRejection, readReason } from '../common/mashov-login/mashov-reason';
+import {
+  describeMashovFailure,
+  isMashovRejection,
+  readReason,
+  type MashovReason,
+} from '../common/mashov-login/mashov-reason';
 import { countAgainstLimit, identityKeyHash } from '../common/mashov-login/rate-limit';
 import { AuthService } from './auth.service';
 
@@ -266,7 +271,17 @@ export class OtpService {
       );
     }
 
-    switch (readReason(err)) {
+    const reason = readReason(err);
+
+    // At the request stage there IS no code, so none of the three
+    // code-validity reasons can be true of anything the parent did. Routing
+    // them to the stage branch below is the same correction as the one on the
+    // unmapped fallback -- the bug was never specific to a missing `Reason`
+    // header.
+    const codeValidityAtRequestStage =
+      stage === 'request' && reason !== undefined && CODE_VALIDITY_REASONS.has(reason);
+
+    switch (codeValidityAtRequestStage ? undefined : reason) {
       case 'MfaInvalidCode':
         return envelope(
           'INVALID_OTP_CODE',
@@ -314,6 +329,17 @@ export class OtpService {
         break;
     }
 
+    // Logged on every unmapped path, not only the unreachable one. Mashov
+    // answering with something we do not map is the single most useful fact
+    // about this flow and it used to leave no trace at all.
+    this.logger.warn(
+      `Mashov OTP ${stage} unmapped: ${describeMashovFailure(err, {
+        stage,
+        semel,
+        path: stage === 'request' ? REQUEST_PATH : VERIFY_PATH,
+      })}`,
+    );
+
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
     if (
       status !== undefined &&
@@ -323,6 +349,29 @@ export class OtpService {
       // not.
       isMashovRejection(err)
     ) {
+      // At the request stage nothing has been typed and nothing has been
+      // burned, so "that code is not valid" is not merely unhelpful, it is
+      // false -- and it was what the parent saw on both channels. The honest
+      // answer names the one thing they can still do.
+      //
+      // 400 rather than 401: `apiFetch` hard-redirects on any 401 whose code is
+      // not INVALID_CREDENTIALS, which would throw the parent off the page
+      // carrying their instructions. And not 502: `isMashovRejection` being
+      // true is positive evidence Mashov's API did answer, so an outage would
+      // be the same category of lie, inverted.
+      //
+      // This leaks nothing new: it is reachable only after
+      // `requireExistingConnection` has passed, i.e. only for an identity whose
+      // membership the existing 409 already discloses, and behind the same
+      // per-identity meter.
+      if (stage === 'request') {
+        return envelope(
+          'OTP_REQUEST_REFUSED',
+          'Mashov would not send a code for this account.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       return envelope(
         'INVALID_OTP_CODE',
         'That code is not valid.',
@@ -337,6 +386,23 @@ export class OtpService {
     );
   }
 }
+
+/**
+ * The upstream paths, as literals for the log line. Never read from
+ * `err.config?.url` -- see `describeMashovFailure`.
+ */
+const REQUEST_PATH = '/api/user/otp/request';
+const VERIFY_PATH = '/api/user/otp';
+
+/**
+ * Reasons that say something about a code the parent typed, and therefore
+ * cannot be true at the request stage, where there is no code yet.
+ */
+const CODE_VALIDITY_REASONS = new Set<MashovReason>([
+  'MfaInvalidCode',
+  'MfaCodeExpired',
+  'MfaExpired',
+]);
 
 function stateKey(otpRequestId: string): string {
   return `otp:${otpRequestId}`;

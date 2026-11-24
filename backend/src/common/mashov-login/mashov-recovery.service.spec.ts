@@ -234,21 +234,57 @@ describe('MashovRecoveryService', () => {
   });
 
   describe('secrecy', () => {
-    it('logs nothing that interpolates a password or a code', () => {
-      // The one guarantee that matters most here. The service holds a
-      // single-use code and a plaintext password it must never persist
-      // anywhere -- not Redis, not a log line, not a breadcrumb.
-      const source = require('node:fs').readFileSync(
-        require('node:path').join(__dirname, 'mashov-recovery.service.ts'),
-        'utf8',
-      ) as string;
+    /**
+     * Every file in this surface that logs at all.
+     *
+     * This list used to be one entry, and that was the gap: the OTP and MFA
+     * classifiers shipped a "that code is not valid" answer for a stage with no
+     * code, and when they were given the log line that makes such a failure
+     * diagnosable, nothing was checking what those lines carried. A gate that
+     * guards one of four files is a gate that will be routed around.
+     */
+    const LOGGING_FILES = [
+      'mashov-recovery.service.ts',
+      'mashov-reason.ts',
+      '../../auth/otp.service.ts',
+      '../../auth/mfa.service.ts',
+    ];
 
-      const logLines = source
-        .split('\n')
-        .filter((line) => /this\.logger\.|console\./.test(line));
+    for (const file of LOGGING_FILES) {
+      it(`logs nothing that interpolates a password or a code in ${file}`, () => {
+        // The one guarantee that matters most here. This surface holds
+        // single-use codes and plaintext passwords it must never persist
+        // anywhere -- not Redis, not a log line, not a breadcrumb.
+        const source = require('node:fs').readFileSync(
+          require('node:path').join(__dirname, file),
+          'utf8',
+        ) as string;
 
-      for (const line of logLines) {
-        expect(line).not.toMatch(/newPassword|\bcode\b|captcha|devicePass|idNumber/);
+        const logLines = source
+          .split('\n')
+          .filter((line) => /this\.logger\.|console\./.test(line));
+
+        for (const line of logLines) {
+          expect(line).not.toMatch(/newPassword|\bcode\b|captcha|devicePass|idNumber/);
+        }
+      });
+    }
+
+    it('never logs the request URL, which can itself be a single-use code', () => {
+      // `resetPassword` puts the recovery code IN the path. Any log line built
+      // from `err.config.url` would write live recovery codes to the logs, so
+      // `describeMashovFailure` takes a caller-supplied literal instead and no
+      // file in this surface may reach for the real one.
+      const fs = require('node:fs');
+      const path = require('node:path');
+
+      for (const file of LOGGING_FILES) {
+        const source = fs.readFileSync(path.join(__dirname, file), 'utf8') as string;
+        const offending = source
+          .split('\n')
+          .filter((line) => !line.trimStart().startsWith('*'))
+          .filter((line) => /config\??\.(url|data|headers)/.test(line));
+        expect(offending).toEqual([]);
       }
     });
   });

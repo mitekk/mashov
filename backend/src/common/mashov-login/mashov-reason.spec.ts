@@ -3,6 +3,7 @@ import {
   MASHOV_REASONS,
   type MashovReason,
   classifyLoginReason,
+  describeMashovFailure,
   isMashovRejection,
   readChallengeId,
   readReason,
@@ -220,5 +221,89 @@ describe('isMashovRejection', () => {
   it('is false for a non-axios error and for a response-less one', () => {
     expect(isMashovRejection(new Error('boom'))).toBe(false);
     expect(isMashovRejection(new AxiosError('no response'))).toBe(false);
+  });
+});
+
+/**
+ * The log line that makes an unmapped upstream refusal diagnosable.
+ *
+ * Its whole value is that it says what Mashov actually answered, and its whole
+ * risk is that an error object handed to it is stuffed with secrets: the
+ * request body carries passwords and one-time codes, the request headers carry
+ * `Cookie`, and `MashovRecoveryService.resetPassword` puts a single-use
+ * recovery code in the URL itself. So the contract asserted here is not "it
+ * happens not to log those today" but "it cannot".
+ */
+describe('describeMashovFailure', () => {
+  function response(headers: Record<string, string>, status = 403): AxiosError {
+    const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+    err.response = {
+      status,
+      data: {},
+      headers,
+    } as unknown as AxiosError['response'];
+    return err;
+  }
+
+  const SECRET_LADEN = (() => {
+    const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+    err.config = {
+      url: '/api/user/reset/SINGLE-USE-RECOVERY-CODE',
+      data: JSON.stringify({ newPassword: 'hunter2-the-password', code: '424242' }),
+      headers: { Cookie: 'uniquId=secret-session-cookie' },
+    } as unknown as AxiosError['config'];
+    err.response = {
+      status: 403,
+      data: { message: 'another-secret-in-the-body' },
+      headers: { Reason: 'NotAuthenticated', 'content-type': 'application/json' },
+    } as unknown as AxiosError['response'];
+    return err;
+  })();
+
+  const CONTEXT = { stage: 'request', semel: 482273, path: '/api/user/otp/request' };
+
+  it('names the stage, school, path, status and Reason', () => {
+    const line = describeMashovFailure(SECRET_LADEN, CONTEXT);
+    expect(line).toContain('stage=request');
+    expect(line).toContain('semel=482273');
+    expect(line).toContain('path=/api/user/otp/request');
+    expect(line).toContain('status=403');
+    expect(line).toContain('reason=NotAuthenticated');
+    expect(line).toContain('signed=true');
+  });
+
+  it('reports a Reason outside MASHOV_REASONS, which readReason discards', () => {
+    // The reason this does not simply call `readReason`: an unrecognised value
+    // is exactly the evidence worth having when a guessed contract fails.
+    const line = describeMashovFailure(
+      response({ Reason: 'SomeBrandNewReason' }),
+      CONTEXT,
+    );
+    expect(line).toContain('reason=SomeBrandNewReason');
+  });
+
+  it('leaks nothing from the request, not even the URL it was sent to', () => {
+    const line = describeMashovFailure(SECRET_LADEN, CONTEXT);
+    for (const secret of [
+      'SINGLE-USE-RECOVERY-CODE',
+      'hunter2-the-password',
+      '424242',
+      'secret-session-cookie',
+      'another-secret-in-the-body',
+    ]) {
+      expect(line).not.toContain(secret);
+    }
+  });
+
+  it('truncates a hostile Reason rather than trusting its length', () => {
+    const line = describeMashovFailure(response({ Reason: 'A'.repeat(500) }), CONTEXT);
+    expect(line.length).toBeLessThan(300);
+  });
+
+  it('says so plainly when there is nothing to report', () => {
+    const line = describeMashovFailure(new Error('boom'), CONTEXT);
+    expect(line).toContain('status=none');
+    expect(line).toContain('reason=none');
+    expect(line).toContain('signed=false');
   });
 });
