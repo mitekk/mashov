@@ -17,6 +17,7 @@ import { AuthPage } from './pages/AuthPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { MfaPage } from './pages/MfaPage';
+import { CompleteSetupPage } from './pages/CompleteSetupPage';
 
 const SCHOOL = { semel: 540175, name: 'בית ספר לדוגמה', years: [2026] };
 const ID_NUMBER = '303977367';
@@ -351,5 +352,112 @@ test.describe('captcha escape hatch', () => {
     await expect(page.getByTestId('sign-in-captcha-escape')).toHaveCount(0);
     // And the 401 with INVALID_CREDENTIALS did NOT bounce us off the page.
     await expect(page).toHaveURL(/\/auth\/sign-in/);
+  });
+});
+
+/**
+ * Forced credential setup — the one in-app auth screen that had no E2E.
+ *
+ * It is also the page that changes a third party's Mashov password
+ * (ADR-0042 §9) and the page behind `POST /auth/credentials`, which had no
+ * end-to-end cover either.
+ */
+test.describe('forced credential setup', () => {
+  test.beforeEach(async ({ page }) => {
+    await routeSchools(page);
+  });
+
+  test('a parent Mashov wants a new password from gets one and is signed in', async ({ page }) => {
+    const setup = new CompleteSetupPage(page);
+    await routeJson(page, '**/api/v1/auth/credentials', 200, {
+      ok: true,
+      isFirstLogin: true,
+    });
+    await routeJson(page, '**/api/v1/sync/status', 200, {
+      done: false,
+      sourcesCompleted: 0,
+      sourcesTotal: 8,
+      phase: 'running',
+      refreshId: null,
+      startedAt: null,
+      endedAt: null,
+      tasksTotal: 8,
+      tasksSettled: 0,
+      tasksFailed: 0,
+      currentTask: null,
+      tasks: [],
+    });
+
+    await setup.navigate(SCHOOL.semel, 'password');
+    await setup.changePassword(ID_NUMBER, 'oldpw1', GOOD_PASSWORD);
+
+    // A first sign-in goes to the syncing screen, exactly as a password
+    // sign-in does -- the whole point is that this is a sign-in, not a detour.
+    await expect(page).toHaveURL(/\/auth\/syncing/, { timeout: 15_000 });
+  });
+
+  test('asks for a new username too when Mashov wants one', async ({ page }) => {
+    const setup = new CompleteSetupPage(page);
+    await setup.navigate(SCHOOL.semel, 'credentials');
+    await expect(setup.newUsernameInput).toBeVisible();
+
+    // The password-only mode must NOT ask for it, or every ChangePass parent
+    // is prompted to rename themselves.
+    await setup.navigate(SCHOOL.semel, 'password');
+    await expect(setup.newUsernameInput).toHaveCount(0);
+  });
+
+  test('shows the password policy live, before anything is submitted', async ({ page }) => {
+    // Mashov answers 404 for a weak password and for a bad code alike, so a
+    // parent who learns the rules only from a rejection cannot tell which one
+    // they hit.
+    const setup = new CompleteSetupPage(page);
+    await setup.navigate(SCHOOL.semel, 'password');
+    await expect(setup.policyChecklist).toBeVisible();
+
+    await setup.newPasswordInput.fill('short');
+    await expect(setup.policyChecklist).toBeVisible();
+  });
+
+  test('reports a rejected current password without redirecting', async ({ page }) => {
+    // 400 INVALID_CREDENTIALS, not 401: a 401 would send `apiFetch` into its
+    // hard redirect and lose the half-filled form. This is the assertion that
+    // only exists in a browser.
+    const setup = new CompleteSetupPage(page);
+    await routeJson(
+      page,
+      '**/api/v1/auth/credentials',
+      400,
+      errorBody('INVALID_CREDENTIALS'),
+    );
+
+    await setup.navigate(SCHOOL.semel, 'password');
+    await setup.changePassword(ID_NUMBER, 'wrongpw', GOOD_PASSWORD);
+
+    await expect(setup.errorMessage).toBeVisible({ timeout: 15_000 });
+    await expect(page).toHaveURL(/\/auth\/complete-setup/);
+  });
+
+  test('sends the parent to the code screen when Mashov asks for one mid-change', async ({ page }) => {
+    const setup = new CompleteSetupPage(page);
+    await routeJson(
+      page,
+      '**/api/v1/auth/credentials',
+      400,
+      errorBody('MFA_REQUIRED', { challengeId: 'ch-9' }),
+    );
+
+    await setup.navigate(SCHOOL.semel, 'password');
+    await setup.changePassword(ID_NUMBER, 'oldpw1', GOOD_PASSWORD);
+
+    // The challenge id has to ride along, or the parent lands on a screen
+    // that knows a code is needed and has no handle to ask for one.
+    await expect(page).toHaveURL(/\/auth\/mfa\?.*cid=ch-9/, { timeout: 15_000 });
+  });
+
+  test('offers a way back when the school is missing from the URL', async ({ page }) => {
+    const setup = new CompleteSetupPage(page);
+    await setup.navigateWithoutSemel();
+    await expect(setup.startAgain).toBeVisible();
   });
 });

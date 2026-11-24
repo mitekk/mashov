@@ -46,30 +46,55 @@ describe('MashovRecoveryService', () => {
   });
 
   describe('requestRecovery', () => {
-    it('posts the documented body to /api/user/recover', async () => {
-      await service.requestRecovery({ semel: 482273, idNumber: '303977367', email: true });
-
-      const { path, body } = lastPost();
-      expect(path).toBe('/api/user/recover');
-      expect(body).toEqual({ semel: 482273, idNumber: '303977367', email: true });
-    });
-
-    it('asks for the SMS channel with cellphone instead of email', async () => {
+    /**
+     * Captured from Mashov's own client on 2026-11-24, both channels. These
+     * are the observed bytes, not a reading of the bundle.
+     */
+    it('posts the captured body to /api/user/recover', async () => {
       await service.requestRecovery({
         semel: 482273,
         idNumber: '303977367',
-        cellphone: true,
+        email: 'parent@example.com',
+      });
+
+      const { path, body } = lastPost();
+      expect(path).toBe('/api/user/recover');
+      expect(body).toEqual({
+        semel: 482273,
+        idNumber: '303977367',
+        email: 'parent@example.com',
+      });
+    });
+
+    it('never sends a boolean, which is what broke this flow', async () => {
+      // `email: true` will not bind to a .NET string property: Mashov answered
+      // 400 and sent nothing, while our 202 told the parent to check an inbox.
+      await service.requestRecovery({
+        semel: 482273,
+        idNumber: '303977367',
+        email: 'parent@example.com',
+      });
+      expect(typeof (lastPost().body as { email: unknown }).email).toBe('string');
+    });
+
+    it('asks for the SMS channel with cellphone instead of email', async () => {
+      // The field NAME is the channel -- there is no separate flag, and the
+      // two fields are never both present.
+      await service.requestRecovery({
+        semel: 482273,
+        idNumber: '303977367',
+        cellphone: '0501234567',
       });
 
       expect(lastPost().body).toEqual({
         semel: 482273,
         idNumber: '303977367',
-        cellphone: true,
+        cellphone: '0501234567',
       });
     });
 
     it('sends the shared CSRF token like every other Mashov call', async () => {
-      await service.requestRecovery({ semel: 1, idNumber: '1', email: true });
+      await service.requestRecovery({ semel: 1, idNumber: '1', email: 'p@example.com' });
       expect(lastPost().config.headers['X-Csrf-Token']).toBe(MASHOV_CSRF_TOKEN);
     });
 
@@ -79,7 +104,7 @@ describe('MashovRecoveryService', () => {
       const result = await service.requestRecovery({
         semel: 1,
         idNumber: '1',
-        email: true,
+        email: 'p@example.com',
       });
 
       expect(result.isResettingAndVerifying).toBe(true);
@@ -233,22 +258,116 @@ describe('MashovRecoveryService', () => {
     });
   });
 
+  /**
+   * The stored `uniquId` device cookie.
+   *
+   * A real browser sends it on every same-origin request, so Mashov's own
+   * client sends it on all of these routes. We sent it on `POST /api/login`
+   * only, while the credential-change flows read `mashovUniqueId` from the
+   * database, wrote down why it mattered, and dropped it on the floor.
+   */
+  describe('the device cookie', () => {
+
+    it('sends it on a password change', async () => {
+      await service.changePassword({
+        loginData: { semel: 1 },
+        newPassword: 'secret1',
+        uniqueId: 'uid-7',
+      });
+      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
+    });
+
+    it('sends it on a username change', async () => {
+      await service.changeUsername({
+        loginData: { semel: 1 },
+        username: 'newname',
+        uniqueId: 'uid-7',
+      });
+      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
+    });
+
+    it('omits the header entirely when there is no stored cookie', async () => {
+      // Not `Cookie: uniquId=null`, which would be a header asserting a
+      // session that does not exist.
+      await service.changePassword({
+        loginData: { semel: 1 },
+        newPassword: 'secret1',
+        uniqueId: null,
+      });
+      expect(lastPost().config.headers.Cookie).toBeUndefined();
+    });
+
+    it('still sends none on MFA verify, deliberately', async () => {
+      // Not an oversight: the `403 Reason: MfaRequired` that opens the
+      // challenge makes axios throw, so its `Set-Cookie: uniquId` is
+      // discarded and the stored value is an OLDER session's. If Mashov binds
+      // the challenge to its cookie, a stale one is worse than none. See the
+      // TODO in `mfa.service.ts` for what the capture has to settle.
+      await service.verifyMfa({
+        loginData: { semel: 1 },
+        challengeId: 'ch-1',
+        code: '123456',
+        rememberBrowser: true,
+      });
+      expect(lastPost().config.headers.Cookie).toBeUndefined();
+    });
+  });
+
   describe('secrecy', () => {
-    it('logs nothing that interpolates a password or a code', () => {
-      // The one guarantee that matters most here. The service holds a
-      // single-use code and a plaintext password it must never persist
-      // anywhere -- not Redis, not a log line, not a breadcrumb.
-      const source = require('node:fs').readFileSync(
-        require('node:path').join(__dirname, 'mashov-recovery.service.ts'),
-        'utf8',
-      ) as string;
+    /**
+     * Every file in this surface that logs at all.
+     *
+     * This list used to be one entry, and that was the gap: the OTP and MFA
+     * classifiers shipped a "that code is not valid" answer for a stage with no
+     * code, and when they were given the log line that makes such a failure
+     * diagnosable, nothing was checking what those lines carried. A gate that
+     * guards one of four files is a gate that will be routed around.
+     */
+    const LOGGING_FILES = [
+      'mashov-recovery.service.ts',
+      'mashov-reason.ts',
+      '../../auth/mfa.service.ts',
+      // Added when recovery gained logging. It holds an Israeli national ID
+      // number in `input.idNumber`, so it is the file in this surface where the
+      // gate matters most.
+      '../../auth/credential-recovery.service.ts',
+    ];
 
-      const logLines = source
-        .split('\n')
-        .filter((line) => /this\.logger\.|console\./.test(line));
+    for (const file of LOGGING_FILES) {
+      it(`logs nothing that interpolates a password or a code in ${file}`, () => {
+        // The one guarantee that matters most here. This surface holds
+        // single-use codes and plaintext passwords it must never persist
+        // anywhere -- not Redis, not a log line, not a breadcrumb.
+        const source = require('node:fs').readFileSync(
+          require('node:path').join(__dirname, file),
+          'utf8',
+        ) as string;
 
-      for (const line of logLines) {
-        expect(line).not.toMatch(/newPassword|\bcode\b|captcha|devicePass|idNumber/);
+        const logLines = source
+          .split('\n')
+          .filter((line) => /this\.logger\.|console\./.test(line));
+
+        for (const line of logLines) {
+          expect(line).not.toMatch(/newPassword|\bcode\b|captcha|devicePass|idNumber/);
+        }
+      });
+    }
+
+    it('never logs the request URL, which can itself be a single-use code', () => {
+      // `resetPassword` puts the recovery code IN the path. Any log line built
+      // from `err.config.url` would write live recovery codes to the logs, so
+      // `describeMashovFailure` takes a caller-supplied literal instead and no
+      // file in this surface may reach for the real one.
+      const fs = require('node:fs');
+      const path = require('node:path');
+
+      for (const file of LOGGING_FILES) {
+        const source = fs.readFileSync(path.join(__dirname, file), 'utf8') as string;
+        const offending = source
+          .split('\n')
+          .filter((line) => !line.trimStart().startsWith('*'))
+          .filter((line) => /config\??\.(url|data|headers)/.test(line));
+        expect(offending).toEqual([]);
       }
     });
   });
@@ -301,49 +420,5 @@ describe('MashovRecoveryService', () => {
     });
   });
 
-  describe('requestOtp', () => {
-    it('posts the school, username and channel', async () => {
-      await service.requestOtp({ semel: 482273, username: 'u', method: 'sms' });
 
-      const { path, body } = lastPost();
-      expect(path).toBe('/api/user/otp/request');
-      expect(body).toEqual({ semel: 482273, username: 'u', method: 'sms' });
-    });
-  });
-
-  describe('verifyOtp', () => {
-    const loginData = { semel: 482273, year: 2027, username: 'u' };
-
-    it('posts the login data plus the code', async () => {
-      await service.verifyOtp({ loginData, code: '123456' });
-
-      const { path, body } = lastPost();
-      expect(path).toBe('/api/user/otp');
-      expect(body).toMatchObject({ semel: 482273, username: 'u', code: '123456' });
-    });
-
-    it('strips the code of whitespace', async () => {
-      await service.verifyOtp({ loginData, code: '123 456' });
-      expect(lastPost().body.code).toBe('123456');
-    });
-
-    it('carries no password, by construction', async () => {
-      await service.verifyOtp({
-        loginData: { ...loginData, password: 'leaked' },
-        code: '123456',
-      });
-      expect(lastPost().body).not.toHaveProperty('password');
-    });
-
-    it('captures the session headers so a session can be minted', async () => {
-      mockHttp.post.mockResolvedValue(
-        ok({ credential: { userId: 'u1' } }, { devicepass: 'dp-9' }),
-      );
-
-      const result = await service.verifyOtp({ loginData, code: '123456' });
-
-      expect(result.devicePass).toBe('dp-9');
-      expect(result.data).toMatchObject({ credential: { userId: 'u1' } });
-    });
-  });
 });

@@ -209,6 +209,10 @@ when it did not is a lie they cannot act on.
 
 ### 7. OTP login cannot replace password login, and says so
 
+> **Amendment, 2026-11-24 — it does not work in production, and is now off.**
+> See §11 below. Everything in this section still describes the intent and the
+> code; none of it was reachable, because step 1 was refused by Mashov.
+
 Our sync model needs a stored credential. A household that only ever signed in
 by one-time code would have none, and would get a working session and an app
 that silently never updates.
@@ -322,6 +326,146 @@ and keeps them consistent with `SignInPageClient.tsx` and
 `AddSchoolPageClient.tsx` sitting right beside them. A deliberate deviation from
 the rule, recorded here rather than silently taken.
 
+### 11. What the unobserved contract actually cost — and the rule it bought
+
+Added 2026-11-24, after passwordless sign-in was tried on production.
+
+Picking "קוד לאימייל" or "קוד בסמס" on `/auth/sign-in` answered, on both
+channels, `400 INVALID_OTP_CODE` — *"That code is not valid."* The parent was
+told a code was wrong before one had been sent, and because the code input only
+renders once step 1 succeeds, it also looked like a missing form field.
+
+Two separate failures, and the second is the one worth recording.
+
+**The upstream call is refused.** `POST /api/user/otp/request` was read out of
+the Angular bundle and never observed, and the `apis/` document says in its own
+words that the request field names are the least certain part of it. The likely
+cause is §9's egress model meeting a flow that needs session state: our
+`headers()` sends a hard-coded CSRF literal and **no cookie at all**, and
+`requestOtp`/`verifyOtp` thread nothing between the two calls — no `uniquId`, no
+per-session token — where `sendMfa`/`verifyMfa` at least carry a `challengeId`.
+Unproven, because nothing told us.
+
+**Nothing told us.** `OtpService.classify` took a `stage: 'request' | 'verify'`
+and used it *only to interpolate a log message*. Its unmapped-4xx tail answered
+`INVALID_OTP_CODE` at either stage, and three different upstream answers reached
+that tail: no `Reason` header; a `Reason` in `MASHOV_REASONS` that this surface
+maps on no branch (24 of the 32); and a `Reason` string outside the list, which
+`readReason` discards silently. Worse, the only `logger` call in `classify` was
+in the unreachable branch — so a Mashov refusal became user-facing copy with **no
+record of the status, the `Reason` or the path**. The failure was not merely
+mis-reported; it was undiagnosable from production.
+
+`MfaService.classify` had the identical defect at its `'send'` stage.
+`CredentialRecoveryService` did not: its step 1 guards on `!isMashovRejection`
+and poisons instead, which is why §3 and §4 read as carefully as they do. The
+two that were wrong are the two whose step 1 was added late.
+
+Three rules follow, and they generalise past this bug:
+
+1. **A stage argument that only reaches a log line is a bug waiting to be
+   filed.** If a classifier knows which call failed, its answer must depend on
+   it. The three code-validity reasons are now routed through that branch too,
+   not just the bare 4xx — the defect was never specific to a missing header.
+2. **Every unmapped upstream answer gets logged, not just the unreachable
+   ones.** `describeMashovFailure` is the only sanctioned way: it reads the
+   **raw** `Reason` header rather than `readReason`, because an unrecognised
+   value is exactly the evidence worth having, and it takes the path as a
+   **caller-supplied literal** — never `err.config?.url`, since
+   `resetPassword` puts a single-use recovery code *in the path* and a helper
+   reaching for the request URL would write live recovery codes into the logs
+   the first time it was reused. It cannot see a request body, request headers
+   or a response body at all. The secrecy grep gate, which guarded one file,
+   now guards all four that log.
+3. **A reverse-engineered path is not shipped as a live button.** §8 refused to
+   ship dead Turnstile config on the reasoning that it "invites someone to
+   'finish' a path that cannot work"; a button that always fails is worse,
+   because a parent presses it. `PASSWORDLESS_SIGN_IN_ENABLED` in
+   `frontend/src/lib/featureFlags.ts` is `false` until a real capture of
+   Mashov's own login page proves the contract and an integration test asserts
+   the captured request shape.
+
+A plain constant, not an env var: the sign-in page is statically prerendered, so
+`process.env` bakes at `next build` whether it is read client- or server-side,
+and the runtime values in compose would be ignored silently — which is the state
+`NEXT_PUBLIC_SYNCING_HARD_CAP_MS` is already in. The backend routes stay **live
+and ungated**: they are metered per IP and per identity, they refuse a school
+with no stored credential before sending anything, and verifying the corrected
+contract needs them reachable. The flag's job is only to stop parents walking
+into a dead end.
+
+The honest summary of §7 and of the *reverse-engineered contracts* bullet below:
+we shipped a sign-in method on a guess, and the first thing the guess cost was
+not the broken flow — flows break — but a false accusation aimed at the parent,
+with no evidence trail to correct it.
+
+### 12. The capture, and what it ended
+
+Added 2026-11-24, from a live capture of Mashov's own login and recovery pages
+against a real account. Three flows were observed end to end; two contracts
+were wrong, and one of them fatally.
+
+**Recovery was wrong and is now fixed.** `apis/post-api-user-recover.md` had
+flagged one field as unproven — "the channel flag's exact type (`boolean` vs
+the contact string) is the one thing a live call still has to confirm" — and
+the guess was wrong in both its type and its meaning. We sent `email: true`.
+Mashov wants `email: "parent@example.com"`: there is no channel flag, the
+field **name** selects the channel and its value is the destination address,
+which the parent types and Mashov checks against the school's record. `true`
+fails .NET model binding, so Mashov answered 400 and sent nothing, while our
+deliberately indistinguishable 202 told the parent to check their inbox. This
+is the defect in §11 again, inverted: a false *positive*, which is strictly
+harder to find than the false negative, because "no email arrived" is
+indistinguishable from "it went somewhere you forgot about".
+
+**Passwordless OTP sign-in was removed, and cannot come back.** Mashov gates
+`POST /api/user/otp/request` behind a **Cloudflare Turnstile** token — the
+widget renders on the EMAIL and SMS tabs of its login form and not on the
+password tab, which is exactly why ordinary password login works from our
+backend and this never could. A Turnstile token is minted by a browser against
+Mashov's sitekey; our server cannot produce one, and rendering their widget on
+our domain to obtain one would be circumventing a bot-protection control. §8
+already concluded Turnstile is not deliverable and the fallback is one link
+out; this extends that conclusion from *solving* a captcha to *pre-empting*
+one, and the answer is the same.
+
+The second half of the flow did not exist either. There is no
+`POST /api/user/otp`: the one-time code is submitted as the `password` field of
+an ordinary `POST /api/login` — Mashov's own email calls it a *סיסמה חד פעמית*,
+a one-time password, which is literally what it is. We had invented a route and
+a field name, and because `classify` reported every step-1 refusal as an
+invalid code, none of it was visible.
+
+So `OtpService`, both `/auth/otp-requests` routes, the two upstream methods,
+the frontend branch, ten `OTP_*` codes with their Hebrew copy, and
+`PASSWORDLESS_SIGN_IN_ENABLED` are deleted. §7's constraint — OTP login cannot
+replace password login, because sync re-logins decrypt a stored password —
+remains true and would still apply to any revival, but it is no longer the
+binding reason. `apis/post-api-user-otp.md` is kept, rewritten as a captured
+record of *why* it is impossible, because §8's own standard applies to
+knowledge as much as to configuration: the next person to look at this should
+find the blocker, not an inviting gap.
+
+**MFA remains unobserved, and this capture does not cover it.** Said plainly
+so the recovery capture's credibility does not rub off on it. `sendMfa`,
+`verifyMfa` and `POST /api/loginDevice` were all read from the bundle, and the
+account used for the capture was never challenged, so none of them has been
+seen on the wire. Two specific unknowns are live in the code: whether the
+`403 Reason: MfaRequired` carries a `Set-Cookie: uniquId` we should be echoing
+back (see the TODO in `mfa.service.ts`), and whether `rememberBrowser` really
+returns a `devicePass` — which `apis/post-api-loginDevice.md` calls "the single
+assumption MFA support rests on". The blast radius is small, since the flow is
+only reachable behind a 403 most accounts never see, and failures there are now
+logged rather than reported as a bad code. But on this branch's record, an
+unobserved contract is as likely wrong as right.
+
+**The rule §11 bought, restated with its evidence.** Do not ship a flow whose
+upstream contract has never been observed. Of the three contracts this branch
+rested on, the capture confirmed one (`buildLoginBody`, field for field),
+corrected one (recovery), and killed one (OTP). That is a one-in-three hit rate
+on careful bundle reading, and the two failures were invisible in production
+precisely because the error-handling turned them into plausible sentences.
+
 ## Consequences
 
 ### Good
@@ -375,3 +519,6 @@ the rule, recorded here rather than silently taken.
   (`email: boolean` vs. a contact string), and whether `rememberBrowser` really
   issues a `devicePass`. One real end-to-end reset on a live account is the only
   thing that settles the first, and it has not been run.
+  **Update 2026-11-24:** a third guess has now been settled, negatively — the
+  OTP request contract does not work as read, and passwordless sign-in is off.
+  See §11.

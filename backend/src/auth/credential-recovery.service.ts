@@ -7,6 +7,7 @@ import { isUpstreamUnreachable } from '../common/http/mashov-http';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { assertPasswordPolicy } from '../common/mashov-login/password-policy';
 import {
+  describeMashovFailure,
   isMashovRejection,
   readReason,
   type MashovReason,
@@ -57,6 +58,14 @@ import { MashovSessionService } from '../session/mashov-session.service';
 
 const RECOVERY_TTL_SECONDS = 900;
 
+/**
+ * The upstream path, as a literal for the log line. Never read from
+ * `err.config?.url` -- see `describeMashovFailure`: `resetPassword` puts a
+ * single-use recovery code in the path, so a log line built from the request
+ * URL would write live recovery codes to disk.
+ */
+const RECOVER_PATH = '/api/user/recover';
+
 const IP_LIMIT = 3;
 const IP_WINDOW_SECONDS = 900;
 /**
@@ -89,6 +98,15 @@ export interface StartRecoveryInput {
   semel: number;
   idNumber: string;
   channel: RecoveryChannel;
+  /**
+   * The email address or mobile number the code goes to.
+   *
+   * Required, because Mashov requires it: the parent types it and Mashov
+   * refuses unless it matches what the school holds. The earlier design
+   * assumed Mashov would send to a contact it already had, which is true of
+   * the OTP and MFA flows but not of this one.
+   */
+  destination: string;
 }
 
 export interface StartRecoveryResult {
@@ -120,7 +138,11 @@ export interface CompletePasswordResult {
 interface RecoveryState {
   semel: number;
   idNumber: string;
-  channel: RecoveryChannel;
+  // No `channel`. It was written here and never read back -- every use is
+  // `input.channel` on the request that writes it -- while the docblock above
+  // claimed it was part of "what survives between the two steps". Step 2 takes
+  // the codes and the new password; which channel sent them is not its
+  // business. Removed rather than left as a comfortable-looking field.
   isResettingAndVerifying: boolean;
   attempts: number;
   poisoned: boolean;
@@ -172,9 +194,36 @@ export class CredentialRecoveryService {
       const result = await this.upstream.requestRecovery({
         semel: input.semel,
         idNumber: input.idNumber,
-        ...(input.channel === 'sms' ? { cellphone: true } : { email: true }),
+        // The field NAME is the channel; the value is the address. Never a
+        // boolean -- see `RequestRecoveryInput`.
+        ...(input.channel === 'sms'
+          ? { cellphone: input.destination }
+          : { email: input.destination }),
       });
       isResettingAndVerifying = result.isResettingAndVerifying === true;
+
+      // Logged on SUCCESS, which is the counter-intuitive half and the reason
+      // this flow had no diagnosis.
+      //
+      // The likeliest cause of "no email arrived" is not a refusal at all: the
+      // channel flag's type is the one thing `apis/post-api-user-recover.md`
+      // admits it never confirmed, and a Mashov that ignores an unknown-typed
+      // flag answers 200 having sent nothing. No exception is thrown, so every
+      // log line in the `catch` below -- including the one this change adds --
+      // stays silent, and the parent is told to check an inbox nothing went to.
+      // `status=200 isResettingAndVerifying=absent` is that failure's
+      // fingerprint, and nothing else records it.
+      //
+      // Key NAMES only, never values: the keys are Mashov's schema and are the
+      // diagnostic, while the body may carry a masked address or phone number.
+      this.logger.log(
+        `Mashov recovery accepted: semel=${input.semel} channel=${input.channel} ` +
+          `isResettingAndVerifying=${
+            result.isResettingAndVerifying === undefined
+              ? 'absent'
+              : String(result.isResettingAndVerifying)
+          } responseKeys=[${Object.keys(result ?? {}).sort().join(',')}]`,
+      );
     } catch (err) {
       if (isUpstreamUnreachable(err)) {
         this.logger.error(
@@ -206,6 +255,13 @@ export class CredentialRecoveryService {
       // recovery here would have the parent wait for an email that was never
       // going to be sent.
       if (status === undefined || status >= 500) {
+        this.logger.warn(
+          `Mashov recovery failed upstream: ${describeMashovFailure(err, {
+            stage: `recover:${input.channel}`,
+            semel: input.semel,
+            path: RECOVER_PATH,
+          })}`,
+        );
         throw upstreamError();
       }
 
@@ -223,6 +279,30 @@ export class CredentialRecoveryService {
       // Everything else -- IdNumberNoMatch, NotContactInSchool, BindNotFound,
       // UserInactive*, MfaContactMissing, UserSuspended, any unmapped 4xx --
       // becomes an indistinguishable success.
+      //
+      // The RESPONSE stays indistinguishable, because that is what keeps an
+      // attacker from using this route to test whether an ID number belongs to
+      // a real parent. The LOG does not, because the silence protected nobody:
+      // it was the response that needed to be uninformative, and the
+      // anti-enumeration reasoning was applied to our own telemetry by
+      // accident. A parent reporting "no email arrived" had nothing to read.
+      //
+      // `semel` only -- never `idNumber`. It is an Israeli national ID number,
+      // the thing ADR-0042 §9's HMAC'd rate-limit keys exist to keep out of
+      // plaintext, and `describeMashovFailure` structurally cannot reach it.
+      // Not an HMAC of it either: the key lives in this process and the domain
+      // is ~10^9, so a "correlation hash" in a log file is the ID number.
+      this.logger.warn(
+        `Mashov recovery refused, answering an indistinguishable 202: ${describeMashovFailure(
+          err,
+          {
+            stage: `recover:${input.channel}`,
+            semel: input.semel,
+            path: RECOVER_PATH,
+          },
+        )}`,
+      );
+
       poisoned = true;
     }
 
@@ -230,7 +310,6 @@ export class CredentialRecoveryService {
     const state: RecoveryState = {
       semel: Number(input.semel),
       idNumber: input.idNumber,
-      channel: input.channel,
       isResettingAndVerifying,
       attempts: 0,
       poisoned,

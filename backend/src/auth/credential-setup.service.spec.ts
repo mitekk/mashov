@@ -1,4 +1,4 @@
-import { HttpException } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import axios, { AxiosError, CanceledError } from 'axios';
 import { Prisma } from '@prisma/client';
@@ -133,6 +133,46 @@ describe('CredentialSetupService', () => {
       IP,
     );
   }
+
+  /**
+   * The guard that stops this surface acquiring a fifth silent failure.
+   *
+   * Four separate flows here turned an unmapped Mashov answer into
+   * user-facing copy while logging nothing: OTP request, MFA send, recovery
+   * step 1, and this one. Each was found by a user report rather than by a
+   * test. An assertion that the unmapped path says SOMETHING is the cheapest
+   * thing that would have caught any of them.
+   */
+  describe('an unmapped upstream answer is never silent', () => {
+    it('logs exactly once when Mashov answers something we do not map', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockUpstream.changePassword.mockRejectedValue(bareError(400));
+      await thrown(() => run());
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = String(warn.mock.calls[0][0]);
+      expect(line).toContain('status=400');
+      expect(line).toContain(`semel=${SEMEL}`);
+    });
+
+    it('records a Reason we have never seen, which readReason discards', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockUpstream.changePassword.mockRejectedValue(reasonError('SomeNewReason'));
+      await thrown(() => run());
+      expect(String(warn.mock.calls[0][0])).toContain('reason=SomeNewReason');
+    });
+
+    it('logs no password, old or new', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockUpstream.changePassword.mockRejectedValue(bareError(400));
+      await thrown(() => run());
+
+      const line = warn.mock.calls.map(([first]) => String(first)).join('\n');
+      expect(line).not.toContain('oldpw1');
+      expect(line).not.toContain('secret1');
+      expect(line).not.toContain(USERNAME);
+    });
+  });
 
   it('changes the password and mints a session', async () => {
     await expect(run()).resolves.toEqual({ sessionToken: 'tok', isFirstLogin: false });

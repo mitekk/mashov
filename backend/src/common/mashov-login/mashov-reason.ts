@@ -252,3 +252,87 @@ export function isMashovRejection(error: unknown): boolean {
   }
   return false;
 }
+
+/** The one response header this module reads by name, case-insensitively. */
+function responseHeader(error: unknown, wanted: string): string | undefined {
+  if (!axios.isAxiosError(error)) return undefined;
+  const headers = error.response?.headers as Record<string, unknown> | undefined;
+  if (!headers) return undefined;
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== wanted) continue;
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (typeof raw === 'string') return raw;
+  }
+  return undefined;
+}
+
+/**
+ * One log line describing an upstream failure we could not map, and the only
+ * sanctioned way to log one.
+ *
+ * ## Why this exists
+ *
+ * Every classifier in this surface turned an unmapped Mashov 4xx straight into
+ * user-facing copy and logged nothing. A passwordless sign-in that Mashov
+ * refused therefore reached the parent as "that code is not valid" and left no
+ * trace at all of what Mashov actually said — so the failure was not merely
+ * mis-reported, it was undiagnosable. This line is what makes one production
+ * repro enough.
+ *
+ * ## The raw header, not `readReason`
+ *
+ * `readReason` returns `undefined` for any value outside `MASHOV_REASONS`,
+ * which is right for classification — a Reason we have never seen must not
+ * become a code no caller handles — and useless for diagnosis, because an
+ * unrecognised Reason is exactly the evidence worth having. So this reads the
+ * header verbatim, and truncates rather than trusting its length.
+ *
+ * ## It cannot carry a secret, by construction
+ *
+ * `path` is a **caller-supplied literal**, never `err.config?.url`:
+ * `MashovRecoveryService.resetPassword` puts a single-use recovery code *in the
+ * path*, so a helper that logged the request URL would write live recovery
+ * codes to the logs the first time it was reused on that surface — exactly what
+ * ADR-0042 §9 forbids. For the same reason nothing here touches
+ * `err.response?.data`, `err.config?.data` or `err.config?.headers` (which
+ * carries `Cookie`). Response status and the two response headers below are the
+ * whole of what it can see.
+ *
+ * `semel` is a public school code — the sign-in form fetches the entire list —
+ * and is already logged across this surface. It is optional because the MFA
+ * resend route genuinely does not have one in scope; it holds a `challengeId`
+ * instead, and that is a bearer handle for someone else's challenge, so it is
+ * not logged either. `username` is NOT logged and must not be: for these
+ * accounts it is the parent's national ID number, which is the thing §9's
+ * HMAC'd rate-limit keys exist to keep out of plaintext.
+ */
+export function describeMashovFailure(
+  error: unknown,
+  context: { stage: string; semel?: number; path: string },
+): string {
+  const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+  const reason = responseHeader(error, 'reason')?.trim().slice(0, 64);
+  const contentType = responseHeader(error, 'content-type')?.trim().slice(0, 64);
+
+  // Infrastructure-only headers, and the difference between "Mashov refused
+  // this account" and "something between us and Mashov refused the request".
+  // An HTML 403 from a proxy ACL is already caught by `isMashovRejection`, but
+  // a proxy that answers 403 with a JSON content type is misclassified as a
+  // Mashov rejection, and these two headers are what give it away. Neither can
+  // carry user data.
+  const server = responseHeader(error, 'server')?.trim().slice(0, 64);
+  const via = responseHeader(error, 'via')?.trim().slice(0, 64);
+
+  return [
+    `stage=${context.stage}`,
+    `semel=${context.semel ?? 'none'}`,
+    `path=${context.path}`,
+    `status=${status ?? 'none'}`,
+    `reason=${reason || 'none'}`,
+    `contentType=${contentType || 'none'}`,
+    `server=${server || 'none'}`,
+    `via=${via || 'none'}`,
+    `signed=${isMashovRejection(error)}`,
+  ].join(' ');
+}

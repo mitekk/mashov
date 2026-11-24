@@ -4,7 +4,6 @@ import {
   HttpCode,
   HttpException,
   HttpStatus,
-  Param,
   Post,
   Req,
   Res,
@@ -13,16 +12,12 @@ import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { Public } from '../common/public.decorator';
 import { CredentialSetupService } from './credential-setup.service';
-import { OtpService } from './otp.service';
-import type { MfaMethod } from '../common/mashov-login/mashov-recovery.service';
 
 /**
  * The last two in-app auth paths: a forced credential change, and passwordless
  * sign-in by one-time code.
  *
  *   POST /api/v1/auth/credentials              -> 200 + mashov_session
- *   POST /api/v1/auth/otp-requests             -> 202 { otpRequestId, method }
- *   POST /api/v1/auth/otp-requests/:id/session -> 200 + mashov_session
  *
  * All `@Public()`: every one of them is reached by someone who cannot complete
  * an ordinary sign-in. None may answer 401, for the same reason as the rest of
@@ -32,7 +27,6 @@ import type { MfaMethod } from '../common/mashov-login/mashov-recovery.service';
 export class CredentialSetupController {
   constructor(
     private readonly setup: CredentialSetupService,
-    private readonly otp: OtpService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -69,45 +63,6 @@ export class CredentialSetupController {
     return { ok: true as const, isFirstLogin: result.isFirstLogin };
   }
 
-  /** Step 1 of passwordless sign-in. */
-  @Public()
-  @Post('otp-requests')
-  @HttpCode(HttpStatus.ACCEPTED)
-  async requestOtp(@Body() body: RequestOtpDto, @Req() req: Request) {
-    const semel = Number(body?.semel);
-    const username = str(body?.username).trim();
-
-    if (!Number.isFinite(semel) || semel <= 0 || !username) {
-      throw validationError('semel and username are required');
-    }
-    if (body?.method !== 'email' && body?.method !== 'sms') {
-      throw validationError("method must be 'email' or 'sms'");
-    }
-
-    return this.otp.request({ semel, username, method: body.method }, clientIp(req));
-  }
-
-  /** Step 2 of passwordless sign-in. */
-  @Public()
-  @Post('otp-requests/:otpRequestId/session')
-  @HttpCode(HttpStatus.OK)
-  async createOtpSession(
-    @Param('otpRequestId') otpRequestId: string,
-    @Body() body: CreateOtpSessionDto,
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const code = str(body?.code);
-    if (!code.trim()) {
-      throw validationError('code is required');
-    }
-
-    const result = await this.otp.createSession(otpRequestId, { code }, clientIp(req));
-
-    this.setSessionCookie(res, result.sessionToken);
-    return { ok: true as const, isFirstLogin: result.isFirstLogin };
-  }
-
   /** Byte-identical to `AuthController.login`'s cookie, deliberately. */
   private setSessionCookie(res: Response, sessionToken: string): void {
     const secureCookie =
@@ -136,15 +91,7 @@ interface SetCredentialsDto {
   challengeId?: string;
 }
 
-interface RequestOtpDto {
-  semel: number;
-  username: string;
-  method: MfaMethod;
-}
 
-interface CreateOtpSessionDto {
-  code: string;
-}
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value : '';

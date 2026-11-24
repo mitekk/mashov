@@ -54,6 +54,12 @@ test.describe('SEO metadata and crawler policy', () => {
       '/inbox',
       '/more',
       '/auth/syncing',
+      // The in-app auth screens. Every one of them sets noindex in its own
+      // page.tsx; none was in this list, so nothing checked it.
+      '/auth/mfa',
+      '/auth/forgot-password',
+      '/auth/reset-password',
+      '/auth/complete-setup',
       '/children/student-guid-1',
       '/children/student-guid-1/homework/homework-1',
       '/children/student-guid-1/behavior/behavior-1',

@@ -1,4 +1,4 @@
-import { HttpException } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { createHash } from 'node:crypto';
 import axios, { AxiosError, CanceledError } from 'axios';
@@ -49,10 +49,25 @@ const mockEncryption = {
 
 const GOOD_PASSWORD = 'secret1';
 const ID = '303977367';
+/** Mashov requires the address itself and checks it against the school's. */
+const DESTINATION = 'parent@example.com';
 const SEMEL = 482273;
 const IP = '203.0.113.7';
 
 /** An upstream rejection carrying a `Reason` header, as Mashov sends them. */
+function proxyErrorWithHeaders(
+  status: number,
+  headers: Record<string, string>,
+): AxiosError {
+  const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+  err.response = {
+    status,
+    data: {},
+    headers,
+  } as unknown as AxiosError['response'];
+  return err;
+}
+
 function reasonError(reason: string, status = 403): AxiosError {
   const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
   err.response = {
@@ -129,9 +144,20 @@ describe('CredentialRecoveryService', () => {
     };
   }
 
-  function start(overrides: Partial<{ channel: 'email' | 'sms'; idNumber: string }> = {}) {
+  function start(
+    overrides: Partial<{
+      channel: 'email' | 'sms';
+      idNumber: string;
+      destination: string;
+    }> = {},
+  ) {
     return service.start(
-      { semel: SEMEL, idNumber: overrides.idNumber ?? ID, channel: overrides.channel ?? 'email' },
+      {
+        semel: SEMEL,
+        idNumber: overrides.idNumber ?? ID,
+        channel: overrides.channel ?? 'email',
+        destination: overrides.destination ?? DESTINATION,
+      },
       IP,
     );
   }
@@ -206,6 +232,178 @@ describe('CredentialRecoveryService', () => {
       expect(Object.keys(storedState().value).sort()).toEqual(real);
     });
 
+    /**
+     * The upstream body, as captured from Mashov's own client on 2026-11-24.
+     *
+     * This is the bug the parent reported as "no email on recovery nor sms".
+     * We sent `email: true`, guessing a boolean channel flag. Mashov wants the
+     * ADDRESS, and the field NAME is the channel -- `true` will not bind to a
+     * .NET string, so it answered 400 and sent nothing, while our deliberately
+     * indistinguishable 202 told the parent to check their inbox.
+     */
+    describe('the request Mashov actually wants', () => {
+      it('sends the email address itself, never a boolean', async () => {
+        await start({ channel: 'email', destination: 'parent@example.com' });
+        expect(mockUpstream.requestRecovery).toHaveBeenCalledWith({
+          semel: SEMEL,
+          idNumber: ID,
+          email: 'parent@example.com',
+        });
+      });
+
+      it('sends the mobile number under cellphone for SMS', async () => {
+        await start({ channel: 'sms', destination: '0501234567' });
+        expect(mockUpstream.requestRecovery).toHaveBeenCalledWith({
+          semel: SEMEL,
+          idNumber: ID,
+          cellphone: '0501234567',
+        });
+      });
+
+      it('never sends both fields, since the name is the channel', async () => {
+        await start({ channel: 'sms', destination: '0501234567' });
+        const sent = mockUpstream.requestRecovery.mock.calls[0][0];
+        expect(sent).not.toHaveProperty('email');
+
+        mockUpstream.requestRecovery.mockClear();
+        await start({ channel: 'email', destination: 'parent@example.com' });
+        expect(mockUpstream.requestRecovery.mock.calls[0][0]).not.toHaveProperty(
+          'cellphone',
+        );
+      });
+
+      it('still answers an indistinguishable 202 when the address does not match', async () => {
+        // Observed: a destination the school does not hold gives a plain 400
+        // ProblemDetails with no `Reason` header. `isMashovRejection` accepts
+        // it on the JSON content type, so it stays on the poisoned path --
+        // reporting "that is not your address" would answer the enumeration
+        // question this route exists to refuse.
+        mockUpstream.requestRecovery.mockRejectedValue(bareError(400));
+        const result = await start({ destination: 'someone-else@example.com' });
+
+        expect(result.recoveryId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(result.requiresSecondChannel).toBe(false);
+        expect(storedState().value.poisoned).toBe(true);
+      });
+
+      it('keeps the destination out of Redis', async () => {
+        // It is the parent's email address or mobile number. Step 2 takes the
+        // code and the new password; it has no use for where the code went.
+        await start({ destination: 'parent@example.com' });
+        expect(mockRedis.set.mock.calls[0][1] as string).not.toContain(
+          'parent@example.com',
+        );
+      });
+    });
+
+    /**
+     * The diagnosis this flow never had.
+     *
+     * Anti-enumeration is about the RESPONSE: an attacker must not be able to
+     * use this route to test whether an ID number belongs to a real parent, so
+     * a refusal and a real account both answer 202. That reasoning was applied
+     * to our own logs as well, by accident, and there it protected nobody --
+     * a parent reporting "no email arrived" left no trace to read.
+     *
+     * These tests pin the split: the response stays indistinguishable (proved
+     * by the byte-identical and Redis-shape tests above, which must keep
+     * passing untouched), and the log does not.
+     */
+    describe('the log that makes a silent refusal diagnosable', () => {
+      let warn: jest.SpyInstance;
+      let log: jest.SpyInstance;
+
+      beforeEach(() => {
+        warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+      });
+
+      const lines = (spy: jest.SpyInstance) =>
+        spy.mock.calls.map(([first]) => String(first)).join('\n');
+
+      it('records a refusal that the response deliberately hides', async () => {
+        mockUpstream.requestRecovery.mockRejectedValue(reasonError('IdNumberNoMatch'));
+        await start();
+
+        const line = lines(warn);
+        expect(line).toContain('status=403');
+        expect(line).toContain('reason=IdNumberNoMatch');
+        expect(line).toContain('path=/api/user/recover');
+        expect(line).toContain('stage=recover:email');
+      });
+
+      it('records an unmapped refusal, including a Reason we do not know', async () => {
+        mockUpstream.requestRecovery.mockRejectedValue(reasonError('SomeNewReason'));
+        await start();
+        expect(lines(warn)).toContain('reason=SomeNewReason');
+      });
+
+      /**
+       * The case the first draft of this fix would have missed entirely.
+       *
+       * `apis/post-api-user-recover.md` admits the channel flag's type is the
+       * one thing it never confirmed, and we send `email: true`. A Mashov that
+       * ignores an unknown-typed flag answers 200 having sent nothing: no
+       * exception, so every line in the `catch` stays silent and the parent is
+       * told to check an inbox nothing went to. Only a success-path log catches
+       * it, and `isResettingAndVerifying=absent` is the fingerprint.
+       */
+      it('records a 200 that sent nothing, which throws no error at all', async () => {
+        mockUpstream.requestRecovery.mockResolvedValue({});
+        await start();
+
+        const line = lines(log);
+        expect(line).toContain('isResettingAndVerifying=absent');
+        expect(line).toContain('responseKeys=[]');
+        expect(line).toContain('channel=email');
+        expect(warn).not.toHaveBeenCalled();
+      });
+
+      it('distinguishes a real two-channel success from that', async () => {
+        mockUpstream.requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+        await start();
+        expect(lines(log)).toContain('isResettingAndVerifying=true');
+      });
+
+      it('logs a proxy ACL with the headers that give it away', async () => {
+        // An HTML 403 is already caught by `isMashovRejection`, but a proxy
+        // answering 403 with a JSON content type is misread as a Mashov
+        // refusal. `server=` and `via=` are what tell them apart.
+        mockUpstream.requestRecovery.mockRejectedValue(
+          proxyErrorWithHeaders(403, { 'content-type': 'application/json', via: 'tinyproxy' }),
+        );
+        await start();
+        expect(lines(warn)).toContain('via=tinyproxy');
+      });
+
+      it('logs an upstream 5xx, which used to throw in silence', async () => {
+        mockUpstream.requestRecovery.mockRejectedValue(bareError(503));
+        await expect(start()).rejects.toThrow();
+        expect(lines(warn)).toContain('status=503');
+      });
+
+      it('never logs the ID number, on any path', async () => {
+        for (const arrange of [
+          () => mockUpstream.requestRecovery.mockResolvedValue({}),
+          () => mockUpstream.requestRecovery.mockRejectedValue(reasonError('IdNumberNoMatch')),
+          () => mockUpstream.requestRecovery.mockRejectedValue(bareError(503)),
+        ]) {
+          warn.mockClear();
+          log.mockClear();
+          arrange();
+          await start().catch(() => undefined);
+
+          // An Israeli national ID number. ADR-0042 §9 keeps it out of
+          // plaintext; a "correlation hash" of it would too, since the key
+          // lives in this process and the domain is ~10^9.
+          expect(lines(warn) + lines(log)).not.toContain(ID);
+          // Nor the destination: an email address or mobile number is the
+          // parent's, and `semel` is the only identifier worth logging.
+          expect(lines(warn) + lines(log)).not.toContain(DESTINATION);
+        }
+      });
+    });
+
     it('reports the server-stored two-channel flag rather than trusting the client', async () => {
       mockUpstream.requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
       const result = await start();
@@ -220,14 +418,18 @@ describe('CredentialRecoveryService', () => {
     });
 
     it('asks the SMS channel with cellphone and the email channel with email', async () => {
-      await start({ channel: 'sms' });
+      // This test used to assert `cellphone: true` / `email: true`, which is
+      // what the reverse-engineered contract guessed and what kept the flow
+      // broken: a test can only pin the shape you believed. The captured
+      // shape is covered in full under 'the request Mashov actually wants'.
+      await start({ channel: 'sms', destination: '0501234567' });
       expect(mockUpstream.requestRecovery).toHaveBeenLastCalledWith(
-        expect.objectContaining({ cellphone: true }),
+        expect.objectContaining({ cellphone: '0501234567' }),
       );
 
-      await start({ channel: 'email' });
+      await start({ channel: 'email', destination: 'parent@example.com' });
       expect(mockUpstream.requestRecovery).toHaveBeenLastCalledWith(
-        expect.objectContaining({ email: true }),
+        expect.objectContaining({ email: 'parent@example.com' }),
       );
     });
   });
@@ -362,6 +564,7 @@ describe('CredentialRecoveryService', () => {
             semel: SEMEL,
             idNumber: ID,
             channel: 'email',
+        destination: DESTINATION,
             isResettingAndVerifying: false,
             attempts: 0,
             poisoned: false,
@@ -611,6 +814,7 @@ describe('CredentialRecoveryService stale-credential remediation', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: false,
@@ -706,6 +910,7 @@ describe('CredentialRecoveryService stale-credential remediation', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: true,
@@ -759,6 +964,7 @@ describe('CredentialRecoveryService review fixes', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: false,
@@ -827,7 +1033,7 @@ describe('CredentialRecoveryService review fixes', () => {
 
       expect(
         await thrown(() =>
-          service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP),
+          service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP),
         ),
       ).toMatchObject({ status: 502, code: 'UPSTREAM_ERROR' });
     });
@@ -842,7 +1048,7 @@ describe('CredentialRecoveryService review fixes', () => {
         return Promise.resolve(1);
       });
 
-      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP);
 
       const bare = createHash('sha256').update(ID).digest('hex');
       expect(keys.join(' ')).not.toContain(bare);
@@ -862,7 +1068,7 @@ describe('CredentialRecoveryService review fixes', () => {
   // I8a — the raw ID number must not sit in a Redis value.
   describe('recovery state at rest', () => {
     it('stores no raw ID number in Redis', async () => {
-      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP);
 
       const written = mockRedis.set.mock.calls[0][1] as string;
       expect(written).not.toContain(ID);
@@ -871,7 +1077,7 @@ describe('CredentialRecoveryService review fixes', () => {
     it('round-trips the state it wrote, so step 2 still works', async () => {
       // The encryption is only worth anything if the service can read its own
       // state back -- otherwise every recovery silently becomes "start again".
-      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP);
       const written = mockRedis.set.mock.calls[0][1] as string;
       mockRedis.get.mockResolvedValue(written);
 
@@ -913,6 +1119,7 @@ describe('CredentialRecoveryService non-axios failures', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: false,
@@ -965,7 +1172,7 @@ describe('CredentialRecoveryService non-axios failures', () => {
 
     expect(
       await thrown(() =>
-        service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP),
+        service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP),
       ),
     ).toMatchObject({ status: 502, code: 'UPSTREAM_ERROR' });
   });

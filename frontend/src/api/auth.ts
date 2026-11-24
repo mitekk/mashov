@@ -13,10 +13,6 @@ import type {
   CreateMfaSessionResponse,
   SetCredentialsRequest,
   SetCredentialsResponse,
-  RequestOtpRequest,
-  RequestOtpResponse,
-  CreateOtpSessionRequest,
-  CreateOtpSessionResponse,
 } from '@/types/api';
 
 export function getSchools(): Promise<School[]> {
@@ -94,7 +90,7 @@ export function createMfaSession(
   );
 }
 
-// ─── In-app Mashov auth: forced credential change, passwordless OTP ────────
+// ─── In-app Mashov auth: MFA, recovery, forced credential change ───────────
 
 /**
  * Satisfy Mashov's forced credential change and sign in.
@@ -118,20 +114,5 @@ export function setCredentials(
  * signed into with a password, BEFORE sending a code -- so the parent is never
  * left holding a code they cannot use.
  */
-export function requestOtp(body: RequestOtpRequest): Promise<RequestOtpResponse> {
-  return apiFetch<RequestOtpResponse>('/auth/otp-requests', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
-}
 
 /** Step 2 of passwordless sign-in. Sets the `mashov_session` cookie. */
-export function createOtpSession(
-  otpRequestId: string,
-  body: CreateOtpSessionRequest,
-): Promise<CreateOtpSessionResponse> {
-  return apiFetch<CreateOtpSessionResponse>(
-    `/auth/otp-requests/${encodeURIComponent(otpRequestId)}/session`,
-    { method: 'POST', body: JSON.stringify(body) },
-  );
-}

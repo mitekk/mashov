@@ -31,11 +31,19 @@ function renderPage() {
   );
 }
 
-async function submit(idNumber = '303977367') {
+const EMAIL = 'parent@example.com';
+const PHONE = '0501234567';
+
+async function submit(idNumber = '303977367', destination = EMAIL) {
   fireEvent.focus(await screen.findByTestId('forgot-password-school-selector'));
   fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));
   fireEvent.change(screen.getByTestId('forgot-password-id-number'), {
     target: { value: idNumber },
+  });
+  // Mashov takes the destination from the parent and checks it against the
+  // school's record; it does not send to a contact it already holds.
+  fireEvent.change(screen.getByTestId('forgot-password-destination'), {
+    target: { value: destination },
   });
   fireEvent.click(screen.getByTestId('forgot-password-submit'));
 }
@@ -51,7 +59,7 @@ beforeEach(() => {
 });
 
 describe('ForgotPasswordPageClient', () => {
-  it('sends the chosen school, ID number and channel', async () => {
+  it('sends the chosen school, ID number, channel and destination', async () => {
     renderPage();
     await submit();
 
@@ -62,6 +70,7 @@ describe('ForgotPasswordPageClient', () => {
         semel: SCHOOL.semel,
         idNumber: '303977367',
         channel: 'email',
+        destination: EMAIL,
       });
     });
   });
@@ -69,11 +78,45 @@ describe('ForgotPasswordPageClient', () => {
   it('can ask for the code by SMS instead', async () => {
     renderPage();
     fireEvent.click(await screen.findByTestId('forgot-password-channel-sms'));
-    await submit();
+    await submit('303977367', PHONE);
 
     await waitFor(() => {
-      expect(startRecovery.mock.calls[0][0]).toMatchObject({ channel: 'sms' });
+      expect(startRecovery.mock.calls[0][0]).toMatchObject({
+        channel: 'sms',
+        destination: PHONE,
+      });
     });
+  });
+
+  it('asks for the destination, which Mashov requires', async () => {
+    // The flow shipped without this field at all: we sent `email: true`,
+    // guessing a boolean channel flag, and Mashov answered 400 and sent
+    // nothing while our 202 said "check your email".
+    renderPage();
+    fireEvent.focus(await screen.findByTestId('forgot-password-school-selector'));
+    fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));
+    fireEvent.change(screen.getByTestId('forgot-password-id-number'), {
+      target: { value: '303977367' },
+    });
+    fireEvent.click(screen.getByTestId('forgot-password-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('forgot-password-error')).toBeInTheDocument();
+    });
+    expect(startRecovery).not.toHaveBeenCalled();
+  });
+
+  it('keeps each channel’s destination when switching between them', async () => {
+    // An email typed, then a switch to SMS and back, must not come back empty.
+    renderPage();
+    fireEvent.change(await screen.findByTestId('forgot-password-destination'), {
+      target: { value: EMAIL },
+    });
+    fireEvent.click(screen.getByTestId('forgot-password-channel-sms'));
+    expect(screen.getByTestId('forgot-password-destination')).toHaveValue('');
+
+    fireEvent.click(screen.getByTestId('forgot-password-channel-email'));
+    expect(screen.getByTestId('forgot-password-destination')).toHaveValue(EMAIL);
   });
 
   it('hands the opaque recovery id to the reset form in the URL', async () => {
@@ -116,6 +159,9 @@ describe('ForgotPasswordPageClient', () => {
     renderPage();
     fireEvent.change(await screen.findByTestId('forgot-password-id-number'), {
       target: { value: '303977367' },
+    });
+    fireEvent.change(screen.getByTestId('forgot-password-destination'), {
+      target: { value: EMAIL },
     });
     fireEvent.click(screen.getByTestId('forgot-password-submit'));
 
