@@ -49,6 +49,21 @@ import { MashovSessionService } from '../session/mashov-session.service';
  * real recovery sends an email), and `RECOVERY_THROTTLED`, because hiding a
  * channel lockout leaves a locked-out parent retrying forever.
  *
+ * **Three more are NOT accounted for, and the claim below that step 1's body is
+ * byte-identical for an unknown ID is therefore too strong.** Found in review,
+ * recorded rather than fixed because closing them changes step 1's response
+ * semantics and wants an ADR-0042 amendment of its own:
+ *   1. `requiresSecondChannel` is only ever `true` for a real two-channel
+ *      account -- a poisoned handle always carries `false`, since the flag is
+ *      assigned inside the `try`. `true` is a positive existence oracle.
+ *   2. Derived from the same flag: step 2 with one code answers
+ *      `SECOND_CODE_REQUIRED` for a real two-channel identity and
+ *      `INVALID_RECOVERY_CODE` for a poisoned one, at no attempt cost.
+ *   3. `RECOVERY_CODE_EXPIRED`, `CAPTCHA_REQUIRED` and an early
+ *      `RECOVERY_LOCKED` are reachable only on a non-poisoned handle; a
+ *      poisoned one emits nothing but `INVALID_RECOVERY_CODE` until the local
+ *      budget is spent.
+ *
  * ## Secrecy
  *
  * Codes and passwords are never persisted -- not in Redis, not in a log line,
@@ -544,9 +559,8 @@ export class CredentialRecoveryService {
       this.sessionService.invalidateConnection(connection.id);
     } catch (err) {
       this.logger.error(
-        `Failed to mark connection stale after a reset for semel=${state.semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Failed to mark connection stale after a reset for ` +
+          `semel=${state.semel} ${describeLocalFailure(err)}`,
       );
     }
   }
@@ -566,9 +580,8 @@ export class CredentialRecoveryService {
   ): HttpException {
     if (isUpstreamUnreachable(err)) {
       this.logger.error(
-        `Mashov reset unreachable for semel=${semel} path=${path} attempt=${attempt}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Mashov reset unreachable for semel=${semel} path=${path} ` +
+          `attempt=${attempt} ${describeLocalFailure(err)}`,
       );
       return upstreamError();
     }
@@ -757,9 +770,8 @@ export class CredentialRecoveryService {
       // now would tell the parent their reset did not work when it did, and
       // the code is single-use, so they could not repeat it.
       this.logger.error(
-        `Failed to write the recovery audit row for semel=${state.semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Failed to write the recovery audit row for ` +
+          `semel=${state.semel} ${describeLocalFailure(err)}`,
       );
     }
   }
@@ -767,6 +779,30 @@ export class CredentialRecoveryService {
 
 function stateKey(recoveryId: string): string {
   return `recovery:${recoveryId}`;
+}
+
+/**
+ * A LOCAL failure, described without its message.
+ *
+ * `err.message` is the one unbounded string these catches can reach, and two of
+ * the three sit on a Prisma call whose ARGUMENTS are the identity:
+ * `markCredentialStale` looks up `username: state.idNumber`, `writeAudit` writes
+ * `idNumberHash`. Prisma renders the failing invocation, argument values
+ * included, so `${err.message}` put a raw Israeli national ID number -- or the
+ * HMAC that ADR-0042 §9 also forbids in plaintext -- straight into a log line.
+ *
+ * The class name and the error code are what actually identify the fault
+ * (`P2002`, `ECONNREFUSED`, `PrismaClientValidationError`), and neither can
+ * carry a value. The message is dropped, not truncated: a prefix of a Prisma
+ * invocation is still a prefix of the arguments.
+ */
+function describeLocalFailure(err: unknown): string {
+  if (!(err instanceof Error)) return 'kind=unknown';
+  const code = (err as { code?: unknown }).code;
+  return (
+    `kind=${err.name}` +
+    (typeof code === 'string' || typeof code === 'number' ? ` code=${code}` : '')
+  );
 }
 
 

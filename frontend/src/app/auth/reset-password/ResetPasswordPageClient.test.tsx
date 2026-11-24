@@ -380,6 +380,40 @@ describe('ResetPasswordPageClient minor fixes', () => {
   });
 
   // M18 — a lockout and an expiry are the same situation for the parent.
+  /**
+   * The lockout is the ONE screen a parent holding a real code can reach, and
+   * the only place it is safe to name the address.
+   *
+   * A step-1 request for an address the school does not hold answers a
+   * fabricated `poisoned` handle (ADR-0042, deliberately indistinguishable), so
+   * step 2 refuses every code against it and burns all five attempts. "Start
+   * again" on its own sends the parent round the same loop with the same wrong
+   * address. By the time the budget is spent there is nothing left to protect.
+   *
+   * It must NOT appear on the expired / no-handle panel, which is a different
+   * dead end with a different cause.
+   */
+  it('names the address on the lockout panel, not just "start again"', async () => {
+    completeRecovery.mockRejectedValue(apiError(429, 'RECOVERY_LOCKED'));
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    const note = await screen.findByTestId('reset-password-locked-note');
+    expect(note.textContent).toMatch(/אימייל|טלפון/);
+  });
+
+  it('says nothing about the address when the handle merely expired', async () => {
+    // Different cause, and this one really is unrelated to the address.
+    completeRecovery.mockRejectedValue(apiError(400, 'RECOVERY_SESSION_EXPIRED'));
+    renderPage();
+    fill();
+    fireEvent.click(screen.getByTestId('reset-password-submit'));
+
+    await screen.findByTestId('reset-password-start-again');
+    expect(screen.queryByTestId('reset-password-locked-note')).toBeNull();
+  });
+
   it('offers a fresh start when the attempts are used up', async () => {
     // The server deletes the handle on the 6th attempt, so the NEXT call would
     // answer RECOVERY_SESSION_EXPIRED anyway. Showing an error the parent

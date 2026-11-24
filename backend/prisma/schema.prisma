@@ -983,14 +983,19 @@ model Feedback {
 /// visible after the fact. See ADR-0042.
 ///
 /// What is deliberately NOT here: the recovery code, the new password, and the
-/// raw ID number. The ID number is stored only as a SHA-256 hash, which is
-/// enough to count resets per identity and to join two attempts together
-/// without parking a national identifier in a support-readable table.
+/// raw ID number. The ID number is stored only as an HMAC-SHA-256 keyed with
+/// the deploy's own secret, which is enough to count resets per identity and to
+/// join two attempts together without parking a national identifier in a
+/// support-readable table.
+///
+/// Keyed, NOT a bare digest: an Israeli ID number is about 10^9 candidates, so
+/// a plain SHA-256 is a rainbow table away from the original and would defeat
+/// the whole point. See `CredentialRecoveryService.identityHash`.
 model CredentialRecoveryAudit {
   id String @id @default(cuid())
   /// Mashov `semel`.
   schoolCode   Int
-  /// SHA-256 hex of the ID number the reset was performed for. Never the ID.
+  /// Keyed HMAC-SHA-256 hex of the ID number the reset was for. Never the ID.
   idNumberHash String
   /// The caller's IP, as the login rate limiter sees it.
   ip           String

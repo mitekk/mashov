@@ -36,9 +36,25 @@ describe('credential_recovery_audit migration', () => {
     expect(sql()).toMatch(/CREATE TABLE IF NOT EXISTS "credential_recovery_audit"/);
   });
 
+  /** The CREATE TABLE body only, with comments stripped: a column named in a
+   *  `--` comment must not satisfy a column assertion. */
+  const columnLines = (): string[] => {
+    const body = sql()
+      .split('CREATE TABLE IF NOT EXISTS "credential_recovery_audit" (')[1]
+      .split('\n);')[0];
+    return body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('"'));
+  };
+
+  const declaredColumns = () =>
+    columnLines().map((line) => line.slice(1, line.indexOf('"', 1)));
+
   it('carries every column the model declares, and no others', () => {
     // Drift in either direction is a bug: a missing column breaks every write
-    // under `migrate deploy`, and an extra one is a column nothing fills.
+    // under `migrate deploy`, and an extra one is a column nothing fills --
+    // or, worse, one somebody fills with the thing the model keeps out.
     const model = readFileSync(SCHEMA, 'utf8')
       .split('model CredentialRecoveryAudit {')[1]
       .split('\n}')[0];
@@ -48,10 +64,29 @@ describe('credential_recovery_audit migration', () => {
       ['at', 'id', 'idNumberHash', 'ip', 'schoolCode'].sort(),
     );
 
-    for (const field of modelFields) {
-      expect(sql()).toContain(`"${field}"`);
-    }
+    // Both directions, as a set equality rather than a one-way loop.
+    expect(declaredColumns().sort()).toEqual(modelFields.sort());
   });
+
+  /**
+   * A `"schoolCode" TEXT`, a nullable `"idNumberHash"` or an `at` with no
+   * default all pass a name-only check and all break the table under
+   * `migrate deploy`.
+   */
+  it.each([
+    // cuid is generated client-side, so no DB default is wanted here.
+    ['id', /^"id"\s+TEXT NOT NULL,?$/],
+    ['schoolCode', /^"schoolCode"\s+INTEGER NOT NULL,?$/],
+    ['idNumberHash', /^"idNumberHash"\s+TEXT NOT NULL,?$/],
+    ['ip', /^"ip"\s+TEXT NOT NULL,?$/],
+    ['at', /^"at"\s+TIMESTAMP\(3\) NOT NULL DEFAULT CURRENT_TIMESTAMP,?$/],
+  ] as Array<[string, RegExp]>)(
+    'declares %s with the model\'s type, nullability and default',
+    (name, pattern) => {
+      const line = columnLines().find((l) => l.startsWith(`"${name}"`));
+      expect(line).toMatch(pattern);
+    },
+  );
 
   it('declares the primary key', () => {
     expect(sql()).toMatch(/PRIMARY KEY \("id"\)/);
@@ -87,6 +122,6 @@ describe('credential_recovery_audit migration', () => {
   it('never names the ID number column anything that suggests it holds one', () => {
     // The model stores a hash. A column called `idNumber` would invite someone
     // to write the real thing into it.
-    expect(sql()).not.toMatch(/"idNumber"/);
+    expect(declaredColumns()).not.toContain('idNumber');
   });
 });

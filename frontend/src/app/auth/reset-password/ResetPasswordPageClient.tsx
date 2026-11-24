@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import { Check, X } from 'lucide-react';
 import { completeRecovery, login } from '@/api/auth';
-import { authErrorText, readAuthError } from '@/lib/authErrors';
+import { AUTH_ERROR_COPY, authErrorText, readAuthError } from '@/lib/authErrors';
 import { PASSWORD_RULES, brokenRules } from '@/lib/passwordPolicy';
 import { CenteredShell } from '@/components/layout/CenteredShell';
 
@@ -53,7 +53,11 @@ function ResetPasswordForm() {
   );
   const [newPassword, setNewPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [expired, setExpired] = useState(false);
+  // Three-valued, not a boolean. Both values render the start-again panel, but
+  // only the lockout may name the address: it is the one dead end whose cause
+  // can BE the address, and by then the attempt budget is spent so there is
+  // nothing left for the indistinguishable answer to protect.
+  const [expired, setExpired] = useState<null | 'gone' | 'locked'>(null);
   const [done, setDone] = useState<{ username: string | null } | null>(null);
 
   // The username is not known until the reset succeeds, so the relational rule
@@ -98,7 +102,7 @@ function ResetPasswordForm() {
         errorCode === 'RECOVERY_SESSION_EXPIRED' ||
         errorCode === 'RECOVERY_LOCKED'
       ) {
-        setExpired(true);
+        setExpired(errorCode === 'RECOVERY_LOCKED' ? 'locked' : 'gone');
         return;
       }
       // `authErrorText`, not the code's own copy: a 422 WEAK_PASSWORD carries
@@ -143,6 +147,20 @@ function ResetPasswordForm() {
         <p className="text-sm text-muted-foreground">
           תהליך איפוס הסיסמה פג, הסתיים או שלא התחיל. יש להתחיל מחדש.
         </p>
+        {/*
+          Read from AUTH_ERROR_COPY rather than written again here, so the
+          lockout advice has one home. Without this the whole copy change was
+          dead: this branch returns before `authErrorText` is ever called, so
+          the map's RECOVERY_LOCKED string had no consumer at all.
+        */}
+        {expired === 'locked' && (
+          <p
+            data-testid="reset-password-locked-note"
+            className="mt-2 rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground"
+          >
+            {AUTH_ERROR_COPY.RECOVERY_LOCKED}
+          </p>
+        )}
         <Link
           href="/auth/forgot-password"
           data-testid="reset-password-start-again"
@@ -166,6 +184,18 @@ function ResetPasswordForm() {
             className="mt-2 rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground"
           >
             שם המשתמש שלך: <span dir="ltr">{done.username}</span>
+            {/*
+              Hedged, because the value is usually DERIVED rather than reported:
+              upstream returns an empty body on a successful reset, so the
+              server falls back to the ID number, which IS the Mashov username
+              for these accounts -- except for a parent who set their own
+              through `CreateUsername`. Stating it flatly would be telling that
+              parent something false, and they are exactly the parent who needs
+              to know to ignore it.
+            */}
+            <span className="mt-1 block text-xs">
+              אם הגדרת במשוב שם משתמש אחר, יש להתחבר איתו.
+            </span>
           </p>
         )}
         {signInMutation.isPending ? (

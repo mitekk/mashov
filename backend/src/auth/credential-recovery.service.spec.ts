@@ -780,11 +780,12 @@ describe('CredentialRecoveryService', () => {
     describe('the log that makes step 2 diagnosable', () => {
       let warn: jest.SpyInstance;
       let log: jest.SpyInstance;
+      let error: jest.SpyInstance;
 
       beforeEach(() => {
         warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
         log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
-        jest.spyOn(Logger.prototype, 'error').mockImplementation();
+        error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
       });
 
       const lines = (spy: jest.SpyInstance) =>
@@ -887,11 +888,19 @@ describe('CredentialRecoveryService', () => {
         for (const arrange of arrangements) {
           warn.mockClear();
           log.mockClear();
+          error.mockClear();
           stateIs();
           arrange();
           await complete().catch(() => undefined);
 
-          const everything = lines(warn) + lines(log);
+          // `error` included deliberately. The first version of this test read
+          // `warn` and `log` only, and every line that interpolates a
+          // free-form string is an `error` line -- so the one level where a
+          // secret could actually appear was the one it did not look at.
+          const everything = lines(warn) + lines(log) + lines(error);
+          // Positive assertion first: without it, deleting every log line in
+          // the class would make this suite pass.
+          expect(everything).not.toBe('');
           // The single-use recovery code. It is in the request PATH, which is
           // why the log line is built from a literal and never from
           // `err.config?.url`.
@@ -901,6 +910,68 @@ describe('CredentialRecoveryService', () => {
           // lives in this process and the domain is ~10^9.
           expect(everything).not.toContain(ID);
         }
+      });
+
+      /**
+       * The hole the "on any path" test above could not see: it reads `warn`
+       * and `log`, and every line that interpolates a free-form string is an
+       * `error` line.
+       *
+       * Both of these catches sit on a Prisma call whose ARGUMENTS carry the
+       * identity -- `markCredentialStale` looks up
+       * `schoolCode_username: { username: state.idNumber }`, and `writeAudit`
+       * writes `idNumberHash`. A `PrismaClientValidationError` renders the whole
+       * invocation, argument values included, so interpolating `err.message`
+       * puts a raw Israeli national ID number (or the HMAC the constraint also
+       * forbids) into a log line.
+       */
+      it('keeps the ID number out of the stale-credential failure line', async () => {
+        const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+        mockPrisma.householdConnection.findUnique.mockRejectedValue(
+          // The shape Prisma actually produces: the failing invocation, with
+          // argument values in it.
+          new Error(
+            `Invalid \`prisma.householdConnection.findUnique()\` invocation:\n` +
+              `{ where: { schoolCode_username: { schoolCode: ${SEMEL}, username: "${ID}" } } }`,
+          ),
+        );
+
+        await complete();
+
+        const lines = error.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(lines).toContain(`semel=${SEMEL}`);
+        expect(lines).not.toContain(ID);
+      });
+
+      it('keeps the identity hash out of the audit failure line', async () => {
+        const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+        mockPrisma.credentialRecoveryAudit.create.mockRejectedValue(
+          new Error(
+            `Invalid \`prisma.credentialRecoveryAudit.create()\` invocation:\n` +
+              `{ data: { idNumberHash: "deadbeef", ip: "${IP}" } }`,
+          ),
+        );
+
+        await complete();
+
+        const lines = error.mock.calls.map(([first]) => String(first)).join('\n');
+        // Not even an HMAC: the key lives in this process and the domain is ~10^9.
+        expect(lines).not.toContain('deadbeef');
+      });
+
+      it('keeps a transport error message out of the unreachable line', async () => {
+        // An axios message is normally bounded, but it is the one unbounded
+        // interpolation left on a path that handles a live recovery code.
+        const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+        jest.spyOn(axios, 'isCancel').mockReturnValue(true);
+        const err = new CanceledError('aborted while POSTing /api/user/reset/ABC123');
+        mockUpstream.resetPassword.mockRejectedValue(err);
+
+        await thrown(() => complete());
+
+        const lines = error.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(lines).toContain(`semel=${SEMEL}`);
+        expect(lines).not.toContain('ABC123');
       });
 
       it('builds the failure line from a literal path, not the request URL', async () => {

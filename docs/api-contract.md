@@ -1067,8 +1067,24 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 | POST | `/api/login/mfa/send` · `/api/login/mfa/verify` | MashovRecoveryService — MFA challenge |
 | POST | `/api/loginDevice` | MashovRecoveryService — trusted-device re-login |
 | POST | `/api/user/password` · `/api/user/username` | MashovRecoveryService — forced change paths |
+| GET | `/api/user/notifications?skip=0&take=50` | NotificationSyncTask |
+| GET | `/api/mail/counts?$select=unreadConversations` | MailCountSyncTask |
+| GET | `/api/mail/inbox/conversations?skip=0&take=50` | InboxSyncTask |
+| GET | `/api/students/{childGuid}/homework` | HomeworkSyncTask (per child) |
+| GET | `/api/students/{studentGuid}/behave` | BehaviorSyncTask (per child) |
+| GET | `/api/students/{studentId}/groups` | DailyGroupsTask (per child) |
+| GET | `/api/students/{studentGuid}/lessonsCount` | DailyLessonsCountTask (per child) |
+| GET | `/api/students/{childGuid}/messageBoard` | DailyMessageBoardTask (per child) |
+| GET | `/api/achvas` | DailyAchvasTask |
+| GET | `/api/user/details` | DailyUserDetailsTask |
+| GET | `/api/mail/recipients` | DailyMailRecipientsTask (optional) |
+| GET | `/api/mail/conversations/{conversationId}` | MailController — lazy detail fetch |
+| PUT | `/api/mail/conversations/markAsUnread` | MailActionController — mark-unread proxy |
+| PUT | `/api/mail/conversations/move/archive` | MailActionController — archive proxy |
+| GET | `/api/students/{childGuid}/dailyBehave` | DailyBehaveSyncTask (feature-flagged) |
+| GET | `/api/students/{studentId}/outBehave` | OutBehaveSyncTask (feature-flagged) |
 
-#### The `Referer` these calls send is per route
+### The `Referer` these calls send is per route
 
 `MashovRecoveryService.headers()` sent `Referer: {baseUrl}/students/login` for
 every route on the class. It now defaults to that and takes a per-route
@@ -1088,22 +1104,6 @@ Both reset routes are also deliberately **cookie-less**: the capture shows no
 `Cookie` header, because the route is unauthenticated and the single-use code is
 the whole authorisation. The `uniquId` gap documented on `headers()` is a
 separate, still-open problem and does not apply to them.
-| GET | `/api/user/notifications?skip=0&take=50` | NotificationSyncTask |
-| GET | `/api/mail/counts?$select=unreadConversations` | MailCountSyncTask |
-| GET | `/api/mail/inbox/conversations?skip=0&take=50` | InboxSyncTask |
-| GET | `/api/students/{childGuid}/homework` | HomeworkSyncTask (per child) |
-| GET | `/api/students/{studentGuid}/behave` | BehaviorSyncTask (per child) |
-| GET | `/api/students/{studentId}/groups` | DailyGroupsTask (per child) |
-| GET | `/api/students/{studentGuid}/lessonsCount` | DailyLessonsCountTask (per child) |
-| GET | `/api/students/{childGuid}/messageBoard` | DailyMessageBoardTask (per child) |
-| GET | `/api/achvas` | DailyAchvasTask |
-| GET | `/api/user/details` | DailyUserDetailsTask |
-| GET | `/api/mail/recipients` | DailyMailRecipientsTask (optional) |
-| GET | `/api/mail/conversations/{conversationId}` | MailController — lazy detail fetch |
-| PUT | `/api/mail/conversations/markAsUnread` | MailActionController — mark-unread proxy |
-| PUT | `/api/mail/conversations/move/archive` | MailActionController — archive proxy |
-| GET | `/api/students/{childGuid}/dailyBehave` | DailyBehaveSyncTask (feature-flagged) |
-| GET | `/api/students/{studentId}/outBehave` | OutBehaveSyncTask (feature-flagged) |
 
 ### Telegram link — POST /api/v1/digest/telegram-links
 
