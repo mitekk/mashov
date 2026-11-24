@@ -11,12 +11,29 @@ import {
   isUpstreamUnreachable,
   resolveMashovBaseUrl,
 } from '../http/mashov-http';
+import { MASHOV_CSRF_TOKEN, buildLoginBody } from './mashov-login-body';
+import { readLoginHeaders } from './mashov-login-headers';
 
 /** What Mashov tells us about an account when the credentials are good. */
 export interface MashovLoginResult {
   data: MashovLoginPayload;
   /** The `uniquId` cookie, if the response set one. */
   newUniqueId: string | undefined;
+  /**
+   * The `X-Csrf-Token` response header, if Mashov sent one. Mashov's own
+   * client echoes this back on subsequent calls.
+   */
+  csrfToken?: string;
+  /**
+   * The `devicePass` response header, if Mashov sent one.
+   *
+   * This is the trusted-device credential: `POST /api/loginDevice` with an
+   * empty body and this header re-logs in WITHOUT re-triggering an MFA
+   * challenge. It is what makes an MFA-protected account compatible with our
+   * cron re-logins -- without it, MFA sign-in works once and sync dies the
+   * next morning.
+   */
+  devicePass?: string;
 }
 
 export interface MashovLoginPayload {
@@ -51,6 +68,10 @@ export interface ValidateCredentialsInput {
   password: string;
   /** A stored `uniquId`, sent so Mashov recognises a known device. */
   uniqueId?: string | null;
+  /** A Turnstile token, only ever present after Mashov asked for one. */
+  captcha?: string;
+  isPrivateDevice?: boolean;
+  IsBiometric?: boolean;
 }
 
 /**
@@ -123,24 +144,7 @@ export class MashovCredentialValidatorService {
    * twice and both attempts share `validate`'s classification.
    */
   async postLogin(input: ValidateCredentialsInput): Promise<MashovLoginResult> {
-    const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
-
-    const loginBody = {
-      semel: Number(input.semel),
-      year: Number(input.year),
-      username: input.username,
-      password: input.password,
-      IsBiometric: false,
-      appName: 'info.mashov.students',
-      apiVersion: '3.20210425',
-      appVersion: 3.20210425,
-      appBuild: 3.20210425,
-      deviceUuid: 'chrome',
-      devicePlatform: 'chrome',
-      deviceManufacturer: 'mac',
-      deviceModel: 'desktop',
-      deviceVersion: '145.0.0.0',
-    };
+    const loginBody = buildLoginBody(input);
 
     const extraHeaders: Record<string, string> = {};
     if (input.uniqueId) {
@@ -149,17 +153,14 @@ export class MashovCredentialValidatorService {
 
     const response = await this.http.post<MashovLoginPayload>('/api/login', loginBody, {
       headers: {
-        'X-Csrf-Token': csrfToken,
+        'X-Csrf-Token': MASHOV_CSRF_TOKEN,
         'Content-Type': 'application/json',
         Referer: `${this.baseUrl}/students/login`,
         ...extraHeaders,
       },
     });
 
-    return {
-      data: response.data,
-      newUniqueId: readUniqueIdCookie(response.headers?.['set-cookie']),
-    };
+    return { data: response.data, ...readLoginHeaders(response.headers) };
   }
 
   /** True when an error is an upstream outage rather than a rejection. */
@@ -171,18 +172,4 @@ export class MashovCredentialValidatorService {
   isRejection(error: unknown): boolean {
     return axios.isAxiosError(error) && error.response?.status === 401;
   }
-}
-
-/** The `uniquId` Mashov sets, if it set one. */
-function readUniqueIdCookie(setCookie: string | string[] | undefined): string | undefined {
-  if (!setCookie) return undefined;
-  const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-  for (const cookie of cookies) {
-    const nameValue = cookie.split(';')[0] ?? '';
-    const eqIdx = nameValue.indexOf('=');
-    if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
-      return nameValue.substring(eqIdx + 1).trim();
-    }
-  }
-  return undefined;
 }

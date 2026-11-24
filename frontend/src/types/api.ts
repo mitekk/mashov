@@ -655,6 +655,16 @@ export interface MeSchool {
   /** Short enough for a chip on a 360px row; resolved server-side. */
   shortLabel: string;
   schoolYear: number;
+  /**
+   * The stored Mashov password no longer works -- today, because a password
+   * reset through the in-app recovery flow succeeded.
+   *
+   * Per school on purpose: reset school B, sign in with school A's password,
+   * and the app has a perfectly valid session while B's background sync is
+   * dead. Cleared by any sign-in for that school, and by re-entering the
+   * password here.
+   */
+  credentialStale: boolean;
 }
 
 export interface AppUser {
@@ -691,6 +701,16 @@ export interface SchoolLink {
   /** `null` means the first sync has not finished yet. */
   lastSyncAt: string | null;
   active: boolean;
+  /**
+   * The stored Mashov password no longer works -- today, because a password
+   * reset through the in-app recovery flow succeeded.
+   *
+   * Per school on purpose: reset school B, sign in with school A's password,
+   * and the app has a perfectly valid session while B's background sync is
+   * dead. Cleared by any sign-in for that school, and by re-entering the
+   * password here.
+   */
+  credentialStale: boolean;
 }
 
 export type SchoolLinksResponse = PaginatedResponse<SchoolLink>;
@@ -705,6 +725,71 @@ export interface LoginRequest {
   semel: number;
   username: string;
   password: string;
+}
+
+/**
+ * Error codes `POST /auth/login` can answer with, derived from Mashov's
+ * `Reason` response header.
+ *
+ * Only `INVALID_CREDENTIALS` is a 401; everything else is 400, 422, 429 or
+ * 502. That is deliberate and load-bearing — `apiFetch` hard-redirects to
+ * `/auth/sign-in` on any 401 whose code is not `INVALID_CREDENTIALS`, so a
+ * signposted failure answered 401 would bounce the parent off the page
+ * carrying the instructions they need.
+ */
+export type AuthErrorCode =
+  | 'INVALID_CREDENTIALS'
+  /** Mashov opened an MFA challenge; `error.challengeId` is the handle on it. */
+  | 'MFA_REQUIRED'
+  | 'PASSWORD_CHANGE_REQUIRED'
+  | 'CREDENTIALS_SETUP_REQUIRED'
+  /** Mashov escalated to a Cloudflare Turnstile challenge. */
+  | 'CAPTCHA_REQUIRED'
+  | 'NO_CHILDREN'
+  | 'SCHOOL_CLOSED'
+  | 'USER_INACTIVE'
+  | 'USE_USERNAME'
+  | 'UPSTREAM_ERROR'
+  // Password recovery.
+  | 'RECOVERY_THROTTLED'
+  | 'RECOVERY_SESSION_EXPIRED'
+  | 'INVALID_RECOVERY_CODE'
+  | 'RECOVERY_CODE_EXPIRED'
+  | 'RECOVERY_LOCKED'
+  | 'SECOND_CODE_REQUIRED'
+  | 'WEAK_PASSWORD'
+  // MFA.
+  | 'INVALID_MFA_CODE'
+  | 'MFA_CODE_EXPIRED'
+  | 'MFA_LOCKED'
+  | 'MFA_RESEND_TOO_SOON'
+  | 'MFA_CONTACT_MISSING'
+  // Forced credential change.
+  | 'USERNAME_TAKEN'
+  | 'USERNAME_LOCKED'
+  | 'CREDENTIALS_SETUP_FAILED'
+  // Passwordless sign-in.
+  | 'PASSWORD_SIGN_IN_REQUIRED'
+  | 'INVALID_OTP_CODE'
+  | 'OTP_CODE_EXPIRED'
+  | 'OTP_LOCKED'
+  | 'OTP_RESEND_TOO_SOON'
+  | 'OTP_CONTACT_MISSING'
+  | 'OTP_SESSION_EXPIRED'
+  | 'LOGIN_METHOD_BLOCKED'
+  // Shared.
+  | 'VALIDATION_ERROR'
+  | 'RATE_LIMITED';
+
+/** The envelope every backend error uses; see `.claude/rules/api.md`. */
+export interface ApiErrorEnvelope {
+  error: {
+    code: string;
+    message: string;
+    details?: Array<{ field: string; message: string }>;
+    /** Only on `MFA_REQUIRED`. Beside the three standard fields, not in `details`. */
+    challengeId?: string;
+  };
 }
 
 export interface LoginResponse {
@@ -825,4 +910,118 @@ export interface TelegramLinkState {
 
 export interface TelegramLinkStateResponse {
   data: TelegramLinkState;
+}
+
+// ─── In-app Mashov auth: recovery, MFA ─────────────────────────────────────
+
+/** Which channel Mashov should send the one-time code on. */
+export type RecoveryChannel = 'email' | 'sms';
+
+export interface StartRecoveryRequest {
+  semel: number;
+  /** The national ID number. Also the Mashov username, for most accounts. */
+  idNumber: string;
+  channel: RecoveryChannel;
+}
+
+/**
+ * Always a 202, for a real account and an unknown one alike — the body is
+ * byte-identical either way, so this response says nothing about whether the
+ * ID number exists. The copy on screen has to be enumeration-safe too: "if the
+ * details are correct, a code was sent", never "a code was sent".
+ */
+export interface StartRecoveryResponse {
+  /**
+   * Opaque, single-use, server-side TTL. Safe in a URL in a way a verification
+   * code is not, which is what lets a refresh of the reset form not strand the
+   * parent.
+   */
+  recoveryId: string;
+  /** Mashov sent a code to BOTH channels and wants both back. Server-decided. */
+  requiresSecondChannel: boolean;
+  channel: RecoveryChannel;
+}
+
+export interface CompleteRecoveryRequest {
+  code: string;
+  /** Only when `requiresSecondChannel` was true. */
+  secondCode?: string;
+  newPassword: string;
+}
+
+export interface CompleteRecoveryResponse {
+  ok: true;
+  /** A parent who forgot their password often forgot the username too. */
+  username: string | null;
+}
+
+export interface SendMfaCodeRequest {
+  method: RecoveryChannel;
+}
+
+export interface CreateMfaSessionRequest {
+  semel: number;
+  username: string;
+  /**
+   * Required. Mashov's own verify route rejects a password and our backend
+   * strips it before calling upstream — but the sync crons re-login by
+   * decrypting a stored credential, so an MFA sign-in with no password would
+   * give a working session and no background sync at all.
+   */
+  password: string;
+  code: string;
+}
+
+export interface CreateMfaSessionResponse {
+  ok: true;
+  isFirstLogin: boolean;
+}
+
+// ─── In-app Mashov auth: forced credential change, passwordless OTP ────────
+
+export interface SetCredentialsRequest {
+  semel: number;
+  username: string;
+  /** The CURRENT password. Mashov proves it before changing anything. */
+  password: string;
+  newPassword?: string;
+  newUsername?: string;
+  /** From the 403 that demanded the change. */
+  challengeId?: string;
+}
+
+export interface SetCredentialsResponse {
+  ok: true;
+  isFirstLogin: boolean;
+}
+
+/**
+ * How the parent wants to prove who they are, mirroring Mashov's own
+ * `loginMethod`.
+ *
+ * `email` and `sms` are passwordless, and cannot be the FIRST sign-in for a
+ * school: our background sync needs a stored password, so the server answers
+ * `409 PASSWORD_SIGN_IN_REQUIRED` and the form says so.
+ */
+export type SignInMethod = 'password' | 'email' | 'sms';
+
+export interface RequestOtpRequest {
+  semel: number;
+  username: string;
+  method: RecoveryChannel;
+}
+
+export interface RequestOtpResponse {
+  /** Opaque handle; the school and username stay server-side. */
+  otpRequestId: string;
+  method: RecoveryChannel;
+}
+
+export interface CreateOtpSessionRequest {
+  code: string;
+}
+
+export interface CreateOtpSessionResponse {
+  ok: true;
+  isFirstLogin: boolean;
 }

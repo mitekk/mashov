@@ -19,13 +19,38 @@ export interface RouteUnderTest {
 }
 
 /**
- * All 13 pages. The child workspace appears twice on purpose: its timetable
+ * Every page. The child workspace appears twice on purpose: its timetable
  * section is a different layout from its list sections, and it is the one
  * surface with two presentations switched by CSS.
+ *
+ * The four credential-recovery routes read their state from the query string,
+ * so they are given plausible ids here. The APIs behind them answer 404 from
+ * the catch-all, which is fine -- this sweep measures geometry, and an error
+ * state is laid out by the same shell as a loaded one.
  */
 export const ROUTES: RouteUnderTest[] = [
   { name: 'sign-in', path: '/auth/sign-in', readyTestId: 'sign-in-illustration' },
   { name: 'syncing', path: '/auth/syncing', readyTestId: 'syncing-heading' },
+  {
+    name: 'forgot password',
+    path: '/auth/forgot-password',
+    readyTestId: 'forgot-password-id-number',
+  },
+  {
+    name: 'reset password',
+    path: '/auth/reset-password?recoveryId=e2e-recovery-1&semel=540175',
+    readyTestId: 'reset-password-code',
+  },
+  {
+    name: 'mfa',
+    path: '/auth/mfa?challengeId=e2e-challenge-1&semel=540175',
+    readyTestId: 'mfa-code',
+  },
+  {
+    name: 'complete setup',
+    path: '/auth/complete-setup?semel=540175&username=parent',
+    readyTestId: 'complete-setup-submit',
+  },
   { name: 'home', path: '/home', readyTestId: 'home-header' },
   { name: 'children', path: '/children', readyTestId: 'children-page' },
   {

@@ -74,11 +74,17 @@ export default defineConfig({
       testMatch: '**/auth.setup.ts',
     },
 
-    // --- Auth spec: tests unauthenticated flows (no session cookie) ---
+    // --- Auth specs: unauthenticated flows, so NO session cookie ---
+    //
+    // `auth-recovery.spec.ts` belongs here and not in `chromium` below: every
+    // screen it drives (forgot-password, reset-password, mfa) exists precisely
+    // for someone who cannot sign in. Run with a pre-set session it would also
+    // inherit the `setup` dependency, which needs a working backend to mint
+    // one -- for tests that mock every API call.
     {
       name: 'chromium-auth',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } },
-      testMatch: '**/auth.spec.ts',
+      testMatch: ['**/auth.spec.ts', '**/auth-recovery.spec.ts'],
     },
 
     // --- All other specs: run with session cookie pre-set ---
@@ -93,9 +99,10 @@ export default defineConfig({
           'x-mashov-e2e-auth-bypass': '1',
         },
       },
-      // responsive.spec.ts has its own three projects below; running it here
-      // too would duplicate the 1280 pass.
-      testIgnore: ['**/auth.spec.ts', '**/responsive.spec.ts'],
+      // auth and auth-recovery have their own unauthenticated project above;
+      // responsive.spec.ts has its own three projects below, and running it
+      // here too would duplicate the 1280 pass.
+      testIgnore: ['**/auth.spec.ts', '**/auth-recovery.spec.ts', '**/responsive.spec.ts'],
       dependencies: ['setup'],
     },
 

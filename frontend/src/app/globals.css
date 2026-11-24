@@ -90,7 +90,13 @@
   }
 
   html {
-    font-family: var(--font-assistant), system-ui, sans-serif;
+    /* No `font-family` here on purpose. The next/font `.variable` class is on
+       <body> -- it cannot go on <html>, whose class attribute belongs to the
+       theme bootstrap -- and custom properties inherit downward only, so any
+       `var(--font-assistant)` written at this level is invalid at
+       computed-value time and dropped. The font reaches the page via the
+       generated `.className` on <body>, and Tailwind's `font-sans`. See
+       ADR-0043. */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     /* Stops iOS Safari inflating text in landscape without disabling the
