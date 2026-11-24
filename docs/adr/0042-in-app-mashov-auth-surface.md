@@ -446,6 +446,19 @@ record of *why* it is impossible, because §8's own standard applies to
 knowledge as much as to configuration: the next person to look at this should
 find the blocker, not an inviting gap.
 
+**MFA remains unobserved, and this capture does not cover it.** Said plainly
+so the recovery capture's credibility does not rub off on it. `sendMfa`,
+`verifyMfa` and `POST /api/loginDevice` were all read from the bundle, and the
+account used for the capture was never challenged, so none of them has been
+seen on the wire. Two specific unknowns are live in the code: whether the
+`403 Reason: MfaRequired` carries a `Set-Cookie: uniquId` we should be echoing
+back (see the TODO in `mfa.service.ts`), and whether `rememberBrowser` really
+returns a `devicePass` — which `apis/post-api-loginDevice.md` calls "the single
+assumption MFA support rests on". The blast radius is small, since the flow is
+only reachable behind a 403 most accounts never see, and failures there are now
+logged rather than reported as a bad code. But on this branch's record, an
+unobserved contract is as likely wrong as right.
+
 **The rule §11 bought, restated with its evidence.** Do not ship a flow whose
 upstream contract has never been observed. Of the three contracts this branch
 rested on, the capture confirmed one (`buildLoginBody`, field for field),
