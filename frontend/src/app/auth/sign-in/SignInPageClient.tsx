@@ -9,6 +9,7 @@ import { createOtpSession, getSchools, login, requestOtp } from '@/api/auth';
 import { SchoolAutocomplete } from '@/components/auth/SchoolAutocomplete';
 import { CaptchaEscapeHatch } from '@/components/auth/CaptchaEscapeHatch';
 import { readAuthError } from '@/lib/authErrors';
+import { PASSWORDLESS_SIGN_IN_ENABLED } from '@/lib/featureFlags';
 import type { School, SignInMethod } from '@/types/api';
 // Static import, not /public: it hands <Image> the intrinsic 1000x750 so the
 // box is reserved before the bytes land, and it is served from
@@ -26,7 +27,7 @@ import signInIllustration from '@/assets/images/sign-in-illustration.png';
  * and the heading therefore live in `SignInPage` below, which is where the
  * reason is written down.
  */
-function SignInForm() {
+function SignInForm({ passwordlessEnabled }: { passwordlessEnabled: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const nextPath = searchParams.get('next') ?? '/';
@@ -190,7 +191,10 @@ function SignInForm() {
     setErrorMsg(null);
     setErrorCode(undefined);
     const identity = identityOrError();
-    if (!identity || method === 'password') return;
+    // Enforced in behaviour and not only in markup: with the flag off there is
+    // no picker, so `method` cannot leave 'password' -- but a guard that lives
+    // only in JSX is one refactor away from being gone.
+    if (!identity || method === 'password' || !passwordlessEnabled) return;
     otpRequestMutation.mutate({ ...identity, method });
   }
 
@@ -204,7 +208,13 @@ function SignInForm() {
 
     if (method !== 'password') {
       if (!otpRequestId) {
-        handleRequestCode();
+        // Deliberately NOT a silent re-request. This button used to send a
+        // real SMS, spending one of five per hour per identity, because the
+        // parent pressed the obvious primary button -- and after the
+        // classification fix it would surface a send-stage refusal under a
+        // button labelled "sign in", which reads as a non-sequitur. The
+        // dedicated request button is directly above.
+        setErrorMsg('יש לבקש קוד אימות');
         return;
       }
       if (!otpCode.trim()) {
@@ -234,47 +244,54 @@ function SignInForm() {
       className="rounded-2xl border border-border/60 bg-card p-6 shadow-sm space-y-5"
     >
       {/*
-        Mirrors Mashov's own `loginMethod`. The passwordless options are
-        offered rather than hidden, with their one real constraint stated
-        below rather than discovered later.
+        Mirrors Mashov's own `loginMethod`, and is drawn only when the
+        passwordless methods actually work.
+
+        Not rendered-but-disabled: a greyed-out "קוד לאימייל" is something the
+        parent can neither use nor understand, and a one-button fieldset
+        legended "אופן הכניסה" is worse than no fieldset. With this absent,
+        `method` cannot leave 'password', so the whole OTP branch below is
+        unreachable. See `@/lib/featureFlags` for why it is off.
       */}
-      <fieldset className="space-y-1.5">
-        <legend className="block text-sm font-medium text-foreground">
-          אופן הכניסה
-        </legend>
-        <div className="flex gap-2">
-          {(
-            [
-              ['password', 'סיסמה'],
-              ['email', 'קוד לאימייל'],
-              ['sms', 'קוד בסמס'],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              data-testid={`sign-in-method-${value}`}
-              aria-pressed={method === value}
-              onClick={() => {
-                setMethod(value);
-                // A method change invalidates a code already requested on
-                // the other channel.
-                setOtpRequestId(null);
-                setOtpCode('');
-                setErrorMsg(null);
-                setErrorCode(undefined);
-              }}
-              className={
-                method === value
-                  ? 'flex-1 rounded-xl border border-primary bg-primary/10 px-2 py-2 text-xs font-semibold text-primary'
-                  : 'flex-1 rounded-xl border border-input px-2 py-2 text-xs font-medium text-muted-foreground hover:bg-accent/50 transition-colors'
-              }
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </fieldset>
+      {passwordlessEnabled && (
+        <fieldset className="space-y-1.5">
+          <legend className="block text-sm font-medium text-foreground">
+            אופן הכניסה
+          </legend>
+          <div className="flex gap-2">
+            {(
+              [
+                ['password', 'סיסמה'],
+                ['email', 'קוד לאימייל'],
+                ['sms', 'קוד בסמס'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                data-testid={`sign-in-method-${value}`}
+                aria-pressed={method === value}
+                onClick={() => {
+                  setMethod(value);
+                  // A method change invalidates a code already requested on
+                  // the other channel.
+                  setOtpRequestId(null);
+                  setOtpCode('');
+                  setErrorMsg(null);
+                  setErrorCode(undefined);
+                }}
+                className={
+                  method === value
+                    ? 'flex-1 rounded-xl border border-primary bg-primary/10 px-2 py-2 text-xs font-semibold text-primary'
+                    : 'flex-1 rounded-xl border border-input px-2 py-2 text-xs font-medium text-muted-foreground hover:bg-accent/50 transition-colors'
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+      )}
 
       <SchoolAutocomplete
         value={selectedSchool}
@@ -332,6 +349,24 @@ function SignInForm() {
           >
             כניסה עם קוד חד-פעמי אפשרית לבית ספר שכבר נכנסת אליו עם סיסמה. העדכון
             האוטומטי של הנתונים ברקע ממשיך להסתמך על הסיסמה השמורה.
+          </p>
+
+          {/*
+            The sentence this screen never had.
+
+            There is no field here for an address or a phone number -- by
+            design, because Mashov sends the code to the contact it already
+            holds for the account, and step 1 posts only the school, the
+            username and the channel. Unsaid, that reads as a missing input,
+            which is exactly how it was reported.
+          */}
+          <p
+            data-testid="sign-in-passwordless-destination"
+            className="text-xs text-muted-foreground"
+          >
+            {method === 'email'
+              ? 'הקוד יישלח לכתובת האימייל הרשומה בחשבון במשוב. אין צורך להזין אותה כאן.'
+              : 'הקוד יישלח למספר הטלפון הרשום בחשבון במשוב. אין צורך להזין אותו כאן.'}
           </p>
 
           {!otpRequestId ? (
@@ -410,7 +445,14 @@ function SignInForm() {
   );
 }
 
-export default function SignInPage() {
+export default function SignInPage({
+  /**
+   * Whether the one-time-code methods are offered. A prop rather than a module
+   * read so the tests can drive both states; the real value is the constant in
+   * `@/lib/featureFlags`, and the reason it is off is written down there.
+   */
+  passwordlessEnabled = PASSWORDLESS_SIGN_IN_ENABLED,
+}: { passwordlessEnabled?: boolean } = {}) {
   // The page chrome lives OUTSIDE the Suspense boundary on purpose. SignInForm
   // calls useSearchParams(), which makes its boundary bail out of SSR and
   // render on the client -- so anything inside it is absent from the server
@@ -463,7 +505,7 @@ export default function SignInPage() {
             </div>
           }
         >
-          <SignInForm />
+          <SignInForm passwordlessEnabled={passwordlessEnabled} />
         </Suspense>
       </div>
     </div>

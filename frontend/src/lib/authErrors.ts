@@ -42,6 +42,7 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
   MFA_LOCKED: 'יותר מדי נסיונות. נסה שוב מאוחר יותר',
   MFA_RESEND_TOO_SOON: 'קוד נשלח לפני רגע. יש להמתין לפני בקשת קוד נוסף',
   MFA_CONTACT_MISSING: 'אין במשוב אימייל או טלפון לחשבון הזה',
+  MFA_SEND_REFUSED: 'משוב לא שלח קוד לחשבון הזה',
 
   // Forced credential change.
   USERNAME_TAKEN: 'שם המשתמש הזה כבר תפוס במשוב',
@@ -58,6 +59,10 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
   OTP_RESEND_TOO_SOON: 'קוד נשלח לפני רגע. יש להמתין לפני בקשת קוד נוסף',
   OTP_CONTACT_MISSING: 'אין במשוב אימייל או טלפון לחשבון הזה',
   OTP_SESSION_EXPIRED: 'תהליך הכניסה פג. יש לבקש קוד חדש',
+  // Not a code error: there is no code yet at this point. Until this existed,
+  // a refusal here was reported as INVALID_OTP_CODE and the parent was told a
+  // code was wrong before they had been sent one.
+  OTP_REQUEST_REFUSED: 'משוב לא שלח קוד לחשבון הזה. אפשר להיכנס עם סיסמה',
   LOGIN_METHOD_BLOCKED: 'בית הספר הזה אינו מאפשר כניסה בלי סיסמה',
 
   // Shared.

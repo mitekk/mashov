@@ -764,6 +764,7 @@ export type AuthErrorCode =
   | 'MFA_LOCKED'
   | 'MFA_RESEND_TOO_SOON'
   | 'MFA_CONTACT_MISSING'
+  | 'MFA_SEND_REFUSED'
   // Forced credential change.
   | 'USERNAME_TAKEN'
   | 'USERNAME_LOCKED'
@@ -776,6 +777,7 @@ export type AuthErrorCode =
   | 'OTP_RESEND_TOO_SOON'
   | 'OTP_CONTACT_MISSING'
   | 'OTP_SESSION_EXPIRED'
+  | 'OTP_REQUEST_REFUSED'
   | 'LOGIN_METHOD_BLOCKED'
   // Shared.
   | 'VALIDATION_ERROR'
@@ -1005,16 +1007,27 @@ export interface SetCredentialsResponse {
  */
 export type SignInMethod = 'password' | 'email' | 'sms';
 
+/**
+ * The two passwordless channels.
+ *
+ * Narrowed from `SignInMethod` rather than reusing `RecoveryChannel`: these are
+ * sign-in methods on a sign-in route, and the server 400s on `password`
+ * (`method` must be `email` or `sms`). The two types happen to hold the same
+ * strings today, which is why the mismatch compiled, and they would drift the
+ * moment recovery gained a channel.
+ */
+export type PasswordlessSignInMethod = Exclude<SignInMethod, 'password'>;
+
 export interface RequestOtpRequest {
   semel: number;
   username: string;
-  method: RecoveryChannel;
+  method: PasswordlessSignInMethod;
 }
 
 export interface RequestOtpResponse {
   /** Opaque handle; the school and username stay server-side. */
   otpRequestId: string;
-  method: RecoveryChannel;
+  method: PasswordlessSignInMethod;
 }
 
 export interface CreateOtpSessionRequest {
