@@ -233,6 +233,71 @@ describe('MashovRecoveryService', () => {
     });
   });
 
+  /**
+   * The stored `uniquId` device cookie.
+   *
+   * A real browser sends it on every same-origin request, so Mashov's own
+   * client sends it on all of these routes. We sent it on `POST /api/login`
+   * only, while three other flows read `mashovUniqueId` from the database,
+   * wrote down why it mattered, and dropped it on the floor.
+   */
+  describe('the device cookie', () => {
+    it('sends it on the OTP request, which used to send none', async () => {
+      await service.requestOtp({
+        semel: 482273,
+        username: 'u',
+        method: 'email',
+        uniqueId: 'uid-7',
+      });
+      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
+    });
+
+    it('sends it on the OTP verify', async () => {
+      await service.verifyOtp({ loginData: { semel: 1 }, code: '123456', uniqueId: 'uid-7' });
+      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
+    });
+
+    it('sends it on a password change', async () => {
+      await service.changePassword({
+        loginData: { semel: 1 },
+        newPassword: 'secret1',
+        uniqueId: 'uid-7',
+      });
+      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
+    });
+
+    it('sends it on a username change', async () => {
+      await service.changeUsername({
+        loginData: { semel: 1 },
+        username: 'newname',
+        uniqueId: 'uid-7',
+      });
+      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
+    });
+
+    it('omits the header entirely when there is no stored cookie', async () => {
+      // Not `Cookie: uniquId=null`, which would be a header asserting a
+      // session that does not exist.
+      await service.requestOtp({ semel: 1, username: 'u', method: 'sms', uniqueId: null });
+      expect(lastPost().config.headers.Cookie).toBeUndefined();
+    });
+
+    it('still sends none on MFA verify, deliberately', async () => {
+      // Not an oversight: the `403 Reason: MfaRequired` that opens the
+      // challenge makes axios throw, so its `Set-Cookie: uniquId` is
+      // discarded and the stored value is an OLDER session's. If Mashov binds
+      // the challenge to its cookie, a stale one is worse than none. See the
+      // TODO in `mfa.service.ts` for what the capture has to settle.
+      await service.verifyMfa({
+        loginData: { semel: 1 },
+        challengeId: 'ch-1',
+        code: '123456',
+        rememberBrowser: true,
+      });
+      expect(lastPost().config.headers.Cookie).toBeUndefined();
+    });
+  });
+
   describe('secrecy', () => {
     /**
      * Every file in this surface that logs at all.
@@ -248,6 +313,10 @@ describe('MashovRecoveryService', () => {
       'mashov-reason.ts',
       '../../auth/otp.service.ts',
       '../../auth/mfa.service.ts',
+      // Added when recovery gained logging. It holds an Israeli national ID
+      // number in `input.idNumber`, so it is the file in this surface where the
+      // gate matters most.
+      '../../auth/credential-recovery.service.ts',
     ];
 
     for (const file of LOGGING_FILES) {

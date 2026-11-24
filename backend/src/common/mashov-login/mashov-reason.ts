@@ -315,6 +315,15 @@ export function describeMashovFailure(
   const reason = responseHeader(error, 'reason')?.trim().slice(0, 64);
   const contentType = responseHeader(error, 'content-type')?.trim().slice(0, 64);
 
+  // Infrastructure-only headers, and the difference between "Mashov refused
+  // this account" and "something between us and Mashov refused the request".
+  // An HTML 403 from a proxy ACL is already caught by `isMashovRejection`, but
+  // a proxy that answers 403 with a JSON content type is misclassified as a
+  // Mashov rejection, and these two headers are what give it away. Neither can
+  // carry user data.
+  const server = responseHeader(error, 'server')?.trim().slice(0, 64);
+  const via = responseHeader(error, 'via')?.trim().slice(0, 64);
+
   return [
     `stage=${context.stage}`,
     `semel=${context.semel ?? 'none'}`,
@@ -322,6 +331,8 @@ export function describeMashovFailure(
     `status=${status ?? 'none'}`,
     `reason=${reason || 'none'}`,
     `contentType=${contentType || 'none'}`,
+    `server=${server || 'none'}`,
+    `via=${via || 'none'}`,
     `signed=${isMashovRejection(error)}`,
   ].join(' ');
 }

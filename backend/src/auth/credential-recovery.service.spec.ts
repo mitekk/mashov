@@ -1,4 +1,4 @@
-import { HttpException } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { createHash } from 'node:crypto';
 import axios, { AxiosError, CanceledError } from 'axios';
@@ -53,6 +53,19 @@ const SEMEL = 482273;
 const IP = '203.0.113.7';
 
 /** An upstream rejection carrying a `Reason` header, as Mashov sends them. */
+function proxyErrorWithHeaders(
+  status: number,
+  headers: Record<string, string>,
+): AxiosError {
+  const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
+  err.response = {
+    status,
+    data: {},
+    headers,
+  } as unknown as AxiosError['response'];
+  return err;
+}
+
 function reasonError(reason: string, status = 403): AxiosError {
   const err = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
   err.response = {
@@ -204,6 +217,111 @@ describe('CredentialRecoveryService', () => {
       mockUpstream.requestRecovery.mockRejectedValue(reasonError('IdNumberNoMatch'));
       await start();
       expect(Object.keys(storedState().value).sort()).toEqual(real);
+    });
+
+    /**
+     * The diagnosis this flow never had.
+     *
+     * Anti-enumeration is about the RESPONSE: an attacker must not be able to
+     * use this route to test whether an ID number belongs to a real parent, so
+     * a refusal and a real account both answer 202. That reasoning was applied
+     * to our own logs as well, by accident, and there it protected nobody --
+     * a parent reporting "no email arrived" left no trace to read.
+     *
+     * These tests pin the split: the response stays indistinguishable (proved
+     * by the byte-identical and Redis-shape tests above, which must keep
+     * passing untouched), and the log does not.
+     */
+    describe('the log that makes a silent refusal diagnosable', () => {
+      let warn: jest.SpyInstance;
+      let log: jest.SpyInstance;
+
+      beforeEach(() => {
+        warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+      });
+
+      const lines = (spy: jest.SpyInstance) =>
+        spy.mock.calls.map(([first]) => String(first)).join('\n');
+
+      it('records a refusal that the response deliberately hides', async () => {
+        mockUpstream.requestRecovery.mockRejectedValue(reasonError('IdNumberNoMatch'));
+        await start();
+
+        const line = lines(warn);
+        expect(line).toContain('status=403');
+        expect(line).toContain('reason=IdNumberNoMatch');
+        expect(line).toContain('path=/api/user/recover');
+        expect(line).toContain('stage=recover:email');
+      });
+
+      it('records an unmapped refusal, including a Reason we do not know', async () => {
+        mockUpstream.requestRecovery.mockRejectedValue(reasonError('SomeNewReason'));
+        await start();
+        expect(lines(warn)).toContain('reason=SomeNewReason');
+      });
+
+      /**
+       * The case the first draft of this fix would have missed entirely.
+       *
+       * `apis/post-api-user-recover.md` admits the channel flag's type is the
+       * one thing it never confirmed, and we send `email: true`. A Mashov that
+       * ignores an unknown-typed flag answers 200 having sent nothing: no
+       * exception, so every line in the `catch` stays silent and the parent is
+       * told to check an inbox nothing went to. Only a success-path log catches
+       * it, and `isResettingAndVerifying=absent` is the fingerprint.
+       */
+      it('records a 200 that sent nothing, which throws no error at all', async () => {
+        mockUpstream.requestRecovery.mockResolvedValue({});
+        await start();
+
+        const line = lines(log);
+        expect(line).toContain('isResettingAndVerifying=absent');
+        expect(line).toContain('responseKeys=[]');
+        expect(line).toContain('channel=email');
+        expect(warn).not.toHaveBeenCalled();
+      });
+
+      it('distinguishes a real two-channel success from that', async () => {
+        mockUpstream.requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+        await start();
+        expect(lines(log)).toContain('isResettingAndVerifying=true');
+      });
+
+      it('logs a proxy ACL with the headers that give it away', async () => {
+        // An HTML 403 is already caught by `isMashovRejection`, but a proxy
+        // answering 403 with a JSON content type is misread as a Mashov
+        // refusal. `server=` and `via=` are what tell them apart.
+        mockUpstream.requestRecovery.mockRejectedValue(
+          proxyErrorWithHeaders(403, { 'content-type': 'application/json', via: 'tinyproxy' }),
+        );
+        await start();
+        expect(lines(warn)).toContain('via=tinyproxy');
+      });
+
+      it('logs an upstream 5xx, which used to throw in silence', async () => {
+        mockUpstream.requestRecovery.mockRejectedValue(bareError(503));
+        await expect(start()).rejects.toThrow();
+        expect(lines(warn)).toContain('status=503');
+      });
+
+      it('never logs the ID number, on any path', async () => {
+        for (const arrange of [
+          () => mockUpstream.requestRecovery.mockResolvedValue({}),
+          () => mockUpstream.requestRecovery.mockRejectedValue(reasonError('IdNumberNoMatch')),
+          () => mockUpstream.requestRecovery.mockRejectedValue(bareError(503)),
+        ]) {
+          warn.mockClear();
+          log.mockClear();
+          arrange();
+          await start().catch(() => undefined);
+
+          // An Israeli national ID number. ADR-0042 §9 keeps it out of
+          // plaintext; a "correlation hash" of it would too, since the key
+          // lives in this process and the domain is ~10^9.
+          expect(lines(warn) + lines(log)).not.toContain(ID);
+        }
+      });
     });
 
     it('reports the server-stored two-channel flag rather than trusting the client', async () => {
