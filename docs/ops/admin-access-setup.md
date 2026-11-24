@@ -26,45 +26,78 @@ reachable** — see [step 5](#5-close-the-origin-required-follow-up).
 
 ---
 
-## 1. Create the two Access applications
+## 1. The two Access applications
 
-Cloudflare dashboard → **Zero Trust → Access → Applications → Add an
-application → Self-hosted**, twice:
+**These already exist** — created 2026-11-24 on account
+`7cd3858e35280ca7938d9fc91fb03b15`. This section records what they are, so the
+set-up can be audited, repaired or rebuilt.
 
-| Application name | Domain | Path |
-|---|---|---|
-| `mashov-admin-ui` | `mashov.mitya.dev` | `admin` |
-| `mashov-admin-api` | `mashov.mitya.dev` | `api/v1/admin` |
+| Application name | Domain (incl. path) | Application ID | App launcher |
+|---|---|---|---|
+| `mashov-admin-ui` | `mashov.mitya.dev/admin` | `cf5fa159-6009-43a1-b9dc-4b26f80a4ac0` | visible |
+| `mashov-admin-api` | `mashov.mitya.dev/api/v1/admin` | `677a032c-f48e-4e8a-ba8d-0f483e0c555e` | hidden |
+
+Both are `self_hosted`, session duration `24h`, `auto_redirect_to_identity`
+on, restricted to the **one-time PIN** identity provider
+(`055f09a1-dec3-40be-9d10-41c892c3fe48`) — matching the `campaign admin` app
+already on this account.
 
 Both reference **one reusable policy** rather than two copies of the same rule:
 
-- **Policies → Add a policy → Reuse policy**, name `allow`
-- Action: **Allow**
-- Include → **Emails** → the operator address(es)
+| Policy name | Policy ID | Decision | Include |
+|---|---|---|---|
+| `mashov-admin-operators` | `6a544aef-5f1a-43b8-90b3-2525d5bac011` | `allow` | Emails: the operator address |
 
 Two applications and one policy, deliberately. The page and its API are
 separate paths, so one application cannot cover both; a reusable policy means
-the allowlist is edited in one place and cannot drift between them.
+the allowlist is edited in one place and cannot drift between them. The policy
+is named for what it guards, not `allow` — this account holds other policies
+and a bare `allow` would be unreadable in the list.
 
-## 2. Read the AUD tag and verify the JWKS
+**To add or remove an operator**, edit that one policy: Zero Trust → Access →
+Policies → `mashov-admin-operators` → Include → Emails. Both applications pick
+the change up; nothing needs redeploying, because the allowlist lives in
+Cloudflare and not in the app (ADR-0045: no roles model, no `AppUser.role`).
 
-On either application's **Overview** tab, copy the **Application Audience (AUD)
-Tag** — a 64-character hex string. Both applications have their own AUD; use
-**the API one** (`mashov-admin-api`), because that is the token the backend
-verifies.
+To rebuild from scratch, create two `self_hosted` applications with the domains
+above and attach one reusable `allow` policy to each via
+`POST /accounts/{account_id}/access/policies` then
+`POST /accounts/{account_id}/access/apps` with
+`policies: [{ id, precedence: 1 }]`. Do **not** inline an app-scoped policy —
+those report `reusable: false` and are the legacy shape.
 
-The team domain is `https://<team>.cloudflareaccess.com` (Zero Trust →
-Settings → Custom Pages shows the team name).
+## 2. The AUD tags and the JWKS
 
-Confirm the key set is reachable and non-empty before setting anything:
+Each application has its **own** Application Audience (AUD) tag:
+
+| Application | AUD tag |
+|---|---|
+| `mashov-admin-ui` | `33247b2323bcfa4091a0797da7a81a10a5e77f85395481ab3875112d844892b2` |
+| **`mashov-admin-api`** | **`efd01ef8d189ecdaccfe6ac9dca2bd7bfb160e88096655a561b2e06656258f6c`** |
+
+**`ACCESS_AUD` takes the API one.** That is the audience of the token the
+backend actually receives, and taking the UI one instead is the single easiest
+mistake to make here: the page loads perfectly and every list request 403s,
+with nothing in the Cloudflare logs to explain it.
+
+Neither tag is a secret — Access publishes the matching one as `kid=` in its
+own unauthenticated login redirect (see step 4), which is also how to check
+which application is covering a path.
+
+The team domain is **`https://young-poetry-2f7a.cloudflareaccess.com`**
+(Zero Trust → Settings shows the team name).
+
+The key set is reachable and non-empty:
 
 ```bash
-curl -s https://<team>.cloudflareaccess.com/cdn-cgi/access/certs | jq '.keys|length'
-# -> 2   (any number >= 1 is fine)
+curl -s https://young-poetry-2f7a.cloudflareaccess.com/cdn-cgi/access/certs \
+  | jq '{n: (.keys|length), algs: [.keys[].alg]|unique}'
+# -> { "n": 2, "algs": ["RS256"] }
 ```
 
-If this returns `0` or fails, stop: the backend will refuse every request with
-403 and the cause will not be obvious from the screen.
+Verified 2026-11-24. If this ever returns `0` or fails, the backend refuses
+every request with 403 and the cause will not be obvious from the screen. The
+guard pins `RS256` and will not follow the JWKS onto a weaker algorithm.
 
 ## 3. Set the backend variables
 
@@ -72,10 +105,15 @@ Coolify → the `backend` service → **Environment Variables**:
 
 ```
 ADMIN_AUTH_MODE=verify
-ACCESS_AUD=<the 64-char AUD tag from step 2>
-ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
+ACCESS_AUD=efd01ef8d189ecdaccfe6ac9dca2bd7bfb160e88096655a561b2e06656258f6c
+ACCESS_TEAM_DOMAIN=https://young-poetry-2f7a.cloudflareaccess.com
 FEEDBACK_TELEGRAM_CHAT_ID=<the operator chat id>
 ```
+
+`ACCESS_TEAM_DOMAIN` needs the `https://` scheme and no trailing slash — it is
+compared against the token's `iss` claim. Also confirm `PUBLIC_BASE_URL` is
+`https://mashov.mitya.dev`, or the Telegram notification arrives without its
+deep link.
 
 Notes:
 
@@ -94,11 +132,39 @@ Notes:
 
 Redeploy the backend.
 
-## 4. Smoke test, in a browser
+## 4. Smoke test
 
-1. Open `https://mashov.mitya.dev/admin/feedback` in a private window.
-2. Cloudflare Access should present its login. Sign in with an allowlisted
-   address.
+First, with no browser — confirm Access is in front of both paths, and that
+each path is covered by the application you think it is. The `kid=` in the
+redirect **is** that application's AUD tag, so this also checks the pairing:
+
+```bash
+for p in /admin/feedback /api/v1/admin/feedback; do
+  curl -s -o /dev/null -D - "https://mashov.mitya.dev$p" \
+    | sed -n 's/^location: .*[?&]kid=\([0-9a-f]*\).*/'"$p"' -> kid=\1/p'
+done
+```
+
+Expected (verified 2026-11-24 — both answered `HTTP/2 302`):
+
+```
+/admin/feedback          -> kid=33247b23...  (mashov-admin-ui)
+/api/v1/admin/feedback   -> kid=efd01ef8...  (mashov-admin-api)
+```
+
+A `200` from either path means Access is **not** covering it. Check a
+parent-facing route is untouched too: `/api/health` must still answer `200`.
+
+Then, in a browser:
+
+1. Open `https://mashov.mitya.dev/admin/feedback` in a private window — **the
+   page, not the API.** Order matters: authenticating against the UI
+   application sets the `CF_Authorization` cookie for the whole host, which
+   then satisfies the API application. Hitting an API URL first gets a 302 to
+   a login page an XHR cannot follow, which looks like a broken screen.
+2. Cloudflare Access should present its login — a one-time PIN mailed to the
+   address, since that is the only identity provider these applications
+   accept. Sign in with an allowlisted address.
 3. The triage list should render with data. **If the page renders but every
    list request 403s**, the JWT is reaching the backend and failing
    verification — re-check `ACCESS_AUD` against the *API* application's tag.
