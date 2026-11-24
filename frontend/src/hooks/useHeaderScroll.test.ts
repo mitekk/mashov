@@ -139,6 +139,72 @@ describe('useHeaderScroll', () => {
     expect(progress()).toBe('0');
   });
 
+  /**
+   * Going inert while the header holds focus resets `document.activeElement`
+   * to `<body>` -- per spec, and silently. A keyboard user who tabs to the
+   * theme toggle and then scrolls on loses their place entirely: the next Tab
+   * restarts at the top of the document, with no announcement and nothing on
+   * screen to explain it. So the fade is pinned open while focus is inside.
+   */
+  it('stays open while the header holds keyboard focus', () => {
+    const header = document.createElement('header');
+    const button = document.createElement('button');
+    header.appendChild(button);
+    document.body.appendChild(header);
+
+    const { result } = renderHook(() => useHeaderScroll<HTMLElement>());
+    result.current.current = header;
+    button.focus();
+
+    scrollTo(400);
+
+    expect(progress()).toBe('0');
+    expect(document.activeElement).toBe(button);
+
+    header.remove();
+  });
+
+  it('resumes fading once focus leaves the header', () => {
+    const header = document.createElement('header');
+    const button = document.createElement('button');
+    header.appendChild(button);
+    document.body.appendChild(header);
+
+    const { result } = renderHook(() => useHeaderScroll<HTMLElement>());
+    result.current.current = header;
+    button.focus();
+    scrollTo(400);
+    expect(progress()).toBe('0');
+
+    act(() => {
+      button.blur();
+    });
+    scrollTo(400);
+
+    expect(progress()).toBe('1');
+
+    header.remove();
+  });
+
+  /**
+   * Two headers are briefly mounted at once during an App Router transition.
+   * An unconditional `removeProperty` in the outgoing one's cleanup wipes the
+   * incoming one's value back to 0 -- a fully opaque header over content that
+   * is already scrolled past it.
+   */
+  it('does not let an unmounting header clear a newer one value', () => {
+    const first = renderHook(() => useHeaderScroll<HTMLElement>());
+    scrollTo(400);
+    expect(progress()).toBe('1');
+
+    // A second header mounts and takes ownership...
+    renderHook(() => useHeaderScroll<HTMLElement>());
+    // ...then the first unmounts, as the outgoing route tears down.
+    first.unmount();
+
+    expect(progress()).toBe('1');
+  });
+
   it('cleans the custom property up when the header unmounts', () => {
     const { unmount } = renderHook(() => useHeaderScroll<HTMLElement>());
     scrollTo(300);

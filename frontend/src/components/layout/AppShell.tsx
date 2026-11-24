@@ -18,20 +18,19 @@ export function AppShell({ children }: AppShellProps) {
     // `lg:ps-rail` is the side rail's gutter. Logical, so under RTL the gutter
     // sits on the right -- the same edge the rail moves to.
     <div className="flex min-h-dvh flex-col lg:ps-rail">
-      {/* Above the header and deliberately NOT sticky: it scrolls away, and
-          the header then sticks to the viewport top with no geometry to keep
-          in sync between the two.
-
-          The slot carries the notch padding only while there is a banner in
-          it. `StaleIndicator` returns null in the fresh and syncing states, so
-          `:empty` matches and `empty:pt-0` hands the inset back to the header,
-          which is where it belongs the rest of the time. Without the modifier
-          this div would reserve a safe-area strip above a header that already
-          pads itself -- the inset twice, on every screen. */}
-      <div className="pt-safe empty:pt-0 lg:pt-0">
-        <FreshnessBar />
-      </div>
       <AppHeader />
+      {/* BELOW the header, and deliberately not sticky: it scrolls away under
+          it, and the header has no geometry to keep in sync with it.
+
+          Ordering is the whole point. `pt-safe` lives on the header, which is
+          `sticky top-0` and so parks at the viewport top under the notch.
+          Anything rendered ABOVE it in the flow either takes the notch itself
+          -- `StaleIndicator` renders a real banner in the `degraded` and
+          `stale` states, which would land under the status bar -- or carries a
+          second copy of the inset, which on an iPhone shows up as a ~47px
+          blank strip inside the header. Putting the header first leaves it the
+          single owner of the inset and the topmost chrome in every state. */}
+      <FreshnessBar />
       {/*
         No `overflow-y-auto` here. It made `<main>` a second scroller inside a
         `min-h-dvh` flex column that `body` already scrolls, so `pb-nav` padded

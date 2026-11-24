@@ -128,8 +128,15 @@ test.describe('app header', () => {
     await scrollTo(page, STICKY_PX);
     expect(await progress(page)).toBe(0);
     expect(await opacity(page)).toBe(1);
+
     const box = await header.boundingBox();
     expect(box).not.toBeNull();
+    // The LOWER bound is what proves stickiness. `boundingBox().y` is
+    // viewport-relative and goes negative for content scrolled off the top, so
+    // a `<= 1` assertion alone passes for a header that scrolled away at
+    // y = -80 -- this test would not have failed if `sticky top-0` were
+    // dropped. Pinned at the top means y is 0, from both sides.
+    expect(box!.y).toBeGreaterThanOrEqual(0);
     expect(box!.y).toBeLessThanOrEqual(1);
   });
 
@@ -147,6 +154,22 @@ test.describe('app header', () => {
     const partial = await opacity(page);
     expect(partial).toBeGreaterThan(0.2);
     expect(partial).toBeLessThan(0.8);
+
+    // The translate is the half of `.app-header` that actually gets the header
+    // out of the way. Opacity alone would leave an invisible but still
+    // hit-testable 56px box over the top of the content for every p <= 0.99,
+    // and nothing else here would notice: delete the `translateY` and every
+    // other assertion in this file still passes.
+    const transform = await page.evaluate(() => {
+      const header = document.querySelector('[data-testid="app-header"]');
+      return header ? getComputedStyle(header).transform : '';
+    });
+    // `matrix(a, b, c, d, tx, ty)` -- ty is the vertical translate, and it has
+    // to be meaningfully negative (the header sliding up), not 0.
+    const matrix = /^matrix\(([^)]+)\)$/.exec(transform);
+    expect(matrix, `expected a matrix transform, got ${transform}`).not.toBeNull();
+    const translateY = Number(matrix![1].split(',')[5]);
+    expect(translateY).toBeLessThan(-5);
   });
 
   test('goes inert once it is fully gone, so nothing invisible takes a tap or a tab', async ({

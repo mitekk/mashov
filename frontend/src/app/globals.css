@@ -54,11 +54,25 @@
        second `.pt-header`-style rule for any hand-written utility of the same
        name, and which one won would be emission order. src/app/globals.test.ts
        asserts that collision cannot happen. */
-    --app-header-h: 3.5rem;
+    /* `h-14` PLUS the notch, because `pt-safe` lives on the header itself.
+       Leave the inset out and `.sticky-under-header` offsets by 56px against a
+       header that is really 56px + inset tall -- the child workspace tab rail
+       is `sticky` at EVERY width, so on a notched iPhone it parks behind the
+       header, half-covered and partly unclickable. Cancelled at `lg` below,
+       tracking the header's own `lg:pt-0`. */
+    --app-header-h: calc(3.5rem + env(safe-area-inset-top));
     /* 0 = header fully visible, 1 = fully faded out. Written on
        `document.documentElement` by useHeaderScroll, outside React, so the
        scroll fade costs no re-renders. */
     --app-header-p: 0;
+  }
+
+  /* The header drops its `pt-safe` at `lg` (`lg:pt-0`), so the height every
+     sticky element offsets from has to drop the inset in the same breath. */
+  @media (min-width: 1024px) {
+    :root {
+      --app-header-h: 3.5rem;
+    }
   }
 
   .dark {
