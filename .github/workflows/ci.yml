@@ -141,16 +141,21 @@ jobs:
       # inside Docker, and these need no container -- the frontend deps are
       # already installed two steps above.
       #
-      # `vitest_args` narrows to the specs related to the changed frontend
-      # files. Unlike the backend suite, this one runs on the host, so the git
-      # history `--changed` needs is actually present.
+      # `vitest_args` carries the subcommand as well as the flags: either plain
+      # `run`, or `related --run <files> --passWithNoTests` with the file list
+      # the selector derived, paths relative to this directory.
+      #
+      # An explicit file list, NOT `--changed <base>`: this job checks out at
+      # the default shallow depth (only `changes` uses fetch-depth 0), so the
+      # base sha is not in this clone and vitest's own `git diff <base>...HEAD`
+      # fails with "Invalid symmetric difference expression".
       - name: Unit test frontend
         if: needs.changes.outputs.vitest == 'true'
         working-directory: frontend
         env:
           VITEST_ARGS: ${{ needs.changes.outputs.vitest_args }}
-        # Unquoted on purpose: the shell must word-split the flag list.
-        run: npm test -- $VITEST_ARGS
+        # Unquoted on purpose: the shell must word-split the argument list.
+        run: npx vitest $VITEST_ARGS
 
   # ────────────────────────────────────────────────────────────────────────────
   # 2. UNIT TESTS — run inside Docker container

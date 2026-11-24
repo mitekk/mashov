@@ -61,8 +61,11 @@ npm run audit                     # Dependency CVE scan
 `scripts/select-tests.mjs` is the single source of truth for "which layers does
 this diff need?", shared by `npm run test:pr` and the `changes` job in CI. It
 diffs against the merge-base, maps the changed paths to layers, and narrows
-inside them (`jest --findRelatedTests`, `vitest --changed`, and
-`.github/e2e-map.json` for Playwright, which has no dependency graph).
+inside them (`jest --findRelatedTests`, `vitest related`, and
+`.github/e2e-map.json` for Playwright, which has no dependency graph). Both
+dependency-graph layers get an explicit file list rather than a git ref: the
+unit container has no repo mount, and CI checks out shallow everywhere except
+the `changes` job.
 
 - Anything it does not recognise forces a **full run** — a silent skip is a
   false negative, a needless full run only costs minutes.
