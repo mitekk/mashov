@@ -133,8 +133,12 @@ export class FeedbackService {
         mashovUserId: user.mashovUserId,
         username: user.username,
         // Stripped of the per-school child tag Mashov appends, so one child's
-        // name is not persisted into every row of the household.
-        displayName: parentDisplayName(user.displayName),
+        // name is not persisted into every row of the household. The username
+        // stands in when there is no name at all: `parentDisplayName('')`
+        // returns `''` and this column is NOT NULL, so the alternative is a
+        // report filed under a blank name in the one table whose point is
+        // telling you who sent it.
+        displayName: parentDisplayName(user.displayName) || user.username,
         // A typed interface is not an `InputJsonObject` -- Prisma's Json input
         // type demands an index signature, which would cost the field names
         // their meaning. The cast keeps the shape documented in
@@ -153,6 +157,18 @@ export class FeedbackService {
     };
   }
 
+  /**
+   * Count, then insert -- with no transaction and no lock, deliberately.
+   *
+   * Two concurrent requests can both read 9 and both insert, so a parent with
+   * two tabs can land slightly more than ten rows in an hour. That is accepted:
+   * this is crude anti-abuse with a per-IP `@Throttle` backstop, not a quota
+   * anyone is charged for. What the race cannot do is matter in the other
+   * direction -- no legitimate report is ever wrongly refused, because the
+   * window is rolling and nothing after the count can fail in a way that would
+   * have changed it. Serializing it would cost a transaction per report to
+   * stop someone from filing an eleventh complaint about us.
+   */
   private async assertUnderHourlyLimit(userId: string): Promise<void> {
     const recent = await this.prisma.feedback.count({
       where: { userId, createdAt: { gte: new Date(Date.now() - ONE_HOUR_MS) } },

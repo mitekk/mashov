@@ -194,6 +194,55 @@ describe('FeedbackService', () => {
       });
     });
 
+    /**
+     * `parentDisplayName('')` returns `''` and the column is NOT NULL, so a
+     * household whose credential never carried a name would file every report
+     * under a blank one -- unreadable in exactly the table whose point is
+     * telling you who sent it.
+     */
+    it('falls back to the username when the parent has no display name', async () => {
+      const { prisma, create } = makeMockPrisma({
+        user: { mashovUserId: 'mashov-1', username: 'parent', displayName: '' },
+      });
+      const service = new FeedbackService(prisma);
+
+      await service.create('user-1', input());
+
+      expect(create.mock.calls[0][0].data.displayName).toBe('parent');
+    });
+
+    /**
+     * `schoolName` is nullable -- a connection created before the login
+     * response carried schoolSettings has none -- and `resolveSchoolLabels`
+     * stands the semel in so a label is never blank.
+     */
+    it('labels a nameless school by its semel rather than leaving it blank', async () => {
+      const { prisma, create } = makeMockPrisma({
+        connections: [
+          {
+            id: 'conn-nameless',
+            schoolCode: 987654,
+            schoolName: null,
+            displayLabel: null,
+            schoolYear: 2027,
+          },
+        ],
+      });
+      const service = new FeedbackService(prisma);
+
+      await service.create('user-1', input());
+
+      expect(create.mock.calls[0][0].data.schoolsSnapshot).toEqual([
+        {
+          id: 'conn-nameless',
+          schoolCode: 987654,
+          schoolName: null,
+          label: '987654',
+          schoolYear: 2027,
+        },
+      ]);
+    });
+
     it('truncates an over-long user agent rather than refusing the report', async () => {
       const { prisma, create } = makeMockPrisma({});
       const service = new FeedbackService(prisma);

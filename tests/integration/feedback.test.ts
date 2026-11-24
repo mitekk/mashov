@@ -327,6 +327,28 @@ describe('POST /api/v1/feedback', () => {
         body: { subject: 'bug', content: 'משהו', appVersion: 'v'.repeat(41) },
         field: 'appVersion',
       },
+      /**
+       * Unbounded, `Int` maps to Postgres INTEGER and the driver raises
+       * "integer out of range", which the catch-all filter turns into a 500 --
+       * a status `.claude/rules/api.md` reserves for the genuinely
+       * unexpected. Not reachable from a browser, where `window.innerWidth` is
+       * screen-bounded, but a hand-made request is all it takes.
+       */
+      {
+        name: 'a viewport wider than any screen',
+        body: { subject: 'bug', content: 'משהו', viewportWidth: 3_000_000_000 },
+        field: 'viewportWidth',
+      },
+      {
+        name: 'a viewport taller than any screen',
+        body: { subject: 'bug', content: 'משהו', viewportHeight: 3_000_000_000 },
+        field: 'viewportHeight',
+      },
+      {
+        name: 'a negative viewport',
+        body: { subject: 'bug', content: 'משהו', viewportWidth: -1 },
+        field: 'viewportWidth',
+      },
     ];
 
     it.each(CASES)('refuses $name', async ({ body, field }) => {

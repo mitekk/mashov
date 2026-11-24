@@ -15,6 +15,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -27,6 +28,9 @@ import {
   type FeedbackReceipt,
   type FeedbackSubject,
 } from './feedback.service';
+
+/** Far past any real screen, far short of Postgres INTEGER's ceiling. */
+const VIEWPORT_MAX = 100_000;
 
 /** `{ data: … }`, the envelope the digest and telegram routes return. */
 interface FeedbackResponse {
@@ -73,16 +77,25 @@ class CreateFeedbackDto {
   @MaxLength(200)
   pagePath?: string;
 
+  /**
+   * Bounded at both ends. Unbounded, Prisma's `Int` maps to Postgres INTEGER
+   * and an absurd value raises "integer out of range" -- which the catch-all
+   * filter turns into a 500, a status .claude/rules/api.md reserves for the
+   * genuinely unexpected. A browser cannot send one (`window.innerWidth` is
+   * screen-bounded); a hand-made request can.
+   */
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  @Max(VIEWPORT_MAX)
   viewportWidth?: number;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  @Max(VIEWPORT_MAX)
   viewportHeight?: number;
 
   @IsOptional()

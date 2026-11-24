@@ -221,7 +221,14 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
           dir="rtl"
           // `dvh`, not `vh`: `vh` does not shrink when the iOS keyboard rises,
           // so the submit button ends up under it with nothing to scroll.
-          className="fixed inset-x-4 top-10 z-50 mx-auto max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-background p-4 shadow-xl sm:inset-x-0"
+          // `max-w-[calc(100%-2rem)]`, not `w-full`: with `position: fixed`,
+          // `w-full` resolves against the VIEWPORT, so a 360px phone gets a
+          // 360px box between two 16px insets. CSS resolves that
+          // over-constraint by honouring the inline-start inset and letting the
+          // rest hang off the physical left edge. `sm:inset-x-0` hid it at
+          // >=640px, which is why it survived in ReleasesDialog (untouched
+          // here -- same idiom, its own change).
+          className="fixed inset-x-4 top-10 z-50 mx-auto max-h-[85dvh] w-auto max-w-lg overflow-y-auto rounded-2xl border border-border bg-background p-4 shadow-xl sm:inset-x-0 sm:w-full sm:max-w-lg"
           // Two requirements pulling against each other. Letting the open
           // focus land on a text field would raise the phone keyboard over the
           // subject picker before the parent had read it -- but merely
@@ -280,6 +287,12 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                   </option>
                 ))}
               </select>
+              {/*
+                Kept although the native select offers only the seven valid
+                codes, so `z.enum` cannot fail short of devtools tampering.
+                Without it that tampered submit is blocked by the resolver and
+                shows nothing at all, which looks like a dead button.
+              */}
               <FieldError
                 id="feedback-subject-error"
                 testId="feedback-subject-error"
