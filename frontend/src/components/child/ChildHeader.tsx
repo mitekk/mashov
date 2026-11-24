@@ -13,8 +13,6 @@ import {
   SelectLabel,
   SelectTrigger,
 } from '@/components/ui/Select';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useSchoolActivities } from '@/hooks/useChild';
 import { ReleasesDialog } from './ReleasesDialog';
 import { SchoolActivitiesDialog } from './SchoolActivitiesDialog';
@@ -186,8 +184,6 @@ export function ChildHeader({
               </span>
             )}
           </div>
-          <ThemeToggle />
-          <RefreshButton />
         </div>
       </div>
       <div className="flex flex-wrap gap-2.5">

@@ -4,8 +4,6 @@ import type { ChildStudent, ChildSummary } from '@/types/api';
 import type { ChildHeaderOption } from './ChildHeader';
 
 vi.mock('@/hooks/useChild', () => ({ useSchoolActivities: () => ({ data: [] }) }));
-vi.mock('@/components/ui/ThemeToggle', () => ({ ThemeToggle: () => <button>theme</button> }));
-vi.mock('@/components/ui/RefreshButton', () => ({ RefreshButton: () => <button>refresh</button> }));
 vi.mock('./ReleasesDialog', () => ({ ReleasesDialog: () => null }));
 vi.mock('./SchoolActivitiesDialog', () => ({ SchoolActivitiesDialog: () => null }));
 

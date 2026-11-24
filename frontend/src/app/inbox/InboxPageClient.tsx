@@ -8,8 +8,6 @@ import { UnreadBadge } from '@/components/inbox/UnreadBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { RefreshButton } from '@/components/ui/RefreshButton';
 import {
   useArchive,
   useConversations,
@@ -253,8 +251,6 @@ function InboxPageContent() {
               הכל
             </button>
           </div>
-          <ThemeToggle />
-          <RefreshButton />
         </div>
       </header>
 
@@ -285,7 +281,10 @@ function InboxPageContent() {
       {hasSelection && (
         <section
           data-testid="inbox-bulk-actions"
-          className="card-base flex flex-wrap items-center gap-2 px-3 py-2.5 lg:sticky lg:top-4 lg:z-10"
+          // `.sticky-under-header` replaces `lg:top-4`: it tracks the app
+          // header rather than parking behind it. A `top-*` utility here would
+          // win over it -- see globals.css.
+          className="card-base sticky-under-header flex flex-wrap items-center gap-2 px-3 py-2.5 lg:sticky lg:z-10"
         >
           <span className="text-sm font-medium text-foreground">
             נבחרו {selectedConversationIds.length}

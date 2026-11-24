@@ -1,13 +1,22 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render as renderWithoutProvider,
+  screen,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * A stub, so the launcher's own contract is what is under test -- and so this
  * file renders with NO QueryClientProvider, which is the point: the launcher
- * lives in `UserHeader`, whose own test mounts it without one. A TanStack hook
- * called here rather than inside the dialog would break that test.
+ * lives in `AppHeader`, whose own test mounts it without one. A TanStack hook
+ * called here or in the provider, rather than inside the dialog, would break
+ * that test.
+ *
+ * The dialog is mounted by `FeedbackDialogProvider` now, so the path is the
+ * one the provider imports.
  */
-vi.mock('./FeedbackDialog', () => ({
+vi.mock('@/components/feedback/FeedbackDialog', () => ({
   FeedbackDialog: ({
     open,
     onOpenChange,
@@ -33,7 +42,24 @@ vi.mock('./FeedbackDialog', () => ({
     ) : null,
 }));
 
-const { FeedbackLauncher, FEEDBACK_THANKS_MS } = await import('./FeedbackLauncher');
+const { FeedbackLauncher } = await import('./FeedbackLauncher');
+const { FeedbackDialogProvider, FEEDBACK_THANKS_MS, useFeedbackDialog } = await import(
+  '@/hooks/useFeedbackDialog'
+);
+
+/**
+ * The launcher is a trigger and nothing else: `open`, `thanks`, the dialog and
+ * the thank-you banner all live in the provider, so that a second trigger (the
+ * header's overflow menu below `sm`) shares one dialog and one `role="status"`
+ * live region instead of mounting a second copy of each.
+ */
+function render(): ReturnType<typeof renderWithoutProvider> {
+  return renderWithoutProvider(
+    <FeedbackDialogProvider>
+      <FeedbackLauncher />
+    </FeedbackDialogProvider>,
+  );
+}
 
 function open(): void {
   fireEvent.click(screen.getByTestId('feedback-launcher-button'));
@@ -45,14 +71,14 @@ describe('FeedbackLauncher', () => {
   });
 
   it('mounts nothing but the trigger until it is pressed', () => {
-    render(<FeedbackLauncher />);
+    render();
 
     expect(screen.getByTestId('feedback-launcher-button')).not.toBeNull();
     expect(screen.queryByTestId('feedback-dialog')).toBeNull();
   });
 
   it('names itself for a screen reader, having no visible text', () => {
-    render(<FeedbackLauncher />);
+    render();
 
     expect(screen.getByTestId('feedback-launcher-button').getAttribute('aria-label')).toBe(
       'שליחת משוב',
@@ -60,7 +86,7 @@ describe('FeedbackLauncher', () => {
   });
 
   it('opens the form on press', () => {
-    render(<FeedbackLauncher />);
+    render();
 
     open();
 
@@ -68,7 +94,7 @@ describe('FeedbackLauncher', () => {
   });
 
   it('thanks the parent once the report is sent', () => {
-    render(<FeedbackLauncher />);
+    render();
     open();
 
     fireEvent.click(screen.getByTestId('stub-send'));
@@ -79,7 +105,7 @@ describe('FeedbackLauncher', () => {
   });
 
   it('lets the parent dismiss the thank-you', () => {
-    render(<FeedbackLauncher />);
+    render();
     open();
     fireEvent.click(screen.getByTestId('stub-send'));
 
@@ -90,7 +116,7 @@ describe('FeedbackLauncher', () => {
 
   it('clears the thank-you by itself', () => {
     vi.useFakeTimers();
-    render(<FeedbackLauncher />);
+    render();
     open();
     fireEvent.click(screen.getByTestId('stub-send'));
 
@@ -113,7 +139,7 @@ describe('FeedbackLauncher', () => {
    * the tree before the text lands in it.
    */
   it('keeps the live region mounted so the thank-you is actually announced', () => {
-    render(<FeedbackLauncher />);
+    render();
 
     const region = screen.getByTestId('feedback-thanks-live');
     expect(region.getAttribute('role')).toBe('status');
@@ -128,7 +154,7 @@ describe('FeedbackLauncher', () => {
   });
 
   it('empties the live region when the thank-you clears', () => {
-    render(<FeedbackLauncher />);
+    render();
     open();
     fireEvent.click(screen.getByTestId('stub-send'));
 
@@ -145,7 +171,7 @@ describe('FeedbackLauncher', () => {
    * a nav tab hits nothing at all.
    */
   it('lets taps through to the nav underneath it', () => {
-    render(<FeedbackLauncher />);
+    render();
     open();
     fireEvent.click(screen.getByTestId('stub-send'));
 
@@ -157,7 +183,7 @@ describe('FeedbackLauncher', () => {
   });
 
   it('keeps the dismiss button out of the tab order, being aria-hidden', () => {
-    render(<FeedbackLauncher />);
+    render();
     open();
     fireEvent.click(screen.getByTestId('stub-send'));
 
@@ -169,7 +195,7 @@ describe('FeedbackLauncher', () => {
 
   /** The visible banner must not be read a second time after the region. */
   it('hides the visible banner from the accessibility tree', () => {
-    render(<FeedbackLauncher />);
+    render();
     open();
     fireEvent.click(screen.getByTestId('stub-send'));
 
@@ -177,10 +203,46 @@ describe('FeedbackLauncher', () => {
   });
 
   it('announces the thank-you politely rather than as an alert', () => {
-    render(<FeedbackLauncher />);
+    render();
     open();
     fireEvent.click(screen.getByTestId('stub-send'));
 
     expect(screen.getByTestId('feedback-thanks-live').getAttribute('role')).toBe('status');
+  });
+
+  /**
+   * The reason the state left this component. Below `sm` the header collapses
+   * into an overflow menu, so feedback has two triggers at once -- both in the
+   * DOM, one hidden by Tailwind. Two mounted launchers would mean two live
+   * regions, and a screen reader announcing the thank-you twice.
+   */
+  it('keeps one dialog and one live region across two triggers', () => {
+    function SecondTrigger() {
+      const { openDialog } = useFeedbackDialog();
+      return (
+        <button type="button" data-testid="second-trigger" onClick={openDialog}>
+          second
+        </button>
+      );
+    }
+
+    renderWithoutProvider(
+      <FeedbackDialogProvider>
+        <FeedbackLauncher />
+        <SecondTrigger />
+      </FeedbackDialogProvider>,
+    );
+
+    expect(screen.getAllByTestId('feedback-thanks-live')).toHaveLength(1);
+
+    // Either trigger reaches the same dialog, and there is only ever one.
+    fireEvent.click(screen.getByTestId('second-trigger'));
+    expect(screen.getAllByTestId('feedback-dialog')).toHaveLength(1);
+
+    fireEvent.click(screen.getByTestId('stub-send'));
+    expect(screen.getAllByTestId('feedback-thanks')).toHaveLength(1);
+
+    open();
+    expect(screen.getAllByTestId('feedback-dialog')).toHaveLength(1);
   });
 });

@@ -45,6 +45,20 @@
     --info-subtle: 210 80% 94%;
 
     --radius: 16px;
+
+    /* The app header's own geometry, read by `.app-header` and
+       `.sticky-under-header` in @layer components.
+
+       Deliberately plain custom properties and NOT a `spacing` token in
+       tailwind.config.ts: a token named `header` would make Tailwind emit a
+       second `.pt-header`-style rule for any hand-written utility of the same
+       name, and which one won would be emission order. src/app/globals.test.ts
+       asserts that collision cannot happen. */
+    --app-header-h: 3.5rem;
+    /* 0 = header fully visible, 1 = fully faded out. Written on
+       `document.documentElement` by useHeaderScroll, outside React, so the
+       scroll fade costs no re-renders. */
+    --app-header-p: 0;
   }
 
   .dark {
@@ -503,6 +517,29 @@
     .pb-nav {
       padding-bottom: 2rem;
     }
+  }
+
+  /* The app-wide sticky header, and whatever tucks under it.
+
+     No `transition` on either rule: `--app-header-p` is already a continuous
+     function of the scroll offset, and a transition would make the header lag
+     the finger. */
+  .app-header {
+    opacity: calc(1 - var(--app-header-p));
+    /* Percent, so nothing has to measure the header's height in JS. */
+    transform: translateY(calc(var(--app-header-p) * -100%));
+    will-change: opacity, transform;
+  }
+
+  /* For `position: sticky` elements that would otherwise park behind the
+     header: they sit below it while it is there and ride up into its place as
+     it leaves, ending flush where they sat before the header existed.
+
+     Sets `top` directly rather than composing with Tailwind's `top-*`: those
+     live in @layer utilities, which wins over this layer, so an element using
+     this class must not also carry a `top-*` utility. */
+  .sticky-under-header {
+    top: calc(var(--app-header-h) * (1 - var(--app-header-p)) + 0.5rem);
   }
 
   /* Content safe area */

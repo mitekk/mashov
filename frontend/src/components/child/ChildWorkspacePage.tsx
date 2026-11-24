@@ -186,7 +186,12 @@ export function ChildWorkspacePage({
           />
         </div>
 
-        <div className="sticky top-2 z-10 rounded-2xl border border-border/80 bg-background/85 backdrop-blur lg:self-start">
+        {/* `.sticky-under-header` instead of a `top-*` utility: it tracks the
+            app header, sitting below it while it is on screen and riding up
+            into its place as it fades, ending where `top-2` used to put it.
+            Tailwind's `top-*` lives in @layer utilities and would win over it,
+            so the two cannot be combined. */}
+        <div className="sticky-under-header sticky z-10 rounded-2xl border border-border/80 bg-background/85 backdrop-blur lg:self-start">
           <div className="rail px-3 py-2.5 md:flex-wrap md:overflow-visible lg:flex-col lg:items-stretch">
             {SECTIONS.map((section) => {
               return (
