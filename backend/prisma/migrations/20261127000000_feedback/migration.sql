@@ -9,7 +9,7 @@
 -- No foreign key on "userId": Postgres has no `ADD CONSTRAINT IF NOT EXISTS`,
 -- so an FK cannot be written idempotently, and a row whose whole point is to
 -- outlive a merged or unlinked household must not be blocked by one. See
--- ADR-0043 and the doc comment on `model Feedback`.
+-- ADR-0044 and the doc comment on `model Feedback`.
 
 CREATE TABLE IF NOT EXISTS "feedback" (
   "id"              TEXT NOT NULL,

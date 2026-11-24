@@ -1,6 +1,6 @@
-# ADR-0043: A Feedback Row Is a Self-Contained Snapshot, Not a Set of References
+# ADR-0044: A Feedback Row Is a Self-Contained Snapshot, Not a Set of References
 
-- **Date**: 2026-11-23
+- **Date**: 2026-11-24
 - **Status**: Accepted
 - **Deciders**: User, Backend agent, Frontend agent
 - **Relates to**: [ADR-0029](0029-household-merge-and-login-adoption.md) (the merge retires an

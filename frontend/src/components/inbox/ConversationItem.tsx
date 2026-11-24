@@ -58,7 +58,7 @@ export function ConversationItem({
       >
         {conversation.subject}
       </p>
-      <p className="mt-1 text-[11px] text-muted-foreground">
+      <p className="mt-1 text-2xs text-muted-foreground">
         {formatAbsoluteHe(conversation.sendTime)}
       </p>
       <div className="flex items-center gap-2 mt-1">
@@ -73,7 +73,7 @@ export function ConversationItem({
         )}
       </div>
       {!safeHref && (
-        <p className="text-[11px] text-muted-foreground mt-1">
+        <p className="text-2xs text-muted-foreground mt-1">
           קישור זה אינו זמין בשלב 1
         </p>
       )}

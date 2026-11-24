@@ -342,7 +342,7 @@ export function ReleasesDialog({
             data-testid="releases-dialog"
             lang="he-IL"
             dir="rtl"
-            className="fixed inset-x-4 top-12 z-50 mx-auto max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-background p-4 shadow-xl sm:inset-x-0"
+            className="dialog-panel fixed inset-x-4 top-12 z-50 mx-auto w-full max-w-2xl rounded-2xl border border-border bg-background p-4 shadow-xl sm:inset-x-0"
           >
             <div className="mb-4 flex items-start justify-between gap-2">
               <Dialog.Title className="text-lg font-semibold text-foreground">
@@ -604,7 +604,7 @@ export function ReleasesDialog({
           <AlertDialog.Overlay className="fixed inset-0 z-[60] bg-black/55" />
           <AlertDialog.Content
             dir="rtl"
-            className="fixed inset-x-4 top-1/2 z-[61] mx-auto w-full max-w-sm -translate-y-1/2 rounded-2xl border border-border bg-background p-4 shadow-xl"
+            className="dialog-panel fixed inset-x-4 top-1/2 z-[61] mx-auto w-full max-w-sm -translate-y-1/2 rounded-2xl border border-border bg-background p-4 shadow-xl"
           >
             <AlertDialog.Title className="text-base font-semibold text-foreground">
               למחוק בקשת שחרור?

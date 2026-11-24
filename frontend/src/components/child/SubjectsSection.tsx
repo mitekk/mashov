@@ -32,9 +32,14 @@ export function SubjectsSection({ studentGuid }: SubjectsSectionProps) {
           title="אין נתוני מקצועות"
         />
       )}
+      {/* The card clips, so the table needs its own scroller: a long teacher
+          name should scroll inside the card rather than be cut off by it. A
+          two-column grid, which the other sections get at lg, would make no
+          sense for a single table. */}
       {data && data.data.length > 0 && (
         <div className="card-base overflow-hidden">
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[20rem] text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/55">
                 <th className="text-start px-4 py-2.5 text-xs font-semibold text-muted-foreground">
@@ -70,6 +75,7 @@ export function SubjectsSection({ studentGuid }: SubjectsSectionProps) {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </section>

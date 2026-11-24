@@ -12,6 +12,8 @@ import {
   connectionStudentWhere,
   linkStudentsToConnection,
 } from '../common/student-links';
+import { MASHOV_CSRF_TOKEN } from '../common/mashov-login/mashov-login-body';
+import { readResponseHeader } from '../common/mashov-login/mashov-login-headers';
 
 interface LoginChild {
   childGuid: string;
@@ -146,7 +148,7 @@ export class MashovSessionService {
   // }
 
   async login(): Promise<void> {
-    const csrfToken = "9c690c16-d0c8-ed43-9314-d622077e2e26";
+    const csrfToken = MASHOV_CSRF_TOKEN;
 
     const semel = this.configService.get<number>("MASHOV_SEMEL");
     const username = this.configService.get<string>("MASHOV_USERNAME");
@@ -815,7 +817,7 @@ export class MashovSessionService {
 
     const connRecord = await this.prisma.householdConnection.findUnique({
       where: { id: connectionId },
-      select: { mashovUniqueId: true, schoolYear: true },
+      select: { mashovUniqueId: true, schoolYear: true, devicePass: true },
     });
     const storedUniqueId = connRecord?.mashovUniqueId ?? undefined;
 
@@ -825,7 +827,7 @@ export class MashovSessionService {
     const isHistorical =
       connRecord?.schoolYear !== undefined && Number(year) < connRecord.schoolYear;
 
-    const authPromise = this.loginWithCredentials(
+    const authPromise = this.establishConnectionLogin({
       semel,
       year,
       username,
@@ -833,7 +835,8 @@ export class MashovSessionService {
       connectionId,
       storedUniqueId,
       isHistorical,
-    );
+      storedDevicePass: connRecord?.devicePass ?? null,
+    });
     placeholder.authPromise = authPromise;
 
     try {
@@ -902,6 +905,102 @@ export class MashovSessionService {
     return { 'X-Csrf-Token': csrfToken, Cookie: cookieString };
   }
 
+  /**
+   * One connection login, by whichever route works.
+   *
+   * Prefers Mashov's trusted-device re-login (`POST /api/loginDevice`, an empty
+   * body plus a `devicePass` header) when we hold a `devicePass`, and falls
+   * back to the password login otherwise or when it fails.
+   *
+   * That preference is the load-bearing half of MFA support: sixteen cron tasks
+   * re-login here, and a password login against an MFA-protected account
+   * re-opens the challenge every time. Without this path the parent signs in
+   * once and then watches their data go stale overnight, with no error anyone
+   * can see.
+   *
+   * A HISTORICAL login never takes it: `/api/loginDevice` carries no year at
+   * all, so it would hand back the live session rather than the year the
+   * backfill asked for.
+   */
+  private async establishConnectionLogin(input: {
+    semel: number;
+    year: number;
+    username: string;
+    password: string;
+    connectionId?: string;
+    storedUniqueId?: string;
+    isHistorical: boolean;
+    storedDevicePass: string | null;
+  }): Promise<ConnectionLogin> {
+    if (input.storedDevicePass && !input.isHistorical) {
+      try {
+        return await this.loginWithDevicePass(
+          input.semel,
+          input.year,
+          input.username,
+          input.storedDevicePass,
+          input.connectionId,
+          input.storedUniqueId,
+        );
+      } catch (err) {
+        // A revoked or rotated-out devicePass must degrade to the route that
+        // still works, not fail the sync task. Logged at warn because a
+        // permanent failure here means every re-login pays a password login
+        // and an MFA account will start re-challenging.
+        this.logger.warn(
+          `Trusted-device login failed for connection ${input.connectionId ?? '(none)'}; falling back to password login: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        );
+      }
+    }
+
+    return this.loginWithCredentials(
+      input.semel,
+      input.year,
+      input.username,
+      input.password,
+      input.connectionId,
+      input.storedUniqueId,
+      input.isHistorical,
+    );
+  }
+
+  /**
+   * `POST /api/loginDevice`: a session with no password and no MFA challenge.
+   *
+   * It takes no year, so it cannot be asked for one -- the session it returns is
+   * whatever Mashov considers current. `finishConnectionLogin` therefore
+   * persists the roster under the year the CALLER asked for, which
+   * `reconcileFromLogin` corrects on the next pass if they disagree. Transient
+   * and self-healing, and the password path has the same shape; it is why a
+   * historical backfill is excluded from this route entirely (see
+   * `establishConnectionLogin`), since there the mismatch would be permanent.
+   */
+  private async loginWithDevicePass(
+    semel: number,
+    year: number,
+    username: string,
+    encryptedDevicePass: string,
+    connectionId?: string,
+    storedUniqueId?: string,
+  ): Promise<ConnectionLogin> {
+    const devicePass = this.encryptionService.decrypt(encryptedDevicePass);
+
+    const extraHeaders: Record<string, string> = { devicePass };
+    if (storedUniqueId) {
+      extraHeaders['Cookie'] = `uniquId=${storedUniqueId}`;
+    }
+
+    const response: AxiosResponse<LoginResponse> = await this.httpClient.post(
+      '/api/loginDevice',
+      {},
+      { headers: { ...this.loginHeaders(), ...extraHeaders } },
+    );
+
+    return this.finishConnectionLogin(response, semel, year, username, connectionId, false);
+  }
+
   private async loginWithCredentials(
     semel: number,
     year: number,
@@ -919,7 +1018,7 @@ export class MashovSessionService {
      */
     isHistorical = false,
   ): Promise<ConnectionLogin> {
-    const csrfToken = '9c690c16-d0c8-ed43-9314-d622077e2e26';
+    const csrfToken = MASHOV_CSRF_TOKEN;
 
     const loginBody = {
       semel: Number(semel),
@@ -946,19 +1045,48 @@ export class MashovSessionService {
     const response: AxiosResponse<LoginResponse> = await this.httpClient.post(
       '/api/login',
       loginBody,
-      {
-        headers: {
-          'X-Csrf-Token': csrfToken,
-          'Content-Type': 'application/json',
-          Referer: `${this.baseUrl}/students/login`,
-          'sec-ch-ua-platform': '"macOS"',
-          'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-          'sec-ch-ua-mobile': '?0',
-          ...extraHeaders,
-        },
-      },
+      { headers: { ...this.loginHeaders(csrfToken), ...extraHeaders } },
     );
 
+    return this.finishConnectionLogin(
+      response,
+      semel,
+      year,
+      username,
+      connectionId,
+      isHistorical,
+    );
+  }
+
+  /** The headers every connection login sends. */
+  private loginHeaders(csrfToken: string = MASHOV_CSRF_TOKEN): Record<string, string> {
+    return {
+      'X-Csrf-Token': csrfToken,
+      'Content-Type': 'application/json',
+      Referer: `${this.baseUrl}/students/login`,
+      'sec-ch-ua-platform': '"macOS"',
+      'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+      'sec-ch-ua-mobile': '?0',
+    };
+  }
+
+  /**
+   * Everything a connection login does once the response is in hand: parse the
+   * session cookies, persist the device identity, refresh the roster, and prime
+   * the per-connection caches.
+   *
+   * Shared by the password login and the trusted-device login so the two cannot
+   * drift about what a login persists -- in particular about writing back the
+   * `devicePass`, which Mashov may rotate on either route.
+   */
+  private async finishConnectionLogin(
+    response: AxiosResponse<LoginResponse>,
+    semel: number,
+    year: number,
+    username: string,
+    connectionId: string | undefined,
+    isHistorical: boolean,
+  ): Promise<ConnectionLogin> {
     const setCookieHeader = response.headers['set-cookie'];
     if (!setCookieHeader) {
       throw new Error('No Set-Cookie header in login response for connection');
@@ -987,6 +1115,11 @@ export class MashovSessionService {
 
     if (connectionId && parsed.uniquId && !isHistorical) {
       const enrolledYears = this.enrolledSchoolYears(response.data);
+      // Mashov may rotate the devicePass on any login, including a
+      // trusted-device one. Keeping a stale value would fail the NEXT
+      // re-login, and sync would silently drop back to a password that may no
+      // longer exist -- so whatever came back is written through.
+      const devicePass = readDevicePassHeader(response.headers);
       await this.prisma.householdConnection.update({
         where: { id: connectionId },
         data: {
@@ -995,6 +1128,11 @@ export class MashovSessionService {
           // would make the backfill skip every year instead of falling back to
           // the capped window.
           ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
+          // Encrypted like `encryptedPassword` -- it is a credential, and it
+          // alone is enough to get a session.
+          ...(devicePass
+            ? { devicePass: this.encryptionService.encrypt(devicePass) }
+            : {}),
         },
       });
     }
@@ -1020,4 +1158,17 @@ export class MashovSessionService {
     this.logger.debug(`Connection session established for semel=${semel} username=${username}`);
     return { cookies: parsed as SessionCookies, loginData: response.data, roster };
   }
+}
+
+/**
+ * The `devicePass` response header, whatever case the transport chose.
+ *
+ * Axios lowercases header names on the Node adapter but not everywhere, and
+ * Mashov's own bundle spells it mixed-case. A case-sensitive read would
+ * silently return nothing and quietly disable the trusted-device path -- which
+ * surfaces a day later as "MFA accounts stopped syncing" rather than as an
+ * error anyone can see.
+ */
+function readDevicePassHeader(headers: unknown): string | undefined {
+  return readResponseHeader(headers as Record<string, unknown> | undefined, 'devicepass');
 }

@@ -54,6 +54,17 @@ export interface SchoolLink {
   /** `null` means the first sync has not finished -- the UI says so. */
   lastSyncAt: string | null;
   active: boolean;
+  /**
+   * The stored Mashov password no longer works -- today, because a password
+   * reset driven through our own recovery flow succeeded.
+   *
+   * Load-bearing for a multi-school household: reset school B, sign in with
+   * school A's password, and the app has a perfectly valid session while B's
+   * background sync is dead. Only a per-school flag can say which one needs
+   * attention. Cleared by any sign-in for that school, which rewrites the
+   * credential anyway.
+   */
+  credentialStale: boolean;
 }
 
 /** The slice of a link `GET /auth/me` carries, for every page's badges. */
@@ -63,6 +74,17 @@ export interface MeSchool {
   schoolName: string;
   shortLabel: string;
   schoolYear: number;
+  /**
+   * The stored Mashov password no longer works -- today, because a password
+   * reset driven through our own recovery flow succeeded.
+   *
+   * Load-bearing for a multi-school household: reset school B, sign in with
+   * school A's password, and the app has a perfectly valid session while B's
+   * background sync is dead. Only a per-school flag can say which one needs
+   * attention. Cleared by any sign-in for that school, which rewrites the
+   * credential anyway.
+   */
+  credentialStale: boolean;
 }
 
 @Injectable()
@@ -889,6 +911,9 @@ export class SchoolLinksService {
       lastLoginAt: connection.lastLoginAt?.toISOString() ?? null,
       lastSyncAt: lastSyncByConnection.get(connection.id)?.toISOString() ?? null,
       active: connection.active,
+      // A boolean, not the timestamp: the UI branches on it, and `undefined`
+      // would render the banner's absence by accident rather than by decision.
+      credentialStale: connection.credentialStaleAt !== null,
     }));
   }
 
@@ -901,6 +926,7 @@ export class SchoolLinksService {
       schoolName: link.schoolName,
       shortLabel: link.shortLabel,
       schoolYear: link.schoolYear,
+      credentialStale: link.credentialStale,
     }));
   }
 }

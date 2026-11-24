@@ -81,16 +81,16 @@ export function FeedbackLauncher() {
           data-testid="feedback-thanks"
           lang="he-IL"
           dir="rtl"
-          // `pb-nav` rather than a literal: BottomNav is `fixed bottom-0 z-50`,
-          // and the token keeps tracking it if the nav moves or becomes a
-          // side-rail at `lg`.
+          // `pb-nav` rather than a literal, and `lg:ps-rail` to match
+          // `AppShell`: AppNav is `fixed bottom-0 z-50` on a phone and a side
+          // rail at `lg`, and both tokens track it rather than restating it.
           //
-          // `pointer-events-none` because that same padding puts this box over
-          // the whole of BottomNav, above it in z-order and invisible, for ten
+          // `pointer-events-none` because that padding puts this box over the
+          // whole of AppNav, above it in z-order and invisible, for ten
           // seconds -- `aria-hidden` does not affect hit testing, so without
           // it a parent who sends feedback and reaches for a nav tab taps
           // nothing. The banner itself opts back in.
-          className="pb-nav pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex items-center justify-between gap-3 px-4"
+          className="pb-nav pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex items-center justify-between gap-3 px-4 lg:ps-rail"
         >
           <span className="pointer-events-auto mx-auto flex w-full max-w-md items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm text-foreground shadow-lg">
             {THANKS_TEXT}

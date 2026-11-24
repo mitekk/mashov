@@ -199,15 +199,21 @@ function InboxPageContent() {
 
   return (
     <div data-testid="inbox-page" className="page-shell space-y-5">
+      {/*
+        At 360 this row was a title plus a three-segment filter (~190px) plus
+        two 40px buttons, all on one non-wrapping line. `.page-header` now
+        wraps below sm, and the control group wraps within itself so the filter
+        and the two buttons can take separate lines rather than overflow.
+      */}
       <header className="page-header items-center">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <h1 className="page-title">דואר</h1>
           {summary && summary.newConversations > 0 && (
             <UnreadBadge count={summary.newConversations} />
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {/* Filter toggle */}
           <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm">
             <button
@@ -279,7 +285,7 @@ function InboxPageContent() {
       {hasSelection && (
         <section
           data-testid="inbox-bulk-actions"
-          className="card-base flex flex-wrap items-center gap-2 px-3 py-2.5"
+          className="card-base flex flex-wrap items-center gap-2 px-3 py-2.5 lg:sticky lg:top-4 lg:z-10"
         >
           <span className="text-sm font-medium text-foreground">
             נבחרו {selectedConversationIds.length}
@@ -354,7 +360,7 @@ function InboxPageContent() {
         </section>
       )}
 
-      <div className="section-stack">
+      <div className="section-stack measure">
         {/* The gate is part of the condition, not merely of the query: a
             disabled TanStack v5 query reports `isLoading === false`, so
             without it a gated first paint would fall through to the empty

@@ -120,7 +120,7 @@ nothing and is invisible until someone reads the column.
 
 Each row is a self-contained snapshot with no foreign key, because the household merge
 (ADR-0029) and the connection unlink (ADR-0032) make pure references uninterpretable exactly
-when a two-school household is involved. See ADR-0043.
+when a two-school household is involved. See ADR-0044.
 
 **Rate limit: 10 reports per hour per user** — counted as rows in `feedback`, not by the
 global `ThrottlerGuard`, which keys on IP and would lock out a whole school NAT or both

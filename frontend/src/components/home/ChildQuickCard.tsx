@@ -71,19 +71,24 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
         </span>
       </div>
       {child.latestUpdateAt && (
-        <p className="text-[10px] text-muted-foreground opacity-60">
+        <p className="text-3xs text-muted-foreground opacity-60">
           {formatRelativeHe(child.latestUpdateAt)}
         </p>
       )}
       {!safeHref && (
-        <p className="text-[11px] text-muted-foreground mt-1">
+        <p className="text-2xs text-muted-foreground mt-1">
           קישור זה אינו זמין בשלב 1
         </p>
       )}
     </>
   );
 
-  const className = 'card-base tap-target flex min-w-[176px] flex-shrink-0 flex-col gap-2.5 border-border p-4 transition-colors';
+  // The rail floor and its md release live HERE, on the card, not on the
+  // parent's `.card-grid`: `@layer components` always loses to
+  // `@layer utilities`, whatever the selector specificity, so a component
+  // class could never override `min-w-[176px]` on this child.
+  const className =
+    'card-base tap-target flex min-w-[176px] flex-shrink-0 flex-col gap-2.5 border-border p-4 transition-colors md:w-auto md:min-w-0 md:flex-shrink';
 
   if (!safeHref) {
     return (

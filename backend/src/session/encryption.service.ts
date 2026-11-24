@@ -26,6 +26,28 @@ export class EncryptionService {
     return key;
   }
 
+  /**
+   * A key for HMAC-ing identifiers, derived from `ENCRYPTION_KEY`.
+   *
+   * Derived rather than the raw key, so a leaked identity hash cannot be fed
+   * back as encryption material, and separate from `getKey()` so the two uses
+   * of the secret are visibly different. HKDF-style single-step: one
+   * SHA-256 over the key and a fixed label.
+   *
+   * It exists because a bare `sha256(idNumber)` is not a one-way function over
+   * a 9-digit domain -- an Israeli ID number is about 10^9 candidates, so a
+   * full rainbow table is seconds of work. Keyed, the hash is still stable
+   * enough to count per identity and join two records, without parking a
+   * recoverable national identifier in Redis or an audit table.
+   */
+  hashKey(): Buffer {
+    return crypto
+      .createHash('sha256')
+      .update(this.getKey())
+      .update('mashov:identity-hash:v1')
+      .digest();
+  }
+
   encrypt(plaintext: string): string {
     const key = this.getKey();
     const iv = crypto.randomBytes(this.ivLength);

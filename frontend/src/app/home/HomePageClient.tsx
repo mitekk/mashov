@@ -147,7 +147,20 @@ function HomePageContent() {
         {hasChildren && (
           <section data-testid="home-children" className="section-stack">
             <h2 className="text-lg font-semibold text-foreground">ילדים</h2>
-            <div className="flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide">
+            {/*
+              A scroll-snap rail on a phone, a grid once there is room for one.
+              The md+ half is spelled in utilities rather than as an md-variant
+              of `.card-grid`, on purpose: that class and `.rail` both live in
+              `@layer components`, and between two rules in one layer source
+              order decides rather than the breakpoint -- so the variant would
+              be a coin-flip against `.rail`'s `display:flex`. Utilities always
+              win over the components layer, so these do.
+
+              (Described rather than written out for a second reason:
+              Tailwind's content scanner reads comments, so naming the variant
+              here would compile it into the bundle, unused.)
+            */}
+            <div className="rail pb-1 md:grid md:grid-cols-2 md:gap-3 md:overflow-visible xl:grid-cols-3">
               {visibleChildren.map((child) => (
                 <ChildQuickCard
                   key={child.studentGuid}

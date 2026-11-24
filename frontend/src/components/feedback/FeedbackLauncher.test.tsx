@@ -139,7 +139,7 @@ describe('FeedbackLauncher', () => {
 
   /**
    * The wrapper is `fixed bottom-0 z-[60]` with `pb-nav` padding, so its box
-   * extends down across the whole of BottomNav (`z-50`) -- invisible, above
+   * extends down across the whole of AppNav (`z-50`) -- invisible, above
    * it, and for the full ten seconds. `aria-hidden` does not affect hit
    * testing, so without this a parent who sends feedback and immediately taps
    * a nav tab hits nothing at all.

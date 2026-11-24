@@ -50,6 +50,12 @@ export default defineConfig({
     ? [['github'], ['html', { outputFolder: 'playwright-report', open: 'never' }]]
     : [['html', { outputFolder: 'playwright-report', open: 'on-failure' }]],
 
+  // No `viewport` here, deliberately. It used to declare 390x844 with a
+  // comment about the app being mobile-first, while every project spread
+  // `devices['Desktop Chrome']` -- and project `use` beats top-level `use`, so
+  // the suite had only ever run at 1280x720. Deleting the key rather than
+  // fixing it means the trap cannot re-form: each project below states its own
+  // viewport explicitly, AFTER its device spread.
   use: {
     // All tests run against the Dockerized frontend
     baseURL,
@@ -59,9 +65,6 @@ export default defineConfig({
 
     // Capture screenshot on failure
     screenshot: 'only-on-failure',
-
-    // Viewport matching common mobile screen (app is mobile-first)
-    viewport: { width: 390, height: 844 },
   },
 
   projects: [
@@ -71,11 +74,17 @@ export default defineConfig({
       testMatch: '**/auth.setup.ts',
     },
 
-    // --- Auth spec: tests unauthenticated flows (no session cookie) ---
+    // --- Auth specs: unauthenticated flows, so NO session cookie ---
+    //
+    // `auth-recovery.spec.ts` belongs here and not in `chromium` below: every
+    // screen it drives (forgot-password, reset-password, mfa) exists precisely
+    // for someone who cannot sign in. Run with a pre-set session it would also
+    // inherit the `setup` dependency, which needs a working backend to mint
+    // one -- for tests that mock every API call.
     {
       name: 'chromium-auth',
-      use: { ...devices['Desktop Chrome'] },
-      testMatch: '**/auth.spec.ts',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 720 } },
+      testMatch: ['**/auth.spec.ts', '**/auth-recovery.spec.ts'],
     },
 
     // --- All other specs: run with session cookie pre-set ---
@@ -83,13 +92,71 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
+        viewport: { width: 1280, height: 720 },
         storageState: authFile,
         userAgent: 'mashov-e2e-browser',
         extraHTTPHeaders: {
           'x-mashov-e2e-auth-bypass': '1',
         },
       },
-      testIgnore: '**/auth.spec.ts',
+      // auth and auth-recovery have their own unauthenticated project above;
+      // responsive.spec.ts has its own three projects below, and running it
+      // here too would duplicate the 1280 pass.
+      testIgnore: ['**/auth.spec.ts', '**/auth-recovery.spec.ts', '**/responsive.spec.ts'],
+      dependencies: ['setup'],
+    },
+
+    // --- The adaptive-layout suite, at the three sizes it is about ---
+    //
+    // Only responsive.spec.ts. The other specs encode the desktop DOM: at 360
+    // they would fail on every lg-only element and triple CI time for no
+    // signal, so adaptive coverage lives in one spec across three projects.
+    //
+    // `isMobile: true` on the phone project is not cosmetic -- it turns on
+    // meta-viewport emulation and touch, which is what actually exercises the
+    // `maximumScale` removal, `env(safe-area-inset-*)` and svh/dvh behaviour.
+    {
+      name: 'mobile-360',
+      use: {
+        ...devices['Pixel 7'],
+        viewport: { width: 360, height: 780 },
+        isMobile: true,
+        hasTouch: true,
+        storageState: authFile,
+        userAgent: 'mashov-e2e-browser',
+        extraHTTPHeaders: {
+          'x-mashov-e2e-auth-bypass': '1',
+        },
+      },
+      testMatch: '**/responsive.spec.ts',
+      dependencies: ['setup'],
+    },
+    {
+      name: 'tablet-768',
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 768, height: 1024 },
+        storageState: authFile,
+        userAgent: 'mashov-e2e-browser',
+        extraHTTPHeaders: {
+          'x-mashov-e2e-auth-bypass': '1',
+        },
+      },
+      testMatch: '**/responsive.spec.ts',
+      dependencies: ['setup'],
+    },
+    {
+      name: 'desktop-1280',
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1280, height: 800 },
+        storageState: authFile,
+        userAgent: 'mashov-e2e-browser',
+        extraHTTPHeaders: {
+          'x-mashov-e2e-auth-bypass': '1',
+        },
+      },
+      testMatch: '**/responsive.spec.ts',
       dependencies: ['setup'],
     },
   ],

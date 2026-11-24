@@ -81,7 +81,7 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
 
   return (
     <AppShell>
-      <div data-testid="homework-detail-page" className="page-shell space-y-4">
+      <div data-testid="homework-detail-page" className="page-shell measure space-y-4">
         <div className="flex items-center justify-between gap-2 pt-5">
           <button
             type="button"
@@ -174,12 +174,12 @@ export function HomeworkDetailPage({ studentGuid, homeworkId }: HomeworkDetailPa
                 <span className="text-xs text-muted-foreground">שיעור {data.lesson}</span>
               )}
               {data.isNew && (
-                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                <span className="rounded-full bg-primary/15 px-2 py-0.5 text-3xs font-semibold text-primary">
                   חדש
                 </span>
               )}
               {data.isArchived && (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                <span className="rounded-full bg-muted px-2 py-0.5 text-3xs font-medium text-muted-foreground">
                   בארכיון
                 </span>
               )}

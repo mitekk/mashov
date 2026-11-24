@@ -49,7 +49,7 @@ export function SchoolBadge({
       <span
         data-testid={testId ?? 'school-badge'}
         title={schoolName ?? schoolShortLabel}
-        className="truncate max-w-[6rem]"
+        className="truncate max-w-[6rem] sm:max-w-[10rem] lg:max-w-none"
       >
         {schoolShortLabel}
       </span>

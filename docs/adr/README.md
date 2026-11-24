@@ -49,4 +49,6 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0039](0039-mashov-attachments-into-telegram.md) | Mashov Attachment Bytes Leave the Host, into a Telegram Chat | Accepted | User, Backend agent | 2026-11-22 |
 | [ADR-0040](0040-digest-waits-for-the-childs-own-last-bell.md) | The Digest Waits for the Child's Own Last Bell | Accepted | User, Backend agent | 2026-11-23 |
 | [ADR-0041](0041-self-hosted-image-optimization.md) | Self-Hosted Image Optimization — AVIF-First, `sharp` Shipped Explicitly, Cache on a Volume | Accepted | User, Frontend agent | 2026-11-23 |
-| [ADR-0043](0043-feedback-rows-are-self-contained.md) | A Feedback Row Is a Self-Contained Snapshot, Not a Set of References | Accepted | User, Backend agent, Frontend agent | 2026-11-23 |
+| [ADR-0042](0042-in-app-mashov-auth-surface.md) | The Whole Mashov Auth Surface Lives In Our App — Except the Captcha, Which Cannot | Accepted | User, Backend agent, Frontend agent | 2026-11-23 |
+| [ADR-0043](0043-self-hosted-font.md) | Assistant Is Committed to the Repo — One `next/font/local` Call per Subset, All Sharing One Family Name | Accepted | User, Frontend agent | 2026-11-23 |
+| [ADR-0044](0044-feedback-rows-are-self-contained.md) | A Feedback Row Is a Self-Contained Snapshot, Not a Set of References | Accepted | User, Backend agent, Frontend agent | 2026-11-24 |

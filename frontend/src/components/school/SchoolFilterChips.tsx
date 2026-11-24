@@ -32,7 +32,7 @@ export function SchoolFilterChips({ value, onChange }: SchoolFilterChipsProps) {
       role="group"
       aria-label="סינון לפי בית ספר"
       data-testid="school-filter-chips"
-      className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="rail rail-bleed pb-1"
     >
       <Chip
         testId="school-filter-chip-all"

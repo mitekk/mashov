@@ -53,7 +53,7 @@ function ChildrenPageContent() {
 
   return (
     <AppShell>
-      <div className="page-shell space-y-5">
+      <div className="page-shell page-shell-wide space-y-5">
         <header className="page-header">
           <h1 className="page-title">ילדים</h1>
           <div className="flex items-center gap-2">
@@ -93,7 +93,7 @@ function ChildrenPageContent() {
               </button>
             </div>
           ) : (
-            <div data-testid="children-page" className="grid gap-3 md:grid-cols-2">
+            <div data-testid="children-page" className="card-grid">
               {visibleChildren.map((child) => (
                 <ChildCard key={child.studentGuid} child={child} />
               ))}
@@ -115,7 +115,7 @@ export default function ChildrenPage() {
     <Suspense
       fallback={(
         <AppShell>
-          <div className="page-shell space-y-5">
+          <div className="page-shell page-shell-wide space-y-5">
             <LoadingState message="טוען ילדים..." />
           </div>
         </AppShell>

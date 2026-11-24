@@ -207,6 +207,11 @@ describe('SchoolLinksService', () => {
       const schools = await makeService(prisma).listMeSchools('user-1');
 
       expect(Object.keys(schools[0]).sort()).toEqual([
+        // Deliberately part of the badge payload, not a management field: a
+        // household that reset one school's password has a valid session and a
+        // dead sync on that school, and every page's badge is where the parent
+        // has to be able to see which one.
+        'credentialStale',
         'id',
         'schoolName',
         'schoolYear',
@@ -1240,5 +1245,61 @@ describe('SchoolLinksService.createLink', () => {
         service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' }),
       ).resolves.toBeTruthy();
     });
+  });
+});
+
+/**
+ * A reset through our recovery flow invalidates the stored password, and sync
+ * then breaks silently. `credentialStale` is what makes it visible.
+ *
+ * It is load-bearing for a MULTI-SCHOOL household in particular: reset school
+ * B, sign in with school A's password, and the app has a valid session while
+ * B's background sync is dead. Only a per-school flag can say so.
+ */
+describe('SchoolLinksService credentialStale', () => {
+  it('reports a school whose stored credential no longer works', async () => {
+    const { prisma } = makePrisma({
+      connections: [conn({ credentialStaleAt: new Date('2026-11-23T09:00:00Z') })],
+    });
+
+    const links = await makeService(prisma).listLinks('user-1');
+
+    expect(links[0].credentialStale).toBe(true);
+  });
+
+  it('reports false, not undefined, for a healthy school', async () => {
+    // The UI branches on it; `undefined` would render the banner's absence by
+    // accident rather than by decision.
+    const { prisma } = makePrisma({ connections: [conn({ credentialStaleAt: null })] });
+
+    const links = await makeService(prisma).listLinks('user-1');
+
+    expect(links[0].credentialStale).toBe(false);
+  });
+
+  it('carries the flag through to me.schools', async () => {
+    // `GET /auth/me` is what every page's school badge reads, so the banner
+    // has to be reachable without a separate fetch.
+    const { prisma } = makePrisma({
+      connections: [
+        conn({ credentialStaleAt: new Date('2026-11-23T09:00:00Z') }),
+        conn({ id: 'conn-b', schoolCode: 999999, username: 'parent-b', credentialStaleAt: null }),
+      ],
+      studentCounts: [],
+    });
+
+    const schools = await makeService(prisma).listMeSchools('user-1');
+
+    expect(schools.map((school) => school.credentialStale)).toEqual([true, false]);
+  });
+
+  it('still carries no password alongside the flag', async () => {
+    const { prisma } = makePrisma({
+      connections: [conn({ credentialStaleAt: new Date('2026-11-23T09:00:00Z') })],
+    });
+
+    const schools = await makeService(prisma).listMeSchools('user-1');
+
+    expect(JSON.stringify(schools)).not.toContain('enc:secret-password');
   });
 });
