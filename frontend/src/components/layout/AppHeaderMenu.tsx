@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
 import { MessageSquarePlus, MoonStar, MoreHorizontal, RefreshCw, Sun } from 'lucide-react';
 import { useSyncRefresh } from '@/hooks/useDashboard';
@@ -47,10 +47,35 @@ export function AppHeaderMenu({ canSendFeedback, className }: AppHeaderMenuProps
   const isDark = theme === 'dark';
   const themeLabel = isDark ? 'מצב בהיר' : 'מצב כהה';
 
+  const [open, setOpen] = useState(false);
+
+  // The trigger is `sm:hidden`, but the content is portaled to <body> and has
+  // no width gating of its own. A parent who opens this at 360 and rotates to
+  // landscape (>= sm on a phone) would leave the trigger `display: none` with
+  // its anchor rect collapsed to 0x0, and Radix would keep the menu mounted:
+  // an orphaned popover in the viewport corner with nothing to explain it.
+  // Same rotation-across-`sm` case the shared sync state in useDashboard.ts
+  // exists for.
+  useEffect(() => {
+    if (!open) return undefined;
+    const wideEnoughForInline = window.matchMedia?.('(min-width: 640px)');
+    if (!wideEnoughForInline) return undefined;
+
+    const closeIfInlineTakesOver = (): void => {
+      if (wideEnoughForInline.matches) setOpen(false);
+    };
+
+    closeIfInlineTakesOver();
+    wideEnoughForInline.addEventListener?.('change', closeIfInlineTakesOver);
+    return () => {
+      wideEnoughForInline.removeEventListener?.('change', closeIfInlineTakesOver);
+    };
+  }, [open]);
+
   return (
     // `dir` belongs on the root: it is what makes the arrow keys and the
     // content's alignment follow the writing direction.
-    <DropdownMenuPrimitive.Root dir="rtl">
+    <DropdownMenuPrimitive.Root dir="rtl" open={open} onOpenChange={setOpen}>
       <DropdownMenuPrimitive.Trigger
         data-testid="header-menu-trigger"
         aria-label="עוד פעולות"

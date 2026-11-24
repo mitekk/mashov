@@ -216,7 +216,11 @@ test.describe('app header', () => {
     // writing direction, and Escape restoring focus to the trigger is the only
     // thing that stops a keyboard user being dumped at the top of the document.
     await page.goto('/home');
-    await expect(page.getByTestId('app-header')).toBeVisible();
+    // `header-profile-link`, not the header shell: the shell renders before
+    // `me` resolves, and the feedback item is gated on `me`. Opening the menu
+    // in that window makes THEME the first item, and `toBeFocused()` does not
+    // self-heal -- focus does not move when the item appears later.
+    await expect(page.getByTestId('header-profile-link')).toBeVisible();
 
     const trigger = page.getByTestId('header-menu-trigger');
     await trigger.focus();

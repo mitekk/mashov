@@ -21,8 +21,11 @@ const { useSyncRefresh } = await import('./useDashboard');
  * header renders the inline `RefreshButton` and the overflow menu's sync item
  * at the same time, at every width, with Tailwind hiding one.
  */
+const capture: Record<string, ReturnType<typeof useSyncRefresh> | undefined> = {};
+
 function Consumer({ label }: { label: string }) {
   const sync = useSyncRefresh();
+  capture[label] = sync;
   return (
     <button type="button" data-testid={label} disabled={sync.isPending} onClick={() => sync.mutate()}>
       {sync.isPending ? 'pending' : 'idle'}
@@ -71,6 +74,46 @@ describe('useSyncRefresh', () => {
       expect(screen.getByTestId('inline').textContent).toBe('pending');
     });
     expect(screen.getByTestId('inline')).toHaveProperty('disabled', true);
+  });
+
+  /**
+   * `{ ...mutation, isPending: shared }` would leave `status`, `isIdle` and
+   * the rest describing only the local instance, so a consumer writing the
+   * equivalent-looking `status === 'pending'` or `!isIdle` would quietly get
+   * the un-shared answer and bring the double-sync back. The surface is narrow
+   * on purpose: what is not exposed cannot disagree.
+   */
+  it('exposes no second, un-shared way to ask whether a sync is running', async () => {
+    renderBoth();
+
+    act(() => {
+      screen.getByTestId('menu').click();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('inline').textContent).toBe('pending');
+    });
+
+    expect(Object.keys(capture.inline ?? {}).sort()).toEqual([
+      'error',
+      'isError',
+      'isPending',
+      'mutate',
+      'mutateAsync',
+      'reset',
+    ]);
+  });
+
+  it('keeps a stable identity so it is safe in a dependency array', () => {
+    renderBoth();
+    const first = capture.inline;
+
+    act(() => {
+      screen.getByTestId('menu').click();
+    });
+
+    // Re-rendered, but only the pending flag changed -- not the object every
+    // consumer's effects depend on.
+    expect(capture.inline?.mutate).toBe(first?.mutate);
   });
 
   it('clears for every consumer once the sync finishes', async () => {

@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const toggleTheme = vi.fn();
 const mutate = vi.fn();
@@ -28,6 +28,11 @@ beforeAll(() => {
   }
   globalThis.ResizeObserver ??= Observer as unknown as typeof ResizeObserver;
   Element.prototype.scrollIntoView = vi.fn();
+});
+
+afterEach(() => {
+  // @ts-expect-error -- only the rotation test installs a stub.
+  delete window.matchMedia;
 });
 
 beforeEach(() => {
@@ -136,6 +141,41 @@ describe('AppHeaderMenu', () => {
     fireEvent.click(screen.getByTestId('header-menu-refresh'));
 
     expect(mutate).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The trigger is `sm:hidden`, but the content is portaled to <body> and
+   * carries no width gating of its own. Open the menu at 360 and rotate to
+   * landscape (iPhone landscape is >= sm): the trigger goes `display: none`,
+   * its anchor rect collapses to 0x0, and Radix keeps the menu mounted -- an
+   * orphaned popover parked in the viewport corner over the content, with no
+   * visible trigger to explain it.
+   */
+  it('closes itself when the viewport grows past sm', () => {
+    const listeners: Array<() => void> = [];
+    const query = {
+      matches: false,
+      media: '(min-width: 640px)',
+      addEventListener: (_: string, listener: () => void) => listeners.push(listener),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, 'matchMedia', {
+      value: () => query,
+      configurable: true,
+      writable: true,
+    });
+
+    render(<AppHeaderMenu canSendFeedback />);
+    openMenu();
+    expect(screen.getByTestId('header-menu-theme')).not.toBeNull();
+
+    // The parent rotates to landscape.
+    query.matches = true;
+    act(() => {
+      listeners.forEach((listener) => listener());
+    });
+
+    expect(screen.queryByTestId('header-menu-theme')).toBeNull();
   });
 
   it('disables sync while one is already running', () => {

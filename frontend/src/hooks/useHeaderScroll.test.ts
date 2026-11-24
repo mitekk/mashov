@@ -164,6 +164,37 @@ describe('useHeaderScroll', () => {
     header.remove();
   });
 
+  /**
+   * The other ordering, and the one a `focusout` listener alone misses: the
+   * page is ALREADY scrolled into the fade when focus arrives. Tab in from the
+   * URL bar at p = 0.87 and the header is 13% opaque and translated 87% up,
+   * but not yet `inert` (that needs p > 0.99) -- so focus lands on a control
+   * that is all but invisible and mostly off-screen. The browser will not
+   * rescue it: the header's layout box is still at `top: 0` and transforms are
+   * ignored for scroll-into-view, so no scroll event is generated either.
+   */
+  it('pins open when focus arrives while it is already faded', () => {
+    const header = document.createElement('header');
+    const button = document.createElement('button');
+    header.appendChild(button);
+    document.body.appendChild(header);
+
+    const { result } = renderHook(() => useHeaderScroll<HTMLElement>());
+    result.current.current = header;
+
+    // Scroll FIRST, focus second.
+    scrollTo(150);
+    expect(Number(progress())).toBeGreaterThan(0.8);
+
+    act(() => {
+      button.focus();
+    });
+
+    expect(progress()).toBe('0');
+
+    header.remove();
+  });
+
   it('resumes fading once focus leaves the header', () => {
     const header = document.createElement('header');
     const button = document.createElement('button');

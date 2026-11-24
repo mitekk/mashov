@@ -111,10 +111,18 @@ export function useHeaderScroll<T extends HTMLElement>(): RefObject<T | null> {
       frame = window.requestAnimationFrame(update);
     };
 
-    // Focus moving out of the header has to re-apply: the parent may have
-    // scrolled well past the fade while it was pinned open, and no further
-    // scroll event is guaranteed.
-    const onFocusOut = (): void => {
+    // Focus crossing the header in EITHER direction has to re-apply, and
+    // neither direction produces a scroll event.
+    //
+    // In: the page may already be deep in the fade when focus arrives -- Tab
+    // from the URL bar at p = 0.87 lands on a control that is 13% opaque and
+    // translated most of the way off-screen, and not yet `inert`. The browser
+    // will not scroll it into view either: the header's layout box is still at
+    // `top: 0`, and transforms are ignored for scroll-into-view.
+    //
+    // Out: the parent may have scrolled well past the fade while it was pinned
+    // open, so the header has to catch up to where the page actually is.
+    const onFocusChange = (): void => {
       apply(headerProgress(window.scrollY));
     };
 
@@ -126,13 +134,15 @@ export function useHeaderScroll<T extends HTMLElement>(): RefObject<T | null> {
     const listen = (): void => {
       if (listening) return;
       window.addEventListener('scroll', onScroll, { passive: true });
-      document.addEventListener('focusout', onFocusOut);
+      document.addEventListener('focusin', onFocusChange);
+      document.addEventListener('focusout', onFocusChange);
       listening = true;
     };
     const stopListening = (): void => {
       if (!listening) return;
       window.removeEventListener('scroll', onScroll);
-      document.removeEventListener('focusout', onFocusOut);
+      document.removeEventListener('focusin', onFocusChange);
+      document.removeEventListener('focusout', onFocusChange);
       listening = false;
     };
 

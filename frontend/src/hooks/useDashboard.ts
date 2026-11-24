@@ -1,4 +1,5 @@
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { fetchDashboard } from '@/api/dashboard';
 import { triggerSyncRefresh } from '@/api/sync';
 
@@ -44,5 +45,19 @@ export function useSyncRefresh() {
   // A sync started by ANY consumer, not only this instance's own.
   const running = useIsMutating({ mutationKey: SYNC_REFRESH_KEY }) > 0;
 
-  return { ...mutation, isPending: running };
+  const { mutate, mutateAsync, reset, isError, error } = mutation;
+
+  // Deliberately narrow, and NOT `{ ...mutation, isPending: running }`:
+  // spreading would leave `status`, `isIdle`, `isSuccess` and friends
+  // describing only this instance, so a consumer writing the
+  // equivalent-looking `status === 'pending'` would silently get the
+  // un-shared answer and bring the double-sync back. What is not exposed
+  // cannot disagree.
+  //
+  // Memoised so the object is safe to put in a dependency array; without it
+  // every consumer's effects would re-run on each render of this hook.
+  return useMemo(
+    () => ({ mutate, mutateAsync, reset, isError, error, isPending: running }),
+    [mutate, mutateAsync, reset, isError, error, running],
+  );
 }
