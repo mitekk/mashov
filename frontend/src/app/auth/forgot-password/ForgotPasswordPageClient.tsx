@@ -30,6 +30,11 @@ function ForgotPasswordForm() {
   const [school, setSchool] = useState<School | null>(null);
   const [idNumber, setIdNumber] = useState('');
   const [channel, setChannel] = useState<RecoveryChannel>('email');
+  // Mashov takes the destination from the parent and checks it against what
+  // the school holds; it does not send to a contact it already has. Kept per
+  // channel so switching tabs does not drop what was typed.
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   /**
    * The last error's CODE, kept beside its message only so the captcha
@@ -81,10 +86,19 @@ function ForgotPasswordForm() {
       return;
     }
 
+    const destination = (channel === 'sms' ? phone : email).trim();
+    if (!destination) {
+      setErrorMsg(
+        channel === 'sms' ? 'יש להזין מספר טלפון נייד' : 'יש להזין כתובת אימייל',
+      );
+      return;
+    }
+
     mutation.mutate({
       semel: school.semel,
       idNumber: idNumber.trim(),
       channel,
+      destination,
     });
   }
 
@@ -161,6 +175,35 @@ function ForgotPasswordForm() {
             </div>
           </fieldset>
 
+          <div className="space-y-1.5">
+            <label
+              htmlFor="forgot-password-destination-input"
+              className="block text-sm font-medium text-foreground"
+            >
+              {channel === 'sms' ? 'מספר טלפון נייד' : 'כתובת אימייל'}
+            </label>
+            <input
+              id="forgot-password-destination-input"
+              // `tel` and `email` rather than `text`: the mobile keyboard is
+              // the whole difference between typing this easily and not.
+              type={channel === 'sms' ? 'tel' : 'email'}
+              data-testid="forgot-password-destination"
+              // Same RTL detail as the ID field: an address or a phone number
+              // renders with its characters in the wrong visual order in an
+              // RTL input.
+              dir="ltr"
+              inputMode={channel === 'sms' ? 'tel' : 'email'}
+              autoComplete={channel === 'sms' ? 'tel' : 'email'}
+              value={channel === 'sms' ? phone : email}
+              onChange={(event) =>
+                channel === 'sms'
+                  ? setPhone(event.target.value)
+                  : setEmail(event.target.value)
+              }
+              className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-colors"
+            />
+          </div>
+
           {/*
             Stated before anything is submitted, and phrased as a condition.
             The server's 202 is identical for a real and an unknown account;
@@ -170,9 +213,9 @@ function ForgotPasswordForm() {
             data-testid="forgot-password-privacy-note"
             className="rounded-xl bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground"
           >
-            אם הפרטים נכונים, נשלח קוד אימות
-            {channel === 'email' ? ' לאימייל ' : ' לטלפון '}
-            הרשום במשוב.
+            אם הפרטים נכונים ו
+            {channel === 'email' ? 'כתובת האימייל ' : 'מספר הטלפון '}
+            תואם את הרשום במשוב, יישלח קוד אימות.
           </p>
 
           {errorMsg && (

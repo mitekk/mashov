@@ -46,30 +46,55 @@ describe('MashovRecoveryService', () => {
   });
 
   describe('requestRecovery', () => {
-    it('posts the documented body to /api/user/recover', async () => {
-      await service.requestRecovery({ semel: 482273, idNumber: '303977367', email: true });
-
-      const { path, body } = lastPost();
-      expect(path).toBe('/api/user/recover');
-      expect(body).toEqual({ semel: 482273, idNumber: '303977367', email: true });
-    });
-
-    it('asks for the SMS channel with cellphone instead of email', async () => {
+    /**
+     * Captured from Mashov's own client on 2026-11-24, both channels. These
+     * are the observed bytes, not a reading of the bundle.
+     */
+    it('posts the captured body to /api/user/recover', async () => {
       await service.requestRecovery({
         semel: 482273,
         idNumber: '303977367',
-        cellphone: true,
+        email: 'parent@example.com',
+      });
+
+      const { path, body } = lastPost();
+      expect(path).toBe('/api/user/recover');
+      expect(body).toEqual({
+        semel: 482273,
+        idNumber: '303977367',
+        email: 'parent@example.com',
+      });
+    });
+
+    it('never sends a boolean, which is what broke this flow', async () => {
+      // `email: true` will not bind to a .NET string property: Mashov answered
+      // 400 and sent nothing, while our 202 told the parent to check an inbox.
+      await service.requestRecovery({
+        semel: 482273,
+        idNumber: '303977367',
+        email: 'parent@example.com',
+      });
+      expect(typeof (lastPost().body as { email: unknown }).email).toBe('string');
+    });
+
+    it('asks for the SMS channel with cellphone instead of email', async () => {
+      // The field NAME is the channel -- there is no separate flag, and the
+      // two fields are never both present.
+      await service.requestRecovery({
+        semel: 482273,
+        idNumber: '303977367',
+        cellphone: '0501234567',
       });
 
       expect(lastPost().body).toEqual({
         semel: 482273,
         idNumber: '303977367',
-        cellphone: true,
+        cellphone: '0501234567',
       });
     });
 
     it('sends the shared CSRF token like every other Mashov call', async () => {
-      await service.requestRecovery({ semel: 1, idNumber: '1', email: true });
+      await service.requestRecovery({ semel: 1, idNumber: '1', email: 'p@example.com' });
       expect(lastPost().config.headers['X-Csrf-Token']).toBe(MASHOV_CSRF_TOKEN);
     });
 
@@ -79,7 +104,7 @@ describe('MashovRecoveryService', () => {
       const result = await service.requestRecovery({
         semel: 1,
         idNumber: '1',
-        email: true,
+        email: 'p@example.com',
       });
 
       expect(result.isResettingAndVerifying).toBe(true);

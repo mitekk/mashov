@@ -98,6 +98,15 @@ export interface StartRecoveryInput {
   semel: number;
   idNumber: string;
   channel: RecoveryChannel;
+  /**
+   * The email address or mobile number the code goes to.
+   *
+   * Required, because Mashov requires it: the parent types it and Mashov
+   * refuses unless it matches what the school holds. The earlier design
+   * assumed Mashov would send to a contact it already had, which is true of
+   * the OTP and MFA flows but not of this one.
+   */
+  destination: string;
 }
 
 export interface StartRecoveryResult {
@@ -185,7 +194,11 @@ export class CredentialRecoveryService {
       const result = await this.upstream.requestRecovery({
         semel: input.semel,
         idNumber: input.idNumber,
-        ...(input.channel === 'sms' ? { cellphone: true } : { email: true }),
+        // The field NAME is the channel; the value is the address. Never a
+        // boolean -- see `RequestRecoveryInput`.
+        ...(input.channel === 'sms'
+          ? { cellphone: input.destination }
+          : { email: input.destination }),
       });
       isResettingAndVerifying = result.isResettingAndVerifying === true;
 

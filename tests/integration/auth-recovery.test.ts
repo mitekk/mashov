@@ -190,7 +190,15 @@ describe('In-app Mashov password recovery', () => {
     return request(app.getHttpServer())
       .post(RECOVERIES)
       .set('X-Forwarded-For', ip)
-      .send({ semel: SEMEL, idNumber: KNOWN_ID, channel: 'email', ...body });
+      .send({
+        semel: SEMEL,
+        idNumber: KNOWN_ID,
+        channel: 'email',
+        // Mashov requires the destination and checks it against the school's
+        // record; it does not send to a contact it already holds.
+        destination: 'parent@example.com',
+        ...body,
+      });
   }
 
   function completeRecovery(

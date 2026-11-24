@@ -290,8 +290,27 @@ export type MfaMethod = 'email' | 'sms';
 export interface RequestRecoveryInput {
   semel: number;
   idNumber: string;
-  email?: boolean;
-  cellphone?: boolean;
+  /**
+   * The destination, and the channel.
+   *
+   * Captured from Mashov's own client, 2026-11-24. Exactly ONE of these is
+   * sent, and its NAME is how Mashov learns which channel to use -- there is
+   * no separate flag. The value is the address itself:
+   *
+   *   {"email":"parent@example.com","idNumber":"...","semel":482273}
+   *   {"cellphone":"0501234567",    "idNumber":"...","semel":482273}
+   *
+   * We previously sent `email: true` / `cellphone: true`, guessing a boolean
+   * flag. `true` will not bind to a .NET string property, so Mashov answered
+   * 400 and nothing was ever sent -- reported as "no email arrives on recovery
+   * nor sms". `apis/post-api-user-recover.md` had flagged this exact field as
+   * the one thing a live call still had to confirm.
+   *
+   * The parent types the address, and Mashov checks it against what the school
+   * holds. It does NOT send to a contact it already has.
+   */
+  email?: string;
+  cellphone?: string;
 }
 
 export interface RequestRecoveryResult {

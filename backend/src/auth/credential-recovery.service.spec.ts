@@ -49,6 +49,8 @@ const mockEncryption = {
 
 const GOOD_PASSWORD = 'secret1';
 const ID = '303977367';
+/** Mashov requires the address itself and checks it against the school's. */
+const DESTINATION = 'parent@example.com';
 const SEMEL = 482273;
 const IP = '203.0.113.7';
 
@@ -142,9 +144,20 @@ describe('CredentialRecoveryService', () => {
     };
   }
 
-  function start(overrides: Partial<{ channel: 'email' | 'sms'; idNumber: string }> = {}) {
+  function start(
+    overrides: Partial<{
+      channel: 'email' | 'sms';
+      idNumber: string;
+      destination: string;
+    }> = {},
+  ) {
     return service.start(
-      { semel: SEMEL, idNumber: overrides.idNumber ?? ID, channel: overrides.channel ?? 'email' },
+      {
+        semel: SEMEL,
+        idNumber: overrides.idNumber ?? ID,
+        channel: overrides.channel ?? 'email',
+        destination: overrides.destination ?? DESTINATION,
+      },
       IP,
     );
   }
@@ -217,6 +230,70 @@ describe('CredentialRecoveryService', () => {
       mockUpstream.requestRecovery.mockRejectedValue(reasonError('IdNumberNoMatch'));
       await start();
       expect(Object.keys(storedState().value).sort()).toEqual(real);
+    });
+
+    /**
+     * The upstream body, as captured from Mashov's own client on 2026-11-24.
+     *
+     * This is the bug the parent reported as "no email on recovery nor sms".
+     * We sent `email: true`, guessing a boolean channel flag. Mashov wants the
+     * ADDRESS, and the field NAME is the channel -- `true` will not bind to a
+     * .NET string, so it answered 400 and sent nothing, while our deliberately
+     * indistinguishable 202 told the parent to check their inbox.
+     */
+    describe('the request Mashov actually wants', () => {
+      it('sends the email address itself, never a boolean', async () => {
+        await start({ channel: 'email', destination: 'parent@example.com' });
+        expect(mockUpstream.requestRecovery).toHaveBeenCalledWith({
+          semel: SEMEL,
+          idNumber: ID,
+          email: 'parent@example.com',
+        });
+      });
+
+      it('sends the mobile number under cellphone for SMS', async () => {
+        await start({ channel: 'sms', destination: '0501234567' });
+        expect(mockUpstream.requestRecovery).toHaveBeenCalledWith({
+          semel: SEMEL,
+          idNumber: ID,
+          cellphone: '0501234567',
+        });
+      });
+
+      it('never sends both fields, since the name is the channel', async () => {
+        await start({ channel: 'sms', destination: '0501234567' });
+        const sent = mockUpstream.requestRecovery.mock.calls[0][0];
+        expect(sent).not.toHaveProperty('email');
+
+        mockUpstream.requestRecovery.mockClear();
+        await start({ channel: 'email', destination: 'parent@example.com' });
+        expect(mockUpstream.requestRecovery.mock.calls[0][0]).not.toHaveProperty(
+          'cellphone',
+        );
+      });
+
+      it('still answers an indistinguishable 202 when the address does not match', async () => {
+        // Observed: a destination the school does not hold gives a plain 400
+        // ProblemDetails with no `Reason` header. `isMashovRejection` accepts
+        // it on the JSON content type, so it stays on the poisoned path --
+        // reporting "that is not your address" would answer the enumeration
+        // question this route exists to refuse.
+        mockUpstream.requestRecovery.mockRejectedValue(bareError(400));
+        const result = await start({ destination: 'someone-else@example.com' });
+
+        expect(result.recoveryId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(result.requiresSecondChannel).toBe(false);
+        expect(storedState().value.poisoned).toBe(true);
+      });
+
+      it('keeps the destination out of Redis', async () => {
+        // It is the parent's email address or mobile number. Step 2 takes the
+        // code and the new password; it has no use for where the code went.
+        await start({ destination: 'parent@example.com' });
+        expect(mockRedis.set.mock.calls[0][1] as string).not.toContain(
+          'parent@example.com',
+        );
+      });
     });
 
     /**
@@ -320,6 +397,9 @@ describe('CredentialRecoveryService', () => {
           // plaintext; a "correlation hash" of it would too, since the key
           // lives in this process and the domain is ~10^9.
           expect(lines(warn) + lines(log)).not.toContain(ID);
+          // Nor the destination: an email address or mobile number is the
+          // parent's, and `semel` is the only identifier worth logging.
+          expect(lines(warn) + lines(log)).not.toContain(DESTINATION);
         }
       });
     });
@@ -338,14 +418,18 @@ describe('CredentialRecoveryService', () => {
     });
 
     it('asks the SMS channel with cellphone and the email channel with email', async () => {
-      await start({ channel: 'sms' });
+      // This test used to assert `cellphone: true` / `email: true`, which is
+      // what the reverse-engineered contract guessed and what kept the flow
+      // broken: a test can only pin the shape you believed. The captured
+      // shape is covered in full under 'the request Mashov actually wants'.
+      await start({ channel: 'sms', destination: '0501234567' });
       expect(mockUpstream.requestRecovery).toHaveBeenLastCalledWith(
-        expect.objectContaining({ cellphone: true }),
+        expect.objectContaining({ cellphone: '0501234567' }),
       );
 
-      await start({ channel: 'email' });
+      await start({ channel: 'email', destination: 'parent@example.com' });
       expect(mockUpstream.requestRecovery).toHaveBeenLastCalledWith(
-        expect.objectContaining({ email: true }),
+        expect.objectContaining({ email: 'parent@example.com' }),
       );
     });
   });
@@ -480,6 +564,7 @@ describe('CredentialRecoveryService', () => {
             semel: SEMEL,
             idNumber: ID,
             channel: 'email',
+        destination: DESTINATION,
             isResettingAndVerifying: false,
             attempts: 0,
             poisoned: false,
@@ -729,6 +814,7 @@ describe('CredentialRecoveryService stale-credential remediation', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: false,
@@ -824,6 +910,7 @@ describe('CredentialRecoveryService stale-credential remediation', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: true,
@@ -877,6 +964,7 @@ describe('CredentialRecoveryService review fixes', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: false,
@@ -945,7 +1033,7 @@ describe('CredentialRecoveryService review fixes', () => {
 
       expect(
         await thrown(() =>
-          service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP),
+          service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP),
         ),
       ).toMatchObject({ status: 502, code: 'UPSTREAM_ERROR' });
     });
@@ -960,7 +1048,7 @@ describe('CredentialRecoveryService review fixes', () => {
         return Promise.resolve(1);
       });
 
-      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP);
 
       const bare = createHash('sha256').update(ID).digest('hex');
       expect(keys.join(' ')).not.toContain(bare);
@@ -980,7 +1068,7 @@ describe('CredentialRecoveryService review fixes', () => {
   // I8a — the raw ID number must not sit in a Redis value.
   describe('recovery state at rest', () => {
     it('stores no raw ID number in Redis', async () => {
-      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP);
 
       const written = mockRedis.set.mock.calls[0][1] as string;
       expect(written).not.toContain(ID);
@@ -989,7 +1077,7 @@ describe('CredentialRecoveryService review fixes', () => {
     it('round-trips the state it wrote, so step 2 still works', async () => {
       // The encryption is only worth anything if the service can read its own
       // state back -- otherwise every recovery silently becomes "start again".
-      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP);
+      await service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP);
       const written = mockRedis.set.mock.calls[0][1] as string;
       mockRedis.get.mockResolvedValue(written);
 
@@ -1031,6 +1119,7 @@ describe('CredentialRecoveryService non-axios failures', () => {
           semel: SEMEL,
           idNumber: ID,
           channel: 'email',
+        destination: DESTINATION,
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: false,
@@ -1083,7 +1172,7 @@ describe('CredentialRecoveryService non-axios failures', () => {
 
     expect(
       await thrown(() =>
-        service.start({ semel: SEMEL, idNumber: ID, channel: 'email' }, IP),
+        service.start({ semel: SEMEL, idNumber: ID, channel: 'email', destination: DESTINATION }, IP),
       ),
     ).toMatchObject({ status: 502, code: 'UPSTREAM_ERROR' });
   });

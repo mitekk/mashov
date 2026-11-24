@@ -62,7 +62,7 @@ answer to each. Rationale and trade-offs: [ADR-0042](adr/0042-in-app-mashov-auth
 |--------|------|-------|----------------------------|---------------|-------------|--------|
 | POST | `/api/v1/auth/mfa-challenges/:challengeId/code` | No | `{ method: "email" \| "sms" }` | `{ ok: true }` | 202, 400, 422, 429, 502 | implemented |
 | POST | `/api/v1/auth/mfa-challenges/:challengeId/session` | No | `{ semel: number, username: string, password: string, code: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 422, 429, 502 | implemented |
-| POST | `/api/v1/auth/credential-recoveries` | No | `{ semel: number, idNumber: string, channel: "email" \| "sms" }` | `{ recoveryId: string, requiresSecondChannel: boolean, channel: "email" \| "sms" }` | 202, 400, 429, 502 | implemented |
+| POST | `/api/v1/auth/credential-recoveries` | No | `{ semel: number, idNumber: string, channel: "email" \| "sms", destination: string }` | `{ recoveryId: string, requiresSecondChannel: boolean, channel: "email" \| "sms" }` | 202, 400, 429, 502 | implemented |
 | POST | `/api/v1/auth/credential-recoveries/:recoveryId/password` | No | `{ code: string, secondCode?: string, newPassword: string }` | `{ ok: true, username?: string }` | 200, 400, 422, 429, 502 | implemented |
 | POST | `/api/v1/auth/credentials` | No | `{ semel: number, username: string, password: string, newPassword?: string, newUsername?: string, challengeId?: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 409, 422, 429, 502 | implemented |
 | POST | `/api/v1/auth/otp-requests` | No | `{ semel: number, username: string, method: "email" \| "sms" }` | `{ otpRequestId: string, method: "email" \| "sms" }` | 202, 400, 409, 422, 429, 502 | implemented |
@@ -78,6 +78,18 @@ the parent off the very screen carrying their one-time code, mid-sign-in.
 Failures are 400, 409, 422, 429 or 502. `POST /auth/credentials` reports a
 rejected *current* password as `400 INVALID_CREDENTIALS` for this reason, not
 401.
+
+**Recovery takes a destination; the code flows do not.** `POST /credential-recoveries`
+requires a `destination` — the email address or mobile number — because Mashov's
+own form asks the parent to type it and refuses unless it matches what the
+school holds. The MFA and OTP routes take no destination at all: there, Mashov
+sends to the contact it already has. The difference was captured on
+2026-11-24 and is the reason recovery never delivered a code before that date:
+we sent a boolean `email: true` where Mashov wanted the address, so it answered
+400 and sent nothing while our 202 said "check your email". A destination the
+school does not hold is refused upstream and folded into the same 202 as an
+unknown ID — telling the parent "that is not your address" would answer the
+enumeration question this route exists to refuse.
 
 **The 202s are anti-enumeration, not asynchrony.** `POST /credential-recoveries`
 answers 202 with a `recoveryId` for an unknown ID number exactly as it does for
@@ -125,7 +137,7 @@ generic message, so the frontend degrades safely if the backend ships first.
 | `OTP_CODE_EXPIRED` | 400 | Ask for a new code. |
 | `OTP_LOCKED` | 429 | Too many attempts on one handle. |
 | `OTP_RESEND_TOO_SOON` | 429 | A code was just sent. |
-| `OTP_CONTACT_MISSING` | 422 | Mashov holds no email or phone. There is deliberately no destination input: Mashov sends to the contact it already has. |
+| `OTP_CONTACT_MISSING` | 422 | Mashov holds no email or phone. For *this* flow there is deliberately no destination input: Mashov sends to the contact it already has. Recovery is the exception — see below. |
 | `OTP_SESSION_EXPIRED` | 400 | The handle is gone or already used. Single-use by design. |
 | `LOGIN_METHOD_BLOCKED` | 422 | The school does not permit passwordless sign-in. |
 | `CAPTCHA_REQUIRED` | 422 | Mashov wants a captcha. The UI offers a link out to Mashov's own page rather than pretending to solve it. |

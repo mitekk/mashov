@@ -924,6 +924,16 @@ export interface StartRecoveryRequest {
   /** The national ID number. Also the Mashov username, for most accounts. */
   idNumber: string;
   channel: RecoveryChannel;
+  /**
+   * The email address or mobile number the code is sent to.
+   *
+   * Mashov takes the destination from the parent and checks it against what
+   * the school holds -- it does NOT send to a contact it already has, which is
+   * how the OTP and MFA flows work but not this one. A destination the school
+   * does not hold is refused, and that refusal is folded into the same 202 as
+   * an unknown ID.
+   */
+  destination: string;
 }
 
 /**
