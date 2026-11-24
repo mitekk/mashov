@@ -129,7 +129,11 @@ export interface CompletePasswordResult {
 interface RecoveryState {
   semel: number;
   idNumber: string;
-  channel: RecoveryChannel;
+  // No `channel`. It was written here and never read back -- every use is
+  // `input.channel` on the request that writes it -- while the docblock above
+  // claimed it was part of "what survives between the two steps". Step 2 takes
+  // the codes and the new password; which channel sent them is not its
+  // business. Removed rather than left as a comfortable-looking field.
   isResettingAndVerifying: boolean;
   attempts: number;
   poisoned: boolean;
@@ -293,7 +297,6 @@ export class CredentialRecoveryService {
     const state: RecoveryState = {
       semel: Number(input.semel),
       idNumber: input.idNumber,
-      channel: input.channel,
       isResettingAndVerifying,
       attempts: 0,
       poisoned,

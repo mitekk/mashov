@@ -228,7 +228,10 @@ describe('MfaService', () => {
           username: USERNAME,
           password: 'pw',
           code: '123456',
-          rememberBrowser: true,
+          // No `rememberBrowser`: the field was accepted and never read, the
+          // controller DTO never had it, and `verifyMfa` is called with
+          // `rememberBrowser: true` hardcoded. A caller passing `false` here
+          // would have been silently overruled.
           ...overrides,
         },
         IP,

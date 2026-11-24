@@ -123,7 +123,6 @@ export class MfaService {
       username: string;
       password: string;
       code: string;
-      rememberBrowser?: boolean;
     },
     ip: string,
   ): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
