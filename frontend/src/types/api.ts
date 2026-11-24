@@ -856,7 +856,11 @@ export interface CreateFeedbackBody {
   subjectOther?: string;
   contactEmail?: string;
   content: string;
-  /** Path only -- never the query or hash, which can carry a child guid. */
+  /**
+   * Path only -- never the query or hash. The path itself does carry a child
+   * guid on `/children/<guid>`, which is the point: it says which child the
+   * report is about.
+   */
   pagePath?: string;
   viewportWidth?: number;
   viewportHeight?: number;

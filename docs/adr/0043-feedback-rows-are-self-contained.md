@@ -98,7 +98,14 @@ on `AppUser`**:
 **Kept indefinitely, deliberately — and this is the weakest part of the decision.**
 
 Free text, a reply address, a user agent and a page path make `feedback` the most PII-dense
-table in the schema, and there is no deletion path: no nightly cutoff task, no parent-facing
+table in the schema. `pagePath` is the sharpest part of that: on the child routes it is
+`/children/<guid>`, so the row names a child. That is deliberate and not a cross-household
+leak — the guid is the reporting parent's own child, already theirs to see — and without it
+a report reading "the timetable is wrong" names no child at all. It does mean a reader of
+this table is reading child-linked data, which is the reason the retention question below is
+not academic.
+
+There is no deletion path: no nightly cutoff task, no parent-facing
 delete, no export. The reasoning for keeping it that way for now is that the table's only
 reader is a human running SQL, the volume is bounded by 10 rows per household per hour, and a
 report whose context has been aged out is a report that cannot be acted on.

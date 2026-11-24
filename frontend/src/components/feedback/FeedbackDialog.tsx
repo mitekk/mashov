@@ -45,8 +45,17 @@ export const FEEDBACK_CONTENT_MAX = 2000;
 const SUBJECT_OTHER_MAX = 80;
 const EMAIL_MAX = 254;
 
-/** Deliberately loose: the server's `@IsEmail` is the authority. */
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * Close enough to the server's `@IsEmail` that the two do not disagree.
+ *
+ * The server is still the authority, but a client check that is LOOSER is
+ * worse than none: `a@b..c` used to pass here and be refused there, and the
+ * send failure named no field, so the parent retried an address that could
+ * never be accepted. Dots may not lead, trail or repeat on either side, and
+ * the TLD is letters.
+ */
+const EMAIL_SHAPE =
+  /^[^\s@.]+(\.[^\s@.]+)*@[^\s@.]+(\.[^\s@.]+)*\.[A-Za-z]{2,}$/;
 
 const schema = z
   .object({
@@ -90,6 +99,13 @@ const FIELD_CLASS =
 function sendErrorMessage(error: unknown): string {
   if (error instanceof ApiError && error.status === 429) {
     return 'שלחתם כמה דיווחים ברצף. נסו שוב מאוחר יותר';
+  }
+  // A 400 means the server refused a field this form thought was fine. The
+  // envelope's `details` carry only English class-validator sentences and no
+  // field name, so there is nothing to pin to an input -- but "try again" is
+  // the one piece of advice that is guaranteed not to work, so say what will.
+  if (error instanceof ApiError && error.status === 400) {
+    return 'אחד הפרטים לא התקבל. בדקו את כתובת האימייל ואת תוכן ההודעה';
   }
   return 'לא הצלחנו לשלוח את המשוב. נסו שוב';
 }
@@ -186,8 +202,10 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
     const body: CreateFeedbackBody = {
       subject: values.subject,
       content: values.content,
-      // Reproduction context, so the parent never has to describe it. Path
-      // only: `usePathname` carries no query or hash, which can hold a guid.
+      // Reproduction context, so the parent never has to describe it.
+      // `usePathname` is the path without query or hash. It does include the
+      // child guid on `/children/<guid>` -- the reporting parent's own child,
+      // and the only thing tying "the timetable is wrong" to a child.
       pagePath: pathname ?? undefined,
       viewportWidth: typeof window === 'undefined' ? undefined : window.innerWidth,
       viewportHeight: typeof window === 'undefined' ? undefined : window.innerHeight,

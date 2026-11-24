@@ -81,8 +81,10 @@ capped at 2000; `contactEmail` is optional and must be an email, max 254; `pageP
 `appVersion` max 40; the viewport fields are non-negative integers.
 
 **What the client sends versus what the server captures.** The client sends the page path
-(path only — never query or hash, which can carry a child guid), the viewport, and the build
-from `NEXT_PUBLIC_APP_VERSION`. The server adds, and the client cannot influence:
+(path only — never the query or hash), the viewport, and the build from
+`NEXT_PUBLIC_APP_VERSION`. Note the path itself **does** carry a child guid on the child
+routes (`/children/<guid>`), deliberately: it is the reporting parent's own child, and
+without it a report like "the timetable is wrong" names no child. The server adds, and the client cannot influence:
 
 - the `user-agent` request header, truncated to 512 characters — the one field whose purpose
   is saying what the client actually is;

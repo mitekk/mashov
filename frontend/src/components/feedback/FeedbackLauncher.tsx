@@ -84,14 +84,26 @@ export function FeedbackLauncher() {
           // `pb-nav` rather than a literal: BottomNav is `fixed bottom-0 z-50`,
           // and the token keeps tracking it if the nav moves or becomes a
           // side-rail at `lg`.
-          className="pb-nav fixed inset-x-0 bottom-0 z-[60] flex items-center justify-between gap-3 px-4"
+          //
+          // `pointer-events-none` because that same padding puts this box over
+          // the whole of BottomNav, above it in z-order and invisible, for ten
+          // seconds -- `aria-hidden` does not affect hit testing, so without
+          // it a parent who sends feedback and reaches for a nav tab taps
+          // nothing. The banner itself opts back in.
+          className="pb-nav pointer-events-none fixed inset-x-0 bottom-0 z-[60] flex items-center justify-between gap-3 px-4"
         >
-          <span className="mx-auto flex w-full max-w-md items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm text-foreground shadow-lg">
+          <span className="pointer-events-auto mx-auto flex w-full max-w-md items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-sm text-foreground shadow-lg">
             {THANKS_TEXT}
             <button
               type="button"
               data-testid="feedback-thanks-dismiss"
               aria-label="סגירת ההודעה"
+              // Out of the tab order: this sits inside an `aria-hidden`
+              // subtree, and a tabbable control the accessibility tree says
+              // does not exist is a WCAG 4.1.2 failure. For a screen-reader
+              // user the live region has already spoken and the ten-second
+              // timer is the dismissal.
+              tabIndex={-1}
               onClick={() => setThanks(false)}
               className="icon-button h-8 w-8 shrink-0"
             >

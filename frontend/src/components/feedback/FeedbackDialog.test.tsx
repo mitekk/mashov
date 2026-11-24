@@ -263,6 +263,40 @@ describe('FeedbackDialog', () => {
     });
   });
 
+  /**
+   * The client check used to be looser than the server's `@IsEmail`, so an
+   * address like `a@b..c` passed here and was refused there -- and the generic
+   * "try again" copy sent the parent round a loop that could never succeed,
+   * with no field marked.
+   */
+  it('catches an address the server would reject, before sending', async () => {
+    renderDialog();
+    type(screen.getByTestId('feedback-email-input'), 'parent@b..c');
+    type(content(), 'משהו');
+
+    fireEvent.click(submit());
+
+    await waitFor(() => expect(screen.getByTestId('feedback-email-error')).not.toBeNull());
+    expect(submitFeedback).not.toHaveBeenCalled();
+  });
+
+  /** And if one still gets through, "try again" must not be the advice. */
+  it('tells the parent to check the fields on a 400, not merely to retry', async () => {
+    submitFeedback.mockRejectedValue(
+      new ApiError(400, 'Validation failed', {
+        error: { code: 'VALIDATION_ERROR', message: 'Validation failed', details: [] },
+      }),
+    );
+    renderDialog();
+    type(content(), 'משהו');
+
+    fireEvent.click(submit());
+
+    await waitFor(() => {
+      expect(screen.getByTestId('feedback-error').textContent).toContain('בדקו');
+    });
+  });
+
   it('shows generic retry copy on any other failure', async () => {
     submitFeedback.mockRejectedValue(new ApiError(500, 'boom', {}));
     renderDialog();

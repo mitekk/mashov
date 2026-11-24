@@ -71,7 +71,12 @@ class CreateFeedbackDto {
   @MaxLength(2000)
   content!: string;
 
-  /** Path only; the client strips query and hash, which can carry a guid. */
+  /**
+   * The route the parent was on, e.g. `/children/<guid>`. Path only -- the
+   * client sends no query or hash. The path itself DOES carry a child guid on
+   * the child routes, deliberately: it is the parent's own child, in their own
+   * household, and without it "the timetable is wrong" names no child.
+   */
   @IsOptional()
   @IsString()
   @MaxLength(200)

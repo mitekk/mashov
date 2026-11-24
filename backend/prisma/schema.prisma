@@ -917,8 +917,10 @@ model Feedback {
   /// when the parent cleared it.
   contactEmail    String?
   content         String
-  /// Reproduction context, captured by the client. Path only -- no query or
-  /// hash, which can carry a child guid.
+  /// Reproduction context, captured by the client. Path only -- the client
+  /// sends no query or hash. The path itself does carry a child guid on the
+  /// child routes (`/children/<guid>`), deliberately: it is the reporting
+  /// parent's own child, and without it a report names no child at all.
   pagePath        String?
   /// Read from the request header, not from the body. Truncated to 512 chars.
   userAgent       String?

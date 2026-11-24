@@ -137,6 +137,36 @@ describe('FeedbackLauncher', () => {
     expect(screen.getByTestId('feedback-thanks-live').textContent?.trim()).toBe('');
   });
 
+  /**
+   * The wrapper is `fixed bottom-0 z-[60]` with `pb-nav` padding, so its box
+   * extends down across the whole of BottomNav (`z-50`) -- invisible, above
+   * it, and for the full ten seconds. `aria-hidden` does not affect hit
+   * testing, so without this a parent who sends feedback and immediately taps
+   * a nav tab hits nothing at all.
+   */
+  it('lets taps through to the nav underneath it', () => {
+    render(<FeedbackLauncher />);
+    open();
+    fireEvent.click(screen.getByTestId('stub-send'));
+
+    const wrapper = screen.getByTestId('feedback-thanks');
+    expect(wrapper.className).toContain('pointer-events-none');
+    // ...while the banner itself stays tappable, or the dismiss X is dead.
+    const banner = wrapper.querySelector('span');
+    expect(banner?.className).toContain('pointer-events-auto');
+  });
+
+  it('keeps the dismiss button out of the tab order, being aria-hidden', () => {
+    render(<FeedbackLauncher />);
+    open();
+    fireEvent.click(screen.getByTestId('stub-send'));
+
+    // A control inside an aria-hidden subtree that is still tabbable is a
+    // WCAG 4.1.2 failure: a keyboard user reaches a button that, as far as
+    // the accessibility tree is concerned, does not exist.
+    expect(screen.getByTestId('feedback-thanks-dismiss').getAttribute('tabindex')).toBe('-1');
+  });
+
   /** The visible banner must not be read a second time after the region. */
   it('hides the visible banner from the accessibility tree', () => {
     render(<FeedbackLauncher />);
