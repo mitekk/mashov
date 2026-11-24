@@ -165,9 +165,9 @@ shared family name is what makes one `.className` sufficient for all three subse
 Tailwind's `font-sans` utilities resolve the variable normally, since they match elements
 inside `<body>`.
 
-The dead `html` rule is left in place, with a comment saying so. It is pre-existing, it is
-harmless, and fixing it properly means moving the declaration to `body` — unrelated to
-self-hosting the font, so out of scope here.
+The dead `html { font-family }` declaration is removed, with a comment in its place saying
+why nothing belongs there. It never applied, so deleting it changes no rendering; `<body>`'s
+generated `.className` and Tailwind's `font-sans` already cover every element.
 
 ### A subset can silently vanish
 
@@ -245,9 +245,9 @@ already optimally cut.
   no-webfont case, never rendered Assistant text — and in practice the shim face reports
   `unloaded` on the sign-in page, i.e. it is never used at all.
 
-- The `html { font-family: var(--font-assistant) }` rule in `globals.css` remains dead
-  code — documented in a comment rather than fixed, since the fix (moving the classes to
-  `<html>`) collides with the theme bootstrap. Noted above.
+- `<html>` carries no `font-family` of its own any more. Nothing renders text at that
+  level so it changes nothing, but it does mean the font is applied in exactly one place
+  (`<body>`'s generated class) rather than two nominal ones.
 
 - **Font updates are now manual.** Not a version bump: run
   `frontend/src/assets/fonts/fetch-assistant.sh`, then diff the `unicode-range` values it

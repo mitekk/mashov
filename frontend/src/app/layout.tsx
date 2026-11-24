@@ -188,12 +188,11 @@ export default function RootLayout({ children }: RootLayoutProps) {
   //    <html> a React `className` prop lets React reconcile that attribute and
   //    wipe the class, which breaks dark mode on reload and navigation.
   //    (`suppressHydrationWarning` silences the warning, not the patching.)
-  //  - Custom properties inherit DOWNWARD only, so with the variables on <body>
-  //    the `html { font-family: var(--font-assistant) }` rule in globals.css
-  //    cannot resolve and is dropped as invalid-at-computed-value-time. That
-  //    rule has in fact never applied -- `.className` is what has always put
-  //    the font on the page, and still is. Tailwind's `font-sans` utilities
-  //    resolve the variable normally, since they match elements inside <body>.
+  //  - Custom properties inherit DOWNWARD only, so a `var(--font-assistant)`
+  //    written on <html> could never resolve; globals.css therefore sets no
+  //    font-family there. `.className` is what puts the font on the page, and
+  //    Tailwind's `font-sans` utilities resolve the variable normally, since
+  //    they match elements inside <body>.
   //
   // `assistantLatin.className` carries `font-family: Assistant` -- the shared
   // family name, so that one class covers all three subsets. The other two

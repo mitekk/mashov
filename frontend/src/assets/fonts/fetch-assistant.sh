@@ -27,7 +27,12 @@ declare -a SUBSETS=(hebrew latin latin-ext)
 css="$(curl -sS --fail -A "$UA" \
   "https://fonts.googleapis.com/css2?family=${FAMILY}&display=swap")"
 
-printf '%s\n' "$css" > /dev/null  # fail early if the fetch produced nothing
+# `curl --fail` does not catch a 200 with an empty body; without this the
+# per-subset parse below would fail with a confusing "subset not found".
+if [ -z "$css" ]; then
+  echo 'Google returned an empty stylesheet.' >&2
+  exit 1
+fi
 
 for subset in "${SUBSETS[@]}"; do
   url="$(printf '%s' "$css" | python3 -I -c '

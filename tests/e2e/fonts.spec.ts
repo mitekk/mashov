@@ -1,6 +1,20 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, request as playwrightRequest } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const SIGN_IN = '/auth/sign-in';
+const FONT_DIR = path.join(__dirname, '..', '..', 'frontend', 'src', 'assets', 'fonts');
+
+/** Byte size of each committed subset, read from the repo rather than hardcoded, so
+ *  these assertions survive a font update without silently going vacuous. */
+function subsetSizes(): Record<'hebrew' | 'latin' | 'latinExt', number> {
+  const size = (f: string) => fs.statSync(path.join(FONT_DIR, f)).size;
+  return {
+    hebrew: size('assistant-hebrew.woff2'),
+    latin: size('assistant-latin.woff2'),
+    latinExt: size('assistant-latin-ext.woff2'),
+  };
+}
 
 /**
  * Assistant is self-hosted from committed woff2 files (ADR-0042) so that
@@ -19,38 +33,56 @@ const SIGN_IN = '/auth/sign-in';
  */
 test.describe('Assistant font delivery', () => {
   test('preloads exactly the hebrew and latin subsets, fetchable anonymously', async ({
-    request,
+    baseURL,
   }) => {
-    const response = await request.get(SIGN_IN);
-    expect(response.ok()).toBeTruthy();
-    const html = await response.text();
+    // A deliberately clean context. The `chromium` project's `use` block sets a
+    // storageState, a custom userAgent and the `x-mashov-e2e-auth-bypass`
+    // header, and the built-in `request` fixture inherits all three -- which
+    // would mean this test never exercises the anonymous access that is the
+    // whole reason the fonts live under /_next instead of /public (ADR-0042).
+    const anon = await playwrightRequest.newContext({ baseURL });
+    try {
+      const response = await anon.get(SIGN_IN);
+      expect(response.ok()).toBeTruthy();
+      const html = await response.text();
 
-    const preloads = html.match(/<link[^>]*as="font"[^>]*>/g) ?? [];
-    expect(preloads, 'hebrew + latin, never latin-ext').toHaveLength(2);
+      const preloads = html.match(/<link[^>]*as="font"[^>]*>/g) ?? [];
+      expect(preloads, 'hebrew + latin, never latin-ext').toHaveLength(2);
 
-    for (const link of preloads) {
-      expect(link).toContain('rel="preload"');
-      expect(link).toContain('/_next/static/media/');
-      expect(link).toContain('crossorigin');
-      // Never fonts.gstatic.com -- the point of ADR-0042 is that we serve these.
-      expect(link).not.toContain('gstatic');
-    }
+      for (const link of preloads) {
+        expect(link).toContain('rel="preload"');
+        expect(link).toContain('/_next/static/media/');
+        expect(link).toContain('crossorigin');
+        // Never fonts.gstatic.com -- the point of ADR-0042 is that we serve these.
+        expect(link).not.toContain('gstatic');
+      }
 
-    // An empty preload array makes Next emit a <link rel="preconnect"> to
-    // /_next instead, which is the tell that preloading collapsed entirely.
-    expect(html).not.toMatch(/<link[^>]*rel="preconnect"[^>]*\/_next/);
+      // Identify which subset each preloaded file actually is, by byte size
+      // against the committed sources. A plain "<= 23 KB" bound would not
+      // notice latin-ext (11 KB) being preloaded in place of latin.
+      const sizes = subsetSizes();
+      expect(
+        new Set([sizes.hebrew, sizes.latin, sizes.latinExt]).size,
+        'subset sizes must stay distinct for this check to identify files',
+      ).toBe(3);
 
-    // Each preloaded file must really be reachable by a signed-out visitor --
-    // middleware auth-gates /public, which is why these live under /_next.
-    for (const link of preloads) {
-      const href = /href="([^"]+)"/.exec(link)?.[1];
-      expect(href).toBeTruthy();
-      const font = await request.get(href as string);
-      expect(font.status(), `${href} must 200 for a signed-out visitor`).toBe(200);
-      // The two preloaded files are hebrew (~7.3 KB) and latin (~22 KB); the
-      // ~11 KB latin-ext must never be among them.
-      const bytes = (await font.body()).length;
-      expect(bytes, `${href} is the wrong subset`).not.toBeGreaterThan(23_000);
+      const served: number[] = [];
+      for (const link of preloads) {
+        const href = /href="([^"]+)"/.exec(link)?.[1];
+        expect(href).toBeTruthy();
+        const font = await anon.get(href as string);
+        // Must 200 for a signed-out visitor: middleware auth-gates /public,
+        // which is why these are emitted under /_next/static/media instead.
+        expect(font.status(), `${href} must 200 for a signed-out visitor`).toBe(200);
+        served.push((await font.body()).length);
+      }
+
+      expect(served.sort((a, b) => a - b)).toEqual(
+        [sizes.hebrew, sizes.latin].sort((a, b) => a - b),
+      );
+      expect(served, 'latin-ext must never be preloaded').not.toContain(sizes.latinExt);
+    } finally {
+      await anon.dispose();
     }
   });
 
@@ -65,16 +97,9 @@ test.describe('Assistant font delivery', () => {
       })),
     );
 
-    const assistant = faces.filter((f) => f.family === 'Assistant');
-    const shims = faces.filter((f) => f.family === 'Assistant Fallback');
-
-    // Three real subsets, all under the ONE shared family name. A count of 2
-    // means a call got tree-shaken; see failure mode 1 above.
-    expect(assistant, 'hebrew, latin and latin-ext must all be declared').toHaveLength(3);
-    // Exactly one shim: more means an `adjustFontFallback: false` was dropped.
-    expect(shims).toHaveLength(1);
-
-    // Every real face is range-limited; the shim is the only unranged face.
+    // Ranges are compared numerically because the CSSOM normalises
+    // `unicode-range`: it strips leading zeros, reporting the authored
+    // `U+0590-05FF` as `U+590-5FF`.
     const covers = (range: string, cp: number) =>
       range.split(',').some((part) => {
         const [lo, hi] = part.trim().replace(/^u\+/i, '').split('-');
@@ -82,22 +107,49 @@ test.describe('Assistant font delivery', () => {
         return cp >= low && cp <= (hi ? Number.parseInt(hi, 16) : low);
       });
 
-    expect(assistant.some((f) => covers(f.unicodeRange, 0x0590)), 'hebrew').toBeTruthy();
-    expect(assistant.some((f) => covers(f.unicodeRange, 0x0041)), 'latin').toBeTruthy();
-    expect(assistant.some((f) => covers(f.unicodeRange, 0xa720)), 'latin-ext').toBeTruthy();
-    expect(shims[0].unicodeRange).toBe('U+0-10FFFF');
+    const assistant = faces.filter((f) => f.family === 'Assistant');
+    const shims = faces.filter((f) => f.family === 'Assistant Fallback');
+
+    // All three subsets must be present, under the ONE shared family name. A
+    // missing one means that call got tree-shaken; see failure mode 1 above.
+    // Compared as a set of ranges because Next emits the font CSS into more
+    // than one chunk, so document.fonts holds duplicate FontFace objects.
+    for (const [label, cp] of [
+      ['hebrew', 0x0590],
+      ['latin', 0x0041],
+      ['latin-ext', 0xa720],
+    ] as const) {
+      expect(
+        assistant.some((f) => covers(f.unicodeRange, cp)),
+        `the ${label} subset must be declared`,
+      ).toBeTruthy();
+    }
+
+    // Exactly one distinct shim: more means an `adjustFontFallback: false` was
+    // dropped. It is the only face without a unicode-range.
+    expect(shims.length, 'the Arial shim must be declared').toBeGreaterThan(0);
+    expect(new Set(shims.map((s) => s.unicodeRange))).toEqual(new Set(['U+0-10FFFF']));
+    expect(
+      assistant.every((f) => f.unicodeRange !== 'U+0-10FFFF'),
+      'no real Assistant face may be unranged',
+    ).toBeTruthy();
   });
 
   test('renders Hebrew and Latin in the real font, not the Arial shim', async ({ page }) => {
     await page.goto(SIGN_IN);
     await expect(page.getByTestId('sign-in-submit')).toBeVisible();
 
-    // Ask for the Hebrew face explicitly and wait for it. `document.fonts.ready`
-    // is not enough -- it resolves even if the only thing that loaded was the
-    // shim. Ranges are compared numerically because the CSSOM normalises
-    // `unicode-range` (it strips leading zeros, reporting `U+590-5FF`), so a
-    // literal string match against the authored value does not hold.
-    await page.evaluate(() => document.fonts.load('400 16px Assistant', 'שלום'));
+    // Ask for both faces explicitly. `document.fonts.ready` is not enough -- it
+    // resolves even if the only thing that loaded was the shim. The latin face
+    // does get activated by this page (its text contains U+0020 spaces, which
+    // fall in latin's range), but relying on that is incidental; requesting it
+    // by name keeps the measurement below deterministic.
+    await page.evaluate(() =>
+      Promise.all([
+        document.fonts.load('400 16px Assistant', 'שלום'),
+        document.fonts.load('400 16px Assistant', 'Hamburgefonstiv 0123456789'),
+      ]),
+    );
     await page.waitForFunction(() => {
       const covers = (range: string, cp: number) =>
         range.split(',').some((part) => {
@@ -105,44 +157,59 @@ test.describe('Assistant font delivery', () => {
           const low = Number.parseInt(lo, 16);
           return cp >= low && cp <= (hi ? Number.parseInt(hi, 16) : low);
         });
-      return [...document.fonts].some(
-        (f) =>
-          f.status === 'loaded' &&
-          f.family.replace(/^["']|["']$/g, '') === 'Assistant' &&
-          covers(f.unicodeRange, 0x0590),
+      const loaded = [...document.fonts].filter(
+        (f) => f.status === 'loaded' && f.family.replace(/^["']|["']$/g, '') === 'Assistant',
+      );
+      return (
+        loaded.some((f) => covers(f.unicodeRange, 0x0590)) &&
+        loaded.some((f) => covers(f.unicodeRange, 0x0041))
       );
     });
 
     // Measure the inherited stack against the two families it could resolve to.
     // If the shim ever outranks the real face, the stack's width matches Arial's
-    // rather than Assistant's -- this is the assertion that settles it.
-    const widths = await page.evaluate(() => {
-      const measure = (fontFamily: string, text: string) => {
-        const span = document.createElement('span');
-        span.style.cssText =
-          'position:absolute;visibility:hidden;white-space:pre;font:400 16px ' + fontFamily;
-        span.textContent = text;
-        document.body.appendChild(span);
-        const width = span.offsetWidth;
-        span.remove();
-        return width;
-      };
-      // <body>, not documentElement: the font classes are applied there.
-      const stack = getComputedStyle(document.body).fontFamily;
-      return {
-        stack,
-        latinStack: measure(stack, '0123456789'),
-        latinReal: measure('Assistant', '0123456789'),
-        latinShim: measure("'Assistant Fallback'", '0123456789'),
-        hebrewStack: measure(stack, 'שלום עולם'),
-        hebrewReal: measure('Assistant', 'שלום עולם'),
-      };
-    });
+    // rather than Assistant's -- this is the assertion that settles it. The
+    // sample is long on purpose: Assistant and size-adjusted Arial differ by
+    // only ~1px over ten digits, which is too tight to trust.
+    const LATIN = 'Hamburgefonstiv 0123456789 Hamburgefonstiv';
+    const HEBREW = 'שלום עולם ברוכים הבאים למרכז הורים';
+    const widths = await page.evaluate(
+      ({ latin, hebrew }) => {
+        const measure = (fontFamily: string, text: string) => {
+          const span = document.createElement('span');
+          span.style.cssText =
+            'position:absolute;visibility:hidden;white-space:pre;font:400 16px ' + fontFamily;
+          span.textContent = text;
+          document.body.appendChild(span);
+          const width = span.offsetWidth;
+          span.remove();
+          return width;
+        };
+        // <body>, not documentElement: the font classes are applied there.
+        const stack = getComputedStyle(document.body).fontFamily;
+        return {
+          stack,
+          latinStack: measure(stack, latin),
+          latinReal: measure('Assistant', latin),
+          latinShim: measure("'Assistant Fallback'", latin),
+          hebrewStack: measure(stack, hebrew),
+          hebrewReal: measure('Assistant', hebrew),
+        };
+      },
+      { latin: LATIN, hebrew: HEBREW },
+    );
 
     // The inherited stack must name a real family, not have collapsed to the
     // system font.
     expect(widths.stack).toContain('Assistant');
     expect(widths.latinReal).toBeGreaterThan(0);
+    expect(widths.hebrewReal).toBeGreaterThan(0);
+
+    // The sample must actually discriminate, or the next assertion is vacuous.
+    expect(
+      Math.abs(widths.latinReal - widths.latinShim),
+      'Assistant and the Arial shim must measure differently',
+    ).toBeGreaterThan(2);
 
     expect(widths.latinStack, 'Latin must render in Assistant').toBe(widths.latinReal);
     expect(widths.latinStack, 'Latin must not render in the Arial shim').not.toBe(

@@ -90,14 +90,13 @@
   }
 
   html {
-    /* NOTE: this declaration does not actually apply. The next/font `.variable`
-       class is on <body> (it cannot go on <html> -- the theme bootstrap owns
-       that element's class attribute), and custom properties inherit downward
-       only, so `var(--font-assistant)` is invalid at computed-value time here
-       and the whole declaration is dropped. The font reaches the page via the
-       generated `.className` on <body>; this rule is kept only as the
-       documented intent. Pre-existing -- see ADR-0042. */
-    font-family: var(--font-assistant), system-ui, sans-serif;
+    /* No `font-family` here on purpose. The next/font `.variable` class is on
+       <body> -- it cannot go on <html>, whose class attribute belongs to the
+       theme bootstrap -- and custom properties inherit downward only, so any
+       `var(--font-assistant)` written at this level is invalid at
+       computed-value time and dropped. The font reaches the page via the
+       generated `.className` on <body>, and Tailwind's `font-sans`. See
+       ADR-0042. */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
