@@ -498,6 +498,13 @@ jobs:
           ')
 
           title="Nightly CI failure on master"
+
+          # Deliberately ONE long line, not wrapped to fit the editor: GitHub
+          # renders a single newline in an issue body as a hard <br>, so a
+          # wrapped source paragraph displays as ragged short lines. The list
+          # items above DO want their own lines; this prose does not.
+          explainer="The nightly ignores change detection entirely (the selector forces a full run on the \`schedule\` event), so a failure here can be in a layer no recent diff touched, in the 80% backend coverage gate, or in an e2e spec \`.github/e2e-map.json\` has stopped selecting."
+
           body=$(printf '%s\n' \
             "The nightly full run failed." \
             "" \
@@ -507,10 +514,7 @@ jobs:
             "Failed jobs:" \
             "$failed" \
             "" \
-            "The nightly ignores change detection entirely (the selector forces a" \
-            "full run on the \`schedule\` event), so a failure here can be in a" \
-            "layer no recent diff touched, in the 80% backend coverage gate, or in" \
-            "an e2e spec \`.github/e2e-map.json\` has stopped selecting.")
+            "$explainer")
 
           existing=$(gh issue list --state open --search "in:title \"$title\"" \
             --json number --jq '.[0].number // empty')
