@@ -24,6 +24,14 @@
  *  - Those file paths are emitted WITHOUT the `backend/` prefix: inside the
  *    `unit` container /app is the backend directory, not the repo root.
  *
+ *  - The frontend layer uses `vitest related --run <files>` for the same
+ *    reason, and the paths likewise drop the `frontend/` prefix (vitest
+ *    resolves them against its own root). An earlier cut used
+ *    `vitest --changed <base>`, which died in CI with "fatal: Invalid
+ *    symmetric difference expression": only the `changes` job checks out with
+ *    `fetch-depth: 0`, so the base sha does not exist in the `lint` job's
+ *    one-commit clone. Neither layer gets to assume git is present.
+ *
  *  - `auth.setup.ts` is always prepended to a narrowed Playwright filter list.
  *    Measured on Playwright 1.58: a positional filter of `inbox.spec.ts` alone
  *    DOES still run the `setup` project, because playwright.config.ts gives
@@ -290,7 +298,7 @@ export function decide({ changed, deleted, commitMessage, base, e2eMap }) {
       unit: true,
       integration: true,
       e2e: true,
-      vitest_args: '',
+      vitest_args: 'run',
       jest_args: '',
       integration_args: '',
       playwright_args: '',
@@ -332,10 +340,23 @@ export function decide({ changed, deleted, commitMessage, base, e2eMap }) {
     }
   }
 
-  // --- vitest: runs on the host in the lint job, so git IS available ------
+  // --- vitest: explicit file list, no git. Emits the subcommand too, so the
+  // --- caller runs `npx vitest $VITEST_ARGS` and nothing else. -------------
   let vitestArgs = '';
-  if (active.has('vitest') && !noNarrow.has('vitest')) {
-    vitestArgs = `--changed ${base} --passWithNoTests`;
+  if (active.has('vitest')) {
+    const traceable = changed
+      .filter((p) => /^frontend\/src\/.+\.(ts|tsx|js|jsx|mjs|cjs|css)$/.test(p))
+      .map((p) => p.slice('frontend/'.length));
+    const untraceable = changed.some(
+      (p) =>
+        p.startsWith('frontend/') &&
+        !/^frontend\/src\/.+\.(ts|tsx|js|jsx|mjs|cjs|css)$/.test(p),
+    );
+    if (noNarrow.has('vitest') || untraceable || traceable.length === 0) {
+      vitestArgs = 'run';
+    } else {
+      vitestArgs = `related --run ${traceable.join(' ')} --passWithNoTests`;
+    }
   }
 
   // --- integration: narrow only when nothing outside tests/integration ----
@@ -469,11 +490,11 @@ function printHuman(decision, { baseSource, changed, deleted }) {
   }
 }
 
-function runLayer(name, command, args, env) {
+function runLayer(name, command, args, env, cwd = REPO_ROOT) {
   console.log(`\n=== ${name} ===`);
   console.log(`$ ${[command, ...args].join(' ')}`);
   const result = spawnSync(command, args, {
-    cwd: REPO_ROOT,
+    cwd,
     stdio: 'inherit',
     env: { ...process.env, ...env },
     shell: process.platform === 'win32',
@@ -490,9 +511,10 @@ function runSelected(decision) {
     ran.push('vitest');
     runLayer(
       'frontend vitest',
-      'npm',
-      ['--prefix', 'frontend', 'test', '--', ...decision.vitest_args.split(' ').filter(Boolean)],
-      {},
+      'npx',
+      ['vitest', ...decision.vitest_args.split(' ').filter(Boolean)],
+      { npm_config_prefix: undefined },
+      join(REPO_ROOT, 'frontend'),
     );
   }
   if (decision.unit) {
