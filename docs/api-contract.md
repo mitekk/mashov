@@ -1061,6 +1061,33 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 | GET | `https://web.mashov.info/api/schools` | AuthController — school list for login form (proxied to frontend, no auth required) |
 | GET | `https://web.mashov.info/students/login` | MashovSessionService — CSRF bootstrap |
 | POST | `/api/login` | MashovSessionService — authenticate; also called by AuthController on user login |
+| POST | `/api/user/recover` | MashovRecoveryService — password recovery step 1, send a code |
+| POST | `/api/user/reset/{code}` | MashovRecoveryService — recovery step 2, single channel |
+| POST | `/api/user/reset/verify/{code}/{code2}` | MashovRecoveryService — recovery step 2, two channels |
+| POST | `/api/login/mfa/send` · `/api/login/mfa/verify` | MashovRecoveryService — MFA challenge |
+| POST | `/api/loginDevice` | MashovRecoveryService — trusted-device re-login |
+| POST | `/api/user/password` · `/api/user/username` | MashovRecoveryService — forced change paths |
+
+#### The `Referer` these calls send is per route
+
+`MashovRecoveryService.headers()` sent `Referer: {baseUrl}/students/login` for
+every route on the class. It now defaults to that and takes a per-route
+override, because the parent is on a different page:
+
+| Referer | Routes |
+|---------|--------|
+| `/students/login` | `/api/user/recover` (submitted from the login page's forgot-password form), MFA send/verify, `/api/loginDevice`, `/api/user/password`, `/api/user/username` |
+| `/students/reset` | **`/api/user/reset/{code}` and `/api/user/reset/verify/...`** |
+
+`/students/reset` is what the 2026-11-24 capture of the single-channel reset
+records — see [`apis/post-api-user-reset-token.md`](../apis/post-api-user-reset-token.md).
+Mashov has not been observed to reject a mismatched `Referer` on these routes,
+so this is not by itself a cause of a refusal.
+
+Both reset routes are also deliberately **cookie-less**: the capture shows no
+`Cookie` header, because the route is unauthenticated and the single-use code is
+the whole authorisation. The `uniquId` gap documented on `headers()` is a
+separate, still-open problem and does not apply to them.
 | GET | `/api/user/notifications?skip=0&take=50` | NotificationSyncTask |
 | GET | `/api/mail/counts?$select=unreadConversations` | MailCountSyncTask |
 | GET | `/api/mail/inbox/conversations?skip=0&take=50` | InboxSyncTask |
