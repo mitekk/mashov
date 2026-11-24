@@ -5,6 +5,17 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # Unconditional full run: the selector forces `full: true` on this event, so
+  # nothing here depends on change detection or on .github/e2e-map.json being
+  # up to date. That is the point -- a narrowed run never re-validates a layer
+  # no recent diff touched, and only a full run enforces the 80% backend
+  # coverage threshold (narrowed unit runs pass `--coverage=false`).
+  # 02:30 and not 02:00 because on-the-hour schedules queue behind everyone
+  # else's and get delayed.
+  schedule:
+    - cron: "30 2 * * *"
+  # The same forced full run, on demand, from Actions -> CI -> Run workflow.
+  workflow_dispatch:
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
@@ -443,3 +454,71 @@ jobs:
             }
             console.log("all upstream jobs succeeded or were skipped");
           '
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 7. NIGHTLY ALERT — a failing nightly must not go unnoticed
+  #
+  # Scheduled runs have no author watching them: nobody gets the red-X email a
+  # push or PR run sends, so without this a nightly failure is invisible. Gated
+  # on `github.event_name == 'schedule'` only -- a manual workflow_dispatch
+  # failure is already visible to whoever clicked it, and filing an issue for it
+  # would be noise.
+  #
+  # Deduped by title search rather than by label: `gh label list` shows only the
+  # GitHub defaults in this repo, and `gh issue create --label` fails outright
+  # on a label that does not exist.
+  # ────────────────────────────────────────────────────────────────────────────
+  nightly-alert:
+    name: Nightly Failure Alert
+    needs: [changes, lint, unit-test, integration-test, e2e, build, ci-ok]
+    if: always() && github.event_name == 'schedule' && needs.ci-ok.result != 'success'
+    runs-on: ubuntu-latest
+    # The repo default for GITHUB_TOKEN is read-only, so this must be explicit:
+    # without it the gh calls below fail with 403.
+    permissions:
+      issues: write
+    steps:
+      # The failed job names go in the body so the notification email alone is
+      # enough to triage from. Same toJSON(needs) + node -e pattern as `ci-ok`.
+      - name: File or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          failed=$(printf '%s' "$NEEDS" | node -e '
+            const needs = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const bad = Object.entries(needs)
+              .filter(([, job]) => ["failure", "cancelled"].includes(job.result))
+              .map(([name, job]) => `- \`${name}\`: ${job.result}`);
+            process.stdout.write(bad.length ? bad.join("\n") : "- (no job reported failure; see the run)");
+          ')
+
+          title="Nightly CI failure on master"
+          body=$(printf '%s\n' \
+            "The nightly full run failed." \
+            "" \
+            "- run: $RUN_URL" \
+            "- commit: \`$GITHUB_SHA\`" \
+            "" \
+            "Failed jobs:" \
+            "$failed" \
+            "" \
+            "The nightly ignores change detection entirely (the selector forces a" \
+            "full run on the \`schedule\` event), so a failure here can be in a" \
+            "layer no recent diff touched, in the 80% backend coverage gate, or in" \
+            "an e2e spec \`.github/e2e-map.json\` has stopped selecting.")
+
+          existing=$(gh issue list --state open --search "in:title \"$title\"" \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            echo "commenting on existing issue #$existing"
+            gh issue comment "$existing" --body "$body"
+          else
+            echo "filing a new issue"
+            gh issue create --title "$title" --body "$body"
+          fi

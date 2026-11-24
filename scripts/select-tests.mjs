@@ -64,6 +64,14 @@ const ALL_SPECS_SENTINEL = '*';
 const SHARD_THRESHOLD = 4;
 
 // ---------------------------------------------------------------------------
+// Events that mean "run everything", with no diff consulted at all. The
+// nightly `schedule` run exists precisely to re-validate layers no recent diff
+// touched (and to ignore .github/e2e-map.json, which is hand-maintained and can
+// rot silently); `workflow_dispatch` is the same thing on demand.
+// ---------------------------------------------------------------------------
+const FORCE_FULL_EVENTS = new Set(['schedule', 'workflow_dispatch']);
+
+// ---------------------------------------------------------------------------
 // Full-run triggers. Any changed path matching one of these, or `[ci full]` in
 // the head commit message, runs the entire estate unnarrowed.
 // ---------------------------------------------------------------------------
@@ -265,11 +273,18 @@ function e2eSpecsFor(path, e2eMap) {
 }
 
 /**
+ * `forceFullReason` makes the whole estate run with no reference to the diff at
+ * all -- it is how the schedule/workflow_dispatch events get a full run (see
+ * FORCE_FULL_EVENTS in main()). It is pushed first so it becomes `reason`.
+ *
  * @param {{changed: string[], deleted: string[], commitMessage: string,
- *          base: string, e2eMap: [string, string|string[]][]}} input
+ *          base: string, e2eMap: [string, string|string[]][],
+ *          forceFullReason?: string}} input
  */
-export function decide({ changed, deleted, commitMessage, base, e2eMap }) {
+export function decide({ changed, deleted, commitMessage, base, e2eMap, forceFullReason }) {
   const fullReasons = [];
+
+  if (forceFullReason) fullReasons.push(forceFullReason);
 
   if (/\[ci full\]/i.test(commitMessage ?? '')) {
     fullReasons.push('[ci full] in a commit message in range');
@@ -553,6 +568,36 @@ function main() {
   }
 
   const head = opts.head;
+
+  // Return BEFORE resolving a base or diffing anything -- not diff-then-override.
+  // On these events the ref is `master` itself, so `merge-base HEAD origin/master`
+  // is HEAD, the diff is empty, and every layer would be deselected: a nightly
+  // that silently runs nothing. The empty diff IS the wrong answer, so there is
+  // nothing to override; the only safe thing is never to compute it.
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  if (!opts.base && FORCE_FULL_EVENTS.has(eventName)) {
+    const decision = decide({
+      changed: [],
+      deleted: [],
+      commitMessage: '',
+      base: head,
+      e2eMap: loadE2eMap(),
+      forceFullReason: `${eventName} event: full run by definition`,
+    });
+    writeGithubOutput(decision);
+    if (opts.print || opts.run) {
+      printHuman(decision, {
+        baseSource: 'not resolved (forced full run)',
+        changed: [],
+        deleted: [],
+      });
+    } else {
+      console.log(JSON.stringify(decision, null, 2));
+    }
+    if (opts.run) runSelected(decision);
+    return;
+  }
+
   const { base, baseSource } = resolveBase(opts.base, head);
   const changed = new Set(diffNames(base, head, 'd'));
   const deleted = new Set(diffNames(base, head, 'D'));
