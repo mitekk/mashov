@@ -1,3 +1,4 @@
+// Throwaway edit for CI selection verification: exercises a leaf app dir.
 import type { Metadata } from 'next';
 import TelegramSetupPageClient from './TelegramSetupPageClient';
 
