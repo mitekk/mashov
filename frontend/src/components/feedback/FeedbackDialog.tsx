@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useRef } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { X } from 'lucide-react';
+import { ChevronDown, X } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -291,20 +291,34 @@ export function FeedbackDialog({ open, onOpenChange, onSent }: FeedbackDialogPro
                 directly, and it is reachable in jsdom. The styling is
                 `SelectTrigger`'s, so the two still look alike.
               */}
-              <select
-                id="feedback-subject"
-                data-testid="feedback-subject-select"
-                className={`${FIELD_CLASS} h-11`}
-                aria-invalid={errors.subject ? true : undefined}
-                aria-describedby={describedBy(errors.subject && 'feedback-subject-error')}
-                {...register('subject')}
-              >
-                {SUBJECT_ORDER.map((code) => (
-                  <option key={code} value={code}>
-                    {FEEDBACK_SUBJECT_LABELS[code]}
-                  </option>
-                ))}
-              </select>
+              {/*
+                `appearance-none` plus our own chevron: the browser draws the
+                native arrow flush against the control's inline-end edge,
+                ignoring the padding, which reads as a glyph stuck to the
+                border. Ours sits at `end-3`, matching `SelectTrigger`. The
+                picker itself stays native -- `appearance-none` styles the
+                closed control, not the popup.
+              */}
+              <div className="relative">
+                <select
+                  id="feedback-subject"
+                  data-testid="feedback-subject-select"
+                  className={`${FIELD_CLASS} h-11 appearance-none pe-9`}
+                  aria-invalid={errors.subject ? true : undefined}
+                  aria-describedby={describedBy(errors.subject && 'feedback-subject-error')}
+                  {...register('subject')}
+                >
+                  {SUBJECT_ORDER.map((code) => (
+                    <option key={code} value={code}>
+                      {FEEDBACK_SUBJECT_LABELS[code]}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  aria-hidden="true"
+                  className="pointer-events-none absolute end-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                />
+              </div>
               {/*
                 Kept although the native select offers only the seven valid
                 codes, so `z.enum` cannot fail short of devtools tampering.
