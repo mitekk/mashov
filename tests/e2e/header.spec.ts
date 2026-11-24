@@ -301,6 +301,77 @@ test.describe('app header', () => {
     await expect(page.getByTestId('feedback-thanks-live')).toHaveCount(1);
   });
 
+  /**
+   * `STICKY_PX` and `FADE_PX` are re-declared here as literals -- a Playwright
+   * spec cannot import from `frontend/src` across the tsconfig boundary. The
+   * danger of a copied constant is not that it goes wrong but that it goes
+   * VACUOUS: raise the hook's `STICKY_PX` to 200 and "still fully visible at
+   * 80" keeps passing while testing nothing.
+   *
+   * So pin the boundaries themselves. Each of these fails if the real curve
+   * moves in either direction.
+   */
+  test('starts fading exactly where the hook says, and finishes where it says', async ({
+    page,
+  }) => {
+    await page.goto('/home');
+    await expect(page.getByTestId('home-header')).toBeVisible();
+    await ensureScrollable(page);
+
+    await scrollTo(page, STICKY_PX);
+    expect(await progress(page)).toBe(0);
+
+    // Just past the sticky stretch it must already have started moving.
+    await scrollTo(page, STICKY_PX + 4);
+    expect(await progress(page)).toBeGreaterThan(0);
+
+    // Just before the end of the fade it must NOT be finished yet.
+    await scrollTo(page, STICKY_PX + FADE_PX - 4);
+    expect(await progress(page)).toBeLessThan(1);
+
+    await scrollTo(page, STICKY_PX + FADE_PX);
+    expect(await progress(page)).toBe(1);
+  });
+
+  /**
+   * The remount path. `--app-header-p` is global state on `<html>` written by
+   * whichever header is mounted, and during an App Router transition the
+   * outgoing route's tree is still mounted while the incoming one renders. A
+   * header that landed on a fresh route still faded out -- or worse, inert --
+   * would be a dead top bar the parent cannot use.
+   */
+  test('comes back visible after navigating away while faded out', async ({ page }) => {
+    await page.goto('/home');
+    await expect(page.getByTestId('home-header')).toBeVisible();
+    await ensureScrollable(page);
+
+    await scrollTo(page, 400);
+    expect(await progress(page)).toBe(1);
+    await expect(page.getByTestId('app-header')).toHaveAttribute('inert', '');
+
+    await page.getByTestId('nav-inbox').click();
+    await expect(page.getByTestId('inbox-page')).toBeVisible();
+
+    // Still scrolled: `ensureScrollable` appends its spacer to `document.body`,
+    // outside the Next root, so it survives a client-side navigation and the
+    // offset is preserved. A faded header is the CORRECT answer here -- what
+    // matters is that the property still tracks the real offset rather than
+    // having been wiped to the `:root` fallback of 0 by the outgoing header's
+    // cleanup, which would paint a solid header over scrolled content.
+    expect(await progress(page)).toBe(1);
+
+    // And it is not dead: scrolling back up on the new route brings it round.
+    await scrollTo(page, 0);
+    expect(await progress(page)).toBe(0);
+    expect(await opacity(page)).toBe(1);
+    await expect(page.getByTestId('app-header')).not.toHaveAttribute('inert', '');
+    await expect(page.getByTestId('theme-toggle')).toBeVisible();
+    await page.getByTestId('theme-toggle').click();
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')))
+      .toBe(true);
+  });
+
   test('is absent from the centred shell, which has no household to act on', async ({ page }) => {
     await page.goto('/more/telegram');
     await expect(page.getByTestId('telegram-setup-page')).toBeVisible();

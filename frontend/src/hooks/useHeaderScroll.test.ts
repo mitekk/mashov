@@ -205,6 +205,50 @@ describe('useHeaderScroll', () => {
     expect(progress()).toBe('1');
   });
 
+  /**
+   * Reduce Motion is a setting, not a constant. A parent who turns it on from
+   * iOS Settings while the app is backgrounded would otherwise keep the fade
+   * until something remounts the header -- and one who turns it off would be
+   * left with a permanently pinned header.
+   */
+  it('follows prefers-reduced-motion when it changes under it', () => {
+    const listeners: Array<() => void> = [];
+    const query = {
+      matches: false,
+      media: '(prefers-reduced-motion: reduce)',
+      addEventListener: (_: string, listener: () => void) => listeners.push(listener),
+      removeEventListener: vi.fn(),
+    };
+    Object.defineProperty(window, 'matchMedia', {
+      value: () => query,
+      configurable: true,
+      writable: true,
+    });
+
+    renderHook(() => useHeaderScroll<HTMLElement>());
+
+    scrollTo(300);
+    expect(progress()).toBe('1');
+
+    // The parent turns Reduce Motion ON.
+    query.matches = true;
+    act(() => {
+      listeners.forEach((listener) => listener());
+    });
+    expect(progress()).toBe('0');
+
+    // ...and scrolling no longer moves it.
+    scrollTo(400);
+    expect(progress()).toBe('0');
+
+    // Turned back OFF, the fade resumes without a remount.
+    query.matches = false;
+    act(() => {
+      listeners.forEach((listener) => listener());
+    });
+    expect(progress()).toBe('1');
+  });
+
   it('cleans the custom property up when the header unmounts', () => {
     const { unmount } = renderHook(() => useHeaderScroll<HTMLElement>());
     scrollTo(300);

@@ -49,11 +49,13 @@
     /* The app header's own geometry, read by `.app-header` and
        `.sticky-under-header` in @layer components.
 
-       Deliberately plain custom properties and NOT a `spacing` token in
-       tailwind.config.ts: a token named `header` would make Tailwind emit a
-       second `.pt-header`-style rule for any hand-written utility of the same
-       name, and which one won would be emission order. src/app/globals.test.ts
-       asserts that collision cannot happen. */
+       Deliberately plain custom properties and NOT `spacing` tokens in
+       tailwind.config.ts. A spacing token emits a whole family of utilities
+       (`.pt-*`, `.top-*`, ...), and where one of those collides with a
+       hand-written utility of the same name the winner is emission order
+       rather than intent -- the trap src/app/globals.test.ts guards for the
+       utilities that already exist. Custom properties emit nothing, so they
+       cannot join that collision at all. */
     /* `h-14` PLUS the notch, because `pt-safe` lives on the header itself.
        Leave the inset out and `.sticky-under-header` offsets by 56px against a
        header that is really 56px + inset tall -- the child workspace tab rail
@@ -541,9 +543,23 @@
      the finger. */
   .app-header {
     opacity: calc(1 - var(--app-header-p));
-    /* Percent, so nothing has to measure the header's height in JS. */
+    /* Percent, so nothing has to measure the header's height in JS.
+
+       It is also the half that actually gets the header out of the way:
+       opacity alone would leave an invisible but still hit-testable 56px box
+       over the top of the page for every p <= 0.99, where `inert` has not
+       taken over yet. tests/e2e/header.spec.ts asserts the matrix.
+
+       NOTE: a transform makes this element a containing block for any
+       `position: fixed` descendant. Nothing fixed lives in the header today --
+       the feedback dialog and its banner are DOM siblings via the provider,
+       and the overflow menu is portaled to <body> -- but a fixed child added
+       later would position against the header instead of the viewport.
+
+       No `will-change`: the transform already promotes this to its own layer,
+       and `will-change` here is never released, so it would hold a composited
+       layer with a backdrop-filter for the lifetime of every page. */
     transform: translateY(calc(var(--app-header-p) * -100%));
-    will-change: opacity, transform;
   }
 
   /* For `position: sticky` elements that would otherwise park behind the

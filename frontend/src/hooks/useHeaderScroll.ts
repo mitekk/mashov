@@ -100,24 +100,6 @@ export function useHeaderScroll<T extends HTMLElement>(): RefObject<T | null> {
       }
     };
 
-    // `matchMedia` is absent under jsdom, so this is an optional call rather
-    // than a guard the unit tests have to stub their way around.
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-
-    if (reducedMotion?.matches) {
-      apply(0);
-      return () => {
-        if (owner === token) {
-          owner = null;
-          root.style.removeProperty(PROGRESS_PROPERTY);
-        }
-      };
-    }
-
-    // Read on mount, not only on the first scroll: a back-navigation restores
-    // the scroll offset before this runs.
-    apply(headerProgress(window.scrollY));
-
     let frame = 0;
     const update = (): void => {
       frame = 0;
@@ -136,12 +118,52 @@ export function useHeaderScroll<T extends HTMLElement>(): RefObject<T | null> {
       apply(headerProgress(window.scrollY));
     };
 
-    window.addEventListener('scroll', onScroll, { passive: true });
-    document.addEventListener('focusout', onFocusOut);
+    // `matchMedia` is absent under jsdom, so this is an optional call rather
+    // than a guard the unit tests have to stub their way around.
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
 
-    return () => {
+    let listening = false;
+    const listen = (): void => {
+      if (listening) return;
+      window.addEventListener('scroll', onScroll, { passive: true });
+      document.addEventListener('focusout', onFocusOut);
+      listening = true;
+    };
+    const stopListening = (): void => {
+      if (!listening) return;
       window.removeEventListener('scroll', onScroll);
       document.removeEventListener('focusout', onFocusOut);
+      listening = false;
+    };
+
+    // Re-read on every change, not once on mount: Reduce Motion is a setting a
+    // parent can turn on from iOS Settings while the app is backgrounded, and
+    // sampling it once leaves them with the behaviour they just turned off
+    // until something remounts the header.
+    const syncMotionPreference = (): void => {
+      if (reducedMotion?.matches) {
+        stopListening();
+        if (frame) {
+          window.cancelAnimationFrame(frame);
+          frame = 0;
+        }
+        // Permanently sticky and visible, which is the whole request.
+        apply(0);
+        return;
+      }
+      listen();
+      // Read the live offset rather than waiting for the next scroll: a
+      // back-navigation restores it before this runs, and so does turning the
+      // preference off halfway down a page.
+      apply(headerProgress(window.scrollY));
+    };
+
+    syncMotionPreference();
+    reducedMotion?.addEventListener?.('change', syncMotionPreference);
+
+    return () => {
+      stopListening();
+      reducedMotion?.removeEventListener?.('change', syncMotionPreference);
       if (frame) window.cancelAnimationFrame(frame);
 
       if (attached) attached.inert = false;

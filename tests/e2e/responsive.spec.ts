@@ -197,6 +197,42 @@ test.describe('app header', () => {
       .toBe(!wasDark);
   });
 
+  test('keeps the avatar out of the menu at every width', async ({ page }) => {
+    // The one control that does NOT collapse: the profile link stays on the
+    // bar at 360, because it is the way back to /more and an identity cue, not
+    // an action.
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    await expect(page.getByTestId('header-profile-link')).toBeVisible();
+    await expect(page.getByTestId('header-profile-link')).toHaveCount(1);
+  });
+
+  test('drives the overflow menu from the keyboard and gives focus back', async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== MOBILE, 'The menu exists only below sm.');
+    // `dir="rtl"` on the Radix root is what makes the arrow keys follow the
+    // writing direction, and Escape restoring focus to the trigger is the only
+    // thing that stops a keyboard user being dumped at the top of the document.
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    const trigger = page.getByTestId('header-menu-trigger');
+    await trigger.focus();
+    await page.keyboard.press('Enter');
+    // Opening from the keyboard lands on the first item, so the parent is
+    // already somewhere useful rather than on the panel itself.
+    await expect(page.getByTestId('header-menu-feedback')).toBeFocused();
+
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByTestId('header-menu-theme')).toBeFocused();
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('header-menu-theme')).toBeHidden();
+    await expect(trigger).toBeFocused();
+  });
+
   test('offers feedback and sync from the overflow menu', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== MOBILE, 'The menu exists only below sm.');
     await page.goto('/home');
