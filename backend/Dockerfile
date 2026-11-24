@@ -19,6 +19,13 @@ WORKDIR /app
 ENV TZ=UTC
 RUN apk add --no-cache openssl
 RUN addgroup -S app && adduser -S app -G app
+# Baked so the image is self-describing: the backend reads APP_VERSION at
+# RUNTIME, and nothing in a plain `docker compose up` would otherwise tell it
+# which commit it is. Empty is fine -- src/common/app-version.ts then falls
+# back to this package's own version. Declared after the heavy COPYs so a new
+# version does not invalidate them.
+ARG APP_VERSION=""
+ENV APP_VERSION=$APP_VERSION
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/prisma ./prisma

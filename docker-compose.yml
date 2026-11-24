@@ -164,10 +164,14 @@ services:
       FEATURE_DAILY_BEHAVE: ${FEATURE_DAILY_BEHAVE:-false}
       FEATURE_OUT_BEHAVE: ${FEATURE_OUT_BEHAVE:-false}
       # The build this process is. Stamped onto a feedback row when the client
-      # sends none. Optional: unset, the backend falls back to its own
-      # package.json version (src/common/app-version.ts), so the column is
-      # never null. Set it to stamp a real build -- a tag, a git sha.
-      APP_VERSION: ${APP_VERSION:-}
+      # sends none.
+      #
+      # Pass-through (no value), NOT `${APP_VERSION:-}`: the latter sets the
+      # variable to an empty string whenever the operator has not exported one,
+      # which would override the version CI baked into the image and send the
+      # backend back to its package.json version. With no value, compose
+      # forwards it only when it is actually set, and the baked ENV survives.
+      APP_VERSION:
     restart: unless-stopped
     ports:
       # Parameterised for the same reason as DB_PORT above: a hardcoded publish

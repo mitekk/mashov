@@ -140,6 +140,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # Both images carry the commit they were built from. Without it they fall
+      # back to their package.json version, which is not bumped per release --
+      # so every feedback row would report the same string and `appVersion`
+      # could not tell two deployments apart.
+      #
+      # Short, not the full `github.sha`: the client-sent `appVersion` is capped
+      # at 40 characters by the DTO, and 40 of 40 leaves no room for a prefix.
+      - name: Resolve the build version
+        id: app_version
+        run: echo "value=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build backend image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -147,6 +158,8 @@ jobs:
           file: ./backend/Dockerfile
           load: true
           tags: mashov-backend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-backend
           cache-to: type=gha,mode=max,scope=mashov-backend
 
@@ -157,6 +170,8 @@ jobs:
           file: ./frontend/Dockerfile
           load: true
           tags: mashov-frontend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-frontend
           cache-to: type=gha,mode=max,scope=mashov-frontend
 
@@ -213,6 +228,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # Both images carry the commit they were built from. Without it they fall
+      # back to their package.json version, which is not bumped per release --
+      # so every feedback row would report the same string and `appVersion`
+      # could not tell two deployments apart.
+      #
+      # Short, not the full `github.sha`: the client-sent `appVersion` is capped
+      # at 40 characters by the DTO, and 40 of 40 leaves no room for a prefix.
+      - name: Resolve the build version
+        id: app_version
+        run: echo "value=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build backend image (cached)
         uses: docker/build-push-action@v7
         with:
@@ -220,6 +246,8 @@ jobs:
           file: ./backend/Dockerfile
           load: true
           tags: mashov-backend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-backend
           cache-to: type=gha,mode=max,scope=mashov-backend
 
@@ -230,5 +258,7 @@ jobs:
           file: ./frontend/Dockerfile
           load: true
           tags: mashov-frontend:latest
+          build-args: |
+            APP_VERSION=${{ steps.app_version.outputs.value }}
           cache-from: type=gha,scope=mashov-frontend
           cache-to: type=gha,mode=max,scope=mashov-frontend

@@ -99,10 +99,24 @@ without it a report like "the timetable is wrong" names no child. The server add
 **Which build a row records.** Nothing has to be configured: the client inlines its version
 at build time from `next.config.ts`, and the server falls back to its own
 (`backend/src/common/app-version.ts`), so `appVersion` is never null. Both derive from their
-`package.json` version unless `APP_VERSION` is set, which overrides both and is how CI or ops
-stamp a real build — a tag, a git sha. **The package.json versions are not bumped per
-release**, so the default distinguishes nothing: set `APP_VERSION` if you need to tell two
-deployments apart.
+`package.json` version unless `APP_VERSION` is set, which overrides both.
+
+In practice it is always set, because the package.json versions are not bumped per release and
+so distinguish nothing on their own. Two places stamp the commit:
+
+- **CI** resolves `git rev-parse --short=12 HEAD` once per job and passes it as a `build-args`
+  to every image it builds, in both the `e2e` and `build` jobs.
+- **`npm run stack:up`** does the same for a real deployment, which is where it actually
+  matters: CI builds with `load: true` and pushes nothing, so a CI-only stamp never reaches a
+  running stack, and compose cannot shell out for a sha on its own.
+
+The backend image **bakes** `APP_VERSION` as an `ENV`, since it reads the value at runtime.
+That is why `docker-compose.yml` passes the variable through (`APP_VERSION:`, no value) rather
+than as `${APP_VERSION:-}` — the latter sets an empty string whenever nobody exported one,
+which would silently override the baked value and send the backend back to its package.json
+version. `backend/src/common/app-version-build.spec.ts` asserts all of this, because every part
+of it fails silently: the fallback always produces *a* string, so a dropped stamp breaks
+nothing and is invisible until someone reads the column.
 
 Each row is a self-contained snapshot with no foreign key, because the household merge
 (ADR-0029) and the connection unlink (ADR-0032) make pure references uninterpretable exactly
