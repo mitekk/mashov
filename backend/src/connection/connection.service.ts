@@ -9,6 +9,7 @@ import {
 import { AxiosInstance } from 'axios';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
+import { isTakenUsernameConflict } from '../common/prisma-conflicts';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../session/encryption.service';
 import {
@@ -30,20 +31,6 @@ interface MashovLoginResponse {
  * one. Prisma reports `meta.target` as the field list on Postgres and as the
  * constraint name on some other providers, so both shapes are accepted.
  */
-function isTakenUsernameConflict(err: unknown): boolean {
-  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
-    return false;
-  }
-  const target = err.meta?.target;
-  if (Array.isArray(target)) {
-    return target.some((field) => String(field).toLowerCase().includes('username'));
-  }
-  if (typeof target === 'string') {
-    return target.toLowerCase().includes('username');
-  }
-  return false;
-}
-
 @Injectable()
 export class ConnectionService {
   private readonly logger = new Logger(ConnectionService.name);
@@ -189,6 +176,12 @@ export class ConnectionService {
           username: newUsername,
           encryptedPassword,
           lastLoginAt: new Date(),
+          // Mashov just validated this password, so it is the credential that
+          // works -- which makes this the write that HEALS a connection a
+          // recovery reset marked stale. Without it the banner the parent is
+          // acting on can never clear itself: they re-enter the password, we
+          // store it, and the banner comes straight back forever.
+          credentialStaleAt: null,
           ...(newUniqueId ? { mashovUniqueId: newUniqueId } : {}),
         },
       });

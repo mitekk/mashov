@@ -17,6 +17,31 @@ model HouseholdConnection {
   upstreamUserId    String?
   cachedNewCount    Int       @default(0)
   mashovUniqueId    String?
+  /// Mashov's trusted-device credential, encrypted with the same
+  /// `EncryptionService` as `encryptedPassword`.
+  ///
+  /// This is what makes an MFA-protected account compatible with background
+  /// sync. Sixteen cron tasks re-login by decrypting `encryptedPassword`; if
+  /// every one of those re-logins re-opened the MFA challenge, the parent would
+  /// sign in successfully once and then watch their data go stale overnight
+  /// with no error anyone could see. `POST /api/loginDevice` with this value in
+  /// a `devicePass` header is a re-login that skips the challenge.
+  ///
+  /// Mashov may rotate it on any login, so every login writes back whatever it
+  /// returned. Keeping a stale one would fail the next re-login and drop sync
+  /// back to a password that may no longer exist. See apis/post-api-loginDevice.md.
+  devicePass        String?
+  /// Set when we know the stored `encryptedPassword` no longer works -- today,
+  /// when a password reset driven through our own recovery flow succeeded.
+  ///
+  /// Without it a reset breaks background sync silently: the crons keep
+  /// decrypting a password Mashov has already replaced, and the parent sees
+  /// data quietly stop updating. Surfaced on `MeSchool.credentialStale` so the
+  /// app can say which school needs attention, which is what closes the loop
+  /// for a multi-school household -- reset school B, sign in with A, and B must
+  /// still say so. Cleared by any successful sign-in, which rewrites the
+  /// credential anyway.
+  credentialStaleAt DateTime?
   /// accessToken.userSchoolYears from the last login: the years this household
   /// actually has records for. Json rather than Int[] to match every other
   /// list in this schema and to stay additive for `prisma db push`.
@@ -886,4 +911,34 @@ model DigestDelivery {
   /// table now grows by a row per run per subscribing user.
   @@index([userId, runAt])
   @@map("digest_delivery")
+}
+
+/// One row per COMPLETED password reset driven through our recovery flow.
+///
+/// We are mutating a password on a third-party system on behalf of someone we
+/// have not authenticated -- whoever completed the flow proved control of the
+/// school-registered email or phone, not ownership of an AppUser household. The
+/// attempt caps protect us from being an abuse amplifier as much as they
+/// protect the parent, and this table is the trail that makes an abuse pattern
+/// visible after the fact. See ADR-0042.
+///
+/// What is deliberately NOT here: the recovery code, the new password, and the
+/// raw ID number. The ID number is stored only as a SHA-256 hash, which is
+/// enough to count resets per identity and to join two attempts together
+/// without parking a national identifier in a support-readable table.
+model CredentialRecoveryAudit {
+  id String @id @default(cuid())
+  /// Mashov `semel`.
+  schoolCode   Int
+  /// SHA-256 hex of the ID number the reset was performed for. Never the ID.
+  idNumberHash String
+  /// The caller's IP, as the login rate limiter sees it.
+  ip           String
+  at           DateTime @default(now())
+
+  /// "how many resets at this school lately" -- the abuse-amplifier question.
+  @@index([schoolCode, at])
+  /// "how many resets for this identity lately".
+  @@index([idNumberHash, at])
+  @@map("credential_recovery_audit")
 }

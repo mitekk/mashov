@@ -1,4 +1,4 @@
-# ADR-0042: Assistant Is Committed to the Repo — One `next/font/local` Call per Subset, All Sharing One Family Name
+# ADR-0043: Assistant Is Committed to the Repo — One `next/font/local` Call per Subset, All Sharing One Family Name
 
 - **Date**: 2026-11-23
 - **Status**: Accepted

@@ -17,7 +17,7 @@ the Docker image build depended on Google Fonts answering correctly, and twice i
 day it did not (`TypeError: Cannot read properties of null (reading '1')` out of
 `@next/font/dist/google/loader.js`, a failed regex match on the served CSS). Committing
 the woff2 files makes `next build` hermetic: `npm ci` is now its only network
-dependency. See [ADR-0042](../../../../docs/adr/0042-self-hosted-font.md).
+dependency. See [ADR-0043](../../../../docs/adr/0043-self-hosted-font.md).
 
 ## Files
 

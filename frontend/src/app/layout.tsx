@@ -5,7 +5,7 @@ import './globals.css';
 import Providers from './providers';
 
 // Assistant is self-hosted from committed woff2 files (src/assets/fonts/, see
-// its README and ADR-0042) rather than fetched through `next/font/google`. That
+// its README and ADR-0043) rather than fetched through `next/font/google`. That
 // loader resolves the family over the network *during `next build`* -- inside
 // `docker build` -- and twice in four CI runs it failed on an unparseable
 // response (`TypeError: Cannot read properties of null (reading '1')`). A build

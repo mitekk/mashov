@@ -17,7 +17,7 @@ function subsetSizes(): Record<'hebrew' | 'latin' | 'latinExt', number> {
 }
 
 /**
- * Assistant is self-hosted from committed woff2 files (ADR-0042) so that
+ * Assistant is self-hosted from committed woff2 files (ADR-0043) so that
  * `next build` makes no network request. Nothing else in the suite asserts on
  * fonts, preloads or head contents, which left three failure modes unguarded --
  * all three silent, all three leaving a page that still renders:
@@ -39,7 +39,7 @@ test.describe('Assistant font delivery', () => {
     // storageState, a custom userAgent and the `x-mashov-e2e-auth-bypass`
     // header, and the built-in `request` fixture inherits all three -- which
     // would mean this test never exercises the anonymous access that is the
-    // whole reason the fonts live under /_next instead of /public (ADR-0042).
+    // whole reason the fonts live under /_next instead of /public (ADR-0043).
     const anon = await playwrightRequest.newContext({ baseURL });
     try {
       const response = await anon.get(SIGN_IN);
@@ -53,7 +53,7 @@ test.describe('Assistant font delivery', () => {
         expect(link).toContain('rel="preload"');
         expect(link).toContain('/_next/static/media/');
         expect(link).toContain('crossorigin');
-        // Never fonts.gstatic.com -- the point of ADR-0042 is that we serve these.
+        // Never fonts.gstatic.com -- the point of ADR-0043 is that we serve these.
         expect(link).not.toContain('gstatic');
       }
 
