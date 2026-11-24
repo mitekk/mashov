@@ -188,9 +188,16 @@ function resolveBase(explicitBase, head) {
   }
 
   if (eventName === 'push') {
+    // GITHUB_EVENT_BEFORE is NOT a default Actions variable: the workflow has
+    // to map `github.event.before` into it. If that mapping is ever dropped,
+    // this falls back to HEAD~1, which is correct for a merge commit but
+    // under-selects a multi-commit direct push -- so say which one was used.
     const before = process.env.GITHUB_EVENT_BEFORE;
-    if (isCommit(before)) return { base: before, baseSource: 'GITHUB_EVENT_BEFORE' };
-    return { base: `${head}~1`, baseSource: 'HEAD~1 (no usable event before-sha)' };
+    if (isCommit(before)) return { base: before, baseSource: 'github.event.before' };
+    return {
+      base: `${head}~1`,
+      baseSource: 'HEAD~1 (no usable event before-sha; is GITHUB_EVENT_BEFORE mapped?)',
+    };
   }
 
   const mergeBase = git(['merge-base', head, 'origin/master'], { allowFailure: true });

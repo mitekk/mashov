@@ -47,8 +47,18 @@ jobs:
       - name: Test the selector
         run: node --test scripts/select-tests.test.mjs
 
+      # `github.event.before` must be passed through explicitly. There is no
+      # GITHUB_EVENT_BEFORE default environment variable -- the previous sha
+      # lives only in the event payload -- so without this the selector's push
+      # branch silently fell back to HEAD~1. On a merge commit that happens to
+      # be right (HEAD~1 is the first parent, i.e. the old master tip), but a
+      # direct push of several commits would diff only the last one and skip
+      # layers the earlier commits needed: a false negative, which is the one
+      # direction this design must never fail in.
       - name: Select relevant layers
         id: select
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
         run: node scripts/select-tests.mjs
 
       # Values go through `env`, never straight into the shell: `reason` and the
