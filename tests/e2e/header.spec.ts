@@ -185,34 +185,62 @@ test.describe('app header', () => {
     await expect(page.getByTestId('app-header')).not.toHaveAttribute('inert', '');
   });
 
-  test('keeps the inbox bulk-action bar below it rather than behind it', async ({ page }) => {
+  /**
+   * The point of `.sticky-under-header`, and it only shows up once the element
+   * is actually STUCK -- at scroll 0 it sits in normal flow and any "is it
+   * below the header" assertion passes for free. So each of these scrolls far
+   * enough to pin the element, twice: once with the header still there, once
+   * after it has gone.
+   */
+  async function stickyTopAt(page: Page, testId: string, y: number): Promise<number> {
+    await scrollTo(page, y);
+    const box = await page.getByTestId(testId).boundingBox();
+    expect(box, `${testId} has no box at scroll ${y}`).not.toBeNull();
+    return box!.y;
+  }
+
+  test('keeps the inbox bulk-action bar below the header, then lets it ride up', async ({
+    page,
+  }) => {
     await page.goto('/inbox');
     await expect(page.getByTestId('inbox-page')).toBeVisible();
 
     await page.getByTestId(`conversation-select-${CONVERSATION_ID}`).first().click();
+    await expect(page.getByTestId('inbox-bulk-actions')).toBeVisible();
+    await ensureScrollable(page);
 
-    const bar = page.getByTestId('inbox-bulk-actions');
-    await expect(bar).toBeVisible();
+    // Stuck, header fully present: clear of the header's 3.5rem, plus the
+    // 0.5rem gap.
+    const withHeader = await stickyTopAt(page, 'inbox-bulk-actions', STICKY_PX);
+    expect(await progress(page)).toBe(0);
+    expect(withHeader).toBeGreaterThan(50);
 
-    const headerBox = await page.getByTestId('app-header').boundingBox();
-    const barBox = await bar.boundingBox();
-    expect(headerBox).not.toBeNull();
-    expect(barBox).not.toBeNull();
-    // Below the header's bottom edge, not tucked under it.
-    expect(barBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height - 1);
+    // Header gone: the bar takes its place, ending where a plain `top-2` would
+    // have put it all along.
+    const withoutHeader = await stickyTopAt(page, 'inbox-bulk-actions', 400);
+    expect(await progress(page)).toBe(1);
+    expect(withoutHeader).toBeLessThan(withHeader);
+    expect(withoutHeader).toBeLessThanOrEqual(12);
   });
 
-  test('keeps the child workspace tab rail below it rather than behind it', async ({ page }) => {
+  test('keeps the child workspace tab rail below the header, then lets it ride up', async ({
+    page,
+  }) => {
     await page.goto(`/children/${STUDENT_GUID}?section=homework`);
     await expect(page.getByTestId('child-workspace')).toBeVisible();
     await ensureScrollable(page);
 
-    const rail = page.getByTestId('section-tab-homework');
+    const withHeader = await stickyTopAt(page, 'section-tab-homework', STICKY_PX);
+    expect(await progress(page)).toBe(0);
+
     const headerBox = await page.getByTestId('app-header').boundingBox();
-    const railBox = await rail.boundingBox();
     expect(headerBox).not.toBeNull();
-    expect(railBox).not.toBeNull();
-    expect(railBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height - 1);
+    // Below the header's bottom edge while the header is there.
+    expect(withHeader).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height - 1);
+
+    const withoutHeader = await stickyTopAt(page, 'section-tab-homework', 400);
+    expect(await progress(page)).toBe(1);
+    expect(withoutHeader).toBeLessThan(withHeader);
   });
 
   test('sits under an open dialog, not over it', async ({ page }) => {
