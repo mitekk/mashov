@@ -79,6 +79,25 @@ npm run test:pr:dry -- --base origin/master     # against a branch point
 npm run test:pr:dry -- --base <sha>~1 --head <sha>
 ```
 
+### Nightly full run
+
+Narrowing means nothing re-validates the whole estate: a push to `master` gets
+the same narrowed selection its PR got, so a regression in a layer no recent
+diff touched can sit undetected. A **nightly run at 02:30 UTC** closes that
+gap — the selector forces `full: true` on the `schedule` and
+`workflow_dispatch` events and never looks at the diff at all, so the nightly
+also ignores `.github/e2e-map.json` (hand-maintained, and the only thing that
+catches a spec the map has stopped selecting).
+
+- The nightly is what enforces the **80% backend coverage gate**: narrowed unit
+  runs pass `--coverage=false`, because a subset cannot clear the threshold in
+  `backend/package.json`.
+- The same full run is available on demand: **Actions → CI → Run workflow**.
+- A failing nightly files a GitHub issue (`nightly-alert`, deduped by title and
+  commented on while it stays open). Scheduled runs email nobody, so without it
+  a red nightly is invisible. The job is gated on the `schedule` event only — a
+  manual run's failure is already visible to whoever started it.
+
 ## Interview Workflow
 
 1. Run `/prd` first — turn raw requirements (MD, PDF, text) into a versioned PRD snapshot (`docs/prd/PRD-vN.md`) and initialize workflow state.

@@ -226,3 +226,63 @@ test('a changed backend spec file resolves to itself', () => {
     '--findRelatedTests src/digest/digest.service.spec.ts --coverage=false --passWithNoTests',
   );
 });
+
+// ---------------------------------------------------------------------------
+// Forced full runs (the nightly `schedule` run and `workflow_dispatch`).
+// ---------------------------------------------------------------------------
+
+test('a forced reason runs the whole estate off an empty changed set', () => {
+  const d = decide({
+    changed: [],
+    deleted: [],
+    commitMessage: '',
+    base: BASE,
+    e2eMap,
+    forceFullReason: 'schedule event: full run by definition',
+  });
+  assert.equal(d.full, true);
+  assert.equal(d.reason, 'schedule event: full run by definition');
+  assert.deepEqual(d.reasons, ['schedule event: full run by definition']);
+  assert.equal(d.vitest, true);
+  assert.equal(d.unit, true);
+  assert.equal(d.integration, true);
+  assert.equal(d.e2e, true);
+  assert.equal(d.vitest_args, 'run', 'still a valid vitest invocation');
+  assert.equal(d.jest_args, '', 'no narrowing, so coverage stays on');
+  assert.equal(d.integration_args, '');
+  assert.equal(d.playwright_args, '');
+  assert.equal(d.e2e_shards, '[1,2]');
+  assert.equal(d.e2e_shard_total, 2);
+});
+
+test('WITHOUT a forced reason the same empty changed set selects nothing', () => {
+  // Regression pin for the trap the short-circuit in main() exists to avoid.
+  // On a schedule/workflow_dispatch event the ref IS origin/master, so the
+  // merge-base equals HEAD and the diff is empty -- which lands here, with
+  // every layer off: a nightly that silently runs no tests at all. If someone
+  // "simplifies" main() back into resolving a base and diffing on those
+  // events, this is the assertion that explains why they must not.
+  const d = decide({ changed: [], deleted: [], commitMessage: '', base: BASE, e2eMap });
+  assert.equal(d.full, false);
+  assert.equal(d.vitest, false);
+  assert.equal(d.unit, false);
+  assert.equal(d.integration, false);
+  assert.equal(d.e2e, false);
+  assert.match(d.reason, /no test layer affected/);
+});
+
+test('a forced reason stays the headline when a path trigger also fires', () => {
+  const d = decide({
+    changed: ['backend/package.json'],
+    deleted: [],
+    commitMessage: 'chore: bump a dep',
+    base: BASE,
+    e2eMap,
+    forceFullReason: 'workflow_dispatch event: full run by definition',
+  });
+  assert.equal(d.full, true);
+  assert.equal(d.reason, 'workflow_dispatch event: full run by definition');
+  assert.equal(d.reasons.length, 2);
+  assert.equal(d.reasons[0], 'workflow_dispatch event: full run by definition');
+  assert.match(d.reasons[1], /backend\/package\.json matches full-run pattern/);
+});
