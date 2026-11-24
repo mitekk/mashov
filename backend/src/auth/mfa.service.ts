@@ -156,8 +156,8 @@ export class MfaService {
     // triggering 403 carry a `Set-Cookie: uniquId`, and does `mfa/verify`
     // echo back a different one? If yes, the fix is to carry the challenge's
     // OWN cookie — keyed by `challengeId` in Redis — not the stored one.
-    // The other three flows (`requestOtp`, `verifyOtp`, credential-setup) do
-    // send it; see `MashovRecoveryService.headers()` for why they are safe.
+    // The credential-change flows do send it; see
+    // `MashovRecoveryService.headers()` for why they are safe.
     const existingConnBeforeLogin = await this.prisma.householdConnection.findUnique({
       where: { schoolCode_username: { schoolCode: semel, username: input.username } },
       select: { id: true, mashovUniqueId: true, userId: true },
@@ -323,8 +323,9 @@ export class MfaService {
       // rather than INVALID_MFA_CODE, because the parent is sitting on an open
       // challenge and needs to know the resend failed, not that they mistyped.
       //
-      // 422 for the same reason as `OTP_REQUEST_REFUSED`: understood, cannot
-      // be fulfilled, and nothing was typed to be malformed.
+      // 422: understood, cannot be fulfilled, and nothing was typed to be
+      // malformed -- the same shape as LOGIN_METHOD_BLOCKED and
+      // MFA_CONTACT_MISSING.
       if (stage === 'send') {
         return envelope(
           'MFA_SEND_REFUSED',

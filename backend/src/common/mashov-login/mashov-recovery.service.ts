@@ -213,42 +213,6 @@ export class MashovRecoveryService {
     return { data: response.data, ...readLoginHeaders(response.headers) };
   }
 
-  /** Step 1 of passwordless sign-in: ask for a one-time code. */
-  async requestOtp(input: {
-    semel: number;
-    username: string;
-    method: MfaMethod;
-    /** See `uniqueId` on `headers()` below. */
-    uniqueId?: string | null;
-  }): Promise<void> {
-    await this.http.post(
-      '/api/user/otp/request',
-      { semel: Number(input.semel), username: input.username, method: input.method },
-      { headers: this.headers({}, input.uniqueId) },
-    );
-  }
-
-  /**
-   * Step 2 of passwordless sign-in: exchange the code for a session.
-   *
-   * The login data is posted with every secret stripped -- there is no password
-   * in this flow by definition, and `stripLoginSecrets` guarantees one cannot
-   * leak in from a caller that built the body carelessly.
-   */
-  async verifyOtp(input: {
-    loginData: Record<string, unknown>;
-    code: string;
-    /** See `uniqueId` on `headers()` below. */
-    uniqueId?: string | null;
-  }): Promise<MashovLoginResponseView> {
-    const response = await this.http.post<MashovLoginPayload>(
-      '/api/user/otp',
-      { ...stripLoginSecrets(input.loginData), code: stripWhitespace(input.code) },
-      { headers: this.headers({}, input.uniqueId) },
-    );
-    return { data: response.data, ...readLoginHeaders(response.headers) };
-  }
-
   /**
    * `uniqueId` is Mashov's `uniquId` session cookie, stored per connection.
    *

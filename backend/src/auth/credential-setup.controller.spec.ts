@@ -4,14 +4,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { CredentialSetupController } from './credential-setup.controller';
 import { CredentialSetupService } from './credential-setup.service';
-import { OtpService } from './otp.service';
 
 const mockSetup = { setCredentials: jest.fn() };
-const mockOtp = { request: jest.fn(), createSession: jest.fn() };
 
 const SEMEL = 482273;
 const USERNAME = '303977367';
-const OTP_ID = '33333333-3333-4333-8333-333333333333';
 
 function res(): Response & { cookies: Array<[string, string, Record<string, unknown>]> } {
   const cookies: Array<[string, string, Record<string, unknown>]> = [];
@@ -57,14 +54,11 @@ describe('CredentialSetupController', () => {
     jest.clearAllMocks();
     config = {};
     mockSetup.setCredentials.mockResolvedValue({ sessionToken: 'tok', isFirstLogin: true });
-    mockOtp.request.mockResolvedValue({ otpRequestId: OTP_ID, method: 'email' });
-    mockOtp.createSession.mockResolvedValue({ sessionToken: 'tok', isFirstLogin: false });
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [CredentialSetupController],
       providers: [
         { provide: CredentialSetupService, useValue: mockSetup },
-        { provide: OtpService, useValue: mockOtp },
         { provide: ConfigService, useValue: { get: (k: string) => config[k] } },
       ],
     }).compile();
@@ -151,95 +145,12 @@ describe('CredentialSetupController', () => {
     });
   });
 
-  describe('POST /auth/otp-requests', () => {
-    function requestOtp(body: Record<string, unknown> = {}) {
-      return controller.requestOtp(
-        { semel: SEMEL, username: USERNAME, method: 'email', ...body } as never,
-        req,
-      );
-    }
-
-    it('asks for a code and returns the opaque handle', async () => {
-      await expect(requestOtp()).resolves.toEqual({ otpRequestId: OTP_ID, method: 'email' });
-    });
-
-    it('refuses a channel Mashov does not have', async () => {
-      for (const method of ['carrier-pigeon', 'password', '', undefined, 'EMAIL', 1]) {
-        expect(await thrown(() => requestOtp({ method }))).toEqual({
-          status: 400,
-          code: 'VALIDATION_ERROR',
-        });
-      }
-      expect(mockOtp.request).not.toHaveBeenCalled();
-    });
-
-    it('rejects `password` as a channel specifically', async () => {
-      // The frontend's SignInMethod includes 'password'; this route's does not,
-      // and the mismatch is why `RequestOtpRequest.method` was narrowed.
-      expect(await thrown(() => requestOtp({ method: 'password' }))).toEqual({
-        status: 400,
-        code: 'VALIDATION_ERROR',
-      });
-    });
-
-    it('requires a usable semel and username', async () => {
-      for (const body of [{ semel: 0 }, { semel: 'x' }, { username: '  ' }, { username: 1 }]) {
-        expect(await thrown(() => requestOtp(body))).toEqual({
-          status: 400,
-          code: 'VALIDATION_ERROR',
-        });
-      }
-    });
-  });
-
-  describe('POST /auth/otp-requests/:id/session', () => {
-    function createOtpSession(body: Record<string, unknown> = {}, response = res()) {
-      return controller.createOtpSession(OTP_ID, { code: '123456', ...body } as never, req, response);
-    }
-
-    it('exchanges the code for a session', async () => {
-      const response = res();
-      await expect(createOtpSession({}, response)).resolves.toEqual({
-        ok: true,
-        isFirstLogin: false,
-      });
-      expect(response.cookies[0][1]).toBe('tok');
-    });
-
-    it('refuses a code that is absent or only whitespace', async () => {
-      for (const code of ['', '   ', undefined, null, 123456]) {
-        expect(await thrown(() => createOtpSession({ code }))).toEqual({
-          status: 400,
-          code: 'VALIDATION_ERROR',
-        });
-      }
-      expect(mockOtp.createSession).not.toHaveBeenCalled();
-    });
-
-    it('passes the handle through from the path, not the body', async () => {
-      // The school and username live server-side under this handle; a body
-      // that could override it would undo that.
-      await createOtpSession({ otpRequestId: 'attacker-supplied' });
-      expect(mockOtp.createSession).toHaveBeenCalledWith(
-        OTP_ID,
-        { code: '123456' },
-        expect.any(String),
-      );
-    });
-  });
-
   it('never answers 401 on any route or validation path', async () => {
     // `apiFetch` hard-redirects on any 401 whose code is not
     // INVALID_CREDENTIALS, which would throw the parent off a half-filled form.
     const cases: Array<() => Promise<unknown>> = [
       () => setCredentials({ password: '' }),
       () => setCredentials({ semel: 'x' }),
-      () =>
-        controller.requestOtp(
-          { semel: SEMEL, username: USERNAME, method: 'nope' } as never,
-          req,
-        ),
-      () => controller.createOtpSession(OTP_ID, { code: '' } as never, req, res()),
     ];
     for (const run of cases) {
       expect((await thrown(run)).status).not.toBe(401);

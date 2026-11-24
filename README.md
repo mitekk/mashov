@@ -82,11 +82,11 @@ Two constraints worth knowing up front:
 - **The first sign-in for a school has to use a password.** Background updates
   re-login by decrypting a stored password, so a household that only ever
   signed in with a one-time code would see data that never refreshes.
-- **Passwordless sign-in by one-time code is currently switched off.** The
-  code is in the tree and the backend routes are live, but the upstream
-  contract was read out of Mashov's own JavaScript rather than observed, and
-  Mashov refuses it in production. It stays off until a real capture proves it
-  — see ADR-0042 §11 and `frontend/src/lib/featureFlags.ts`.
+- **Signing in with a one-time code is not supported, and cannot be.** Mashov
+  protects that flow with a Cloudflare captcha that only its own site can
+  issue, so an app like this one cannot use it. Password sign-in is the way in;
+  if you have forgotten yours, the recovery flow above will set a new one. See
+  ADR-0042 §12.
 
 ### Good to know
 

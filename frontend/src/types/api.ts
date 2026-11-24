@@ -770,15 +770,6 @@ export type AuthErrorCode =
   | 'USERNAME_LOCKED'
   | 'CREDENTIALS_SETUP_FAILED'
   // Passwordless sign-in.
-  | 'PASSWORD_SIGN_IN_REQUIRED'
-  | 'INVALID_OTP_CODE'
-  | 'OTP_CODE_EXPIRED'
-  | 'OTP_LOCKED'
-  | 'OTP_RESEND_TOO_SOON'
-  | 'OTP_CONTACT_MISSING'
-  | 'OTP_SESSION_EXPIRED'
-  | 'OTP_REQUEST_REFUSED'
-  | 'LOGIN_METHOD_BLOCKED'
   // Shared.
   | 'VALIDATION_ERROR'
   | 'RATE_LIMITED';
@@ -989,7 +980,7 @@ export interface CreateMfaSessionResponse {
   isFirstLogin: boolean;
 }
 
-// ─── In-app Mashov auth: forced credential change, passwordless OTP ────────
+// ─── In-app Mashov auth: MFA, recovery, forced credential change ───────────
 
 export interface SetCredentialsRequest {
   semel: number;
@@ -1007,44 +998,8 @@ export interface SetCredentialsResponse {
   isFirstLogin: boolean;
 }
 
-/**
- * How the parent wants to prove who they are, mirroring Mashov's own
- * `loginMethod`.
- *
- * `email` and `sms` are passwordless, and cannot be the FIRST sign-in for a
- * school: our background sync needs a stored password, so the server answers
- * `409 PASSWORD_SIGN_IN_REQUIRED` and the form says so.
- */
-export type SignInMethod = 'password' | 'email' | 'sms';
 
-/**
- * The two passwordless channels.
- *
- * Narrowed from `SignInMethod` rather than reusing `RecoveryChannel`: these are
- * sign-in methods on a sign-in route, and the server 400s on `password`
- * (`method` must be `email` or `sms`). The two types happen to hold the same
- * strings today, which is why the mismatch compiled, and they would drift the
- * moment recovery gained a channel.
- */
-export type PasswordlessSignInMethod = Exclude<SignInMethod, 'password'>;
 
-export interface RequestOtpRequest {
-  semel: number;
-  username: string;
-  method: PasswordlessSignInMethod;
-}
 
-export interface RequestOtpResponse {
-  /** Opaque handle; the school and username stay server-side. */
-  otpRequestId: string;
-  method: PasswordlessSignInMethod;
-}
 
-export interface CreateOtpSessionRequest {
-  code: string;
-}
 
-export interface CreateOtpSessionResponse {
-  ok: true;
-  isFirstLogin: boolean;
-}

@@ -52,7 +52,7 @@
 | DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | implemented |
 | GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | implemented |
 
-### Phase 2 — In-app Mashov auth: MFA, recovery, credential setup, passwordless
+### Phase 2 — In-app Mashov auth: MFA, recovery, credential setup
 
 Mashov can refuse a correct password for five different reasons, each of which
 used to surface as "wrong password" and a dead end. These routes are the in-app
@@ -65,8 +65,6 @@ answer to each. Rationale and trade-offs: [ADR-0042](adr/0042-in-app-mashov-auth
 | POST | `/api/v1/auth/credential-recoveries` | No | `{ semel: number, idNumber: string, channel: "email" \| "sms", destination: string }` | `{ recoveryId: string, requiresSecondChannel: boolean, channel: "email" \| "sms" }` | 202, 400, 429, 502 | implemented |
 | POST | `/api/v1/auth/credential-recoveries/:recoveryId/password` | No | `{ code: string, secondCode?: string, newPassword: string }` | `{ ok: true, username?: string }` | 200, 400, 422, 429, 502 | implemented |
 | POST | `/api/v1/auth/credentials` | No | `{ semel: number, username: string, password: string, newPassword?: string, newUsername?: string, challengeId?: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 409, 422, 429, 502 | implemented |
-| POST | `/api/v1/auth/otp-requests` | No | `{ semel: number, username: string, method: "email" \| "sms" }` | `{ otpRequestId: string, method: "email" \| "sms" }` | 202, 400, 409, 422, 429, 502 | implemented |
-| POST | `/api/v1/auth/otp-requests/:otpRequestId/session` | No | `{ code: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 409, 422, 429, 502 | implemented |
 
 Three conventions hold across all seven, and each is load-bearing rather than
 stylistic.
@@ -82,8 +80,8 @@ rejected *current* password as `400 INVALID_CREDENTIALS` for this reason, not
 **Recovery takes a destination; the code flows do not.** `POST /credential-recoveries`
 requires a `destination` — the email address or mobile number — because Mashov's
 own form asks the parent to type it and refuses unless it matches what the
-school holds. The MFA and OTP routes take no destination at all: there, Mashov
-sends to the contact it already has. The difference was captured on
+school holds. The MFA route takes no destination at all: there, Mashov sends to
+the contact it already has. The difference was captured on
 2026-11-24 and is the reason recovery never delivered a code before that date:
 we sent a boolean `email: true` where Mashov wanted the address, so it answered
 400 and sent nothing while our 202 said "check your email". A destination the
@@ -96,8 +94,7 @@ answers 202 with a `recoveryId` for an unknown ID number exactly as it does for
 a real one — byte-identical body, same Redis state shape — because anything
 else turns the route into an oracle for "does this national ID belong to a
 parent at this school". The fabricated recovery is marked `poisoned`
-server-side and fails at step 2 like a wrong code. `/otp-requests` and
-`/mfa-challenges/:id/code` are 202 because the code is sent by Mashov, not by
+server-side and fails at step 2 like a wrong code. `/mfa-challenges/:id/code` is 202 because the code is sent by Mashov, not by
 us, so we cannot report delivery.
 
 **`:challengeId` and `:recoveryId` are not authorisation.** Mashov issues the
@@ -131,29 +128,24 @@ generic message, so the frontend degrades safely if the backend ships first.
 | `RECOVERY_CODE_EXPIRED` | 400 | The emailed code expired. |
 | `RECOVERY_LOCKED` | 429 | Too many wrong codes; the handle is burned. |
 | `SECOND_CODE_REQUIRED` | 400 | Mashov sent codes on **both** channels and wants both. Decided server-side, never trusted from the client. |
-| `PASSWORD_SIGN_IN_REQUIRED` | 409 | The first sign-in for a school must use a password: background sync re-logins decrypt a stored one, so an OTP-only household would see data that never updates. |
-| `INVALID_OTP_CODE` | 400 | The code was wrong. Only ever at the verify stage. |
-| `OTP_REQUEST_REFUSED` | 422 | Mashov refused to send a code. **Not** a code error. This is the one that used to read "that code is not valid" before any code had been sent — see ADR-0042 §11. |
-| `OTP_CODE_EXPIRED` | 400 | Ask for a new code. |
-| `OTP_LOCKED` | 429 | Too many attempts on one handle. |
-| `OTP_RESEND_TOO_SOON` | 429 | A code was just sent. |
-| `OTP_CONTACT_MISSING` | 422 | Mashov holds no email or phone. For *this* flow there is deliberately no destination input: Mashov sends to the contact it already has. Recovery is the exception — see below. |
-| `OTP_SESSION_EXPIRED` | 400 | The handle is gone or already used. Single-use by design. |
-| `LOGIN_METHOD_BLOCKED` | 422 | The school does not permit passwordless sign-in. |
 | `CAPTCHA_REQUIRED` | 422 | Mashov wants a captcha. The UI offers a link out to Mashov's own page rather than pretending to solve it. |
 | `RATE_LIMITED` | 429 | Our own per-IP or per-identity budget. |
 | `UPSTREAM_ERROR` | 502 | Mashov unreachable, or an answer that did not come from Mashov's API (a proxy ACL or WAF). Never reported as a bad code. |
 
-**Passwordless sign-in is served but not offered.** All three OTP routes are
-live, metered and tested, and `PASSWORDLESS_SIGN_IN_ENABLED` in
-`frontend/src/lib/featureFlags.ts` is `false`, so the sign-in page renders
-password-only. The upstream contract was read out of Mashov's Angular bundle
-and never observed, and Mashov refuses step 1 in production. The backend stays
-reachable because verifying a corrected contract needs it. See ADR-0042 §11.
+**Passwordless sign-in was removed, and cannot be added back.** Captured
+2026-11-24: Mashov gates `POST /api/user/otp/request` behind a **Cloudflare
+Turnstile** token, which only a browser running against Mashov's own sitekey
+can mint — a server-side client cannot, and rendering their widget on our
+domain to obtain one is exactly what the control exists to prevent. The second
+half of the flow we had built did not exist at all: there is no
+`POST /api/user/otp`, and the one-time code is submitted as the `password`
+field of an ordinary `POST /api/login`. The routes, the service, the ten
+`OTP_*` codes and the feature flag are all gone. See
+`apis/post-api-user-otp.md` and ADR-0042 §11.
 
 **Status codes here deviate from `.claude/rules/api.md` deliberately.** That
 rule says Create → 201 and Delete → 204-no-body. This surface uses 202 for the
-three send-a-code routes (see anti-enumeration above), 200 for the four that
+two send-a-code routes (see anti-enumeration above), 200 for the two that
 mint a session (the response is a cookie plus a flag, not a created resource
 the client can fetch), and 200 for `DELETE /auth/session` so the client can
 distinguish a real sign-out from a proxy swallowing the request. Noted here

@@ -263,24 +263,10 @@ describe('MashovRecoveryService', () => {
    *
    * A real browser sends it on every same-origin request, so Mashov's own
    * client sends it on all of these routes. We sent it on `POST /api/login`
-   * only, while three other flows read `mashovUniqueId` from the database,
-   * wrote down why it mattered, and dropped it on the floor.
+   * only, while the credential-change flows read `mashovUniqueId` from the
+   * database, wrote down why it mattered, and dropped it on the floor.
    */
   describe('the device cookie', () => {
-    it('sends it on the OTP request, which used to send none', async () => {
-      await service.requestOtp({
-        semel: 482273,
-        username: 'u',
-        method: 'email',
-        uniqueId: 'uid-7',
-      });
-      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
-    });
-
-    it('sends it on the OTP verify', async () => {
-      await service.verifyOtp({ loginData: { semel: 1 }, code: '123456', uniqueId: 'uid-7' });
-      expect(lastPost().config.headers.Cookie).toBe('uniquId=uid-7');
-    });
 
     it('sends it on a password change', async () => {
       await service.changePassword({
@@ -303,7 +289,11 @@ describe('MashovRecoveryService', () => {
     it('omits the header entirely when there is no stored cookie', async () => {
       // Not `Cookie: uniquId=null`, which would be a header asserting a
       // session that does not exist.
-      await service.requestOtp({ semel: 1, username: 'u', method: 'sms', uniqueId: null });
+      await service.changePassword({
+        loginData: { semel: 1 },
+        newPassword: 'secret1',
+        uniqueId: null,
+      });
       expect(lastPost().config.headers.Cookie).toBeUndefined();
     });
 
@@ -336,7 +326,6 @@ describe('MashovRecoveryService', () => {
     const LOGGING_FILES = [
       'mashov-recovery.service.ts',
       'mashov-reason.ts',
-      '../../auth/otp.service.ts',
       '../../auth/mfa.service.ts',
       // Added when recovery gained logging. It holds an Israeli national ID
       // number in `input.idNumber`, so it is the file in this surface where the
@@ -431,49 +420,5 @@ describe('MashovRecoveryService', () => {
     });
   });
 
-  describe('requestOtp', () => {
-    it('posts the school, username and channel', async () => {
-      await service.requestOtp({ semel: 482273, username: 'u', method: 'sms' });
 
-      const { path, body } = lastPost();
-      expect(path).toBe('/api/user/otp/request');
-      expect(body).toEqual({ semel: 482273, username: 'u', method: 'sms' });
-    });
-  });
-
-  describe('verifyOtp', () => {
-    const loginData = { semel: 482273, year: 2027, username: 'u' };
-
-    it('posts the login data plus the code', async () => {
-      await service.verifyOtp({ loginData, code: '123456' });
-
-      const { path, body } = lastPost();
-      expect(path).toBe('/api/user/otp');
-      expect(body).toMatchObject({ semel: 482273, username: 'u', code: '123456' });
-    });
-
-    it('strips the code of whitespace', async () => {
-      await service.verifyOtp({ loginData, code: '123 456' });
-      expect(lastPost().body.code).toBe('123456');
-    });
-
-    it('carries no password, by construction', async () => {
-      await service.verifyOtp({
-        loginData: { ...loginData, password: 'leaked' },
-        code: '123456',
-      });
-      expect(lastPost().body).not.toHaveProperty('password');
-    });
-
-    it('captures the session headers so a session can be minted', async () => {
-      mockHttp.post.mockResolvedValue(
-        ok({ credential: { userId: 'u1' } }, { devicepass: 'dp-9' }),
-      );
-
-      const result = await service.verifyOtp({ loginData, code: '123456' });
-
-      expect(result.devicePass).toBe('dp-9');
-      expect(result.data).toMatchObject({ credential: { userId: 'u1' } });
-    });
-  });
 });

@@ -399,6 +399,60 @@ we shipped a sign-in method on a guess, and the first thing the guess cost was
 not the broken flow — flows break — but a false accusation aimed at the parent,
 with no evidence trail to correct it.
 
+### 12. The capture, and what it ended
+
+Added 2026-11-24, from a live capture of Mashov's own login and recovery pages
+against a real account. Three flows were observed end to end; two contracts
+were wrong, and one of them fatally.
+
+**Recovery was wrong and is now fixed.** `apis/post-api-user-recover.md` had
+flagged one field as unproven — "the channel flag's exact type (`boolean` vs
+the contact string) is the one thing a live call still has to confirm" — and
+the guess was wrong in both its type and its meaning. We sent `email: true`.
+Mashov wants `email: "parent@example.com"`: there is no channel flag, the
+field **name** selects the channel and its value is the destination address,
+which the parent types and Mashov checks against the school's record. `true`
+fails .NET model binding, so Mashov answered 400 and sent nothing, while our
+deliberately indistinguishable 202 told the parent to check their inbox. This
+is the defect in §11 again, inverted: a false *positive*, which is strictly
+harder to find than the false negative, because "no email arrived" is
+indistinguishable from "it went somewhere you forgot about".
+
+**Passwordless OTP sign-in was removed, and cannot come back.** Mashov gates
+`POST /api/user/otp/request` behind a **Cloudflare Turnstile** token — the
+widget renders on the EMAIL and SMS tabs of its login form and not on the
+password tab, which is exactly why ordinary password login works from our
+backend and this never could. A Turnstile token is minted by a browser against
+Mashov's sitekey; our server cannot produce one, and rendering their widget on
+our domain to obtain one would be circumventing a bot-protection control. §8
+already concluded Turnstile is not deliverable and the fallback is one link
+out; this extends that conclusion from *solving* a captcha to *pre-empting*
+one, and the answer is the same.
+
+The second half of the flow did not exist either. There is no
+`POST /api/user/otp`: the one-time code is submitted as the `password` field of
+an ordinary `POST /api/login` — Mashov's own email calls it a *סיסמה חד פעמית*,
+a one-time password, which is literally what it is. We had invented a route and
+a field name, and because `classify` reported every step-1 refusal as an
+invalid code, none of it was visible.
+
+So `OtpService`, both `/auth/otp-requests` routes, the two upstream methods,
+the frontend branch, ten `OTP_*` codes with their Hebrew copy, and
+`PASSWORDLESS_SIGN_IN_ENABLED` are deleted. §7's constraint — OTP login cannot
+replace password login, because sync re-logins decrypt a stored password —
+remains true and would still apply to any revival, but it is no longer the
+binding reason. `apis/post-api-user-otp.md` is kept, rewritten as a captured
+record of *why* it is impossible, because §8's own standard applies to
+knowledge as much as to configuration: the next person to look at this should
+find the blocker, not an inviting gap.
+
+**The rule §11 bought, restated with its evidence.** Do not ship a flow whose
+upstream contract has never been observed. Of the three contracts this branch
+rested on, the capture confirmed one (`buildLoginBody`, field for field),
+corrected one (recovery), and killed one (OTP). That is a one-in-three hit rate
+on careful bundle reading, and the two failures were invisible in production
+precisely because the error-handling turned them into plausible sentences.
+
 ## Consequences
 
 ### Good

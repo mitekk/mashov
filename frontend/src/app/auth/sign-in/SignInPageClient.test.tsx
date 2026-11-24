@@ -17,29 +17,20 @@ vi.mock('next/navigation', () => ({
 
 const getSchools = vi.fn();
 const login = vi.fn();
-const requestOtp = vi.fn();
-const createOtpSession = vi.fn();
 vi.mock('@/api/auth', () => ({
   getSchools: (...args: unknown[]) => getSchools(...args),
   login: (...args: unknown[]) => login(...args),
-  requestOtp: (...args: unknown[]) => requestOtp(...args),
-  createOtpSession: (...args: unknown[]) => createOtpSession(...args),
 }));
 
 const SCHOOL = { semel: 482273, name: 'תיכון הרצוג', years: [2027] };
 
-/**
- * `passwordless` mirrors the `PASSWORDLESS_SIGN_IN_ENABLED` flag, which is OFF
- * in production. The passwordless tests below opt in explicitly: the behaviour
- * is gated, not deleted, and it has to keep working for the day the flag flips.
- */
-function renderPage({ passwordless = false }: { passwordless?: boolean } = {}) {
+function renderPage() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
-      <SignInPageClient passwordlessEnabled={passwordless} />
+      <SignInPageClient />
     </QueryClientProvider>,
   );
 }
@@ -68,8 +59,6 @@ function rejectWith(status: number, code: string, extra: Record<string, unknown>
 beforeEach(() => {
   vi.clearAllMocks();
   getSchools.mockResolvedValue([SCHOOL]);
-  requestOtp.mockResolvedValue({ otpRequestId: 'otp-1', method: 'email' });
-  createOtpSession.mockResolvedValue({ ok: true, isFirstLogin: false });
   localStorage.clear();
 });
 
@@ -186,140 +175,6 @@ describe('SignInPageClient forced credential change', () => {
   });
 });
 
-describe('SignInPageClient passwordless sign-in', () => {
-  it('hides the password field when a passwordless method is chosen', async () => {
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-email'));
-
-    expect(screen.queryByTestId('sign-in-password')).toBeNull();
-    expect(screen.getByTestId('sign-in-request-code')).toBeInTheDocument();
-  });
-
-  it('asks for a code on the chosen channel', async () => {
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-sms'));
-
-    const picker = await screen.findByTestId('sign-in-school-selector');
-    fireEvent.focus(picker);
-    fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));
-    fireEvent.change(screen.getByTestId('sign-in-username'), {
-      target: { value: '303977367' },
-    });
-    fireEvent.click(screen.getByTestId('sign-in-request-code'));
-
-    await waitFor(() => {
-      expect(requestOtp.mock.calls[0][0]).toEqual({
-        semel: SCHOOL.semel,
-        username: '303977367',
-        method: 'sms',
-      });
-    });
-  });
-
-  it('exchanges the code for a session', async () => {
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-email'));
-    fireEvent.focus(await screen.findByTestId('sign-in-school-selector'));
-    fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));
-    fireEvent.change(screen.getByTestId('sign-in-username'), {
-      target: { value: '303977367' },
-    });
-    fireEvent.click(screen.getByTestId('sign-in-request-code'));
-
-    const codeInput = await screen.findByTestId('sign-in-otp-code');
-    fireEvent.change(codeInput, { target: { value: '123456' } });
-    fireEvent.click(screen.getByTestId('sign-in-submit'));
-
-    await waitFor(() => {
-      expect(createOtpSession.mock.calls[0][0]).toBe('otp-1');
-      expect(createOtpSession.mock.calls[0][1]).toEqual({ code: '123456' });
-    });
-  });
-
-  it('explains that a first sign-in needs a password, rather than hiding it', async () => {
-    // The constraint is real: background sync decrypts a stored password, so an
-    // OTP-only household would see data that never updates.
-    requestOtp.mockRejectedValue(
-      new ApiError(409, 'nope', {
-        error: { code: 'PASSWORD_SIGN_IN_REQUIRED', message: 'nope', details: [] },
-      }),
-    );
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-email'));
-    fireEvent.focus(await screen.findByTestId('sign-in-school-selector'));
-    fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));
-    fireEvent.change(screen.getByTestId('sign-in-username'), {
-      target: { value: '303977367' },
-    });
-    fireEvent.click(screen.getByTestId('sign-in-request-code'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('sign-in-error').textContent).toContain(
-        'הכניסה הראשונה',
-      );
-    });
-    expect(screen.queryByTestId('sign-in-otp-code')).toBeNull();
-  });
-
-  it('warns that passwordless sign-in does not keep data updating', async () => {
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-email'));
-
-    const note = await screen.findByTestId('sign-in-passwordless-note');
-    expect(note.textContent).toMatch(/[֐-׿]/);
-  });
-
-  it('says where the code is going, since there is no field for it', async () => {
-    // The reported symptom was "no input field for the channel". There is none
-    // by design -- Mashov sends to the contact it holds -- but the screen never
-    // said so, and an unexplained absence is indistinguishable from a bug.
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-email'));
-
-    const note = await screen.findByTestId('sign-in-passwordless-destination');
-    expect(note.textContent).toContain('האימייל');
-
-    fireEvent.click(screen.getByTestId('sign-in-method-sms'));
-    expect(
-      screen.getByTestId('sign-in-passwordless-destination').textContent,
-    ).toContain('הטלפון');
-  });
-
-  it('does not quietly send a code when the main button is pressed first', async () => {
-    // This used to call handleRequestCode(), so the primary "sign in" button
-    // spent one of five SMS per hour per identity without saying it had.
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-email'));
-    fireEvent.focus(await screen.findByTestId('sign-in-school-selector'));
-    fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));
-    fireEvent.change(screen.getByTestId('sign-in-username'), {
-      target: { value: '303977367' },
-    });
-
-    fireEvent.submit(screen.getByTestId('sign-in-submit'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('sign-in-error').textContent).toContain('לבקש קוד');
-    });
-    expect(requestOtp).not.toHaveBeenCalled();
-  });
-
-  it('wires the OTP code input for autofill and LTR digits', async () => {
-    renderPage({ passwordless: true });
-    fireEvent.click(await screen.findByTestId('sign-in-method-email'));
-    fireEvent.focus(await screen.findByTestId('sign-in-school-selector'));
-    fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));
-    fireEvent.change(screen.getByTestId('sign-in-username'), {
-      target: { value: '303977367' },
-    });
-    fireEvent.click(screen.getByTestId('sign-in-request-code'));
-
-    const code = await screen.findByTestId('sign-in-otp-code');
-    expect(code).toHaveAttribute('dir', 'ltr');
-    expect(code).toHaveAttribute('inputMode', 'numeric');
-    expect(code).toHaveAttribute('autoComplete', 'one-time-code');
-  });
-});
 
 describe('SignInPageClient captcha escape hatch', () => {
   it('offers the Mashov link only when Mashov demands a captcha', async () => {
@@ -460,8 +315,19 @@ describe('SignInPageClient page chrome', () => {
  * not offered. Without these two tests the flag has no cover and a refactor
  * silently re-enables the dead end.
  */
-describe('SignInPageClient passwordless flag', () => {
-  it('offers no one-time-code methods by default', async () => {
+/**
+ * Passwordless sign-in was removed, not disabled.
+ *
+ * Mashov gates `POST /api/user/otp/request` behind a Cloudflare Turnstile
+ * token, which a server-side client cannot mint -- and the second half of the
+ * flow we had built did not exist at all: the one-time code goes in the
+ * `password` field of an ordinary `POST /api/login`. Captured 2026-11-24.
+ *
+ * This describe is the guard against someone re-adding a method picker on the
+ * strength of the Hebrew copy or an old ADR.
+ */
+describe('SignInPageClient has no passwordless sign-in', () => {
+  it('offers no one-time-code methods at all', async () => {
     renderPage();
     await screen.findByTestId('sign-in-school-selector');
 
@@ -471,7 +337,7 @@ describe('SignInPageClient passwordless flag', () => {
     expect(screen.queryByTestId('sign-in-request-code')).toBeNull();
   });
 
-  it('still signs in with a password, which is the only method left', async () => {
+  it('signs in with a password, which is the only method Mashov lets us use', async () => {
     renderPage();
     fireEvent.focus(await screen.findByTestId('sign-in-school-selector'));
     fireEvent.mouseDown(await screen.findByTestId(`school-option-${SCHOOL.semel}`));

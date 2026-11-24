@@ -49,28 +49,6 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
   USERNAME_LOCKED: 'יותר מדי החלפות שם משתמש. נסה שוב מאוחר יותר',
   CREDENTIALS_SETUP_FAILED: 'משוב לא אישר את השינוי. נסה שוב',
 
-  // Passwordless sign-in. The first is the sync constraint made visible: it is
-  // the reason an OTP-only household cannot exist.
-  //
-  // Gated off: `PASSWORDLESS_SIGN_IN_ENABLED` is `false`, so the OTP_* strings
-  // below are unreachable from the UI today. They stay because the backend
-  // routes are live and a wire capture may make the flow work; marked here so
-  // the next reader does not take their presence as proof the path ships.
-  // See ADR-0042 §11.
-  PASSWORD_SIGN_IN_REQUIRED:
-    'הכניסה הראשונה לבית ספר צריכה להיות עם סיסמה, כדי שהנתונים יתעדכנו ברקע',
-  INVALID_OTP_CODE: 'קוד האימות שגוי',
-  OTP_CODE_EXPIRED: 'קוד האימות פג. יש לבקש קוד חדש',
-  OTP_LOCKED: 'יותר מדי נסיונות. יש לבקש קוד חדש',
-  OTP_RESEND_TOO_SOON: 'קוד נשלח לפני רגע. יש להמתין לפני בקשת קוד נוסף',
-  OTP_CONTACT_MISSING: 'אין במשוב אימייל או טלפון לחשבון הזה',
-  OTP_SESSION_EXPIRED: 'תהליך הכניסה פג. יש לבקש קוד חדש',
-  // Not a code error: there is no code yet at this point. Until this existed,
-  // a refusal here was reported as INVALID_OTP_CODE and the parent was told a
-  // code was wrong before they had been sent one.
-  OTP_REQUEST_REFUSED: 'משוב לא שלח קוד לחשבון הזה. אפשר להיכנס עם סיסמה',
-  LOGIN_METHOD_BLOCKED: 'בית הספר הזה אינו מאפשר כניסה בלי סיסמה',
-
   // Shared.
   VALIDATION_ERROR: 'חסרים פרטים. יש להשלים את כל השדות',
   RATE_LIMITED: 'יותר מדי נסיונות. נסה שוב בעוד כמה דקות',
@@ -147,7 +125,7 @@ export function readAuthError(error: unknown): ReadAuthError {
     .filter((message): message is string => typeof message === 'string' && message.length > 0);
 
   // The code lookup comes FIRST, before the 429 fallback: several of our 429s
-  // have copy of their own (RECOVERY_THROTTLED, MFA_LOCKED, OTP_LOCKED), and a
+  // have copy of their own (RECOVERY_THROTTLED, MFA_LOCKED), and a
   // blanket "too many attempts" would throw away the one thing that tells the
   // parent which limit they hit and what to do about it.
   if (code && isKnownCode(code)) {
