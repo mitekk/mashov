@@ -193,6 +193,21 @@ function ResetPasswordForm() {
           onChange={setCode}
         />
 
+        {/*
+          Said before the mistake, because afterwards nothing can explain it.
+          A second step-1 request invalidates the first code UPSTREAM while this
+          page still carries the older `rid`, so a parent who asked again and
+          typed the newer code into this form is told a live code is invalid —
+          and the handle, not the code, is what is wrong by then.
+        */}
+        <p
+          data-testid="reset-password-code-note"
+          className="-mt-3 text-xs text-muted-foreground"
+        >
+          בקשת קוד חדש מבטלת את הקוד הקודם. אם ביקשת כמה פעמים, יש להזין את הקוד האחרון
+          שהתקבל — ובמסך שנפתח אחרון.
+        </p>
+
         {needsSecondCode && (
           <CodeField
             id="reset-password-second-code"

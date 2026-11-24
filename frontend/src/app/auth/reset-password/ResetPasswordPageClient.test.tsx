@@ -53,6 +53,25 @@ beforeEach(() => {
 });
 
 describe('ResetPasswordPageClient', () => {
+  /**
+   * The second unrecoverable trap on this screen.
+   *
+   * A second step-1 request invalidates the first code UPSTREAM, while this
+   * page still carries the older `rid` in its URL. A parent who did not see the
+   * first email, asked again, and then typed the newer code into the older
+   * page's form gets "that code is not valid" for a code that is genuinely
+   * live — and no error message can explain it, because by then the handle is
+   * the wrong one.
+   *
+   * The only place to say it is before the mistake.
+   */
+  it('warns that asking for a new code voids the previous one', () => {
+    renderPage();
+    const note = screen.getByTestId('reset-password-code-note');
+    expect(note).toBeInTheDocument();
+    expect(note.textContent).toMatch(/קוד חדש/);
+  });
+
   it('posts the code and the new password against the recovery id', async () => {
     renderPage();
     fill();
