@@ -58,6 +58,23 @@ describe('ConfirmDialog', () => {
     expect(document.getElementById('disconnect-modal-title')).not.toBeNull();
   });
 
+  it('still has an accessible name when no titleId is given', () => {
+    // `aria-labelledby` is spread AFTER Radix sets its own, so passing
+    // `undefined` does not fall back -- it deletes the attribute, and the
+    // dialog ships unnamed. That is the very failure the explicit prop exists
+    // to prevent, and it would be invisible while every call site happens to
+    // pass an id.
+    renderDialog({ titleId: undefined });
+
+    const content = screen.getByRole('alertdialog');
+    const labelledBy = content.getAttribute('aria-labelledby');
+
+    expect(labelledBy).not.toBeNull();
+    expect(document.getElementById(labelledBy!)?.textContent).toBe(
+      'לנתק את "אורט רעננה"?',
+    );
+  });
+
   it('does not let Escape close the dialog mid-mutation', () => {
     // Confirm deliberately does not close, so a failure can be shown in place.
     // Escape would throw that away: the mutation keeps running, the dialog is

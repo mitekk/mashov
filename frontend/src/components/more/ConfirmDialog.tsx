@@ -62,7 +62,13 @@ export function ConfirmDialog({
           // no longer exists -- three data-deleting confirmations announcing
           // as an unlabelled alert dialog, plus a console.error from Radix's
           // (not NODE_ENV-gated) title warning in the production bundle.
-          aria-labelledby={titleId}
+          //
+          // Spread conditionally for the same reason: this is spread AFTER
+          // Radix's own attribute too, so a bare `aria-labelledby={undefined}`
+          // would not fall back -- it would DELETE the generated one and ship
+          // the dialog unnamed, which is the failure this prop exists to
+          // prevent. Without a titleId, Radix's own pairing is already correct.
+          {...(titleId ? { 'aria-labelledby': titleId } : {})}
           // Escape is suppressed while the mutation is in flight for the same
           // reason confirm does not close: the dialog is what holds the error
           // if the request fails. Closing it mid-flight throws that away while
@@ -72,7 +78,13 @@ export function ConfirmDialog({
           }}
           className="dialog-panel fixed inset-x-4 top-1/2 z-50 mx-auto w-full max-w-sm -translate-y-1/2 space-y-4 rounded-2xl border border-border bg-card p-6 shadow-xl sm:max-w-md"
         >
-          <AlertDialog.Title id={titleId} className="text-base font-bold text-foreground">
+          {/* Conditional for the same reason as aria-labelledby above: Radix
+              spreads caller props after its own id, so `id={undefined}` would
+              strip the generated one rather than fall back to it. */}
+          <AlertDialog.Title
+            {...(titleId ? { id: titleId } : {})}
+            className="text-base font-bold text-foreground"
+          >
             {title}
           </AlertDialog.Title>
           <AlertDialog.Description className="text-sm text-muted-foreground">

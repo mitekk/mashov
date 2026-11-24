@@ -109,7 +109,6 @@ interface TimetableWeekGridProps {
   planIndex: SlotTextIndex;
   historyIndex: LessonHistoryIndex;
   todaySchoolDay: number;
-  studentGuid: string;
 }
 
 /**
@@ -121,6 +120,14 @@ interface TimetableWeekGridProps {
  * `md:table-fixed`), which is what lets six days share the width instead of
  * demanding 950px of it. Columns land at roughly 109px at 768, 150px at 1024
  * and 190px at 1280 with `page-shell-wide`.
+ *
+ * There is deliberately no auto-scroll-to-today. The old one could not fire:
+ * its sibling reset effect ran after the ref callbacks had attached and
+ * cleared the ref map, so the scroll effect always found nothing and returned
+ * early -- true in `TimetableSection` before this was split out, too. Even
+ * repaired it would have had nothing to do, because `table-fixed` at `w-full`
+ * cannot overflow its scroller, and below md this grid is `display:none`.
+ * Today is selected directly by the day agenda at those widths.
  */
 export function TimetableWeekGrid({
   model,
@@ -128,34 +135,7 @@ export function TimetableWeekGrid({
   planIndex,
   historyIndex,
   todaySchoolDay,
-  studentGuid,
 }: TimetableWeekGridProps) {
-  const headerRefs = React.useRef<Record<number, HTMLTableCellElement | null>>({});
-  const hasAutoScrolledRef = React.useRef(false);
-
-  React.useEffect(() => {
-    hasAutoScrolledRef.current = false;
-    headerRefs.current = {};
-  }, [studentGuid]);
-
-  // Still here, now only for the case it was always really for: a week wide
-  // enough to overflow even at md. Below md this grid is `display:none`, where
-  // scrollIntoView is a no-op, and the agenda selects today directly instead.
-  React.useEffect(() => {
-    if (model.days.length === 0 || hasAutoScrolledRef.current) return;
-
-    const targetDay = model.days.includes(todaySchoolDay) ? todaySchoolDay : model.days[0];
-    const targetHeader = headerRefs.current[targetDay];
-    if (!targetHeader) return;
-
-    targetHeader.scrollIntoView({
-      behavior: 'auto',
-      block: 'nearest',
-      inline: 'center',
-    });
-    hasAutoScrolledRef.current = true;
-  }, [model, todaySchoolDay]);
-
   return (
     <div className="card-base overflow-hidden">
       <div className="overflow-x-auto">
@@ -173,9 +153,6 @@ export function TimetableWeekGrid({
                 return (
                   <th
                     key={day}
-                    ref={(element) => {
-                      headerRefs.current[day] = element;
-                    }}
                     scope="col"
                     title={DAY_FULL[day]}
                     aria-label={DAY_FULL[day]}

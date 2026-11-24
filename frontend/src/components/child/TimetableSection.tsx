@@ -106,7 +106,6 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
               planIndex={planIndex}
               historyIndex={historyIndex}
               todaySchoolDay={todaySchoolDay}
-              studentGuid={studentGuid}
             />
           </div>
         </>
