@@ -59,9 +59,34 @@ hunting through menus.
 
 ### How it works
 
-1. **Sign in** — pick your school and log in with your Mashov username and password (the school year is detected automatically).
+1. **Sign in** — pick your school and log in with your Mashov username and password (the school year is detected automatically). If Mashov asks for a one-time code, wants your password changed, or needs a username set, that all happens here rather than sending you to Mashov's own site. Forgot your password? There is a recovery flow too.
 2. **First sync** — the app pulls your household's latest data once in the background.
 3. **Glance** — open it whenever, see what's new across all your kids, and drill into a single message or child only if you need to.
+
+### Signing in when Mashov says no
+
+Mashov can refuse a correct password for several reasons, and each one used to
+be a dead end. All of them are now handled in the app
+([ADR-0042](docs/adr/0042-in-app-mashov-auth-surface.md)):
+
+| Mashov wants | What you see |
+|---|---|
+| A one-time code (MFA) | A code screen, with a resend button |
+| Your password changed | A change-password screen that signs you straight in |
+| A username set | The same screen, asking for a username too |
+| A captcha | A link out to Mashov's own page — we do not pretend to solve it |
+| You forgot your password | "שכחתי סיסמה" → a code by email or SMS, then a new password |
+
+Two constraints worth knowing up front:
+
+- **The first sign-in for a school has to use a password.** Background updates
+  re-login by decrypting a stored password, so a household that only ever
+  signed in with a one-time code would see data that never refreshes.
+- **Signing in with a one-time code is not supported, and cannot be.** Mashov
+  protects that flow with a Cloudflare captcha that only its own site can
+  issue, so an app like this one cannot use it. Password sign-in is the way in;
+  if you have forgotten yours, the recovery flow above will set a new one. See
+  ADR-0042 §12.
 
 ### Good to know
 
@@ -329,4 +354,4 @@ instead of a CDN gateway timeout after ~125s. See
 
 - **Product:** [`docs/prd/PRD-current.md`](docs/prd/PRD-current.md) (history: [`docs/prd/`](docs/prd/))
 - **Architecture:** [`docs/architecture.md`](docs/architecture.md) · **API contract:** [`docs/api-contract.md`](docs/api-contract.md)
-- **Decisions:** [`docs/adr/`](docs/adr/) — ADR 0001–0023 ([index](docs/adr/README.md))
+- **Decisions:** [`docs/adr/`](docs/adr/) — ADR 0001–0042 ([index](docs/adr/README.md))

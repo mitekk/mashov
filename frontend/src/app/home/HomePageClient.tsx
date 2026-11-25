@@ -6,8 +6,6 @@ import { ChildQuickCard } from '@/components/home/ChildQuickCard';
 import { LatestFeed } from '@/components/home/LatestFeed';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
-import { RefreshButton } from '@/components/ui/RefreshButton';
 import { useDashboard } from '@/hooks/useDashboard';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { formatRelativeHe } from '@/lib/dates';
@@ -121,17 +119,16 @@ function HomePageContent() {
         {/* Header strip */}
         <header data-testid="home-header" className="page-header">
           <div className="min-w-0 flex-1">
-            <h1 className="page-title">מרכז הורים</h1>
+            {/* The visible title is the app header's. This keeps the
+                document heading where the a11y tree expects it -- the header
+                goes `inert` at the end of its scroll fade. */}
+            <h1 className="sr-only">מרכז הורים</h1>
             <p className="page-subtitle">{currentDateHe}</p>
             {dashboard.freshness.lastSyncAt && (
               <p className="mt-1 text-xs text-muted-foreground">
                 סונכרן {formatRelativeHe(dashboard.freshness.lastSyncAt)}
               </p>
             )}
-          </div>
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            <RefreshButton />
           </div>
         </header>
 

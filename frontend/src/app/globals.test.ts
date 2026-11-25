@@ -52,6 +52,26 @@ describe('globals.css and tailwind.config.ts', () => {
     expect(withoutFallback).not.toContain('overflow-x: hidden');
   });
 
+  it('counts the notch into the header height every sticky element offsets from', () => {
+    // `.sticky-under-header` offsets by `--app-header-h`, but the header is
+    // `h-14` PLUS `pt-safe`. With the inset left out, the child workspace's
+    // tab rail -- `sticky` at every width, not only at `lg` -- parks ~47px
+    // behind a translucent header on a notched iPhone: half-covered, and the
+    // top of it unclickable. Chromium resolves `env()` to 0, so no Playwright
+    // project can catch this.
+    const root = /:root\s*\{([\s\S]*?)\n  \}/.exec(css);
+    expect(root).not.toBeNull();
+    expect(root![1]).toMatch(/--app-header-h:\s*calc\(3\.5rem \+ env\(safe-area-inset-top\)\)/);
+  });
+
+  it('drops the notch back out of that height at lg, where nothing overlays the status bar', () => {
+    // `pt-safe` is cancelled by `lg:pt-0` on the header, so the token has to
+    // follow it or every `lg:sticky` element gains a phantom inset.
+    const lgOverride = /@media \(min-width: 1024px\) \{\s*:root\s*\{([^}]*)\}/.exec(css);
+    expect(lgOverride).not.toBeNull();
+    expect(lgOverride![1]).toMatch(/--app-header-h:\s*3\.5rem/);
+  });
+
   it('keeps touch-action off body, where it would re-block pinch-zoom', () => {
     const bodyRules = [...css.matchAll(/\n\s*body\s*\{([^}]*)\}/g)].map((m) => m[1]);
     for (const rule of bodyRules) {

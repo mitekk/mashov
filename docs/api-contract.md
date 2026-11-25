@@ -47,14 +47,113 @@
 
 | Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
 |--------|------|-------|----------------------------|---------------|-------------|--------|
-| GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | planned |
-| POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 429 | planned |
-| DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | planned |
-| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | planned |
+| GET | `/api/v1/auth/schools` | No | — | `Array<{ semel: number, name: string, years: number[] }>` | 200, 502 | implemented |
+| POST | `/api/v1/auth/login` | No | `{ semel: number, username: string, password: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 401, 422, 429, 502 | implemented |
+| DELETE | `/api/v1/auth/session` | Yes | — | `{ ok: true }` | 200, 401 | implemented |
+| GET | `/api/v1/auth/me` | Yes | — | `{ mashovUserId: string, username: string, displayName: string, childrenCount: number, schools: MeSchool[] }` | 200, 401 | implemented |
 | POST | `/api/v1/feedback` | Yes | `{ subject: FeedbackSubject, subjectOther?: string, contactEmail?: string, content: string, pagePath?: string, viewportWidth?: number, viewportHeight?: number, appVersion?: string }` | `{ data: { id: string, subject: string, createdAt: string } }` | 201, 400, 401, 429 | implemented |
 | GET | `/api/v1/admin/feedback` | Operator | `filter=all\|new\|awaiting` (default `all`), `page` (default 1), `limit` (default 20, max 100) | `{ data: AdminFeedbackListItem[], pagination: { page, limit, total, totalPages } }` | 200, 400, 403 | implemented |
 | GET | `/api/v1/admin/feedback/:id` | Operator | — | `{ data: AdminFeedbackDetail }` | 200, 403, 404 | implemented |
 | POST | `/api/v1/admin/feedback/:id/response` | Operator | — | `{ data: AdminFeedbackDetail }` | 200, 403, 404 | implemented |
+
+### Phase 2 — In-app Mashov auth: MFA, recovery, credential setup
+
+Mashov can refuse a correct password for five different reasons, each of which
+used to surface as "wrong password" and a dead end. These routes are the in-app
+answer to each. Rationale and trade-offs: [ADR-0042](adr/0042-in-app-mashov-auth-surface.md).
+
+| Method | Path | Auth? | Request Body / Query Params | Response Body | Status Codes | Status |
+|--------|------|-------|----------------------------|---------------|-------------|--------|
+| POST | `/api/v1/auth/mfa-challenges/:challengeId/code` | No | `{ method: "email" \| "sms" }` | `{ ok: true }` | 202, 400, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/mfa-challenges/:challengeId/session` | No | `{ semel: number, username: string, password: string, code: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/credential-recoveries` | No | `{ semel: number, idNumber: string, channel: "email" \| "sms", destination: string }` | `{ recoveryId: string, requiresSecondChannel: boolean, channel: "email" \| "sms" }` | 202, 400, 429, 502 | implemented |
+| POST | `/api/v1/auth/credential-recoveries/:recoveryId/password` | No | `{ code: string, secondCode?: string, newPassword: string }` | `{ ok: true, username?: string }` | 200, 400, 422, 429, 502 | implemented |
+| POST | `/api/v1/auth/credentials` | No | `{ semel: number, username: string, password: string, newPassword?: string, newUsername?: string, challengeId?: string }` | `{ ok: true, isFirstLogin: boolean }` (sets httpOnly session cookie) | 200, 400, 409, 422, 429, 502 | implemented |
+
+Three conventions hold across all seven, and each is load-bearing rather than
+stylistic.
+
+**None of these routes may answer 401 — ever.** `apiFetch`
+(`frontend/src/api/client.ts`) hard-redirects to `/auth/sign-in` on any 401
+whose code is not `INVALID_CREDENTIALS`. A 401 from any route here would throw
+the parent off the very screen carrying their one-time code, mid-sign-in.
+Failures are 400, 409, 422, 429 or 502. `POST /auth/credentials` reports a
+rejected *current* password as `400 INVALID_CREDENTIALS` for this reason, not
+401.
+
+**Recovery takes a destination; the code flows do not.** `POST /credential-recoveries`
+requires a `destination` — the email address or mobile number — because Mashov's
+own form asks the parent to type it and refuses unless it matches what the
+school holds. The MFA route takes no destination at all: there, Mashov sends to
+the contact it already has. The difference was captured on
+2026-11-24 and is the reason recovery never delivered a code before that date:
+we sent a boolean `email: true` where Mashov wanted the address, so it answered
+400 and sent nothing while our 202 said "check your email". A destination the
+school does not hold is refused upstream and folded into the same 202 as an
+unknown ID — telling the parent "that is not your address" would answer the
+enumeration question this route exists to refuse.
+
+**The 202s are anti-enumeration, not asynchrony.** `POST /credential-recoveries`
+answers 202 with a `recoveryId` for an unknown ID number exactly as it does for
+a real one — byte-identical body, same Redis state shape — because anything
+else turns the route into an oracle for "does this national ID belong to a
+parent at this school". The fabricated recovery is marked `poisoned`
+server-side and fails at step 2 like a wrong code. `/mfa-challenges/:id/code` is 202 because the code is sent by Mashov, not by
+us, so we cannot report delivery.
+
+**`:challengeId` and `:recoveryId` are not authorisation.** Mashov issues the
+`challengeId` in the 403 that opens the challenge; the one-time code is what
+authorises. Both are rate-limited on their own key as well as per IP, because
+anyone holding a `challengeId` could otherwise text a victim repeatedly.
+
+#### Failures, with the Hebrew the parent sees
+
+Copy lives in `frontend/src/lib/authErrors.ts`; the code union is
+`AuthErrorCode` in `frontend/src/types/api.ts`. An unknown code falls back to a
+generic message, so the frontend degrades safely if the backend ships first.
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `MFA_REQUIRED` | 400 | Mashov wants a one-time code. Carries `challengeId`; without it the parent reaches a screen that knows a code is needed and has no handle to ask for one. |
+| `INVALID_MFA_CODE` | 400 | The code was wrong. Only ever at the verify stage. |
+| `MFA_CODE_EXPIRED` | 400 | The code or the challenge expired. Ask for a new one. |
+| `MFA_SEND_REFUSED` | 422 | Mashov refused to send a code. **Not** a code error — at the send stage no code exists yet. |
+| `MFA_RESEND_TOO_SOON` | 429 | Mashov's own resend brake. |
+| `MFA_CONTACT_MISSING` | 422 | Mashov holds no email or phone for the account. Nothing we can retry. |
+| `PASSWORD_CHANGE_REQUIRED` | 400 | Password correct, but Mashov will not let the parent in until they replace it. Routes to `/auth/complete-setup`. |
+| `CREDENTIALS_SETUP_REQUIRED` | 400 | Same, for a username Mashov wants set. |
+| `USERNAME_TAKEN` | 409 | The requested username already exists in Mashov. |
+| `USERNAME_LOCKED` | 429 | Too many username changes. |
+| `CREDENTIALS_SETUP_FAILED` | 400 | Mashov did not accept the change. |
+| `WEAK_PASSWORD` | 422 | Fails Mashov's own policy. The only auth code carrying `details[]` field errors. |
+| `RECOVERY_THROTTLED` | 429 | Mashov is rate limiting recovery for this account. |
+| `RECOVERY_SESSION_EXPIRED` | 400 | The 15-minute recovery handle is gone. |
+| `INVALID_RECOVERY_CODE` | 400 | Wrong code — **or** a fabricated recovery for an ID Mashov does not know. Deliberately the same answer. |
+| `RECOVERY_CODE_EXPIRED` | 400 | The emailed code expired. |
+| `RECOVERY_LOCKED` | 429 | Too many wrong codes; the handle is burned. |
+| `SECOND_CODE_REQUIRED` | 400 | Mashov sent codes on **both** channels and wants both. Decided server-side, never trusted from the client. |
+| `CAPTCHA_REQUIRED` | 422 | Mashov wants a captcha. The UI offers a link out to Mashov's own page rather than pretending to solve it. |
+| `RATE_LIMITED` | 429 | Our own per-IP or per-identity budget. |
+| `UPSTREAM_ERROR` | 502 | Mashov unreachable, or an answer that did not come from Mashov's API (a proxy ACL or WAF). Never reported as a bad code. |
+
+**Passwordless sign-in was removed, and cannot be added back.** Captured
+2026-11-24: Mashov gates `POST /api/user/otp/request` behind a **Cloudflare
+Turnstile** token, which only a browser running against Mashov's own sitekey
+can mint — a server-side client cannot, and rendering their widget on our
+domain to obtain one is exactly what the control exists to prevent. The second
+half of the flow we had built did not exist at all: there is no
+`POST /api/user/otp`, and the one-time code is submitted as the `password`
+field of an ordinary `POST /api/login`. The routes, the service, the ten
+`OTP_*` codes and the feature flag are all gone. See
+`apis/post-api-user-otp.md` and ADR-0042 §11.
+
+**Status codes here deviate from `.claude/rules/api.md` deliberately.** That
+rule says Create → 201 and Delete → 204-no-body. This surface uses 202 for the
+two send-a-code routes (see anti-enumeration above), 200 for the two that
+mint a session (the response is a cookie plus a flag, not a created resource
+the client can fetch), and 200 for `DELETE /auth/session` so the client can
+distinguish a real sign-out from a proxy swallowing the request. Noted here
+rather than left to disagree silently.
 
 ### POST /api/v1/feedback
 
@@ -1055,6 +1154,12 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 | GET | `https://web.mashov.info/api/schools` | AuthController — school list for login form (proxied to frontend, no auth required) |
 | GET | `https://web.mashov.info/students/login` | MashovSessionService — CSRF bootstrap |
 | POST | `/api/login` | MashovSessionService — authenticate; also called by AuthController on user login |
+| POST | `/api/user/recover` | MashovRecoveryService — password recovery step 1, send a code |
+| POST | `/api/user/reset/{code}` | MashovRecoveryService — recovery step 2, single channel |
+| POST | `/api/user/reset/verify/{code}/{code2}` | MashovRecoveryService — recovery step 2, two channels |
+| POST | `/api/login/mfa/send` · `/api/login/mfa/verify` | MashovRecoveryService — MFA challenge |
+| POST | `/api/loginDevice` | MashovRecoveryService — trusted-device re-login |
+| POST | `/api/user/password` · `/api/user/username` | MashovRecoveryService — forced change paths |
 | GET | `/api/user/notifications?skip=0&take=50` | NotificationSyncTask |
 | GET | `/api/mail/counts?$select=unreadConversations` | MailCountSyncTask |
 | GET | `/api/mail/inbox/conversations?skip=0&take=50` | InboxSyncTask |
@@ -1071,6 +1176,39 @@ These are the upstream API calls made by the NestJS sync engine. The frontend ne
 | PUT | `/api/mail/conversations/move/archive` | MailActionController — archive proxy |
 | GET | `/api/students/{childGuid}/dailyBehave` | DailyBehaveSyncTask (feature-flagged) |
 | GET | `/api/students/{studentId}/outBehave` | OutBehaveSyncTask (feature-flagged) |
+
+### The `Referer` these calls send is per route
+
+`MashovRecoveryService.headers()` sent `Referer: {baseUrl}/students/login` for
+every route on the class. It now defaults to that and takes a per-route
+override, because the parent is on a different page:
+
+| Referer | Routes |
+|---------|--------|
+| `/students/login` | `/api/user/recover` (submitted from the login page's forgot-password form), MFA send/verify, `/api/loginDevice`, `/api/user/password`, `/api/user/username` |
+| `/students/reset` | **`/api/user/reset/{code}` and `/api/user/reset/verify/...`** |
+
+`/students/reset` is what the 2026-11-24 capture of the single-channel reset
+records — see [`apis/post-api-user-reset-token.md`](../apis/post-api-user-reset-token.md).
+Mashov has not been observed to reject a mismatched `Referer` on these routes,
+so this is not by itself a cause of a refusal.
+
+Both reset routes send the **`NonceRef` cookie Mashov mints at step 1**. This
+paragraph previously claimed they were deliberately cookie-less, on the strength
+of a capture that recorded no `Cookie` header; that was wrong, and it is the
+reason a genuine code answered `INVALID_RECOVERY_CODE` in production. Without
+the nonce Mashov answers `400 application/problem+json` with no `Reason` —
+request validation, before the code is read — which our classifier rendered as a
+bad code. See [`apis/post-api-user-reset-token.md`](../apis/post-api-user-reset-token.md)
+for the 2026-11-25 incognito capture and the replay that proves it.
+
+The nonce lives **ten minutes and is not refreshed**, which makes it a shorter
+deadline than our own 15-minute recovery handle. It is carried in the encrypted
+Redis state and never logged by value; the step-2 log lines carry
+`nonce=present|ABSENT` instead.
+
+`uniquId` is a different cookie — a login session — and is neither set nor sent
+on these routes. That gap, documented on `headers()`, remains separate and open.
 
 ### Telegram link — POST /api/v1/digest/telegram-links
 

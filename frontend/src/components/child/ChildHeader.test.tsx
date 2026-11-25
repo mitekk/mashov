@@ -1,11 +1,10 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChildStudent, ChildSummary } from '@/types/api';
-import type { ChildHeaderOption } from './ChildHeader';
 
 vi.mock('@/hooks/useChild', () => ({ useSchoolActivities: () => ({ data: [] }) }));
-vi.mock('@/components/ui/ThemeToggle', () => ({ ThemeToggle: () => <button>theme</button> }));
-vi.mock('@/components/ui/RefreshButton', () => ({ RefreshButton: () => <button>refresh</button> }));
+const useChildren = vi.fn(() => ({ data: undefined }) as { data: unknown });
+vi.mock('@/hooks/useChildren', () => ({ useChildren: () => useChildren() }));
 vi.mock('./ReleasesDialog', () => ({ ReleasesDialog: () => null }));
 vi.mock('./SchoolActivitiesDialog', () => ({ SchoolActivitiesDialog: () => null }));
 
@@ -26,53 +25,36 @@ const summary: ChildSummary = {
   neutralBehaviorCount: 0,
 } as ChildSummary;
 
-function options(count: number): ChildHeaderOption[] {
-  return Array.from({ length: count }, (_, i) => ({
-    studentGuid: `guid-${i + 1}`,
-    fullName: `ילד ${i + 1}`,
-    isActive: true,
-  }));
-}
-
-function renderHeader(childOptions = options(2)) {
+function renderHeader() {
   return render(
     <ChildHeader
       student={student}
       summary={summary}
       lastSyncAt={null}
-      childOptions={childOptions}
-      selectedChildGuid="guid-1"
-      onChildChange={vi.fn()}
       studentGuid="guid-1"
     />,
   );
 }
 
 describe('ChildHeader', () => {
-  it('names the selected child and the class', () => {
+  it('leads with the class, the name being the app header\'s now', () => {
     renderHeader();
 
-    expect(screen.getByTestId('child-header-selector').textContent).toContain('מיקה קורס');
     expect(screen.getByText(/כיתה ז8/)).not.toBeNull();
+    // The name and the switcher moved into the sticky header; this card
+    // repeating them right under it was two header bands stacked.
+    expect(screen.queryByTestId('child-header-selector')).toBeNull();
   });
 
-  it('lets the child selector shrink below its preferred width', () => {
-    // At 360 the row was a title plus a 20rem select plus four 40px icon
-    // buttons inside `card-base px-4` -- ~296px of usable width for ~480px of
-    // content. `max-w-xs` is a floor-less cap: `min(100%, …)` is the cap that
-    // actually yields.
-    renderHeader();
-    const trigger = screen.getByTestId('child-header-selector');
-
-    expect(trigger.className).toContain('max-w-[min(100%,20rem)]');
-    expect(trigger.className).not.toContain('max-w-xs');
-  });
-
-  it('truncates a long child name rather than widening the row', () => {
+  it('keeps the page heading in the document, hidden', () => {
+    // `navigation-fallback.spec.ts` asserts a level-1 heading naming the
+    // child, and the header's own title is `aria-hidden` -- so the card still
+    // owns the h1, just not a visible one.
     renderHeader();
 
-    const name = screen.getByText('מיקה קורס');
-    expect(name.className).toContain('truncate');
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading.textContent).toBe('מיקה קורס');
+    expect(heading.className).toContain('sr-only');
   });
 
   it('wraps the action buttons on a narrow screen', () => {

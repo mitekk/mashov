@@ -15,10 +15,17 @@ export function SubjectsSection({ studentGuid }: SubjectsSectionProps) {
   const { data, isLoading, isError, refetch } = useChildSubjects(studentGuid);
 
   return (
-    <section data-testid="subjects-section" className="section-stack py-1">
-      <h2 className="text-lg font-semibold text-foreground">
-        מקצועות לימוד
-      </h2>
+    <section
+      data-testid="subjects-section"
+      // The tab rail above already names this section, so the heading is
+      // `sr-only` -- the outline needs it, the eye does not.
+      // `aria-labelledby` rather than `aria-label`: the two would otherwise
+      // announce the same name twice, once as the region and once as the
+      // heading.
+      aria-labelledby="subjects-section-title"
+      className="section-stack py-1"
+    >
+      <h2 id="subjects-section-title" className="sr-only">מקצועות לימוד</h2>
       {isLoading && <TableSkeleton rows={5} />}
       {isError && (
         <ErrorState

@@ -2,12 +2,12 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { BookOpen, AlertTriangle, ThumbsUp, Info } from 'lucide-react';
 import type { DashboardChildCard } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
+import { ChildStatChips } from '@/components/children/ChildStatChips';
 import { cn } from '@/lib/utils';
 
 interface ChildQuickCardProps {
@@ -33,42 +33,27 @@ export function ChildQuickCard({ child }: ChildQuickCardProps) {
           כיתה {child.classCode}{child.classNum}
         </p>
       </div>
-      <div className="flex gap-3 text-xs text-muted-foreground">
-        <span
-          data-testid={`child-card-homework-count-${child.studentGuid}`}
-          className="flex items-center gap-1"
-        >
-          <BookOpen className="w-3 h-3" />
-          {child.recentHomeworkCount}
-        </span>
-        <span
-          data-testid={`child-card-negative-count-${child.studentGuid}`}
-          className={cn(
-            'flex items-center gap-1',
-            child.recentBehaviorCount > 0 ? 'text-attention' : 'text-muted-foreground',
-          )}
-        >
-          <AlertTriangle className="w-3 h-3" />
-          {child.recentBehaviorCount}
-        </span>
-        <span
-          data-testid={`child-card-positive-count-${child.studentGuid}`}
-          className={cn(
-            'flex items-center gap-1',
-            positiveBehaviorCount > 0 ? 'text-positive' : 'text-muted-foreground',
-          )}
-        >
-          <ThumbsUp className="w-3 h-3" />
-          {positiveBehaviorCount}
-        </span>
-        {/* Attendance: its own muted count, not part of the amber one. */}
-        <span
-          data-testid={`child-card-neutral-count-${child.studentGuid}`}
-          className="flex items-center gap-1 text-muted-foreground"
-        >
-          <Info className="w-3 h-3" />
-          {neutralBehaviorCount}
-        </span>
+      {/*
+        The same pills the children list uses, in `tooltip` mode: icon +
+        number, Hebrew label on hover and in the accessible name. Four
+        labelled pills would take four lines in a 176px rail card.
+
+        Measured at 360px, this widens the card from 176x121 to 219x127.5 --
+        four `.chip-sm` pills are ~186px, wider than the `min-w-[176px]`
+        floor, so the card grows instead of wrapping. Chosen deliberately
+        over capping the width and spending 28px of height on a second pill
+        row: the rail stays short, and one row scans faster than two.
+      */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <ChildStatChips
+          testIdPrefix="child-card"
+          labelMode="tooltip"
+          studentGuid={child.studentGuid}
+          homeworkCount={child.recentHomeworkCount}
+          attentionCount={child.recentBehaviorCount}
+          positiveCount={positiveBehaviorCount}
+          neutralCount={neutralBehaviorCount}
+        />
       </div>
       {child.latestUpdateAt && (
         <p className="text-3xs text-muted-foreground opacity-60">

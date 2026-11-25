@@ -6,7 +6,9 @@ import { RedisService } from '../redis/redis.service';
 import { isUpstreamUnreachable } from '../common/http/mashov-http';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { assertPasswordPolicy } from '../common/mashov-login/password-policy';
+import { normalizeIsraeliPhone } from './israeli-mobile';
 import {
+  describeMashovFailure,
   isMashovRejection,
   readReason,
   type MashovReason,
@@ -48,6 +50,21 @@ import { MashovSessionService } from '../session/mashov-session.service';
  * real recovery sends an email), and `RECOVERY_THROTTLED`, because hiding a
  * channel lockout leaves a locked-out parent retrying forever.
  *
+ * **Three more are NOT accounted for, and the claim below that step 1's body is
+ * byte-identical for an unknown ID is therefore too strong.** Found in review,
+ * recorded rather than fixed because closing them changes step 1's response
+ * semantics and wants an ADR-0042 amendment of its own:
+ *   1. `requiresSecondChannel` is only ever `true` for a real two-channel
+ *      account -- a poisoned handle always carries `false`, since the flag is
+ *      assigned inside the `try`. `true` is a positive existence oracle.
+ *   2. Derived from the same flag: step 2 with one code answers
+ *      `SECOND_CODE_REQUIRED` for a real two-channel identity and
+ *      `INVALID_RECOVERY_CODE` for a poisoned one, at no attempt cost.
+ *   3. `RECOVERY_CODE_EXPIRED`, `CAPTCHA_REQUIRED` and an early
+ *      `RECOVERY_LOCKED` are reachable only on a non-poisoned handle; a
+ *      poisoned one emits nothing but `INVALID_RECOVERY_CODE` until the local
+ *      budget is spent.
+ *
  * ## Secrecy
  *
  * Codes and passwords are never persisted -- not in Redis, not in a log line,
@@ -56,6 +73,29 @@ import { MashovSessionService } from '../session/mashov-session.service';
  */
 
 const RECOVERY_TTL_SECONDS = 900;
+
+/**
+ * The upstream path, as a literal for the log line. Never read from
+ * `err.config?.url` -- see `describeMashovFailure`: `resetPassword` puts a
+ * single-use recovery code in the path, so a log line built from the request
+ * URL would write live recovery codes to disk.
+ */
+const RECOVER_PATH = '/api/user/recover';
+
+/**
+ * The two step-2 paths, as literals with the code elided.
+ *
+ * Same reasoning as `RECOVER_PATH`, and it matters more here: the single-use
+ * recovery code is IN the path on both of these routes, so a log line built
+ * from `err.config?.url` would write live codes to disk. `{code}` is a
+ * placeholder, never interpolated.
+ *
+ * Which of the two appears in a log line is itself a diagnostic: posting the
+ * single-code route for an account Mashov wants two codes for is one of the
+ * candidate causes of a 404, and nothing else distinguishes it.
+ */
+const RESET_PATH = '/api/user/reset/{code}';
+const RESET_VERIFY_PATH = '/api/user/reset/verify/{code}';
 
 const IP_LIMIT = 3;
 const IP_WINDOW_SECONDS = 900;
@@ -89,6 +129,15 @@ export interface StartRecoveryInput {
   semel: number;
   idNumber: string;
   channel: RecoveryChannel;
+  /**
+   * The email address or mobile number the code goes to.
+   *
+   * Required, because Mashov requires it: the parent types it and Mashov
+   * refuses unless it matches what the school holds. The earlier design
+   * assumed Mashov would send to a contact it already had, which is true of
+   * the OTP and MFA flows but not of this one.
+   */
+  destination: string;
 }
 
 export interface StartRecoveryResult {
@@ -105,8 +154,18 @@ export interface CompletePasswordInput {
 
 export interface CompletePasswordResult {
   ok: true;
-  /** Mashov's username for the account. A parent who forgot the password often forgot this too. */
-  username: string | undefined;
+  /**
+   * Mashov's username for the account. A parent who forgot the password often
+   * forgot this too.
+   *
+   * Always set, and usually DERIVED rather than reported: the capture of
+   * `POST /api/user/reset/{code}` returned an empty body, so upstream names the
+   * username on no observed success. `completePassword` falls back to the
+   * recovering `idNumber`, which IS the Mashov username for these accounts.
+   * Not `| undefined` any more, because a client that gates on it was gating on
+   * something that never arrived.
+   */
+  username: string;
 }
 
 /**
@@ -120,10 +179,34 @@ export interface CompletePasswordResult {
 interface RecoveryState {
   semel: number;
   idNumber: string;
-  channel: RecoveryChannel;
+  // No `channel`. It was written here and never read back -- every use is
+  // `input.channel` on the request that writes it -- while the docblock above
+  // claimed it was part of "what survives between the two steps". Step 2 takes
+  // the codes and the new password; which channel sent them is not its
+  // business. Removed rather than left as a comfortable-looking field.
   isResettingAndVerifying: boolean;
   attempts: number;
   poisoned: boolean;
+  /**
+   * The `NonceRef` cookie Mashov minted at step 1.
+   *
+   * Step 2 is refused without it -- `400 application/problem+json`, no
+   * `Reason`, before the code is looked at -- so this is the one piece of
+   * step-1 output that step 2 cannot do without. It exists only on that one
+   * response's `Set-Cookie`, which is why it is carried here rather than
+   * re-fetched.
+   *
+   * `null`, never absent, when there is none: a poisoned handle never made
+   * the call that mints one, and `JSON.stringify` drops an `undefined` field
+   * entirely -- which would make a poisoned state a different SHAPE from a
+   * real one at rest, the exact distinction this flow refuses to expose. A
+   * handle written by an older deploy has no field at all; that reads back as
+   * `undefined` and is handled where it is used.
+   *
+   * A session secret: it goes into the encrypted state like the `idNumber`,
+   * and never into a log line.
+   */
+  nonceRef: string | null;
 }
 
 @Injectable()
@@ -167,14 +250,48 @@ export class CredentialRecoveryService {
 
     let isResettingAndVerifying = false;
     let poisoned = false;
+    let nonceRef: string | null = null;
 
     try {
       const result = await this.upstream.requestRecovery({
         semel: input.semel,
         idNumber: input.idNumber,
-        ...(input.channel === 'sms' ? { cellphone: true } : { email: true }),
+        // The field NAME is the channel; the value is the address. Never a
+        // boolean -- see `RequestRecoveryInput`.
+        ...(input.channel === 'sms'
+          ? // Normalised, because Mashov matches this literally against the
+            // number the school holds, and ADR-0042 hides the mismatch behind
+            // a 202 -- so `+972...` is a silent dead end. Never applied to an
+            // address: `+` and `.` are ordinary characters in one.
+            { cellphone: normalizeIsraeliPhone(input.destination) }
+          : { email: input.destination }),
       });
-      isResettingAndVerifying = result.isResettingAndVerifying === true;
+      isResettingAndVerifying = result.body.isResettingAndVerifying === true;
+      nonceRef = result.nonceRef ?? null;
+
+      // Logged on SUCCESS, which is the counter-intuitive half and the reason
+      // this flow had no diagnosis.
+      //
+      // The likeliest cause of "no email arrived" is not a refusal at all: the
+      // channel flag's type is the one thing `apis/post-api-user-recover.md`
+      // admits it never confirmed, and a Mashov that ignores an unknown-typed
+      // flag answers 200 having sent nothing. No exception is thrown, so every
+      // log line in the `catch` below -- including the one this change adds --
+      // stays silent, and the parent is told to check an inbox nothing went to.
+      // `status=200 isResettingAndVerifying=absent` is that failure's
+      // fingerprint, and nothing else records it.
+      //
+      // Key NAMES only, never values: the keys are Mashov's schema and are the
+      // diagnostic, while the body may carry a masked address or phone number.
+      this.logger.log(
+        `Mashov recovery accepted: semel=${input.semel} channel=${input.channel} ` +
+          `isResettingAndVerifying=${
+            result.body.isResettingAndVerifying === undefined
+              ? 'absent'
+              : String(result.body.isResettingAndVerifying)
+          } responseKeys=[${Object.keys(result.body).sort().join(',')}] ` +
+          `nonce=${result.nonceRef ? 'present' : 'ABSENT'}`,
+      );
     } catch (err) {
       if (isUpstreamUnreachable(err)) {
         this.logger.error(
@@ -206,6 +323,13 @@ export class CredentialRecoveryService {
       // recovery here would have the parent wait for an email that was never
       // going to be sent.
       if (status === undefined || status >= 500) {
+        this.logger.warn(
+          `Mashov recovery failed upstream: ${describeMashovFailure(err, {
+            stage: `recover:${input.channel}`,
+            semel: input.semel,
+            path: RECOVER_PATH,
+          })}`,
+        );
         throw upstreamError();
       }
 
@@ -223,6 +347,30 @@ export class CredentialRecoveryService {
       // Everything else -- IdNumberNoMatch, NotContactInSchool, BindNotFound,
       // UserInactive*, MfaContactMissing, UserSuspended, any unmapped 4xx --
       // becomes an indistinguishable success.
+      //
+      // The RESPONSE stays indistinguishable, because that is what keeps an
+      // attacker from using this route to test whether an ID number belongs to
+      // a real parent. The LOG does not, because the silence protected nobody:
+      // it was the response that needed to be uninformative, and the
+      // anti-enumeration reasoning was applied to our own telemetry by
+      // accident. A parent reporting "no email arrived" had nothing to read.
+      //
+      // `semel` only -- never `idNumber`. It is an Israeli national ID number,
+      // the thing ADR-0042 §9's HMAC'd rate-limit keys exist to keep out of
+      // plaintext, and `describeMashovFailure` structurally cannot reach it.
+      // Not an HMAC of it either: the key lives in this process and the domain
+      // is ~10^9, so a "correlation hash" in a log file is the ID number.
+      this.logger.warn(
+        `Mashov recovery refused, answering an indistinguishable 202: ${describeMashovFailure(
+          err,
+          {
+            stage: `recover:${input.channel}`,
+            semel: input.semel,
+            path: RECOVER_PATH,
+          },
+        )}`,
+      );
+
       poisoned = true;
     }
 
@@ -230,10 +378,10 @@ export class CredentialRecoveryService {
     const state: RecoveryState = {
       semel: Number(input.semel),
       idNumber: input.idNumber,
-      channel: input.channel,
       isResettingAndVerifying,
       attempts: 0,
       poisoned,
+      nonceRef,
     };
     await this.writeState(recoveryId, state);
 
@@ -313,29 +461,90 @@ export class CredentialRecoveryService {
 
     await this.writeState(recoveryId, { ...state, attempts: state.attempts + 1 });
 
+    const attempt = state.attempts + 1;
+    const path = state.isResettingAndVerifying ? RESET_VERIFY_PATH : RESET_PATH;
+
     if (state.poisoned) {
+      // The cause that is invisible from Mashov's side, because there is no
+      // call to Mashov: step 1 refused this identity, answered an
+      // indistinguishable 202 with a fabricated handle, and step 2 now refuses
+      // every code against it. A parent who typo'd their email address is told
+      // "that code is not valid" about a code they may genuinely be holding.
+      //
+      // The RESPONSE stays indistinguishable -- that is ADR-0042's deliberate
+      // anti-enumeration choice. The LOG does not: the silence here protected
+      // nobody and left three different causes looking identical. Same split
+      // step 1 made in 2e34067.
+      //
+      // `semel` and the attempt number only. Never `idNumber`, and not an HMAC
+      // of it: see the reasoning at the step-1 refusal log above.
+      this.logger.warn(
+        `Mashov reset refused without calling Mashov: the step-1 handle is ` +
+          `poisoned (unknown identity or an upstream refusal at step 1), so no ` +
+          `code can ever match it; semel=${state.semel} attempt=${attempt}/` +
+          `${MAX_CODE_ATTEMPTS} path=${path}`,
+      );
       throw invalidRecoveryCode();
     }
 
-    let username: string | undefined;
+    // Presence only, never the value: a session secret with the same standing
+    // as the code itself. `ABSENT` is the fingerprint of the defect that made
+    // a real code read as invalid, so it is spelled loudly.
+    const nonce = state.nonceRef ? 'present' : 'ABSENT';
+
+    let upstreamUsername: string | undefined;
     try {
       const result = state.isResettingAndVerifying
         ? await this.upstream.resetPasswordVerify(
             input.code,
             input.secondCode,
             input.newPassword,
+            state.nonceRef ?? undefined,
           )
-        : await this.upstream.resetPassword(input.code, input.newPassword);
-      username = result.username;
+        : await this.upstream.resetPassword(
+            input.code,
+            input.newPassword,
+            state.nonceRef ?? undefined,
+          );
+      upstreamUsername = result.username;
     } catch (err) {
-      throw this.classifyResetFailure(err, state.semel);
+      throw this.classifyResetFailure(err, state.semel, path, attempt, nonce);
     }
+
+    // Reaching here IS the success signal, and deliberately not a field read.
+    // The capture records an EMPTY response body on a successful reset, and an
+    // empty body is also exactly the shape of a dead connection -- only the
+    // status separates them, and axios has already thrown on a non-2xx.
+    //
+    // `username` therefore falls back to the ID number. The reasoning is the
+    // one `markCredentialStale` already relies on: `idNumber` IS the Mashov
+    // username for these accounts, and `HouseholdConnection` is uniquely keyed
+    // `[schoolCode, username]` on that basis. Same `CreateUsername` caveat --
+    // a parent who set a custom username will get the ID number instead -- so
+    // an upstream answer always wins when there is one. DERIVED, not reported.
+    //
+    // Without the fallback the client's auto sign-in, which is gated on this
+    // field, never fires on any real reset, and the "your username is..." line
+    // never renders.
+    const username = upstreamUsername ?? state.idNumber;
 
     // Single use: the state is consumed only once the reset actually landed, so
     // a wrong code leaves the parent able to retry with the right one.
     await this.redis.del(key);
     await this.writeAudit(state, ip);
     await this.markCredentialStale(state);
+
+    // The counter-intuitive half, as at step 1: a success leaves a trace too.
+    // `upstreamUsername` is the one thing here that is a fact about the wire
+    // rather than about us, and it is how we learn whether the capture's empty
+    // body is universal or specific to that account.
+    this.logger.log(
+      `Mashov reset accepted: semel=${state.semel} nonce=${nonce} ` +
+        `twoChannel=${state.isResettingAndVerifying} path=${path} ` +
+        `attempt=${attempt} upstreamUsername=${
+          upstreamUsername === undefined ? 'absent' : 'present'
+        }`,
+    );
 
     return { ok: true, username };
   }
@@ -389,9 +598,8 @@ export class CredentialRecoveryService {
       this.sessionService.invalidateConnection(connection.id);
     } catch (err) {
       this.logger.error(
-        `Failed to mark connection stale after a reset for semel=${state.semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Failed to mark connection stale after a reset for ` +
+          `semel=${state.semel} ${describeLocalFailure(err)}`,
       );
     }
   }
@@ -403,58 +611,99 @@ export class CredentialRecoveryService {
    * invalid code. The parent has already burned a single-use code, so a false
    * "wrong code" is unrecoverable — they cannot ask for that code again.
    */
-  private classifyResetFailure(err: unknown, semel: number): HttpException {
+  private classifyResetFailure(
+    err: unknown,
+    semel: number,
+    path: string,
+    attempt: number,
+    nonce: string,
+  ): HttpException {
     if (isUpstreamUnreachable(err)) {
       this.logger.error(
-        `Mashov reset unreachable for semel=${semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Mashov reset unreachable for semel=${semel} path=${path} ` +
+          `nonce=${nonce} attempt=${attempt} ${describeLocalFailure(err)}`,
       );
       return upstreamError();
     }
 
+    const outcome = this.mapResetFailure(err);
+
+    // The line step 2 never had. Three causes -- a poisoned handle, a bare
+    // upstream 404, and `Reason: MfaInvalidCode` -- all render as
+    // INVALID_RECOVERY_CODE, and until now none of them left a trace, so a
+    // report of "the code Mashov sent me is rejected" could not be answered.
+    //
+    // `path` is the LITERAL constant above, never the failed request's own URL:
+    // the single-use code is in the request path, so a line built from the URL
+    // would write live codes to disk. `describeMashovFailure` structurally
+    // cannot reach the code, the password or the ID number.
+    this.logger.warn(
+      `Mashov reset refused, answering ${outcome.code}: ${describeMashovFailure(err, {
+        stage: 'reset',
+        semel,
+        path,
+      })} nonce=${nonce} attempt=${attempt}/${MAX_CODE_ATTEMPTS}`,
+    );
+
+    return outcome.exception;
+  }
+
+  /**
+   * The mapping itself, split out so the log line above can name the outcome
+   * it is about to return without the switch having to log in six places.
+   */
+  private mapResetFailure(err: unknown): { code: string; exception: HttpException } {
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
     const reason = readReason(err);
 
     switch (reason) {
       case 'MfaCodeExpired':
       case 'MfaExpired':
-        return new HttpException(
-          {
-            error: {
-              code: 'RECOVERY_CODE_EXPIRED',
-              message: 'That code has expired. Please start the recovery again.',
-              details: [],
+        return {
+          code: 'RECOVERY_CODE_EXPIRED',
+          exception: new HttpException(
+            {
+              error: {
+                code: 'RECOVERY_CODE_EXPIRED',
+                message: 'That code has expired. Please start the recovery again.',
+                details: [],
+              },
             },
-          },
-          HttpStatus.BAD_REQUEST,
-        );
+            HttpStatus.BAD_REQUEST,
+          ),
+        };
       case 'MfaInvalidCode':
-        return invalidRecoveryCode();
+        return { code: 'INVALID_RECOVERY_CODE', exception: invalidRecoveryCode() };
       case 'MfaLocked':
-        return new HttpException(
-          {
-            error: {
-              code: 'RECOVERY_LOCKED',
-              message: 'Too many attempts. Please start the recovery again.',
-              details: [],
+        return {
+          code: 'RECOVERY_LOCKED',
+          exception: new HttpException(
+            {
+              error: {
+                code: 'RECOVERY_LOCKED',
+                message: 'Too many attempts. Please start the recovery again.',
+                details: [],
+              },
             },
-          },
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
+            HttpStatus.TOO_MANY_REQUESTS,
+          ),
+        };
       case 'UserSuspended':
         // Unlike step 1, this is NOT an oracle: the caller already holds a
         // recoveryId, so they learn nothing new about whether the ID exists.
-        return new HttpException(
-          {
-            error: {
-              code: 'CAPTCHA_REQUIRED',
-              message: 'Mashov is asking for a captcha before this reset can complete',
-              details: [],
+        return {
+          code: 'CAPTCHA_REQUIRED',
+          exception: new HttpException(
+            {
+              error: {
+                code: 'CAPTCHA_REQUIRED',
+                message: 'Mashov is asking for a captcha before this reset can complete',
+                details: [],
+              },
             },
-          },
-          HttpStatus.UNPROCESSABLE_ENTITY,
-        );
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          ),
+        };
       default:
         break;
     }
@@ -471,10 +720,10 @@ export class CredentialRecoveryService {
       status < 500 &&
       isMashovRejection(err)
     ) {
-      return invalidRecoveryCode();
+      return { code: 'INVALID_RECOVERY_CODE', exception: invalidRecoveryCode() };
     }
 
-    return upstreamError();
+    return { code: 'UPSTREAM_ERROR', exception: upstreamError() };
   }
 
   private async checkIpRateLimit(ip: string): Promise<void> {
@@ -561,9 +810,8 @@ export class CredentialRecoveryService {
       // now would tell the parent their reset did not work when it did, and
       // the code is single-use, so they could not repeat it.
       this.logger.error(
-        `Failed to write the recovery audit row for semel=${state.semel}: ${
-          err instanceof Error ? err.message : 'unknown error'
-        }`,
+        `Failed to write the recovery audit row for ` +
+          `semel=${state.semel} ${describeLocalFailure(err)}`,
       );
     }
   }
@@ -571,6 +819,30 @@ export class CredentialRecoveryService {
 
 function stateKey(recoveryId: string): string {
   return `recovery:${recoveryId}`;
+}
+
+/**
+ * A LOCAL failure, described without its message.
+ *
+ * `err.message` is the one unbounded string these catches can reach, and two of
+ * the three sit on a Prisma call whose ARGUMENTS are the identity:
+ * `markCredentialStale` looks up `username: state.idNumber`, `writeAudit` writes
+ * `idNumberHash`. Prisma renders the failing invocation, argument values
+ * included, so `${err.message}` put a raw Israeli national ID number -- or the
+ * HMAC that ADR-0042 §9 also forbids in plaintext -- straight into a log line.
+ *
+ * The class name and the error code are what actually identify the fault
+ * (`P2002`, `ECONNREFUSED`, `PrismaClientValidationError`), and neither can
+ * carry a value. The message is dropped, not truncated: a prefix of a Prisma
+ * invocation is still a prefix of the arguments.
+ */
+function describeLocalFailure(err: unknown): string {
+  if (!(err instanceof Error)) return 'kind=unknown';
+  const code = (err as { code?: unknown }).code;
+  return (
+    `kind=${err.name}` +
+    (typeof code === 'string' || typeof code === 'number' ? ` code=${code}` : '')
+  );
 }
 
 

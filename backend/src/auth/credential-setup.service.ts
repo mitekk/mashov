@@ -6,7 +6,12 @@ import { isUpstreamUnreachable } from '../common/http/mashov-http';
 import { buildLoginBody } from '../common/mashov-login/mashov-login-body';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { assertPasswordPolicy } from '../common/mashov-login/password-policy';
-import { isMashovRejection, readChallengeId, readReason } from '../common/mashov-login/mashov-reason';
+import {
+  describeMashovFailure,
+  isMashovRejection,
+  readChallengeId,
+  readReason,
+} from '../common/mashov-login/mashov-reason';
 import { countAgainstLimit, identityKeyHash } from '../common/mashov-login/rate-limit';
 import { RedisService } from '../redis/redis.service';
 import { EncryptionService } from '../session/encryption.service';
@@ -33,6 +38,12 @@ const IP_WINDOW_SECONDS = 900;
 /** Tighter per identity: nobody legitimately changes one account's password 5x an hour. */
 const IDENTITY_LIMIT = 5;
 const IDENTITY_WINDOW_SECONDS = 3600;
+
+/**
+ * The upstream paths this service posts to. Literals for the log line, never
+ * `err.config?.url` -- see `describeMashovFailure`.
+ */
+const CREDENTIAL_CHANGE_PATH = '/api/user/password|username';
 
 @Injectable()
 export class CredentialSetupService {
@@ -122,6 +133,7 @@ export class CredentialSetupService {
     try {
       if (newUsername) {
         const result = await this.upstream.changeUsername({
+          uniqueId: existingConnBeforeLogin?.mashovUniqueId ?? null,
           loginData: buildLoginBody({
             semel,
             year: resolved.year,
@@ -142,6 +154,7 @@ export class CredentialSetupService {
 
       if (newPassword) {
         const result = await this.upstream.changePassword({
+          uniqueId: existingConnBeforeLogin?.mashovUniqueId ?? null,
           loginData: buildLoginBody({
             semel,
             year: resolved.year,
@@ -261,6 +274,19 @@ export class CredentialSetupService {
       default:
         break;
     }
+
+    // The fourth place in this surface where an unmapped Mashov answer became
+    // user-facing copy with no record of what Mashov said. Unlike the OTP and
+    // recovery cases, the classification below is defensible -- a password IS
+    // being sent here, so an upstream 401 really does mean it was rejected --
+    // so this gets the log line and keeps its mapping.
+    this.logger.warn(
+      `Mashov credential change unmapped: ${describeMashovFailure(err, {
+        stage: 'credential-change',
+        semel,
+        path: CREDENTIAL_CHANGE_PATH,
+      })}`,
+    );
 
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
     if (

@@ -43,17 +43,10 @@ describe('AUTH_ERROR_COPY', () => {
     'MFA_LOCKED',
     'MFA_RESEND_TOO_SOON',
     'MFA_CONTACT_MISSING',
+    'MFA_SEND_REFUSED',
     'USERNAME_TAKEN',
     'USERNAME_LOCKED',
     'CREDENTIALS_SETUP_FAILED',
-    'PASSWORD_SIGN_IN_REQUIRED',
-    'INVALID_OTP_CODE',
-    'OTP_CODE_EXPIRED',
-    'OTP_LOCKED',
-    'OTP_RESEND_TOO_SOON',
-    'OTP_CONTACT_MISSING',
-    'OTP_SESSION_EXPIRED',
-    'LOGIN_METHOD_BLOCKED',
     'VALIDATION_ERROR',
     'RATE_LIMITED',
   ];
@@ -68,6 +61,29 @@ describe('AUTH_ERROR_COPY', () => {
 
   it('covers exactly the codes in the union, with nothing extra', () => {
     expect(Object.keys(AUTH_ERROR_COPY).sort()).toEqual([...CODES].sort());
+  });
+
+  /**
+   * The dead end a parent holding a REAL code can fall into.
+   *
+   * A step-1 request for an address the school does not hold answers an
+   * indistinguishable 202 with a fabricated handle (ADR-0042, deliberately),
+   * and step 2 then refuses every code against it while burning the five
+   * attempts. The response must stay indistinguishable — that is the
+   * anti-enumeration choice and weakening it is not on the table — but once the
+   * budget is spent there is nothing left to protect: the parent is starting
+   * over regardless, and "start again" alone sends them round the same loop
+   * typing the same wrong address.
+   *
+   * So the lockout copy, and only the lockout copy, names the address as the
+   * thing to re-check. It reveals nothing: it is shown to anyone who exhausts
+   * five attempts, whatever the cause.
+   */
+  it('tells a locked-out parent to re-check the address, not just to start again', () => {
+    expect(AUTH_ERROR_COPY.RECOVERY_LOCKED).toMatch(/מחדש/);
+    // The actionable half: the typo'd address is the one cause no error
+    // message is allowed to name directly.
+    expect(AUTH_ERROR_COPY.RECOVERY_LOCKED).toMatch(/אימייל|טלפון/);
   });
 });
 

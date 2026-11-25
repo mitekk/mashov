@@ -5,15 +5,17 @@
   "frontend/src/app/children/**": [
     "children.spec.ts",
     "attachments.spec.ts",
+    "header.spec.ts",
     "navigation-fallback.spec.ts",
     "school-filter.spec.ts",
     "responsive.spec.ts",
     "seo.spec.ts"
   ],
-  "frontend/src/app/home/**": ["home.spec.ts", "inbox.spec.ts", "theme.spec.ts", "responsive.spec.ts", "seo.spec.ts"],
+  "frontend/src/app/home/**": ["home.spec.ts", "inbox.spec.ts", "theme.spec.ts", "header.spec.ts", "responsive.spec.ts", "seo.spec.ts"],
   "frontend/src/app/inbox/**": [
     "inbox.spec.ts",
     "home.spec.ts",
+    "header.spec.ts",
     "read-state.spec.ts",
     "attachments.spec.ts",
     "school-filter.spec.ts",
@@ -22,7 +24,7 @@
   ],
   "frontend/src/app/more/schools/**": ["school-links.spec.ts", "seo.spec.ts"],
   "frontend/src/app/more/telegram/**": ["telegram-link.spec.ts", "seo.spec.ts"],
-  "frontend/src/app/more/**": ["school-links.spec.ts", "telegram-link.spec.ts", "auth.spec.ts", "seo.spec.ts"],
+  "frontend/src/app/more/**": ["school-links.spec.ts", "telegram-link.spec.ts", "auth.spec.ts", "header.spec.ts", "seo.spec.ts"],
   "frontend/src/app/sitemap.ts": ["seo.spec.ts"],
   "frontend/src/app/globals.test.ts": ["theme.spec.ts"],
   "frontend/src/app/admin/**": ["admin-feedback.spec.ts", "seo.spec.ts"],

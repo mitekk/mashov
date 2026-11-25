@@ -49,6 +49,8 @@ export class CredentialRecoveryController {
     const semel = Number(body?.semel);
     const idNumber = typeof body?.idNumber === 'string' ? body.idNumber.trim() : '';
     const channel = body?.channel;
+    const destination =
+      typeof body?.destination === 'string' ? body.destination.trim() : '';
 
     if (!Number.isFinite(semel) || semel <= 0 || !idNumber) {
       throw validationError('semel and idNumber are required');
@@ -56,8 +58,22 @@ export class CredentialRecoveryController {
     if (channel !== 'email' && channel !== 'sms') {
       throw validationError("channel must be 'email' or 'sms'");
     }
+    if (!destination) {
+      // Mashov requires it and checks it against what the school holds, so
+      // there is nothing useful we could send without it. Shape only -- never
+      // "we have no such contact", which would answer the enumeration
+      // question this whole route exists to refuse.
+      throw validationError(
+        channel === 'sms'
+          ? 'destination (mobile number) is required'
+          : 'destination (email address) is required',
+      );
+    }
 
-    return this.recovery.start({ semel, idNumber, channel }, clientIp(req));
+    return this.recovery.start(
+      { semel, idNumber, channel, destination },
+      clientIp(req),
+    );
   }
 
   /** Step 2. */
@@ -92,6 +108,7 @@ interface StartRecoveryDto {
   semel: number;
   idNumber: string;
   channel: RecoveryChannel;
+  destination?: string;
 }
 
 interface CompletePasswordDto {

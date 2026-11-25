@@ -4,7 +4,8 @@ import { createHmac } from 'node:crypto';
  * One sliding-window counter, shared by every limited route in this surface.
  *
  * Extracted rather than copied a fourth time: `AuthService.checkRateLimit`,
- * `CredentialRecoveryService` and `OtpService` each had their own, and the two
+ * `CredentialRecoveryService` and the since-removed `OtpService` each had their
+ * own, and the two
  * routes that shipped WITHOUT one -- `POST /auth/credentials` and both MFA
  * routes -- are exactly the kind of omission a shared helper makes visible.
  *

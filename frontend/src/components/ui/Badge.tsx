@@ -1,5 +1,6 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
+import { normalizeBucket } from '@/lib/behavior';
 import type { FeedSourceType, BehaviorBucket } from '@/types/api';
 
 interface BadgeProps {
@@ -60,7 +61,10 @@ export function SourceTypeBadge({ type }: { type: FeedSourceType }) {
   );
 }
 
-export function BucketBadge({ bucket }: { bucket: BehaviorBucket }) {
+export function BucketBadge({ bucket }: { bucket: BehaviorBucket | (string & {}) }) {
+  // Through `normalizeBucket`, not the raw value: an off-contract bucket would
+  // otherwise miss both records and render an unstyled badge with no text.
+  const safeBucket = normalizeBucket(bucket);
   const labels: Record<BehaviorBucket, string> = {
     attention: 'תשומת לב',
     positive: 'חיובי',
@@ -74,8 +78,8 @@ export function BucketBadge({ bucket }: { bucket: BehaviorBucket }) {
   };
 
   return (
-    <Badge variant={variants[bucket]}>
-      {labels[bucket]}
+    <Badge variant={variants[safeBucket]}>
+      {labels[safeBucket]}
     </Badge>
   );
 }

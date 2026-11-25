@@ -2,15 +2,15 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { BookOpen, AlertTriangle, ThumbsUp, Info, ChevronLeft } from 'lucide-react';
+import { ChevronLeft } from 'lucide-react';
 import type { ChildListItem } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
-import { getBucketLabel } from '@/lib/behavior';
 import { getPhase1HrefOrNull } from '@/lib/phase1-routes';
 import { buildChildSectionHref } from '@/lib/child-routes';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import { cn } from '@/lib/utils';
 import { SchoolBadge } from '@/components/school/SchoolBadge';
+import { ChildStatChips } from '@/components/children/ChildStatChips';
 
 interface ChildCardProps {
   child: ChildListItem;
@@ -51,45 +51,19 @@ export function ChildCard({ child }: ChildCardProps) {
         >
           כיתה {child.classCode}{child.classNum}
         </p>
-        <div className="flex gap-4 text-xs text-muted-foreground">
-          <span
-            data-testid={`child-list-homework-count-${child.studentGuid}`}
-            className="flex items-center gap-1"
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            {child.recentHomeworkCount} שיעורי בית
-          </span>
-          <span
-            data-testid={`child-list-negative-count-${child.studentGuid}`}
-            className={cn(
-              'flex items-center gap-1',
-              child.recentBehaviorCount > 0 ? 'text-attention' : 'text-muted-foreground',
-            )}
-          >
-            <AlertTriangle className="w-3.5 h-3.5" />
-            {child.recentBehaviorCount} {getBucketLabel('attention')}
-          </span>
-          <span
-            data-testid={`child-list-positive-count-${child.studentGuid}`}
-            className={cn(
-              'flex items-center gap-1',
-              positiveBehaviorCount > 0 ? 'text-positive' : 'text-muted-foreground',
-            )}
-          >
-            <ThumbsUp className="w-3.5 h-3.5" />
-            {positiveBehaviorCount} חיוביים
-          </span>
-          {/* Attendance: its own muted count, not part of the amber one. */}
-          <span
-            data-testid={`child-list-neutral-count-${child.studentGuid}`}
-            className="flex items-center gap-1 text-muted-foreground"
-          >
-            <Info className="w-3.5 h-3.5" />
-            {neutralBehaviorCount} {getBucketLabel('neutral')}
-          </span>
+        {/* Wraps between pills, never inside a label -- see ChildStatChips. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <ChildStatChips
+            testIdPrefix="child-list"
+            studentGuid={child.studentGuid}
+            homeworkCount={child.recentHomeworkCount}
+            attentionCount={child.recentBehaviorCount}
+            positiveCount={positiveBehaviorCount}
+            neutralCount={neutralBehaviorCount}
+          />
         </div>
         {child.latestUpdateAt && (
-          <p className="text-xs text-muted-foreground mt-1 opacity-60">
+          <p className="text-xs text-muted-foreground mt-2 opacity-70">
             עודכן {formatRelativeHe(child.latestUpdateAt)}
           </p>
         )}

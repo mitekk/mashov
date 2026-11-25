@@ -32,7 +32,21 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
   RECOVERY_SESSION_EXPIRED: 'תהליך איפוס הסיסמה פג. יש להתחיל מחדש',
   INVALID_RECOVERY_CODE: 'קוד האימות שגוי',
   RECOVERY_CODE_EXPIRED: 'קוד האימות פג. יש להתחיל מחדש',
-  RECOVERY_LOCKED: 'יותר מדי נסיונות. יש להתחיל את האיפוס מחדש',
+  // Names the address deliberately. A step-1 request for an address the school
+  // does not hold answers an indistinguishable 202 (ADR-0042) and step 2 then
+  // refuses every code against the fabricated handle, so a parent holding a
+  // real code can burn all five attempts on a typo they have no way to suspect.
+  // The response stays indistinguishable; once the budget is spent there is
+  // nothing left to protect, and "start again" on its own sends them round the
+  // same loop with the same wrong address.
+  //
+  // The address advice is CONDITIONAL ("if the code never arrived") because
+  // this one code covers two causes: our own attempt budget, and Mashov's own
+  // `Reason: MfaLocked`. The second is reachable only on a handle Mashov
+  // accepted, so the address was fine — unconditional advice would be telling
+  // that parent to go and fix something that is demonstrably not wrong.
+  RECOVERY_LOCKED:
+    'יותר מדי נסיונות. יש להתחיל את האיפוס מחדש. אם הקוד לא הגיע כלל, כדאי לבדוק שכתובת האימייל או מספר הטלפון שהוזנו רשומים במשוב',
   SECOND_CODE_REQUIRED: 'משוב שלח קוד גם לאימייל וגם לטלפון. יש להזין את שני הקודים',
   WEAK_PASSWORD: 'הסיסמה אינה עומדת בדרישות משוב',
 
@@ -42,23 +56,12 @@ export const AUTH_ERROR_COPY: Record<AuthErrorCode, string> = {
   MFA_LOCKED: 'יותר מדי נסיונות. נסה שוב מאוחר יותר',
   MFA_RESEND_TOO_SOON: 'קוד נשלח לפני רגע. יש להמתין לפני בקשת קוד נוסף',
   MFA_CONTACT_MISSING: 'אין במשוב אימייל או טלפון לחשבון הזה',
+  MFA_SEND_REFUSED: 'משוב לא שלח קוד לחשבון הזה',
 
   // Forced credential change.
   USERNAME_TAKEN: 'שם המשתמש הזה כבר תפוס במשוב',
   USERNAME_LOCKED: 'יותר מדי החלפות שם משתמש. נסה שוב מאוחר יותר',
   CREDENTIALS_SETUP_FAILED: 'משוב לא אישר את השינוי. נסה שוב',
-
-  // Passwordless sign-in. The first is the sync constraint made visible: it is
-  // the reason an OTP-only household cannot exist.
-  PASSWORD_SIGN_IN_REQUIRED:
-    'הכניסה הראשונה לבית ספר צריכה להיות עם סיסמה, כדי שהנתונים יתעדכנו ברקע',
-  INVALID_OTP_CODE: 'קוד האימות שגוי',
-  OTP_CODE_EXPIRED: 'קוד האימות פג. יש לבקש קוד חדש',
-  OTP_LOCKED: 'יותר מדי נסיונות. יש לבקש קוד חדש',
-  OTP_RESEND_TOO_SOON: 'קוד נשלח לפני רגע. יש להמתין לפני בקשת קוד נוסף',
-  OTP_CONTACT_MISSING: 'אין במשוב אימייל או טלפון לחשבון הזה',
-  OTP_SESSION_EXPIRED: 'תהליך הכניסה פג. יש לבקש קוד חדש',
-  LOGIN_METHOD_BLOCKED: 'בית הספר הזה אינו מאפשר כניסה בלי סיסמה',
 
   // Shared.
   VALIDATION_ERROR: 'חסרים פרטים. יש להשלים את כל השדות',
@@ -136,7 +139,7 @@ export function readAuthError(error: unknown): ReadAuthError {
     .filter((message): message is string => typeof message === 'string' && message.length > 0);
 
   // The code lookup comes FIRST, before the 429 fallback: several of our 429s
-  // have copy of their own (RECOVERY_THROTTLED, MFA_LOCKED, OTP_LOCKED), and a
+  // have copy of their own (RECOVERY_THROTTLED, MFA_LOCKED), and a
   // blanket "too many attempts" would throw away the one thing that tells the
   // parent which limit they hit and what to do about it.
   if (code && isKnownCode(code)) {

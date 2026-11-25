@@ -13,6 +13,18 @@ import {
   unarchiveConversations,
 } from '@/api/mail';
 
+/**
+ * No component mounts this today -- the unread badge moved into `AppHeader`
+ * and reads `useDashboard().data.summary.newConversations`, the same counter
+ * `useNavItems` uses, so the two can never disagree.
+ *
+ * Kept rather than deleted because `'mail-summary'` is one of the shared keys
+ * in `lib/query-invalidation.ts` and is invalidated from `useConversation`,
+ * `useFeedBulkActions` and the four mutations below; removing the hook alone
+ * would leave those pointing at nothing, and removing the key reaches into
+ * feed code this change never touched. Unmounted, the `refetchInterval` below
+ * costs nothing.
+ */
 export function useMailSummary() {
   return useQuery({
     queryKey: ['mail-summary'],

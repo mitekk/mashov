@@ -34,7 +34,7 @@ async function main(): Promise<void> {
 
   const startedAt = Date.now();
   try {
-    await service.requestRecovery({ semel: 1, idNumber: '000000000', email: true });
+    await service.requestRecovery({ semel: 1, idNumber: '000000000', email: 'probe@example.com' });
     fail('the request RESOLVED through a blackholed proxy, which cannot be right');
   } catch (err) {
     const elapsed = Date.now() - startedAt;

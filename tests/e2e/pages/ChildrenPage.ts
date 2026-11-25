@@ -3,17 +3,24 @@ import { Page, Locator, expect } from '@playwright/test';
 export class ChildrenPage {
   readonly page: Page;
   readonly childrenPageContainer: Locator;
+  /** The `sr-only` h1 -- the document outline, not anything a user sees. */
   readonly pageHeading: Locator;
+  /** The visible title, which lives in the app header. */
+  readonly headerTitle: Locator;
 
   constructor(page: Page) {
     this.page = page;
     this.childrenPageContainer = page.getByTestId('children-page');
     this.pageHeading = page.getByRole('heading', { name: 'ילדים' });
+    this.headerTitle = page.getByTestId('app-header-title');
   }
 
   async navigate(): Promise<void> {
     await this.page.goto('/children');
-    await expect(this.pageHeading).toBeVisible();
+    // Gate on the visible title: `pageHeading` is `sr-only`, and a 1x1 box
+    // passes `toBeVisible`, so it would not catch a title that stopped
+    // rendering.
+    await expect(this.headerTitle).toBeVisible();
   }
 
   childCard(studentGuid: string): Locator {

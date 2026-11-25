@@ -402,6 +402,13 @@ services:
     image: mcr.microsoft.com/playwright:v1.58.2-jammy
     profiles: ["test"]
     working_dir: /work
+    # Chromium puts its shared-memory buffers in /dev/shm, and Docker's default
+    # is 64MB -- enough for one tab on an idle machine, not for Playwright's
+    # default worker count. When it runs out the symptom is not an assertion
+    # failure but `Page crashed` on `page.goto`, scattered across unrelated
+    # specs and projects, which reads exactly like a flaky app. The same rule
+    # .claude/rules/docker.md already states for postgres.
+    shm_size: '1gb'
     depends_on:
       frontend:
         condition: service_healthy

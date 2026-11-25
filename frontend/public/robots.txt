@@ -4,6 +4,14 @@ Disallow: /children
 Disallow: /inbox
 Disallow: /more
 Disallow: /auth/syncing
+# Each of these sets `robots: { index: false, follow: false }` in its own
+# page.tsx; listed here too so a crawler that reads robots.txt never requests
+# them. /auth/reset-password matters most: its URL carries a single-use
+# recovery handle.
+Disallow: /auth/mfa
+Disallow: /auth/forgot-password
+Disallow: /auth/reset-password
+Disallow: /auth/complete-setup
 Allow: /auth/sign-in
 Allow: /
 

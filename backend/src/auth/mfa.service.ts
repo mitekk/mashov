@@ -8,7 +8,12 @@ import {
   MashovRecoveryService,
   type MfaMethod,
 } from '../common/mashov-login/mashov-recovery.service';
-import { isMashovRejection, readReason } from '../common/mashov-login/mashov-reason';
+import {
+  describeMashovFailure,
+  isMashovRejection,
+  readReason,
+  type MashovReason,
+} from '../common/mashov-login/mashov-reason';
 import { countAgainstLimit } from '../common/mashov-login/rate-limit';
 import { RedisService } from '../redis/redis.service';
 import { AuthService } from './auth.service';
@@ -41,6 +46,28 @@ const IP_WINDOW_SECONDS = 900;
  */
 const CHALLENGE_LIMIT = 10;
 const CHALLENGE_WINDOW_SECONDS = 900;
+
+/**
+ * The upstream paths, as literals for the log line. Never read from
+ * `err.config?.url` -- see `describeMashovFailure`.
+ */
+const SEND_PATH = '/api/login/mfa/send';
+const VERIFY_PATH = '/api/login/mfa/verify';
+
+/**
+ * Reasons that say something about a code the parent typed, and therefore
+ * cannot be true at the send stage, where there is no code yet.
+ *
+ * `MfaExpired` is deliberately NOT here, and that is the difference from the
+ * OTP surface: a resend acts on a challenge that already exists, so the
+ * challenge really can have expired by the time the parent asks again, and
+ * `MFA_CODE_EXPIRED` ("ask for a new one") is the right answer. OTP step 1 has
+ * no prior challenge, so there all three are nonsense.
+ */
+const CODE_VALIDITY_REASONS = new Set<MashovReason>([
+  'MfaInvalidCode',
+  'MfaCodeExpired',
+]);
 
 @Injectable()
 export class MfaService {
@@ -96,7 +123,6 @@ export class MfaService {
       username: string;
       password: string;
       code: string;
-      rememberBrowser?: boolean;
     },
     ip: string,
   ): Promise<{ sessionToken: string; isFirstLogin: boolean }> {
@@ -114,8 +140,24 @@ export class MfaService {
     );
 
     // Read BEFORE the login, like `AuthService.login` does: adoption turns on
-    // whether the connection existed beforehand, and the stored `uniquId` makes
-    // Mashov recognise a known device.
+    // whether the connection existed beforehand.
+    //
+    // This comment used to go on to say "and the stored `uniquId` makes Mashov
+    // recognise a known device", which was false — `verifyMfa` has never sent
+    // it, and `VerifyMfaInput` has no field for it. The omission turns out to
+    // be right, so it is now deliberate rather than accidental:
+    //
+    // TODO(capture): when `/api/login` answers `403 Reason: MfaRequired`, axios
+    // throws, so `readLoginHeaders` never runs and the `Set-Cookie: uniquId` on
+    // that 403 is discarded. `mashovUniqueId` below is therefore an OLDER
+    // session's cookie. If Mashov binds a challenge to its session cookie,
+    // sending a stale one is strictly worse than sending none, so this flow
+    // keeps sending none until a wire capture answers two questions: does the
+    // triggering 403 carry a `Set-Cookie: uniquId`, and does `mfa/verify`
+    // echo back a different one? If yes, the fix is to carry the challenge's
+    // OWN cookie — keyed by `challengeId` in Redis — not the stored one.
+    // The credential-change flows do send it; see
+    // `MashovRecoveryService.headers()` for why they are safe.
     const existingConnBeforeLogin = await this.prisma.householdConnection.findUnique({
       where: { schoolCode_username: { schoolCode: semel, username: input.username } },
       select: { id: true, mashovUniqueId: true, userId: true },
@@ -142,7 +184,7 @@ export class MfaService {
         rememberBrowser: true,
       });
     } catch (err) {
-      throw this.classify(err, 'verify');
+      throw this.classify(err, 'verify', semel);
     }
 
     if (!result.data?.credential?.userId) {
@@ -189,7 +231,13 @@ export class MfaService {
    * blames the parent for an outage: a one-time code they cannot immediately
    * replace is at stake.
    */
-  private classify(err: unknown, stage: 'send' | 'verify'): HttpException {
+  private classify(
+    err: unknown,
+    stage: 'send' | 'verify',
+    // Absent on the resend route, which holds only a `challengeId` -- a bearer
+    // handle for someone else's challenge, so not a substitute.
+    semel?: number,
+  ): HttpException {
     if (isUpstreamUnreachable(err)) {
       this.logger.error(
         `Mashov MFA ${stage} unreachable: ${
@@ -203,7 +251,14 @@ export class MfaService {
       );
     }
 
-    switch (readReason(err)) {
+    const reason = readReason(err);
+
+    // No code exists at the send stage, so nothing Mashov says about one can
+    // be true of anything the parent did.
+    const codeValidityAtSendStage =
+      stage === 'send' && reason !== undefined && CODE_VALIDITY_REASONS.has(reason);
+
+    switch (codeValidityAtSendStage ? undefined : reason) {
       case 'MfaInvalidCode':
         return envelope(
           'INVALID_MFA_CODE',
@@ -245,6 +300,14 @@ export class MfaService {
         break;
     }
 
+    this.logger.warn(
+      `Mashov MFA ${stage} unmapped: ${describeMashovFailure(err, {
+        stage,
+        semel,
+        path: stage === 'send' ? SEND_PATH : VERIFY_PATH,
+      })}`,
+    );
+
     const status = axios.isAxiosError(err) ? err.response?.status : undefined;
     if (
       status !== undefined &&
@@ -255,6 +318,22 @@ export class MfaService {
       // replace.
       isMashovRejection(err)
     ) {
+      // At the send stage no code exists yet, so blaming one is false -- the
+      // same defect this flow shipped with on the OTP surface. Its own code
+      // rather than INVALID_MFA_CODE, because the parent is sitting on an open
+      // challenge and needs to know the resend failed, not that they mistyped.
+      //
+      // 422: understood, cannot be fulfilled, and nothing was typed to be
+      // malformed -- the same shape as LOGIN_METHOD_BLOCKED and
+      // MFA_CONTACT_MISSING.
+      if (stage === 'send') {
+        return envelope(
+          'MFA_SEND_REFUSED',
+          'Mashov would not send a code for this account.',
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
+      }
+
       // Includes an upstream 401. Rendered as 400 deliberately -- see the class
       // docblock on why nothing here may answer 401.
       return envelope(

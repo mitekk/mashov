@@ -42,6 +42,13 @@ import { SchoolLinksModule } from '../../backend/src/school-links/school-links.m
 
 const SEMEL = 540175;
 const KNOWN_ID = '303977367';
+/**
+ * The `NonceRef` Mashov mints at step 1 and demands back at step 2. Step 1
+ * always produces one, so the stub always does too; the end-to-end test below
+ * pins that it reaches the reset call, because a reset posted without it is
+ * refused `400 application/problem+json` and we used to call that a bad code.
+ */
+const NONCE = 'nonce-from-step-1';
 const UNKNOWN_ID = '000000001';
 const GOOD_PASSWORD = 'secret1';
 
@@ -162,10 +169,9 @@ describe('In-app Mashov password recovery', () => {
     // what it is checking.
     await redisService.scanDel('ratelimit:*');
     await redisService.scanDel('recovery:*');
-    await redisService.scanDel('otp:*');
     await prisma.credentialRecoveryAudit.deleteMany({});
 
-    requestRecovery.mockResolvedValue({});
+    requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
     resetPassword.mockResolvedValue({ username: KNOWN_ID });
     resetPasswordVerify.mockResolvedValue({ username: KNOWN_ID });
   });
@@ -184,7 +190,15 @@ describe('In-app Mashov password recovery', () => {
     return request(app.getHttpServer())
       .post(RECOVERIES)
       .set('X-Forwarded-For', ip)
-      .send({ semel: SEMEL, idNumber: KNOWN_ID, channel: 'email', ...body });
+      .send({
+        semel: SEMEL,
+        idNumber: KNOWN_ID,
+        channel: 'email',
+        // Mashov requires the destination and checks it against the school's
+        // record; it does not send to a contact it already holds.
+        destination: 'parent@example.com',
+        ...body,
+      });
   }
 
   function completeRecovery(
@@ -226,7 +240,7 @@ describe('In-app Mashov password recovery', () => {
       responses.push(poisoned);
       responses.push(await completeRecovery(poisoned.body.recoveryId));
 
-      requestRecovery.mockResolvedValue({});
+      requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
       const real = await startRecovery();
       responses.push(await completeRecovery(real.body.recoveryId, { newPassword: 'abc' }));
 
@@ -348,7 +362,10 @@ describe('In-app Mashov password recovery', () => {
 
   describe('two-channel recovery', () => {
     it('demands the second code based on the server-stored flag', async () => {
-      requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+      requestRecovery.mockResolvedValue({
+        body: { isResettingAndVerifying: true },
+        nonceRef: NONCE,
+      });
       const { body } = await startRecovery();
       expect(body.requiresSecondChannel).toBe(true);
 
@@ -358,7 +375,10 @@ describe('In-app Mashov password recovery', () => {
     });
 
     it('routes to the /verify endpoint with both codes', async () => {
-      requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+      requestRecovery.mockResolvedValue({
+        body: { isResettingAndVerifying: true },
+        nonceRef: NONCE,
+      });
       const { body } = await startRecovery();
 
       const res = await completeRecovery(body.recoveryId, {
@@ -367,12 +387,22 @@ describe('In-app Mashov password recovery', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(resetPasswordVerify).toHaveBeenCalledWith('AAA111', 'BBB222', GOOD_PASSWORD);
+      // The nonce from step 1 reaches step 2 end to end, through the encrypted
+      // Redis state. Without it Mashov refuses the reset outright.
+      expect(resetPasswordVerify).toHaveBeenCalledWith(
+        'AAA111',
+        'BBB222',
+        GOOD_PASSWORD,
+        NONCE,
+      );
       expect(resetPassword).not.toHaveBeenCalled();
     });
 
     it('cannot be downgraded to the single-code route by the client', async () => {
-      requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+      requestRecovery.mockResolvedValue({
+        body: { isResettingAndVerifying: true },
+        nonceRef: NONCE,
+      });
       const { body } = await startRecovery();
 
       // Even claiming otherwise in the step-2 body changes nothing: the flag
@@ -795,14 +825,11 @@ describe('In-app Mashov password recovery', () => {
     });
   });
 
-  describe('forced credential change and passwordless OTP', () => {
+  describe('forced credential change', () => {
     const CREDENTIALS = '/api/v1/auth/credentials';
-    const OTP_REQUESTS = '/api/v1/auth/otp-requests';
 
     let changePassword: jest.SpyInstance;
     let changeUsername: jest.SpyInstance;
-    let requestOtp: jest.SpyInstance;
-    let verifyOtp: jest.SpyInstance;
 
     function loginPayload() {
       return {
@@ -824,25 +851,17 @@ describe('In-app Mashov password recovery', () => {
     beforeAll(() => {
       changePassword = jest.spyOn(upstream, 'changePassword');
       changeUsername = jest.spyOn(upstream, 'changeUsername');
-      requestOtp = jest.spyOn(upstream, 'requestOtp');
-      verifyOtp = jest.spyOn(upstream, 'verifyOtp');
     });
 
     afterAll(() => {
       changePassword.mockRestore();
       changeUsername.mockRestore();
-      requestOtp.mockRestore();
-      verifyOtp.mockRestore();
     });
 
     beforeEach(async () => {
       await redisService.scanDel('ratelimit:*');
       changePassword.mockResolvedValue(loginPayload());
       changeUsername.mockResolvedValue(loginPayload());
-      requestOtp.mockResolvedValue(undefined);
-      verifyOtp.mockResolvedValue(loginPayload());
-      await redisService.scanDel('ratelimit:otp:*');
-      await redisService.scanDel('otp:*');
       await prisma.appSession.deleteMany({});
       await prisma.householdConnection.deleteMany({});
       await prisma.appUser.deleteMany({});
@@ -854,33 +873,6 @@ describe('In-app Mashov password recovery', () => {
       await prisma.appUser.deleteMany({});
     });
 
-    async function seedConnection() {
-      const user = await prisma.appUser.create({
-        data: {
-          mashovUserId: 'setup-user-1',
-          semel: SEMEL,
-          username: KNOWN_ID,
-          displayName: 'Setup Parent',
-        },
-      });
-      return prisma.householdConnection.create({
-        data: {
-          schoolCode: SEMEL,
-          schoolYear: 2027,
-          username: KNOWN_ID,
-          // Encrypted with the suite's ENCRYPTION_KEY by the service under
-          // test on the way back out; seeded with a value the real
-          // EncryptionService can decrypt is not needed here, because the OTP
-          // path's decrypt is exercised in the unit spec. This asserts the
-          // route shape and the DI graph.
-          encryptedPassword: 'enc-seed',
-          schoolName: 'Test School',
-          upstreamUserId: 'setup-user-1',
-          active: true,
-          userId: user.id,
-        },
-      });
-    }
 
     describe('POST /auth/credentials', () => {
       function setCredentials(body: Record<string, unknown> = {}) {
@@ -950,81 +942,6 @@ describe('In-app Mashov password recovery', () => {
       });
     });
 
-    describe('OTP sign-in', () => {
-      function requestCode(body: Record<string, unknown> = {}) {
-        return request(app.getHttpServer())
-          .post(OTP_REQUESTS)
-          .set('X-Forwarded-For', freshIp())
-          .send({ semel: SEMEL, username: KNOWN_ID, method: 'email', ...body });
-      }
-
-      it('refuses, before sending a code, for a school never signed into', async () => {
-        // The constraint is surfaced rather than hidden: an OTP-only household
-        // would have no stored credential and no background sync at all.
-        const res = await requestCode();
-
-        expect(res.status).toBe(409);
-        expect(res.body.error.code).toBe('PASSWORD_SIGN_IN_REQUIRED');
-        expect(requestOtp).not.toHaveBeenCalled();
-      });
-
-      it('issues an opaque handle for a school that has been signed into', async () => {
-        await seedConnection();
-        const res = await requestCode();
-
-        expect(res.status).toBe(202);
-        expect(res.body.otpRequestId).toMatch(/^[0-9a-f-]{36}$/);
-        expect(res.body.method).toBe('email');
-      });
-
-      it('carries neither the school nor the username into step 2', async () => {
-        await seedConnection();
-        const { body } = await requestCode();
-        const stored = await redisService.get(`otp:${body.otpRequestId}`);
-
-        // Both live server-side under the opaque handle, so the step-2 request
-        // body is just a code.
-        expect(stored).toContain(String(SEMEL));
-        expect(body).not.toHaveProperty('username');
-        expect(body).not.toHaveProperty('semel');
-      });
-
-      it('tells the parent to start again on an unknown handle', async () => {
-        const res = await request(app.getHttpServer())
-          .post(`${OTP_REQUESTS}/44444444-4444-4444-8444-444444444444/session`)
-          .set('X-Forwarded-For', freshIp())
-          .send({ code: '123456' });
-
-        expect(res.status).toBe(400);
-        expect(res.body.error.code).toBe('OTP_SESSION_EXPIRED');
-      });
-
-      it('rejects a missing code', async () => {
-        const res = await request(app.getHttpServer())
-          .post(`${OTP_REQUESTS}/44444444-4444-4444-8444-444444444444/session`)
-          .set('X-Forwarded-For', freshIp())
-          .send({ code: '   ' });
-
-        expect(res.status).toBe(400);
-        expect(res.body.error.code).toBe('VALIDATION_ERROR');
-      });
-
-      it('never answers 401', async () => {
-        const responses: request.Response[] = [];
-        responses.push(await requestCode());
-        responses.push(await requestCode({ method: 'carrier-pigeon' }));
-        responses.push(
-          await request(app.getHttpServer())
-            .post(`${OTP_REQUESTS}/does-not-exist/session`)
-            .set('X-Forwarded-For', freshIp())
-            .send({ code: '123456' }),
-        );
-
-        for (const res of responses) {
-          expect(res.status).not.toBe(401);
-        }
-      });
-    });
   });
 
   describe('review fixes, end to end', () => {
@@ -1068,10 +985,11 @@ describe('In-app Mashov password recovery', () => {
     // covers.
 
     // C2 — nothing that did not prove the password may clear the flag.
-    it('leaves the stale flag set after an OTP sign-in', async () => {
-      // OTP re-stores the password it already had, which may be exactly the
-      // dead one a reset invalidated. Clearing the flag would delete the only
-      // signal saying this school's sync is broken.
+    it('leaves the stale flag set after a sign-in that did not prove the password', async () => {
+      // `credentialProven: false` -- an MFA sign-in re-stores the password it
+      // already had, which may be exactly the dead one a reset invalidated.
+      // Clearing the flag would delete the only signal saying this school's
+      // sync is broken.
       const connection = await seedConnection();
 
       await authService.persistSessionFromLogin({

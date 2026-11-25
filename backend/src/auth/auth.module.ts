@@ -13,7 +13,6 @@ import { CredentialRecoveryController } from './credential-recovery.controller';
 import { MfaService } from './mfa.service';
 import { MfaController } from './mfa.controller';
 import { CredentialSetupService } from './credential-setup.service';
-import { OtpService } from './otp.service';
 import { CredentialSetupController } from './credential-setup.controller';
 
 @Module({
@@ -37,14 +36,12 @@ import { CredentialSetupController } from './credential-setup.controller';
     CredentialRecoveryService,
     MfaService,
     CredentialSetupService,
-    OtpService,
   ],
   exports: [
     AuthService,
     CredentialRecoveryService,
     MfaService,
     CredentialSetupService,
-    OtpService,
   ],
 })
 export class AuthModule {}
