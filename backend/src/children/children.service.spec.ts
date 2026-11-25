@@ -113,6 +113,9 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
         overrides.subjectAggregate ??
         jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
     },
+    gradeItem: {
+      findMany: overrides.gradeFindMany ?? jest.fn().mockResolvedValue([]),
+    },
     messageBoardItem: {
       findMany: overrides.noticeFindMany ?? jest.fn().mockResolvedValue([]),
     },
@@ -1229,6 +1232,125 @@ describe('ChildrenService', () => {
       expect(Array.isArray(notices.data)).toBe(true);
       expect(subjects.data[0].updatedAt).toBe('2026-03-12T00:00:00.000Z');
       expect(notices.data[0].expirationDate).toBe('2026-03-20T00:00:00.000Z');
+    });
+  });
+
+  describe('getGrades', () => {
+    function makeGradeRow(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'grade-1',
+        studentGuid: TEST_GUID,
+        gradingEventId: 18,
+        grade: 93,
+        gradingPeriod: 1,
+        gradeTypeId: 7,
+        gradeType: 'מטלה עם ציון',
+        gradingEvent: 'היכרות עם מערכת צירים',
+        groupId: 202,
+        groupName: 'מתמטיקה ז8',
+        subjectName: 'מתמטיקה',
+        teacherName: 'קליין יעל',
+        eventDate: new Date('2026-09-16T00:00:00Z'),
+        enteredAt: new Date('2026-09-17T14:04:41Z'),
+        updatedAt: new Date('2026-11-01T00:00:00Z'),
+        ...overrides,
+      };
+    }
+
+    it('returns a {data} envelope with every date as an ISO string', async () => {
+      const gradeFindMany = jest.fn().mockResolvedValue([makeGradeRow()]);
+      const service = new ChildrenService(
+        makeMockPrisma({ gradeFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+      );
+
+      const result = await service.getGrades(TEST_GUID);
+
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toEqual({
+        id: 'grade-1',
+        studentGuid: TEST_GUID,
+        gradingEventId: 18,
+        grade: 93,
+        gradingPeriod: 1,
+        gradeTypeId: 7,
+        gradeType: 'מטלה עם ציון',
+        gradingEvent: 'היכרות עם מערכת צירים',
+        groupId: 202,
+        groupName: 'מתמטיקה ז8',
+        subjectName: 'מתמטיקה',
+        teacherName: 'קליין יעל',
+        eventDate: '2026-09-16T00:00:00.000Z',
+        enteredAt: '2026-09-17T14:04:41.000Z',
+        updatedAt: '2026-11-01T00:00:00.000Z',
+      });
+    });
+
+    it("scopes the read to the connection's school year", async () => {
+      // An unscoped read shows last year's tests beside this year's, and the
+      // subject average the client computes would silently span both.
+      const gradeFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ gradeFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+      );
+
+      await service.getGrades(TEST_GUID);
+
+      const { where } = gradeFindMany.mock.calls[0][0];
+      expect(where.studentGuid).toBe(TEST_GUID);
+      expect(where.schoolYear.in).toContain(2027);
+    });
+
+    it('asks for a total order, newest assessment first', async () => {
+      const gradeFindMany = jest.fn().mockResolvedValue([]);
+      const service = new ChildrenService(
+        makeMockPrisma({ gradeFindMany }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+      );
+
+      await service.getGrades(TEST_GUID);
+
+      // `eventDate` alone is not a total order -- a test and a quiz on one day
+      // could come back either way round and swap on screen between refetches.
+      expect(gradeFindMany.mock.calls[0][0].orderBy).toEqual([
+        { eventDate: 'desc' },
+        { enteredAt: 'desc' },
+        { gradingEventId: 'desc' },
+      ]);
+    });
+
+    it('resolves no upstream target at all', async () => {
+      // Deliberately NOT in the `targetForStudent` ROUTES table: this is a
+      // read of our own Postgres. Touching the router would mean a Mashov
+      // login on every tab open, and an upstream outage would empty the view.
+      const targetForStudent = jest.fn();
+      const client = makeMockMashovClient();
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        client,
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope({ targetForStudent }),
+      );
+
+      await service.getGrades(TEST_GUID, 'user-1');
+
+      expect(targetForStudent).not.toHaveBeenCalled();
+      expect(client.getForTarget).not.toHaveBeenCalled();
     });
   });
 
@@ -2471,6 +2593,7 @@ describe('ChildrenService household isolation', () => {
         findMany: jest.fn().mockResolvedValue([]),
         aggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
       },
+      gradeItem: { findMany: jest.fn().mockResolvedValue([]) },
       messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
       timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
       bellSchedule: { findMany: jest.fn().mockResolvedValue([]) },
@@ -2751,6 +2874,7 @@ describe('ChildrenService ownership guard coverage', () => {
         findMany: jest.fn().mockResolvedValue([]),
         aggregate: jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
       },
+      gradeItem: { findMany: jest.fn().mockResolvedValue([]) },
       messageBoardItem: { findMany: jest.fn().mockResolvedValue([]) },
       timetableEntry: { findMany: jest.fn().mockResolvedValue([]) },
       bellSchedule: { findMany: jest.fn().mockResolvedValue([]) },
@@ -2778,6 +2902,7 @@ describe('ChildrenService ownership guard coverage', () => {
     name: string;
     call: (service: ChildrenService) => Promise<unknown>;
   }> = [
+    { name: 'getGrades', call: (s) => s.getGrades(FOREIGN, CALLER) },
     { name: 'getLessonPlans', call: (s) => s.getLessonPlans(FOREIGN, CALLER) },
     { name: 'getLessonHistory', call: (s) => s.getLessonHistory(FOREIGN, CALLER) },
     { name: 'getStudentReleases', call: (s) => s.getStudentReleases(FOREIGN, CALLER) },

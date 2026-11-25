@@ -718,6 +718,52 @@ export class ChildrenService {
     };
   }
 
+  /**
+   * Every graded assessment of the current school year, newest first.
+   *
+   * A read of our own Postgres, like `getSubjects` and unlike the lesson-plan
+   * passthroughs: no upstream call, so it survives a Mashov outage and costs
+   * no login per tab open. Flat rows on purpose -- the grouping by subject and
+   * the subject average live in `frontend/src/components/child/grades-model.ts`,
+   * where the arithmetic is unit-tested on its own.
+   */
+  async getGrades(studentGuid: string, userId?: string) {
+    const student = await this.requireStudent(studentGuid, userId);
+
+    const items = await this.prisma.gradeItem.findMany({
+      where: {
+        studentGuid,
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
+      },
+      // A test and a quiz on one day are common, and `eventDate` alone lets
+      // Postgres return those rows in either order, so a refetch can swap
+      // them on screen. `enteredAt` then `gradingEventId` make it total.
+      orderBy: [{ eventDate: 'desc' }, { enteredAt: 'desc' }, { gradingEventId: 'desc' }],
+    });
+
+    return {
+      data: items.map((item) => ({
+        id: item.id,
+        studentGuid: item.studentGuid,
+        gradingEventId: item.gradingEventId,
+        grade: item.grade,
+        gradingPeriod: item.gradingPeriod,
+        gradeTypeId: item.gradeTypeId,
+        gradeType: item.gradeType,
+        gradingEvent: item.gradingEvent,
+        groupId: item.groupId,
+        groupName: item.groupName,
+        subjectName: item.subjectName,
+        teacherName: item.teacherName,
+        eventDate: item.eventDate.toISOString(),
+        enteredAt: item.enteredAt.toISOString(),
+        updatedAt: item.updatedAt.toISOString(),
+      })),
+    };
+  }
+
   async getLessonPlans(studentGuid: string, userId?: string) {
     await this.requireStudent(studentGuid, userId);
 

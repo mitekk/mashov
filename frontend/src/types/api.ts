@@ -298,6 +298,36 @@ export interface SubjectsResponse {
   data: SubjectEnrollment[];
 }
 
+// ─── Grades ────────────────────────────────────────────────────────────────
+
+/**
+ * `gradeTypeId` is a plain `number` on purpose: a code we have not seen must
+ * render rather than fail to parse. The codes observed upstream are
+ * 1 = מבחן, 2 = בוחן, 3 = הערכה חלופית (עבודה עצמאית),
+ * 4 = הערכה חלופית (עבודת צוות), 7 = מטלה עם ציון.
+ */
+export interface GradeItem {
+  id: string;
+  studentGuid: string;
+  gradingEventId: number;
+  grade: number;
+  gradingPeriod: number;
+  gradeTypeId: number;
+  gradeType: string;
+  gradingEvent: string;
+  groupId: number;
+  groupName: string;
+  subjectName: string;
+  teacherName: string;
+  eventDate: string;
+  enteredAt: string;
+  updatedAt: string;
+}
+
+export interface GradesResponse {
+  data: GradeItem[];
+}
+
 // ─── Notices ───────────────────────────────────────────────────────────────
 
 export interface NoticeItem {

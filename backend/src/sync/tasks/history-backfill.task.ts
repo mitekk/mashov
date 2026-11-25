@@ -220,7 +220,17 @@ export class HistoryBackfillTask {
     );
   }
 
-  /** The eight year-scoped tasks. Mail and notifications carry no year. */
+  /**
+   * The eight year-scoped tasks. Mail and notifications carry no year.
+   *
+   * `grades` is deliberately absent, though it is year-scoped like the rest.
+   * The backfill writes a per-year completion marker, so every year a
+   * deployment has already marked complete would never fetch a source added
+   * afterwards -- the list only ever grows for years nobody has run yet.
+   * Grades are current-year only, and adding them here would buy a backfill
+   * for future years while silently skipping every past one. If historical
+   * grades are ever wanted, they need the marker invalidated, not a line here.
+   */
   private yearScopedTasks(): Array<[string, YearScopedTask]> {
     return [
       [HomeworkTask.SOURCE, this.homeworkTask],

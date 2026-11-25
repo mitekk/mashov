@@ -5,6 +5,7 @@ import { MailCountsTask } from '../../src/sync/tasks/mail-counts.task';
 import { MailInboxTask } from '../../src/sync/tasks/mail-inbox.task';
 import { HomeworkTask } from '../../src/sync/tasks/homework.task';
 import { BehaviorTask } from '../../src/sync/tasks/behavior.task';
+import { GradesTask } from '../../src/sync/tasks/grades.task';
 import { AchvasTask } from '../../src/sync/tasks/achvas.task';
 import { GroupsTask } from '../../src/sync/tasks/groups.task';
 import { LessonsCountTask } from '../../src/sync/tasks/lessons-count.task';
@@ -33,7 +34,7 @@ const createMockTask = () => ({
 });
 
 describe('SyncService', () => {
-  const EXPECTED_TASK_COUNT = 17;
+  const EXPECTED_TASK_COUNT = 18;
 
   let service: SyncService;
   let notificationsTask: ReturnType<typeof createMockTask>;
@@ -41,6 +42,7 @@ describe('SyncService', () => {
   let mailInboxTask: ReturnType<typeof createMockTask>;
   let homeworkTask: ReturnType<typeof createMockTask>;
   let behaviorTask: ReturnType<typeof createMockTask>;
+  let gradesTask: ReturnType<typeof createMockTask>;
   let achvasTask: ReturnType<typeof createMockTask>;
   let groupsTask: ReturnType<typeof createMockTask>;
   let lessonsCountTask: ReturnType<typeof createMockTask>;
@@ -60,6 +62,7 @@ describe('SyncService', () => {
     mailInboxTask = createMockTask();
     homeworkTask = createMockTask();
     behaviorTask = createMockTask();
+    gradesTask = createMockTask();
     achvasTask = createMockTask();
     groupsTask = createMockTask();
     lessonsCountTask = createMockTask();
@@ -81,6 +84,7 @@ describe('SyncService', () => {
         { provide: MailInboxTask, useValue: mailInboxTask },
         { provide: HomeworkTask, useValue: homeworkTask },
         { provide: BehaviorTask, useValue: behaviorTask },
+        { provide: GradesTask, useValue: gradesTask },
         { provide: AchvasTask, useValue: achvasTask },
         { provide: GroupsTask, useValue: groupsTask },
         { provide: LessonsCountTask, useValue: lessonsCountTask },
@@ -114,6 +118,7 @@ describe('SyncService', () => {
       expect(mailInboxTask.execute).toHaveBeenCalledTimes(1);
       expect(homeworkTask.execute).toHaveBeenCalledTimes(1);
       expect(behaviorTask.execute).toHaveBeenCalledTimes(1);
+      expect(gradesTask.execute).toHaveBeenCalledTimes(1);
       expect(achvasTask.execute).toHaveBeenCalledTimes(1);
       expect(groupsTask.execute).toHaveBeenCalledTimes(1);
       expect(lessonsCountTask.execute).toHaveBeenCalledTimes(1);
@@ -149,6 +154,7 @@ describe('SyncService', () => {
       // All other tasks should still have been called
       expect(notificationsTask.execute).toHaveBeenCalledTimes(1);
       expect(behaviorTask.execute).toHaveBeenCalledTimes(1);
+      expect(gradesTask.execute).toHaveBeenCalledTimes(1);
       expect(achvasTask.execute).toHaveBeenCalledTimes(1);
     });
 
@@ -159,6 +165,7 @@ describe('SyncService', () => {
       mailInboxTask.execute.mockRejectedValue(error);
       homeworkTask.execute.mockRejectedValue(error);
       behaviorTask.execute.mockRejectedValue(error);
+      gradesTask.execute.mockRejectedValue(error);
       achvasTask.execute.mockRejectedValue(error);
       groupsTask.execute.mockRejectedValue(error);
       lessonsCountTask.execute.mockRejectedValue(error);

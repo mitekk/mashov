@@ -17,6 +17,7 @@ import { MailCountsTask } from './tasks/mail-counts.task';
 import { MailInboxTask } from './tasks/mail-inbox.task';
 import { HomeworkTask } from './tasks/homework.task';
 import { BehaviorTask } from './tasks/behavior.task';
+import { GradesTask } from './tasks/grades.task';
 import { AchvasTask } from './tasks/achvas.task';
 import { GroupsTask } from './tasks/groups.task';
 import { LessonsCountTask } from './tasks/lessons-count.task';
@@ -52,6 +53,7 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
     MailInboxTask,
     HomeworkTask,
     BehaviorTask,
+    GradesTask,
     AchvasTask,
     GroupsTask,
     LessonsCountTask,

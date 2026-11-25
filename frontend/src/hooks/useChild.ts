@@ -6,6 +6,7 @@ import {
   fetchChildBehavior,
   fetchChildBehaviorDetail,
   fetchChildSubjects,
+  fetchChildGrades,
   fetchChildNotices,
   fetchChildTimetable,
   fetchChildLessonPlans,
@@ -73,6 +74,17 @@ export function useChildSubjects(studentGuid: string) {
   return useQuery({
     queryKey: ['child-subjects', studentGuid],
     queryFn: () => fetchChildSubjects(studentGuid),
+    staleTime: 5 * 60_000,
+    enabled: Boolean(studentGuid),
+  });
+}
+
+export function useChildGrades(studentGuid: string) {
+  return useQuery({
+    // The `child-` prefix is load-bearing: query-invalidation.ts evicts
+    // per-child caches by `queryKey[0].startsWith('child-')` on school unlink.
+    queryKey: ['child-grades', studentGuid],
+    queryFn: () => fetchChildGrades(studentGuid),
     staleTime: 5 * 60_000,
     enabled: Boolean(studentGuid),
   });

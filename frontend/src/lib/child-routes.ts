@@ -1,4 +1,4 @@
-export const CHILD_SECTIONS = ['homework', 'behavior', 'subjects', 'notices', 'timetable'] as const;
+export const CHILD_SECTIONS = ['homework', 'behavior', 'subjects', 'grades', 'notices', 'timetable'] as const;
 export const CHILD_BEHAVIOR_FILTERS = ['all', 'attention', 'positive', 'neutral'] as const;
 
 export type ChildSectionId = (typeof CHILD_SECTIONS)[number];

@@ -25,7 +25,7 @@ const SOURCE_THRESHOLDS: SourceThreshold[] = [
     staleThresholdMinutes: 15,
   },
   {
-    sources: ['homework', 'behavior'],
+    sources: ['homework', 'behavior', 'grades'],
     staleThresholdMinutes: 24 * 60, // 24 hours
   },
   {
@@ -49,6 +49,7 @@ const SOURCE_THRESHOLDS: SourceThreshold[] = [
 export const PER_STUDENT_SOURCES = [
   'homework',
   'behavior',
+  'grades',
   'groups',
   'lessons_count',
   'message_board',
