@@ -77,6 +77,7 @@ export function HomeworkItem({
       data-testid={`homework-item-${item.id}`}
       className={cn(
         'card-base flex items-start gap-3 p-4',
+        detailHref && 'card-interactive',
         selected && 'border-primary/50 bg-primary/5',
       )}
     >
@@ -85,19 +86,19 @@ export function HomeworkItem({
         checked={selected}
         onChange={(event) => onToggleSelect?.(item.id, event.target.checked)}
         data-testid={`homework-select-${item.id}`}
-        className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+        className="relative z-10 mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
         aria-label="בחר שיעורי בית"
       />
       {detailHref ? (
         <Link
           href={detailHref}
           data-testid={`homework-item-link-${item.id}`}
-          className="min-w-0 flex-1 rounded-xl p-1 transition-colors hover:bg-accent/30"
+          className="min-w-0 flex-1 rounded-xl p-1 after:absolute after:inset-0 after:content-['']"
         >
           {content}
         </Link>
       ) : content}
-      <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
+      <div className="relative z-10 flex flex-col gap-1 flex-shrink-0 mt-0.5">
         {!item.isArchived && !item.isPastYear && (
           <button
             data-testid={`homework-mark-new-${item.id}`}

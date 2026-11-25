@@ -88,6 +88,7 @@ export function BehaviorItem({
       data-testid={`behavior-item-${item.id}`}
       className={cn(
         'card-base p-4 flex gap-3 items-start border-s-4',
+        detailHref && 'card-interactive',
         colors.border,
         selected && 'border-primary/50 bg-primary/5',
       )}
@@ -97,19 +98,19 @@ export function BehaviorItem({
         checked={selected}
         onChange={(event) => onToggleSelect?.(item.id, event.target.checked)}
         data-testid={`behavior-select-${item.id}`}
-        className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+        className="relative z-10 mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
         aria-label="בחר אירוע התנהגות"
       />
       {detailHref ? (
         <Link
           href={detailHref}
           data-testid={`behavior-item-link-${item.id}`}
-          className="min-w-0 flex-1 rounded-xl p-1 transition-colors hover:bg-accent/30"
+          className="min-w-0 flex-1 rounded-xl p-1 after:absolute after:inset-0 after:content-['']"
         >
           {content}
         </Link>
       ) : content}
-      <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
+      <div className="relative z-10 flex flex-col gap-1 flex-shrink-0 mt-0.5">
         {!item.isArchived && !item.isPastYear && (
           <button
             data-testid={`behavior-mark-new-${item.id}`}

@@ -250,6 +250,15 @@
     box-shadow: 0 16px 42px -28px hsl(0 0% 0% / 0.78);
   }
 
+  /* A card whose body is a link: one hover state for the whole surface. */
+  .card-interactive {
+    @apply relative transition-colors;
+  }
+
+  .card-interactive:hover {
+    @apply bg-accent/40;
+  }
+
   /* Tap target min size for mobile */
   .tap-target {
     min-height: 44px;

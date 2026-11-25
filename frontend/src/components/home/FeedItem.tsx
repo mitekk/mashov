@@ -92,6 +92,7 @@ export function FeedItem({
       data-testid={`feed-item-${item.id}`}
       className={cn(
         'card-base p-4 flex gap-3 items-start',
+        safeHref && 'card-interactive',
         selected && 'border-primary/50 bg-primary/5',
       )}
     >
@@ -101,13 +102,16 @@ export function FeedItem({
           checked={selected}
           onChange={(event) => onToggleSelect(item.id, event.target.checked)}
           data-testid={`feed-select-${item.id}`}
-          className="mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
+          className="relative z-10 mt-1 h-4 w-4 flex-shrink-0 rounded border-border text-primary focus:ring-primary"
           aria-label="בחר עדכון"
         />
       )}
       <div className="flex-1 min-w-0">
         {safeHref ? (
-          <Link href={safeHref} className="block group">
+          <Link
+            href={safeHref}
+            className="block group after:absolute after:inset-0 after:content-['']"
+          >
             <div className="flex items-start gap-2 mb-1">
               <SourceTypeBadge type={item.sourceType} />
               <span className="text-xs text-muted-foreground flex-shrink-0 whitespace-nowrap me-auto">
@@ -174,7 +178,7 @@ export function FeedItem({
           </div>
         )}
       </div>
-      <div className="flex flex-col gap-1 flex-shrink-0 mt-0.5">
+      <div className="relative z-10 flex flex-col gap-1 flex-shrink-0 mt-0.5">
         {canToggleReadState && (
           <button
             data-testid={`feed-item-mark-new-${item.id}`}

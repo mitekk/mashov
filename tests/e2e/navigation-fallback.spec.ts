@@ -336,6 +336,20 @@ test.describe('Navigation and fallback hardening', () => {
     await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
   });
 
+  test('opens homework detail when the feed card is clicked outside its text panel', async ({
+    page,
+  }) => {
+    await mockBaseRoutes(page);
+
+    await page.goto('/home');
+    await expect(page.getByTestId('home-header')).toBeVisible();
+
+    // The card's own padding -- not the inner link panel -- is the click target.
+    await page.getByTestId('feed-item-feed-1').click({ position: { x: 6, y: 6 } });
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
+  });
+
   test('supports core click/navigation flows across Home -> Child -> Inbox -> Conversation -> More', async ({
     page,
   }) => {
