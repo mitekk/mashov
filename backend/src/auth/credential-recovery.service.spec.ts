@@ -258,6 +258,31 @@ describe('CredentialRecoveryService', () => {
         });
       });
 
+      /**
+       * Observed against production 2026-11-25: the same phone received an
+       * SMS for `0541234567` and nothing at all for `+972541234567`. Mashov
+       * matches the destination literally against what the school holds, and
+       * ADR-0042 then hides the refusal behind a 202 -- so an unnormalised
+       * number is a dead end with no error anywhere for the parent to read.
+       */
+      it('normalises an international mobile to the form the school holds', async () => {
+        await start({ channel: 'sms', destination: '+972541234567' });
+
+        expect(mockUpstream.requestRecovery).toHaveBeenCalledWith(
+          expect.objectContaining({ cellphone: '0541234567' }),
+        );
+      });
+
+      it('leaves an email address exactly as typed', async () => {
+        // Phone normalisation must never reach the other channel: `+` and `.`
+        // are ordinary characters in an address.
+        await start({ channel: 'email', destination: 'a.b+tag@example.com' });
+
+        expect(mockUpstream.requestRecovery).toHaveBeenCalledWith(
+          expect.objectContaining({ email: 'a.b+tag@example.com' }),
+        );
+      });
+
       it('sends the mobile number under cellphone for SMS', async () => {
         await start({ channel: 'sms', destination: '0501234567' });
         expect(mockUpstream.requestRecovery).toHaveBeenCalledWith({

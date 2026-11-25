@@ -6,6 +6,7 @@ import { RedisService } from '../redis/redis.service';
 import { isUpstreamUnreachable } from '../common/http/mashov-http';
 import { MashovRecoveryService } from '../common/mashov-login/mashov-recovery.service';
 import { assertPasswordPolicy } from '../common/mashov-login/password-policy';
+import { normalizeIsraeliPhone } from './israeli-mobile';
 import {
   describeMashovFailure,
   isMashovRejection,
@@ -258,7 +259,11 @@ export class CredentialRecoveryService {
         // The field NAME is the channel; the value is the address. Never a
         // boolean -- see `RequestRecoveryInput`.
         ...(input.channel === 'sms'
-          ? { cellphone: input.destination }
+          ? // Normalised, because Mashov matches this literally against the
+            // number the school holds, and ADR-0042 hides the mismatch behind
+            // a 202 -- so `+972...` is a silent dead end. Never applied to an
+            // address: `+` and `.` are ordinary characters in one.
+            { cellphone: normalizeIsraeliPhone(input.destination) }
           : { email: input.destination }),
       });
       isResettingAndVerifying = result.body.isResettingAndVerifying === true;
