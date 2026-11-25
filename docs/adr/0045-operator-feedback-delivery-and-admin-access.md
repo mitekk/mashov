@@ -8,7 +8,11 @@
   [ADR-0038](0038-inbox-mail-notifications.md) (the cron + `TelegramSender` shape copied
   here), [ADR-0023](0023-bounding-mashov-egress-abortsignal.md) (why this module imports nothing that
   builds a Mashov client), [ADR-0026](0026-outbound-digest-delivery-and-llm-egress.md) (`DigestSender`)
+- **Amended**: 2026-11-25 — sections 2 and 3 superseded in part by sections 11 and 12 below
+  (a separate bot, and a destination failure parking the row instead of charging it).
 - **Implemented by**: `src/feedback/feedback-notifier.service.ts`,
+  `src/feedback/feedback-telegram.sender.ts`, `src/digest/senders/telegram.sender.ts`
+  (`tokenVar()`/`hasToken()`),
   `src/feedback/tasks/feedback-notify.task.ts`, `src/admin-auth/`, `src/admin-feedback/`,
   `frontend/src/app/admin/feedback/`, `prisma/migrations/20261128000000_feedback_outbox_and_triage`,
   `docs/ops/admin-access-setup.md`
@@ -66,24 +70,34 @@ keeps `notifyError`, and the admin detail view renders it — so a report the ou
 is visible on the screen that replaced the notification, rather than only in a log line
 nobody reads.
 
-A permanent failure (`isPermanentTelegramFailure` — "chat not found", "bot was blocked") sets
-`notifyAttempts` straight to 3. Spending three attempts four minutes apart on a chat id that
-does not exist tells nobody anything.
+A permanent failure (`isPermanentTelegramFailure` — "bot was blocked", "user is deactivated")
+sets `notifyAttempts` straight to 3. Spending three attempts four minutes apart on a recipient
+who is gone tells nobody anything.
+
+> **Amended 2026-11-25.** "chat not found" no longer retires a feedback row — it, and the
+> channel-permission refusals beside it, now **park** the row without charging an attempt.
+> See section 12.
 
 Unlike the digest, nothing here is re-derived on retry and nobody is waiting, so there is no
 case for retrying forever: that would log the same failure every two minutes for as long as
 the row exists.
 
-### 3. One switch, deliberately diverging from house convention
+### 3. No `*_ENABLED` flag, deliberately diverging from house convention
 
-`FEEDBACK_TELEGRAM_CHAT_ID` unset means the notifier is off — silently, with no query and no
-log line per tick.
+The notifier is off — silently, with no query and no log line on any of its 720 ticks a day —
+unless it has somewhere to deliver to. Since the amendment in section 11 that is two values
+rather than one: `FEEDBACK_TELEGRAM_BOT_TOKEN` (which bot) and `FEEDBACK_TELEGRAM_CHAT_ID`
+(which chat). Both set means on; either one missing means off.
 
 Every other cron in this repo carries a `*_ENABLED` var defaulting to `false`
 (`DIGEST_ENABLED`, `INBOX_NOTIFY_ENABLED`). Those gate features with per-parent recipients,
 where a wrongly-on cron messages real households. Here the recipient *is* the configuration:
-a configured chat id has no meaning other than "notify this chat", and a second flag only
-creates a state where delivery is silently off while everything needed for it is set.
+these two vars are not flags but the two halves of one address, and a third switch would only
+create a state where delivery is off while everything needed for it is set. Two coordinates,
+no flag.
+
+The token half is asked of the sender (`hasToken()`) rather than read from config by the
+notifier, so each env var name appears in exactly one place in the code.
 
 ### 4. `contactEmail` goes in the Telegram message
 
@@ -192,6 +206,94 @@ inherit its chrome. One exception: the **subject** renders as its Hebrew label w
 code beside it. The parent picked "נתון שגוי או חסר" from a Hebrew select, and the report
 should be read in the words they saw.
 
+### 11. Feedback notifications go out as a **separate bot**
+
+`FeedbackTelegramSender` subclasses `TelegramSender` and overrides one thing — the env var
+holding the token, `FEEDBACK_TELEGRAM_BOT_TOKEN` instead of `TELEGRAM_BOT_TOKEN`.
+
+As first shipped, the notifier sent through `TelegramSender`: the same bot that sends parents
+their digests. That is a problem specific to this operator, who is **also a parent user of
+this app**. Pointing `FEEDBACK_TELEGRAM_CHAT_ID` at their own DM interleaves every parent's
+bug report with their own children's digests in one conversation.
+
+Separating the *chat* alone would fix the interleaving. Separating the *bot* was chosen
+because it also buys two things the chat split does not: a distinct sender identity, so a
+report never looks like it came from the bot parents talk to, and credential independence —
+revoking the feedback token cannot stop a parent's digest, and vice versa.
+
+The mechanics that make this a four-line subclass rather than a duplicated sender:
+
+- `tokenVar()` is a **method**, not a field. A field could be defeated by
+  field-initialisation order in a subclass; a method read at send time cannot be. It is read
+  at send time rather than construction for the same reason `hasToken()` exists — a stack can
+  be configured after boot.
+- Everything else is inherited and therefore has exactly one implementation: the chunking,
+  the `proxy: false` axios instance that keeps a report off ADR-0023's Mashov-only residential
+  hop, the token-on-the-path rule that keeps it out of `config.url` in log lines, and the
+  redaction on the way out.
+- **No fallback to `TELEGRAM_BOT_TOKEN`.** With the feedback token unset and the parent one
+  set, nothing is sent. A quiet fallback is the one behaviour this split exists to prevent.
+- The sender is **send-only**. The `getUpdates` long poll that handles a parent linking their
+  account stays on the original token and is not duplicated — nothing ever replies to the
+  feedback bot.
+
+`FeedbackNotifierService` injects `FeedbackTelegramSender` by **concrete type**, not
+`DigestSender`. Deliberate twice over: the concrete type carries `hasToken()`, and it makes
+handing this service the parent-facing sender a compile error rather than a silent cross-wire.
+
+Consequently `FeedbackModule` **drops `imports: [DigestModule]` entirely**. Subclassing a
+class it imports needs no provider from that module, so the ADR-0023 bound this record already
+claimed — import nothing that builds a Mashov axios client — gets easier to hold, not harder.
+`feedback.module.spec.ts` asserts `TelegramSender` is *unresolvable* in this graph, so a
+future re-import is a failing test rather than a one-typo cross-wire.
+
+### 12. A failure about the **destination** does not spend the **row's** budget
+
+A private Telegram channel refuses a bot that is not one of its admins with `bot is not a
+member of the channel chat` or `need administrator rights in the channel chat`. Neither
+phrase is in `PERMANENT_TELEGRAM_FAILURES`, so both classify as transient under section 2:
+three attempts, six minutes, and then the row is retired permanently.
+
+That is precisely the rollout order an operator will use. Set the two env vars, then go and
+make the bot a channel admin — and in the gap, every report already waiting loses its
+notification for good. The reports are not lost; they stay in the table and on
+`/admin/feedback`. But nobody is ever pinged, and nothing says so.
+
+So `feedback-notifier.service.ts` carries a **feedback-local** `isDestinationFailure()` —
+`chat not found`, `bot is not a member`, `need administrator rights`, `chat_admin_required`,
+`bot was kicked` — checked **before** `isPermanentTelegramFailure()`, because the two lists
+overlap on "chat not found" and the destination reading is the right one here: a chat id with
+a typo in it is a setup mistake an operator fixes, not a dead recipient. On such a failure the
+row **parks**: `notifyError` is recorded, `notifyAttempts` is left exactly as it was, and the
+row stays pending. It delivers by itself on the first tick after the channel is fixed. Same
+principle as the token gate in section 3 — a failure about the address must not consume the
+budget of the rows addressed to it.
+
+It logs **once per run**, not once per row, so a misconfigured channel cannot write one line
+per pending report every two minutes.
+
+The digest's classification is **not** changed and must not be. There the address is a
+per-parent chat the parent themselves supplied, so a refusal means that recipient is gone and
+*should* be retired — retrying forever would re-claim, re-summarize (a model call each time)
+and re-send on every run. Here there is a single operator-owned address, no model call, and at
+most 20 sends per two minutes against a table bounded at ten rows per household per hour. The
+opposite rule, for the opposite blast radius.
+
+**Accepted cost:** a destination that is permanently broken retries forever. Bounded and cheap
+as above, logged once per run, and the stored `notifyError` renders on the admin detail view —
+which is where an operator looks.
+
+**Re-arming an already-retired row** is SQL, not a feature. PR #49's own local testing left
+retired rows behind, and the runbook carries the statement:
+
+```sql
+UPDATE feedback SET "notifyAttempts" = 0, "notifyError" = NULL
+WHERE "notifiedAt" IS NULL AND "notifyAttempts" >= 3;
+```
+
+An admin-UI re-arm button was considered and declined: one operator, one statement, and a
+button needs a route, a guard, a mutation and a test for a thing that has happened once.
+
 ## Consequences
 
 ### Good
@@ -204,6 +306,10 @@ should be read in the words they saw.
   `boot-migrations.spec.ts` needs no new exemption.
 - The admin surface is closed by default and on every misconfiguration short of an explicit
   request to disable it.
+- A parent's bug report and that same operator's own children's digests are visibly separate
+  streams from separate bots, and neither credential can break the other.
+- A setup mistake during rollout — the vars set before the bot is a channel admin — costs
+  nothing permanently. The reports wait, and the first tick after the fix delivers them.
 
 ### Bad / accepted
 
@@ -215,7 +321,12 @@ should be read in the words they saw.
   not.
 - **A retired row is forgotten by the notifier.** Nothing retries it and nothing alerts; it
   is visible only on the admin screen. Acceptable because the screen exists — which it did
-  not when ADR-0044 declined to build the notification.
+  not when ADR-0044 declined to build the notification. Re-arming one is the SQL in section 12.
+- **A permanently broken destination retries forever** (section 12) — the deliberate cost of
+  not burning attempts on a channel nobody has finished configuring.
+- **Two bot tokens to hold.** One more secret in the Coolify UI, and one more thing to get
+  wrong — which is why there is no fallback: a wrong-shaped feedback token sends nothing
+  rather than sending as the parent-facing bot.
 - **The rate limit's race is unchanged**, and now so is the outbox's: two processes running
   this cron would both select the same row. There is one backend container, and the in-row
   `notifiedAt` makes a duplicate message rather than a lost one. Not worth a lock.

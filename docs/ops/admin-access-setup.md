@@ -22,7 +22,7 @@ There are two gates and they are **not** equally important:
 | `CloudflareAccessGuard` in the backend | **every** request that reaches the origin | the real boundary |
 
 The second one is the one that holds, because **the origin is directly
-reachable** — see [step 5](#5-close-the-origin-required-follow-up).
+reachable** — see [step 6](#6-close-the-origin-required-follow-up).
 
 ---
 
@@ -107,7 +107,8 @@ Coolify → the `backend` service → **Environment Variables**:
 ADMIN_AUTH_MODE=verify
 ACCESS_AUD=efd01ef8d189ecdaccfe6ac9dca2bd7bfb160e88096655a561b2e06656258f6c
 ACCESS_TEAM_DOMAIN=https://young-poetry-2f7a.cloudflareaccess.com
-FEEDBACK_TELEGRAM_CHAT_ID=<the operator chat id>
+FEEDBACK_TELEGRAM_BOT_TOKEN=<the FEEDBACK bot's token — see "Feedback notifications" below>
+FEEDBACK_TELEGRAM_CHAT_ID=<the private channel's -100... id>
 ```
 
 `ACCESS_TEAM_DOMAIN` needs the `https://` scheme and no trailing slash — it is
@@ -125,8 +126,11 @@ Notes:
 - `ADMIN_AUTH_MODE=insecure-dev` skips JWT verification entirely and **refuses
   to boot** unless `ENABLE_E2E_AUTH_BYPASS=1` is also set. Both must stay unset
   in production. That combination exists for the e2e run only.
-- `FEEDBACK_TELEGRAM_CHAT_ID` is the only switch for the notifier. Unset means
-  no messages, silently. There is no `FEEDBACK_NOTIFY_ENABLED`.
+- `FEEDBACK_TELEGRAM_BOT_TOKEN` and `FEEDBACK_TELEGRAM_CHAT_ID` are the whole
+  switch for the notifier: both set means on, either missing means off,
+  silently. There is no `FEEDBACK_NOTIFY_ENABLED`. **The bot token is a
+  different bot from `TELEGRAM_BOT_TOKEN`** — see the next section, which is
+  where you create it.
 - `PUBLIC_BASE_URL` must already be set for the Telegram message to carry a
   deep link. Unset, the message still arrives and simply has no link line.
 
@@ -176,7 +180,128 @@ Then, in a browser:
 It cannot be an in-app XHR: Access answers it with a 302 to a login page that
 fetch cannot usefully follow.
 
-## 5. Close the origin (required follow-up)
+## 5. Feedback notifications — the bot and the channel
+
+Reports are delivered by a **separate bot** from the one that sends parents
+their digests, into a **private channel** rather than anyone's DM. The reason
+is that the operator is also a parent user of this app: one bot pointed at the
+operator's own DM interleaves every parent's bug report with that operator's
+own children's digests in a single conversation. See
+[ADR-0045 §11](../adr/0045-operator-feedback-delivery-and-admin-access.md).
+
+There is **no fallback** to `TELEGRAM_BOT_TOKEN`. With the feedback token unset
+and the parent-facing one set, nothing is sent — on purpose.
+
+### 1. Create the bot
+
+In Telegram, talk to **@BotFather**:
+
+```
+/newbot
+  name:     Mashov Feedback
+  username: <something>_feedback_bot
+```
+
+BotFather replies with the token. That value is `FEEDBACK_TELEGRAM_BOT_TOKEN`.
+Do not reuse the parent-facing bot's token, and do not put this one anywhere
+the parent-facing bot's token lives.
+
+Nothing ever replies to this bot, so there is nothing else to configure on it:
+no commands, no privacy setting, no webhook. The `getUpdates` long poll that
+handles a parent linking their account stays on the original bot.
+
+### 2. Create the private channel
+
+Telegram → **New Channel** → name it (e.g. `Mashov feedback`) → **Private**.
+Do not set a public link.
+
+### 3. Add the bot as an administrator — do not skip this
+
+Channel → **Administrators** → **Add Admin** → search the bot's `@username` →
+add it with **Post Messages** granted. The rest of the admin rights can be off.
+
+This is the step whose omission used to cost reports. A private channel refuses
+a non-admin bot with `bot is not a member of the channel chat` or `need
+administrator rights in the channel chat`, and neither phrase classifies as a
+permanent Telegram failure — so before
+[ADR-0045 §12](../adr/0045-operator-feedback-delivery-and-admin-access.md) the
+outbox read it as transient, spent all three attempts in six minutes and
+**retired every report already waiting, permanently**. The rows survived in the
+table and on `/admin/feedback`; nobody was ever pinged.
+
+Now such a refusal **parks** the row instead: the error is recorded, no attempt
+is charged, and the row stays pending — so getting this step wrong, or doing it
+late, costs nothing. Delivery resumes by itself on the first tick after the bot
+becomes an admin. The ordering here is still the one to follow, because it means
+you never see the parked state at all.
+
+### 4. Read the channel's chat id
+
+Post any message in the channel, then forward that message to **@userinfobot**
+(or **@JsonDumpBot**) — it reports the origin chat's id. A channel id looks like
+`-1001234567890`: the leading `-100` is part of the value, so keep it.
+
+Alternatively, with the token in hand:
+
+```bash
+curl -s "https://api.telegram.org/bot<FEEDBACK_TOKEN>/getUpdates" \
+  | jq '.result[].channel_post.chat | {id, title}'
+```
+
+That only works if the bot is already an admin and something has been posted
+since; the forward trick is more reliable.
+
+### 5. Set the two variables and redeploy
+
+Both go on the `backend` service in Coolify, as in
+[step 3](#3-set-the-backend-variables):
+
+```
+FEEDBACK_TELEGRAM_BOT_TOKEN=<BotFather's token>
+FEEDBACK_TELEGRAM_CHAT_ID=-1001234567890
+```
+
+Redeploy. Within ~2 minutes of the next report (the cron is `*/2`), the message
+arrives in the channel.
+
+### 6. Verify
+
+```bash
+# On the Coolify host, against the backend's database:
+#   pending rows, and why any of them is stuck
+psql "$DATABASE_URL" -c 'SELECT id, "createdAt", "notifiedAt", "notifyAttempts", "notifyError" FROM feedback ORDER BY "createdAt" DESC LIMIT 10;'
+```
+
+What the states mean:
+
+| Row state | Meaning |
+|---|---|
+| `notifiedAt` set, `notifyAttempts` 1 | delivered, first try. The happy path. |
+| `notifiedAt` null, `notifyAttempts` 0, `notifyError` set | **parked** — the destination refused. Fix the channel or the chat id; it delivers itself afterwards. |
+| `notifiedAt` null, `notifyAttempts` 1–2 | a transient failure. The next tick retries. |
+| `notifiedAt` null, `notifyAttempts` 3 | **retired.** Nothing will retry it. Re-arm below. |
+| `notifiedAt` null, `notifyAttempts` 0, `notifyError` null | nothing has tried yet — usually means the two vars are not both set. |
+
+A parked destination logs **once per run**, not once per row, so grep the
+backend log for `Feedback notification parked`.
+
+### Re-arming retired rows
+
+Rows retired before the parking rule existed (PR #49's own local testing left
+some) will never be retried. One statement, run against the backend's database:
+
+```sql
+UPDATE feedback SET "notifyAttempts" = 0, "notifyError" = NULL
+WHERE "notifiedAt" IS NULL AND "notifyAttempts" >= 3;
+```
+
+Only do this once the channel is actually working, or the rows simply park
+again — harmless, but pointless. There is deliberately no re-arm button in the
+admin UI: one operator, one statement.
+
+---
+
+## 6. Close the origin (required follow-up)
 
 The Hetzner/Coolify box answers HTTPS for `mashov.mitya.dev` on its own IP,
 bypassing Cloudflare and therefore bypassing the Access policy entirely.
@@ -217,4 +342,8 @@ evidence, and it is the test to re-run.
 | Admin calls answer **401** | something other than `CloudflareAccessGuard` refused it; a 401 makes `apiFetch` redirect to parent sign-in, so this is always a bug |
 | Backend will not boot | `ADMIN_AUTH_MODE=insecure-dev` without `ENABLE_E2E_AUTH_BYPASS=1`; the log line names both |
 | Reports arrive but carry no link | `PUBLIC_BASE_URL` unset or not an `https`/localhost origin |
-| No Telegram messages at all | `FEEDBACK_TELEGRAM_CHAT_ID` unset — by design, and silent. Check `feedback.notifyAttempts` / `notifyError` for the other case |
+| No Telegram messages at all | `FEEDBACK_TELEGRAM_BOT_TOKEN` or `FEEDBACK_TELEGRAM_CHAT_ID` unset — by design, and silent. Check `feedback.notifyAttempts` / `notifyError` for the other case |
+| `notifyError` says "bot is not a member" / "need administrator rights" | the bot is not an admin of the channel — [step 5.3](#3-add-the-bot-as-an-administrator--do-not-skip-this). The rows are parked, not lost; they deliver themselves once it is |
+| `notifyError` says "chat not found" | `FEEDBACK_TELEGRAM_CHAT_ID` wrong — most often the `-100` prefix dropped. Also parked, not retired |
+| `notifyError` says "Unauthorized" | `FEEDBACK_TELEGRAM_BOT_TOKEN` wrong or revoked. This one is transient and **does** spend attempts |
+| Reports arrive in a parent's digest chat | the feedback chat id points at a parent-linked chat, or something re-wired the notifier onto `TelegramSender`. `feedback.module.spec.ts` asserts the latter cannot resolve |

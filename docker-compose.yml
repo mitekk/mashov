@@ -161,11 +161,26 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       SESSION_LIFETIME_DAYS: ${SESSION_LIFETIME_DAYS:-30}
       SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
-      # Operator feedback delivery (ADR-0045). The chat id is the ONLY switch:
-      # unset means the notifier is off, silently, and the two-minute cron does
-      # no work and writes no line. There is deliberately no second
-      # FEEDBACK_NOTIFY_ENABLED var -- see the doc comment on
-      # FeedbackNotifierService.
+      # Operator feedback delivery (ADR-0045). These two are the address, and
+      # they are the only switch: both set means on, either one missing means
+      # off, silently, with the two-minute cron doing no work and writing no
+      # line. There is deliberately no third FEEDBACK_NOTIFY_ENABLED var -- see
+      # the doc comment on FeedbackNotifierService.
+      #
+      # FEEDBACK_TELEGRAM_BOT_TOKEN is a DIFFERENT bot from TELEGRAM_BOT_TOKEN
+      # above, on purpose. The operator of this app is also a parent user of
+      # it, so one bot would interleave every parent's bug report with that
+      # operator's own children's digests in a single conversation. A second
+      # bot also means revoking the feedback credential cannot stop a parent's
+      # digest. There is no fallback: with this unset and TELEGRAM_BOT_TOKEN
+      # set, nothing is sent rather than a report going out as the bot parents
+      # talk to.
+      #
+      # FEEDBACK_TELEGRAM_CHAT_ID is the private channel's `-100...` id. The
+      # bot must be an ADMIN of that channel with post rights; until it is,
+      # Telegram refuses every send and the rows park rather than retiring.
+      # See docs/ops/admin-access-setup.md.
+      FEEDBACK_TELEGRAM_BOT_TOKEN: ${FEEDBACK_TELEGRAM_BOT_TOKEN:-}
       FEEDBACK_TELEGRAM_CHAT_ID: ${FEEDBACK_TELEGRAM_CHAT_ID:-}
       FEEDBACK_NOTIFY_MAX_PER_RUN: ${FEEDBACK_NOTIFY_MAX_PER_RUN:-20}
       # Operator-only admin surface (ADR-0045). `verify` is the default, and
