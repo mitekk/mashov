@@ -205,6 +205,41 @@ test.describe('app header', () => {
     await expect(page.getByTestId('app-header')).toHaveAttribute('inert', '');
   });
 
+  /**
+   * The fade is pinned open while the header holds focus -- but the menu's
+   * content is portaled to `<body>`, so opening it moves focus OUT of the
+   * header and `focusout` re-applies the real progress. Unfixed, the header
+   * fades to nothing and goes inert under its own open menu: a popover left
+   * floating with no visible trigger, and an Escape that restores focus to an
+   * inert node, which silently means `<body>`.
+   *
+   * The order matters. Focus first, then scroll, then open: that is the only
+   * way to be past the fade distance with the trigger still clickable, since
+   * the pin is what keeps it out of `inert` on the way down.
+   */
+  test('stays visible while its own menu is open past the fade distance', async ({ page }) => {
+    await page.goto('/home');
+    await expect(page.getByTestId('home-header')).toBeVisible();
+    await ensureScrollable(page);
+
+    const trigger = page.getByTestId('header-profile-trigger');
+    await trigger.focus();
+    await scrollTo(page, STICKY_PX + FADE_PX + 40);
+    expect(await progress(page)).toBe(0);
+
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('header-menu-settings')).toBeVisible();
+
+    expect(await progress(page)).toBe(0);
+    expect(await opacity(page)).toBe(1);
+    await expect(page.getByTestId('app-header')).not.toHaveAttribute('inert', '');
+    await expect(trigger).toBeVisible();
+
+    // And the trigger is still a live node to come back to.
+    await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused();
+  });
+
   test('fades back in on the way up', async ({ page }) => {
     await page.goto('/home');
     await expect(page.getByTestId('home-header')).toBeVisible();

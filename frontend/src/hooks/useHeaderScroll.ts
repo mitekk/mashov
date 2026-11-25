@@ -74,6 +74,20 @@ export function useHeaderScroll<T extends HTMLElement>(): RefObject<T | null> {
     // tracks it instead.
     let attached: T | null = ref.current;
 
+    /**
+     * Frames the pin is held for after the header's own popover closes, while
+     * focus is still unplaced. Radix restores focus to the trigger AFTER it
+     * unmounts the content, and the restore loses the race either way round:
+     * collapse first and the trigger is inert by the time `focus()` reaches
+     * it, which per spec leaves focus on `<body>` silently. So the pin outlives
+     * the popover until focus lands somewhere real -- bounded, because focus
+     * may never come back (the parent closed the menu by clicking the page).
+     * Three frames is ~50ms, under a tenth of the fade and far below the 100ms
+     * a dropped focus would need to be noticed.
+     */
+    const SETTLE_FRAMES = 3;
+    let settleFrames = 0;
+
     const apply = (progress: number): void => {
       const element = ref.current ?? attached;
       attached = element;
@@ -82,11 +96,37 @@ export function useHeaderScroll<T extends HTMLElement>(): RefObject<T | null> {
       // contains the focused node resets focus to `<body>` -- silently, per
       // spec -- so a keyboard user who tabs into the header and then scrolls
       // would lose their place with nothing to explain it.
-      const holdsFocus =
+      const focusInside =
         element !== null &&
         document.activeElement !== null &&
         document.activeElement !== document.body &&
         element.contains(document.activeElement);
+
+      // An open popover counts as focus being inside even though it is not.
+      // Radix portals the profile menu's content to `<body>`, so the moment it
+      // opens, focus leaves the header subtree and `focusout` re-applies the
+      // real progress: past the fade the header would go transparent and inert
+      // underneath its own open menu, leaving an orphaned popover whose
+      // trigger has vanished. The trigger itself stays in the header and Radix
+      // marks it `data-state="open"`, so the header can see its own popover
+      // without having to know where the content was mounted.
+      const popoverOpen =
+        element !== null && element.querySelector('[data-state="open"]') !== null;
+
+      if (popoverOpen) settleFrames = SETTLE_FRAMES;
+
+      // Focus in flight: the popover has gone and nothing holds focus yet.
+      const settling = !focusInside && !popoverOpen && settleFrames > 0;
+      if (settling) {
+        settleFrames -= 1;
+        // Re-check next frame rather than waiting for an event -- the restore
+        // produces `focusin`, but giving up has no event at all.
+        if (!frame) frame = window.requestAnimationFrame(update);
+      } else if (!popoverOpen) {
+        settleFrames = 0;
+      }
+
+      const holdsFocus = focusInside || popoverOpen || settling;
 
       const next = holdsFocus ? 0 : progress;
       root.style.setProperty(PROGRESS_PROPERTY, String(next));

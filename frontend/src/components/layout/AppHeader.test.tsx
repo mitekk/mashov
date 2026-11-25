@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppUser } from '@/types/api';
 
 const useMe = vi.fn();
@@ -41,6 +41,23 @@ function me(overrides: Partial<AppUser> = {}): AppUser {
 function profileTrigger(): HTMLElement {
   return screen.getByTestId('header-profile-trigger');
 }
+
+/** Radix opens the menu on keydown, which jsdom (no PointerEvent) can send. */
+function openMenu(): void {
+  fireEvent.keyDown(profileTrigger(), { key: 'Enter' });
+}
+
+beforeAll(() => {
+  // Radix's Popper measures its content once the menu actually opens. jsdom
+  // has neither observer.
+  class Observer {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver ??= Observer as unknown as typeof ResizeObserver;
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 beforeEach(() => {
   useMe.mockReset();
@@ -173,6 +190,31 @@ describe('AppHeader', () => {
     expect(screen.queryByTestId('refresh-button')).toBeNull();
     expect(screen.queryByTestId('feedback-launcher-button')).toBeNull();
     expect(screen.getAllByTestId('header-profile-trigger')).toHaveLength(1);
+  });
+
+  /**
+   * The gate is `canSendFeedback={Boolean(me)}`, and it is this component's
+   * expression to get right -- `AppHeaderMenu` only honours whatever prop it
+   * is handed. A report filed before `me` resolves has no household to attach
+   * itself to, so the item is withheld rather than shown and then failing.
+   * Theme and sync need no household and stay available throughout.
+   */
+  it('withholds feedback until the household is known', () => {
+    useMe.mockReturnValue({ data: undefined });
+    render(<AppHeader />);
+    openMenu();
+
+    expect(screen.queryByTestId('header-menu-feedback')).toBeNull();
+    expect(screen.getByTestId('header-menu-theme')).toBeTruthy();
+    expect(screen.getByTestId('header-menu-refresh')).toBeTruthy();
+  });
+
+  it('offers feedback once the household is known', () => {
+    useMe.mockReturnValue({ data: me() });
+    render(<AppHeader />);
+    openMenu();
+
+    expect(screen.getByTestId('header-menu-feedback')).toBeTruthy();
   });
 
   /**

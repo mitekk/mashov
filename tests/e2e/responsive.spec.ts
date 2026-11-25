@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import {
   documentScrollsHorizontally,
   findHorizontalOverflow,
@@ -142,6 +142,22 @@ test.describe('tap targets at every width', () => {
 });
 
 test.describe('app header', () => {
+  /**
+   * The trigger renders before `me` resolves -- deliberately, so the row never
+   * shifts -- and until then its label is the `פרופיל` placeholder and the
+   * feedback item is withheld. Any test that needs the gated item has to wait
+   * for the household, and the name span itself cannot be the signal: it is
+   * `hidden lg:block`, so it is invisible at two of the three widths this file
+   * runs at. The accessible name is there at every width.
+   */
+  async function waitForHousehold(page: Page): Promise<void> {
+    await expect(page.getByTestId('app-header')).toBeVisible();
+    await expect(page.getByTestId('header-profile-trigger')).not.toHaveAttribute(
+      'aria-label',
+      'פרופיל — תפריט',
+    );
+  }
+
   test('keeps the profile trigger a 44x44 tap target', async ({ page }) => {
     // The avatar circle is 32px; `.tap-target` on the button is what gets the
     // hit area to the WCAG floor, at every width.
@@ -193,7 +209,10 @@ test.describe('app header', () => {
     // writing direction, and Escape restoring focus to the trigger is the only
     // thing that stops a keyboard user being dumped at the top of the document.
     await page.goto('/home');
-    await expect(page.getByTestId('app-header')).toBeVisible();
+    // The item ArrowDown lands on is the gated one, so the household has to be
+    // there before the menu is opened -- otherwise the next item is theme and
+    // the assertion below is testing the wrong layout.
+    await waitForHousehold(page);
 
     const trigger = page.getByTestId('header-profile-trigger');
     await trigger.focus();
@@ -204,8 +223,12 @@ test.describe('app header', () => {
     // item that is there however early the menu is opened.
     await expect(page.getByTestId('header-menu-settings')).toBeFocused();
 
+    // Named, not merely "no longer on הגדרות": ArrowDown moving focus to
+    // `<body>` -- which is what a broken `dir` or a non-focusable item gets
+    // you -- satisfies a negative assertion just as well as working arrow keys
+    // do, so the negative form covered nothing.
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByTestId('header-menu-settings')).not.toBeFocused();
+    await expect(page.getByTestId('header-menu-feedback')).toBeFocused();
 
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('header-menu-settings')).toBeHidden();
@@ -214,9 +237,7 @@ test.describe('app header', () => {
 
   test('offers settings, feedback and sync from the profile menu', async ({ page }) => {
     await page.goto('/home');
-    // The trigger renders before `me` does, and the feedback item is gated on
-    // `me` -- so wait for the name, not just the shell, before opening.
-    await expect(page.getByTestId('app-header')).toBeVisible();
+    await waitForHousehold(page);
 
     await page.getByTestId('header-profile-trigger').click();
 

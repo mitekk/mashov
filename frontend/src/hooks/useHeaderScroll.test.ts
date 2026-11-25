@@ -13,6 +13,17 @@ function progress(): string {
   return document.documentElement.style.getPropertyValue('--app-header-p');
 }
 
+/**
+ * Let the pin's post-popover settle window expire. The hook re-checks on its
+ * own rAF while focus is in flight, so the frames have to be run out before a
+ * collapse can be asserted.
+ */
+function flushFrames(): void {
+  act(() => {
+    vi.advanceTimersByTime(100);
+  });
+}
+
 function scrollTo(y: number): void {
   Object.defineProperty(window, 'scrollY', { value: y, configurable: true, writable: true });
   act(() => {
@@ -213,6 +224,103 @@ describe('useHeaderScroll', () => {
     scrollTo(400);
 
     expect(progress()).toBe('1');
+
+    header.remove();
+  });
+
+  /**
+   * The profile menu's content is portaled to `<body>`, so while it is open
+   * the focused node is NOT inside the header and `focusout` has already
+   * re-applied the real progress. Without the popover clause the header fades
+   * out and goes inert under its own open menu: the popover is left floating
+   * with no visible trigger, and Escape restores focus to an inert node, which
+   * means `<body>`.
+   */
+  it('stays open while its own portaled menu is open', () => {
+    const header = document.createElement('header');
+    const trigger = document.createElement('button');
+    trigger.dataset.state = 'open';
+    header.appendChild(trigger);
+    document.body.appendChild(header);
+
+    // Where Radix actually puts the content: a sibling of the header, not a
+    // descendant of it.
+    const content = document.createElement('div');
+    const item = document.createElement('button');
+    content.appendChild(item);
+    document.body.appendChild(content);
+
+    const { result } = renderHook(() => useHeaderScroll<HTMLElement>());
+    result.current.current = header;
+
+    act(() => {
+      item.focus();
+    });
+    scrollTo(400);
+
+    expect(header.contains(document.activeElement)).toBe(false);
+    expect(progress()).toBe('0');
+    expect(header.inert).toBe(false);
+
+    header.remove();
+    content.remove();
+  });
+
+  it('resumes fading once that menu closes', () => {
+    const header = document.createElement('header');
+    const trigger = document.createElement('button');
+    trigger.dataset.state = 'open';
+    header.appendChild(trigger);
+    document.body.appendChild(header);
+
+    const { result } = renderHook(() => useHeaderScroll<HTMLElement>());
+    result.current.current = header;
+
+    scrollTo(400);
+    expect(progress()).toBe('0');
+
+    trigger.dataset.state = 'closed';
+    scrollTo(400);
+    // Not immediately: the pin outlives the popover by a few frames so Radix's
+    // focus restore has a live trigger to land on.
+    expect(progress()).toBe('0');
+
+    flushFrames();
+
+    expect(progress()).toBe('1');
+
+    header.remove();
+  });
+
+  /**
+   * The point of the settle window: Radix unmounts the content first and only
+   * then calls `focus()` on the trigger, so there is a gap where nothing holds
+   * focus. Collapse during the gap and the restore lands on an inert node,
+   * which the spec resolves by putting focus on `<body>` and saying nothing.
+   */
+  it('keeps the trigger focusable for the restore that follows a close', () => {
+    const header = document.createElement('header');
+    const trigger = document.createElement('button');
+    trigger.dataset.state = 'open';
+    header.appendChild(trigger);
+    document.body.appendChild(header);
+
+    const { result } = renderHook(() => useHeaderScroll<HTMLElement>());
+    result.current.current = header;
+
+    scrollTo(400);
+    expect(progress()).toBe('0');
+
+    // Close, then restore a frame later, as Radix does.
+    trigger.dataset.state = 'closed';
+    scrollTo(400);
+    act(() => {
+      trigger.focus();
+    });
+    flushFrames();
+
+    expect(document.activeElement).toBe(trigger);
+    expect(progress()).toBe('0');
 
     header.remove();
   });
