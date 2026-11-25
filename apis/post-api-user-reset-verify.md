@@ -43,8 +43,11 @@ one-segment path, not an empty trailing segment.
 > `/students/reset` page, and a parent on the two-code form is on that page.
 > Worth confirming if this route is ever captured.
 
-No cookie is sent, for the same reason as the single-channel route: the codes
-are the whole authorisation.
+The `NonceRef` cookie minted by step 1 is sent, as on the single-channel route
+— see [`post-api-user-reset-token.md`](post-api-user-reset-token.md) for the
+capture and for what Mashov answers without it. Not itself captured on this
+route: it is inferred from the single-channel one, which is step 2 of the same
+flow against the same origin. No `uniquId` on either.
 
 ### Body
 ```json

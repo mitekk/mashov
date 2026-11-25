@@ -42,9 +42,33 @@ on the class; it now defaults to that and takes a per-route override, and both
 step-2 reset routes pass `/students/reset`. The login, MFA, trusted-device and
 authenticated-change routes still send `/students/login`.
 
-No cookie header was sent. This route is genuinely unauthenticated — the
-single-use code is the whole authorisation — so the CSRF token is the only
-header that has to be sourced from a prior request.
+### The `NonceRef` cookie is required — this was the bug
+
+An earlier reading of this capture recorded "no cookie header was sent" and
+concluded the route was unauthenticated. **That was wrong, and it is what made a
+real code answer `INVALID_RECOVERY_CODE` in production.**
+
+Re-captured 2026-11-25 in a clean Chrome incognito session:
+
+- `POST /api/user/recover` (step 1) answers
+  `Set-Cookie: NonceRef=<uuid>; expires=<+10 min>; domain=web.mashov.info; path=/; secure; samesite=none; httponly`
+- `POST /api/user/reset/{code}` (step 2) sends `Cookie: NonceRef=<that uuid>`
+  and nothing else.
+
+Without it Mashov answers **`400 application/problem+json`** with no `Reason`
+header — an ASP.NET request-validation refusal, raised *before* the code is
+examined. The body carries only `type`/`title`/`status`/`traceId`; it does not
+name the missing field.
+
+Proven by replay on 2026-11-25: the three headers this client already sent,
+plus `-b 'NonceRef=…'`, returned an empty `200` and changed the password. The
+same code had been refused four times through our app minutes earlier, and was
+still unspent — which is how we know the refusals never reached Mashov's reset
+logic at all.
+
+Still **no `uniquId`** on this route: it is never set and never sent, so the
+session-cookie gap documented on `headers()` genuinely does not apply. The nonce
+is a per-recovery token, not a session.
 
 ### Body
 ```json

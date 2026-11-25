@@ -46,20 +46,41 @@ export function readResponseHeader(
   return undefined;
 }
 
-/** The `uniquId` Mashov set, if it set one. */
-export function readUniqueIdCookie(
+/**
+ * One named cookie out of a `Set-Cookie` response header.
+ *
+ * Only the `name=value` pair is returned: `expires`, `domain`, `path`, `secure`
+ * and the rest are instructions to a browser about when to send the cookie, and
+ * a client that echoes them back sends a header no server asked for.
+ *
+ * Node's axios gives `set-cookie` as an array even for one cookie; other
+ * adapters give a bare string. Both are accepted because reading only the array
+ * shape fails silently -- as `undefined`, which here means "no session".
+ */
+export function readCookie(
   setCookie: string | string[] | undefined,
+  name: string,
 ): string | undefined {
   if (!setCookie) return undefined;
   const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
   for (const cookie of cookies) {
     const nameValue = cookie.split(';')[0] ?? '';
     const eqIdx = nameValue.indexOf('=');
-    if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === 'uniquId') {
+    if (eqIdx !== -1 && nameValue.substring(0, eqIdx).trim() === name) {
+      // An empty value is returned as empty, not as "no cookie": the server
+      // setting `NonceRef=` is clearing it, which is a different fact from
+      // never having set one, and the caller decides what to do about it.
       return nameValue.substring(eqIdx + 1).trim();
     }
   }
   return undefined;
+}
+
+/** The `uniquId` Mashov set, if it set one. */
+export function readUniqueIdCookie(
+  setCookie: string | string[] | undefined,
+): string | undefined {
+  return readCookie(setCookie, 'uniquId');
 }
 
 /** All three, from one response's headers. */

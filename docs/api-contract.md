@@ -1100,10 +1100,22 @@ records — see [`apis/post-api-user-reset-token.md`](../apis/post-api-user-rese
 Mashov has not been observed to reject a mismatched `Referer` on these routes,
 so this is not by itself a cause of a refusal.
 
-Both reset routes are also deliberately **cookie-less**: the capture shows no
-`Cookie` header, because the route is unauthenticated and the single-use code is
-the whole authorisation. The `uniquId` gap documented on `headers()` is a
-separate, still-open problem and does not apply to them.
+Both reset routes send the **`NonceRef` cookie Mashov mints at step 1**. This
+paragraph previously claimed they were deliberately cookie-less, on the strength
+of a capture that recorded no `Cookie` header; that was wrong, and it is the
+reason a genuine code answered `INVALID_RECOVERY_CODE` in production. Without
+the nonce Mashov answers `400 application/problem+json` with no `Reason` —
+request validation, before the code is read — which our classifier rendered as a
+bad code. See [`apis/post-api-user-reset-token.md`](../apis/post-api-user-reset-token.md)
+for the 2026-11-25 incognito capture and the replay that proves it.
+
+The nonce lives **ten minutes and is not refreshed**, which makes it a shorter
+deadline than our own 15-minute recovery handle. It is carried in the encrypted
+Redis state and never logged by value; the step-2 log lines carry
+`nonce=present|ABSENT` instead.
+
+`uniquId` is a different cookie — a login session — and is neither set nor sent
+on these routes. That gap, documented on `headers()`, remains separate and open.
 
 ### Telegram link — POST /api/v1/digest/telegram-links
 

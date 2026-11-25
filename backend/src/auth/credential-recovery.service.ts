@@ -186,6 +186,26 @@ interface RecoveryState {
   isResettingAndVerifying: boolean;
   attempts: number;
   poisoned: boolean;
+  /**
+   * The `NonceRef` cookie Mashov minted at step 1.
+   *
+   * Step 2 is refused without it -- `400 application/problem+json`, no
+   * `Reason`, before the code is looked at -- so this is the one piece of
+   * step-1 output that step 2 cannot do without. It exists only on that one
+   * response's `Set-Cookie`, which is why it is carried here rather than
+   * re-fetched.
+   *
+   * `null`, never absent, when there is none: a poisoned handle never made
+   * the call that mints one, and `JSON.stringify` drops an `undefined` field
+   * entirely -- which would make a poisoned state a different SHAPE from a
+   * real one at rest, the exact distinction this flow refuses to expose. A
+   * handle written by an older deploy has no field at all; that reads back as
+   * `undefined` and is handled where it is used.
+   *
+   * A session secret: it goes into the encrypted state like the `idNumber`,
+   * and never into a log line.
+   */
+  nonceRef: string | null;
 }
 
 @Injectable()
@@ -229,6 +249,7 @@ export class CredentialRecoveryService {
 
     let isResettingAndVerifying = false;
     let poisoned = false;
+    let nonceRef: string | null = null;
 
     try {
       const result = await this.upstream.requestRecovery({
@@ -240,7 +261,8 @@ export class CredentialRecoveryService {
           ? { cellphone: input.destination }
           : { email: input.destination }),
       });
-      isResettingAndVerifying = result.isResettingAndVerifying === true;
+      isResettingAndVerifying = result.body.isResettingAndVerifying === true;
+      nonceRef = result.nonceRef ?? null;
 
       // Logged on SUCCESS, which is the counter-intuitive half and the reason
       // this flow had no diagnosis.
@@ -259,10 +281,11 @@ export class CredentialRecoveryService {
       this.logger.log(
         `Mashov recovery accepted: semel=${input.semel} channel=${input.channel} ` +
           `isResettingAndVerifying=${
-            result.isResettingAndVerifying === undefined
+            result.body.isResettingAndVerifying === undefined
               ? 'absent'
-              : String(result.isResettingAndVerifying)
-          } responseKeys=[${Object.keys(result ?? {}).sort().join(',')}]`,
+              : String(result.body.isResettingAndVerifying)
+          } responseKeys=[${Object.keys(result.body).sort().join(',')}] ` +
+          `nonce=${result.nonceRef ? 'present' : 'ABSENT'}`,
       );
     } catch (err) {
       if (isUpstreamUnreachable(err)) {
@@ -353,6 +376,7 @@ export class CredentialRecoveryService {
       isResettingAndVerifying,
       attempts: 0,
       poisoned,
+      nonceRef,
     };
     await this.writeState(recoveryId, state);
 
@@ -458,6 +482,11 @@ export class CredentialRecoveryService {
       throw invalidRecoveryCode();
     }
 
+    // Presence only, never the value: a session secret with the same standing
+    // as the code itself. `ABSENT` is the fingerprint of the defect that made
+    // a real code read as invalid, so it is spelled loudly.
+    const nonce = state.nonceRef ? 'present' : 'ABSENT';
+
     let upstreamUsername: string | undefined;
     try {
       const result = state.isResettingAndVerifying
@@ -465,11 +494,16 @@ export class CredentialRecoveryService {
             input.code,
             input.secondCode,
             input.newPassword,
+            state.nonceRef ?? undefined,
           )
-        : await this.upstream.resetPassword(input.code, input.newPassword);
+        : await this.upstream.resetPassword(
+            input.code,
+            input.newPassword,
+            state.nonceRef ?? undefined,
+          );
       upstreamUsername = result.username;
     } catch (err) {
-      throw this.classifyResetFailure(err, state.semel, path, attempt);
+      throw this.classifyResetFailure(err, state.semel, path, attempt, nonce);
     }
 
     // Reaching here IS the success signal, and deliberately not a field read.
@@ -500,7 +534,7 @@ export class CredentialRecoveryService {
     // rather than about us, and it is how we learn whether the capture's empty
     // body is universal or specific to that account.
     this.logger.log(
-      `Mashov reset accepted: semel=${state.semel} ` +
+      `Mashov reset accepted: semel=${state.semel} nonce=${nonce} ` +
         `twoChannel=${state.isResettingAndVerifying} path=${path} ` +
         `attempt=${attempt} upstreamUsername=${
           upstreamUsername === undefined ? 'absent' : 'present'
@@ -577,11 +611,12 @@ export class CredentialRecoveryService {
     semel: number,
     path: string,
     attempt: number,
+    nonce: string,
   ): HttpException {
     if (isUpstreamUnreachable(err)) {
       this.logger.error(
         `Mashov reset unreachable for semel=${semel} path=${path} ` +
-          `attempt=${attempt} ${describeLocalFailure(err)}`,
+          `nonce=${nonce} attempt=${attempt} ${describeLocalFailure(err)}`,
       );
       return upstreamError();
     }
@@ -602,7 +637,7 @@ export class CredentialRecoveryService {
         stage: 'reset',
         semel,
         path,
-      })} attempt=${attempt}/${MAX_CODE_ATTEMPTS}`,
+      })} nonce=${nonce} attempt=${attempt}/${MAX_CODE_ATTEMPTS}`,
     );
 
     return outcome.exception;
