@@ -9,7 +9,9 @@
   here), [ADR-0023](0023-bounding-mashov-egress-abortsignal.md) (why this module imports nothing that
   builds a Mashov client), [ADR-0026](0026-outbound-digest-delivery-and-llm-egress.md) (`DigestSender`)
 - **Amended**: 2026-11-25 — sections 2 and 3 superseded in part by sections 11 and 12 below
-  (a separate bot, and a destination failure parking the row instead of charging it).
+  (a separate bot, and a destination failure parking the row instead of charging it);
+  section 5's two-application split superseded by section 13 (one application, two
+  destinations).
 - **Implemented by**: `src/feedback/feedback-notifier.service.ts`,
   `src/feedback/feedback-telegram.sender.ts`, `src/digest/senders/telegram.sender.ts`
   (`tokenVar()`/`hasToken()`),
@@ -117,7 +119,9 @@ failure this feature could have.
 ### 5. In-process JWT verification is the real boundary — not defense in depth
 
 Two Cloudflare Access applications (`/admin` and `/api/v1/admin`) share one reusable
-email-allowlist policy. **And the backend verifies the forwarded
+email-allowlist policy. *(Superseded — see section 13: the split was unworkable for a
+single-page app and is now **one** application carrying both destinations, with the same
+reusable policy and the same AUD.)* **And the backend verifies the forwarded
 `Cf-Access-Jwt-Assertion` itself**, with `jose`: remote JWKS at
 `${ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`, `RS256` pinned explicitly, audience and issuer
 checked, identity taken only from verified claims.
@@ -320,6 +324,49 @@ WHERE "notifiedAt" IS NULL AND "notifyAttempts" >= 3;
 
 An admin-UI re-arm button was considered and declined: one operator, one statement, and a
 button needs a route, a guard, a mutation and a test for a thing that has happened once.
+
+### 13. One Access application, two destinations — amending section 5
+
+**Added 2026-11-25, after the split shipped and broke the screen.** Section 5 put `/admin`
+and `/api/v1/admin` behind two Access applications sharing one reusable policy, on the
+premise — written into `docs/ops/admin-access-setup.md` — that logging in at the page sets a
+host-wide `CF_Authorization` cookie which then satisfies the API application. **That premise
+is wrong.**
+
+The cookie is host-scoped, but Access issues an application token *per application* and its
+`aud` claim is that one application's AUD tag. There is one `CF_Authorization` cookie name
+per host, so it can hold a session for one application at a time. Signing in at `/admin`
+left a token with the UI application's AUD; the page's own `fetch` to
+`/api/v1/admin/feedback` was evaluated against the API application, found no session, and
+got a `302` to `…cloudflareaccess.com/cdn-cgi/access/login/…` (its `meta` JWT carrying
+`"auth_status":"NONE"`). That hop is cross-origin and the Access login page sends no
+`Access-Control-Allow-Origin`, so the browser reported only **"CORS error"** — a symptom
+three layers away from its cause.
+
+Enabling the Cookie Path Attribute makes it strictly worse: the cookie would be scoped to
+`/admin` and not sent to `/api/v1/admin` at all. And an XHR can never complete an
+interactive login. So **two applications on one hostname cannot both be live for a
+single-page app** — one application is the only configuration that works. A self-hosted
+application takes several destinations on one hostname, which section 5's "the page and its
+API are separate paths" wrongly assumed it could not.
+
+The surviving application is the **API** one (`677a032c-…`), widened to both destinations
+and renamed `mashov-admin`; the UI application (`cf5fa159-…`) is deleted. Keeping the API one
+preserves AUD `efd01ef8…`, which is the value already in production's `ACCESS_AUD` — so the
+fix needed no backend change, no env change and no redeploy. The reusable policy
+`6a544aef-…` carries over unchanged.
+
+Two consequences worth keeping:
+
+- A 24h session still expires, and the next admin XHR would hit the same unreadable CORS
+  error. `frontend/src/api/client.ts` therefore grows an opt-in `reauthenticateOnRedirect`
+  (used only by `api/adminFeedback.ts`): `redirect: 'manual'` turns the Access 302 into a
+  readable `opaqueredirect`, and the client then does a full-page navigation so Access can
+  run its login as a *document* request. It deliberately does **not** reuse
+  `handle401Redirect()` — that routes to the parent sign-in, for the reason in section 6.
+- The admin e2e spec runs under `insecure-dev` and exercises no Access at all, so nothing in
+  the suite can catch a regression here. The check is the `kid=` comparison in
+  `admin-access-setup.md` step 4: both admin paths must report the *same* tag.
 
 ## Consequences
 

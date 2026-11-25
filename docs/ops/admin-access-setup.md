@@ -26,63 +26,78 @@ reachable** — see [step 6](#6-close-the-origin-required-follow-up).
 
 ---
 
-## 1. The two Access applications
+## 1. The Access application
 
-**These already exist** — created 2026-11-24 on account
-`7cd3858e35280ca7938d9fc91fb03b15`. This section records what they are, so the
-set-up can be audited, repaired or rebuilt.
+**It already exists** — created 2026-11-24 on account
+`7cd3858e35280ca7938d9fc91fb03b15`, and widened on 2026-11-25 to cover both
+paths. This section records what it is, so the set-up can be audited, repaired
+or rebuilt.
 
-| Application name | Domain (incl. path) | Application ID | App launcher |
+| Application name | Destinations (incl. path) | Application ID | App launcher |
 |---|---|---|---|
-| `mashov-admin-ui` | `mashov.mitya.dev/admin` | `cf5fa159-6009-43a1-b9dc-4b26f80a4ac0` | visible |
-| `mashov-admin-api` | `mashov.mitya.dev/api/v1/admin` | `677a032c-f48e-4e8a-ba8d-0f483e0c555e` | hidden |
+| `mashov-admin` | `mashov.mitya.dev/admin` + `mashov.mitya.dev/api/v1/admin` | `677a032c-f48e-4e8a-ba8d-0f483e0c555e` | visible |
 
-Both are `self_hosted`, session duration `24h`, `auto_redirect_to_identity`
-on, restricted to the **one-time PIN** identity provider
+It is `self_hosted`, session duration `24h`, `auto_redirect_to_identity` on,
+restricted to the **one-time PIN** identity provider
 (`055f09a1-dec3-40be-9d10-41c892c3fe48`) — matching the `campaign admin` app
 already on this account.
 
-Both reference **one reusable policy** rather than two copies of the same rule:
+It references **one reusable policy** rather than an inlined rule:
 
 | Policy name | Policy ID | Decision | Include |
 |---|---|---|---|
 | `mashov-admin-operators` | `6a544aef-5f1a-43b8-90b3-2525d5bac011` | `allow` | Emails: the operator address |
 
-Two applications and one policy, deliberately. The page and its API are
-separate paths, so one application cannot cover both; a reusable policy means
-the allowlist is edited in one place and cannot drift between them. The policy
-is named for what it guards, not `allow` — this account holds other policies
-and a bare `allow` would be unreadable in the list.
+**One application with two destinations, deliberately — and it is the only
+shape that works.** A single self-hosted application takes several
+destinations on one hostname (`campaign admin` on this same account lists two,
+`me.mitya.dev/admin` and `me.mitya.dev/admin/*`). Splitting the page and its
+API across two applications does not work for a single-page app: there is one
+`CF_Authorization` cookie per host, it holds a token issued *per application*,
+and that token's `aud` claim is one application's AUD tag — so the second
+application never has a session and answers the page's own XHR with a login
+redirect. See [step 4](#4-smoke-test). The reusable policy means the allowlist
+is edited in one place. The policy is named for what it guards, not `allow` —
+this account holds other policies and a bare `allow` would be unreadable in
+the list.
 
 **To add or remove an operator**, edit that one policy: Zero Trust → Access →
-Policies → `mashov-admin-operators` → Include → Emails. Both applications pick
-the change up; nothing needs redeploying, because the allowlist lives in
+Policies → `mashov-admin-operators` → Include → Emails. The change applies
+immediately; nothing needs redeploying, because the allowlist lives in
 Cloudflare and not in the app (ADR-0045: no roles model, no `AppUser.role`).
 
-To rebuild from scratch, create two `self_hosted` applications with the domains
-above and attach one reusable `allow` policy to each via
+To rebuild from scratch, create **one** `self_hosted` application carrying both
+destinations above and attach one reusable `allow` policy via
 `POST /accounts/{account_id}/access/policies` then
 `POST /accounts/{account_id}/access/apps` with
 `policies: [{ id, precedence: 1 }]`. Do **not** inline an app-scoped policy —
 those report `reusable: false` and are the legacy shape.
 
-## 2. The AUD tags and the JWKS
+Two things to know before editing the application later: the apps endpoint has
+**no `PATCH`**, only `PUT`, so an edit resends the whole definition — and a
+body that omits `policies` detaches the allowlist and leaves the application
+default-deny. A destination owned by another application is refused with
+`409 destination belongs to another application`, so the old owner has to give
+it up first.
 
-Each application has its **own** Application Audience (AUD) tag:
+## 2. The AUD tag and the JWKS
+
+The application has its own Application Audience (AUD) tag:
 
 | Application | AUD tag |
 |---|---|
-| `mashov-admin-ui` | `33247b2323bcfa4091a0797da7a81a10a5e77f85395481ab3875112d844892b2` |
-| **`mashov-admin-api`** | **`efd01ef8d189ecdaccfe6ac9dca2bd7bfb160e88096655a561b2e06656258f6c`** |
+| **`mashov-admin`** | **`efd01ef8d189ecdaccfe6ac9dca2bd7bfb160e88096655a561b2e06656258f6c`** |
 
-**`ACCESS_AUD` takes the API one.** That is the audience of the token the
-backend actually receives, and taking the UI one instead is the single easiest
-mistake to make here: the page loads perfectly and every list request 403s,
-with nothing in the Cloudflare logs to explain it.
+**`ACCESS_AUD` takes that value.** It is the audience of the token the backend
+actually receives. The tag is minted per application, so *recreating* the
+application instead of editing it mints a new one and `ACCESS_AUD` has to be
+updated to match — getting that wrong is the single easiest mistake to make
+here: the page loads perfectly and every list request 403s, with nothing in
+the Cloudflare logs to explain it.
 
-Neither tag is a secret — Access publishes the matching one as `kid=` in its
-own unauthenticated login redirect (see step 4), which is also how to check
-which application is covering a path.
+The tag is not a secret — Access publishes it as `kid=` in its own
+unauthenticated login redirect (see step 4), which is also how to check which
+application is covering a path.
 
 The team domain is **`https://young-poetry-2f7a.cloudflareaccess.com`**
 (Zero Trust → Settings shows the team name).
@@ -149,29 +164,37 @@ for p in /admin/feedback /api/v1/admin/feedback; do
 done
 ```
 
-Expected (verified 2026-11-24 — both answered `HTTP/2 302`):
+Expected (verified 2026-11-25 — both answered `HTTP/2 302`):
 
 ```
-/admin/feedback          -> kid=33247b23...  (mashov-admin-ui)
-/api/v1/admin/feedback   -> kid=efd01ef8...  (mashov-admin-api)
+/admin/feedback          -> kid=efd01ef8...  (mashov-admin)
+/api/v1/admin/feedback   -> kid=efd01ef8...  (mashov-admin)
 ```
+
+The two `kid`s must be **identical**, and must be the AUD in `ACCESS_AUD`.
+Different tags on the two paths means two applications are covering them
+again — the configuration that broke this screen: the operator logs in at
+`/admin`, the host's single `CF_Authorization` cookie then holds a token
+`aud`-scoped to *that* application, and the other application sees no session
+for `/api/v1/admin` and answers the page's `fetch` with a 302 to its login
+host. Cross-origin, no CORS headers, so the browser reports only "CORS error".
+Enabling the Cookie Path Attribute does not rescue that — it scopes the cookie
+to `/admin` so it is not sent to `/api/v1/admin` at all.
 
 A `200` from either path means Access is **not** covering it. Check a
 parent-facing route is untouched too: `/api/health` must still answer `200`.
 
 Then, in a browser:
 
-1. Open `https://mashov.mitya.dev/admin/feedback` in a private window — **the
-   page, not the API.** Order matters: authenticating against the UI
-   application sets the `CF_Authorization` cookie for the whole host, which
-   then satisfies the API application. Hitting an API URL first gets a 302 to
-   a login page an XHR cannot follow, which looks like a broken screen.
+1. Open `https://mashov.mitya.dev/admin/feedback` in a private window. One
+   login covers the page *and* its API, because both are destinations of the
+   same application — there is no order to get right.
 2. Cloudflare Access should present its login — a one-time PIN mailed to the
    address, since that is the only identity provider these applications
    accept. Sign in with an allowlisted address.
 3. The triage list should render with data. **If the page renders but every
    list request 403s**, the JWT is reaching the backend and failing
-   verification — re-check `ACCESS_AUD` against the *API* application's tag.
+   verification — re-check `ACCESS_AUD` against the application's tag.
 4. Confirm the three filters, that opening a row clears its "New" chip, and
    that "Mark as answered" empties the awaiting-response lens.
 
@@ -363,6 +386,7 @@ evidence, and it is the test to re-run.
 |---|---|
 | Browser lands on the **parent** sign-in page | `/admin` missing from `PUBLIC_PATHS` in `frontend/src/middleware.ts` |
 | Every admin call 403s, page shell loads | `ACCESS_AUD` / `ACCESS_TEAM_DOMAIN` wrong, unset, or the JWKS is unreachable |
+| Admin call dies with a **CORS error** mentioning `cloudflareaccess.com` | Access answered the XHR with a login redirect: either the Access session expired (the page reloads itself into the login — see `reauthenticateOnRedirect` in `frontend/src/api/client.ts`), or a *second* Access application has been added over one of the two admin paths. Compare the `kid=`s in [step 4](#4-smoke-test) |
 | Admin calls answer **401** | something other than `CloudflareAccessGuard` refused it; a 401 makes `apiFetch` redirect to parent sign-in, so this is always a bug |
 | Backend will not boot | `ADMIN_AUTH_MODE=insecure-dev` without `ENABLE_E2E_AUTH_BYPASS=1`; the log line names both |
 | Reports arrive but carry no link | `PUBLIC_BASE_URL` unset or not an `https`/localhost origin |
