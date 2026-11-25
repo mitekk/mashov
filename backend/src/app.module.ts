@@ -22,6 +22,8 @@ import { MailModule } from "./mail/mail.module";
 import { SettingsModule } from "./settings/settings.module";
 import { HealthModule } from "./health/health.module";
 import { FeedbackModule } from "./feedback/feedback.module";
+import { AdminAuthModule } from "./admin-auth/admin-auth.module";
+import { AdminFeedbackModule } from "./admin-feedback/admin-feedback.module";
 import { AppSessionGuard } from "./app-session/app-session.guard";
 
 @Module({
@@ -52,6 +54,12 @@ import { AppSessionGuard } from "./app-session/app-session.guard";
     SettingsModule,
     HealthModule,
     FeedbackModule,
+    // Operator-only (ADR-0045). AdminAuthModule is @Global() and provides the
+    // Cloudflare Access guard that AdminFeedbackModule's controller attaches
+    // with @UseGuards -- the guard is deliberately NOT an APP_GUARD, so every
+    // parent-facing route keeps AppSessionGuard below as its only gate.
+    AdminAuthModule,
+    AdminFeedbackModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

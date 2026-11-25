@@ -956,6 +956,63 @@ export interface FeedbackResponse {
   data: FeedbackReceipt;
 }
 
+// ---------------------------------------------------------------------------
+// Admin feedback triage (operator-only; ADR-0045)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three triage lenses, mirroring `ADMIN_FEEDBACK_FILTERS` in
+ * `backend/src/admin-feedback/admin-feedback.service.ts`.
+ *
+ *  - `new`      -> nobody has opened it yet (`readAt` is null)
+ *  - `awaiting` -> there is a reply address and no reply has been recorded
+ */
+export type AdminFeedbackFilter = 'all' | 'new' | 'awaiting';
+
+/**
+ * One row of the triage list. No `content`: the detail view carries it, and a
+ * list of fifty reports should not ship fifty 2000-character bodies.
+ */
+export interface AdminFeedbackListItem {
+  id: string;
+  subject: FeedbackSubject | string;
+  subjectOther: string | null;
+  displayName: string;
+  username: string;
+  /** Whether this report can be answered at all -- what `awaiting` filters on. */
+  hasContactEmail: boolean;
+  /** Pre-rendered `label (semel)`, from the row's own snapshot. */
+  schools: string[];
+  createdAt: string;
+  /** Delivery state. Null means the outbox has not sent it yet. */
+  notifiedAt: string | null;
+  readAt: string | null;
+  respondedAt: string | null;
+}
+
+export interface AdminFeedbackDetail extends AdminFeedbackListItem {
+  contactEmail: string | null;
+  content: string;
+  pagePath: string | null;
+  userAgent: string | null;
+  viewportWidth: number | null;
+  viewportHeight: number | null;
+  appVersion: string | null;
+  mashovUserId: string;
+  notifyAttempts: number;
+  /** The last delivery failure, bot token already redacted by the sender. */
+  notifyError: string | null;
+}
+
+export interface AdminFeedbackListResponse {
+  data: AdminFeedbackListItem[];
+  pagination: PaginationMeta;
+}
+
+export interface AdminFeedbackDetailResponse {
+  data: AdminFeedbackDetail;
+}
+
 // ─── In-app Mashov auth: recovery, MFA ─────────────────────────────────────
 
 /** Which channel Mashov should send the one-time code on. */

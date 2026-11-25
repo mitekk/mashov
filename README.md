@@ -251,6 +251,14 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `TELEGRAM_LINK_CODE_TTL_MINUTES` | how long a one-time link code stays valid | `15` |
 | `TELEGRAM_POLL_TIMEOUT_SECONDS` | how long each `getUpdates` long poll waits | `30` |
 | `TELEGRAM_POLL_ENABLED` | set `false` to stop polling — required if you ever set a webhook on the bot, since Telegram refuses `getUpdates` while one is active | `true` |
+| `FEEDBACK_TELEGRAM_BOT_TOKEN` | **secret.** From BotFather, and a **different bot** from `TELEGRAM_BOT_TOKEN` above — the operator is also a parent user, so one bot would interleave parents' bug reports with that operator's own children's digests. No fallback between them: unset means nothing is sent, never sent as the parent-facing bot | unset |
+| `FEEDBACK_TELEGRAM_CHAT_ID` | the private channel reports are delivered to, as a `-100…` id. The bot must be an **admin with post rights**; see [`docs/ops/admin-access-setup.md`](docs/ops/admin-access-setup.md) | unset |
+| `FEEDBACK_NOTIFY_MAX_PER_RUN` | rows one outbox tick will try. A runaway guard, not a throughput knob | `20` |
+
+The two `FEEDBACK_TELEGRAM_*` vars are the whole switch for operator notifications: both set
+means on, either missing means off — silently, with no query and no log line on any of the
+cron's 720 ticks a day. There is deliberately no `FEEDBACK_NOTIFY_ENABLED`; they are not flags
+but the two halves of one address. See ADR-0045 §3 and §11.
 
 Both defaults are deliberately inert: merging the feature changes nothing until `DIGEST_ENABLED`
 is `true`, and even then `DIGEST_DRY_RUN` keeps it from messaging anyone until you set it to

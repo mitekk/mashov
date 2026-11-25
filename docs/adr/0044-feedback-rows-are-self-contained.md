@@ -125,6 +125,25 @@ overlooked.
 - **No reply thread and no email delivery.** `contactEmail` is a way to reach the parent by
   hand, not a channel the app operates.
 
+### Amendment, 2026-11-24 — the first two are now addressed
+
+[ADR-0045](0045-operator-feedback-delivery-and-admin-access.md) supersedes the first two
+bullets above. Appended rather than rewritten: this record is what was decided at the time,
+and the reasoning in it still explains why the read path is an authorization surface.
+
+- **The read path exists**: `GET /api/v1/admin/feedback`, its detail, and `/admin/feedback`.
+  The authorization surface that bullet worried about is real and is why ADR-0045 verifies a
+  Cloudflare Access JWT in-process rather than trusting an edge policy.
+- **The notification exists**, and it is close to the cheap fix sketched above — the existing
+  Telegram sender, gated on `FEEDBACK_TELEGRAM_CHAT_ID` alone, failures logged and never
+  raised. It is not fire-and-forget: it is a cron-driven outbox, so `create()` is unchanged
+  and a Telegram outage costs no reports.
+- **The third bullet still stands.** There is no reply thread and no email sending.
+
+One consequence sharpens: a screen now renders this PII, so the retention question this
+record left open matters more than it did. ADR-0045 restates it; neither record builds a
+deletion job.
+
 ## Rate limiting
 
 Counted **per user**, as rows in the last hour, not by the global `ThrottlerGuard` — which

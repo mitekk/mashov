@@ -33,6 +33,7 @@ import { AppSessionGuard } from '../../backend/src/app-session/app-session.guard
 import { FeedbackModule } from '../../backend/src/feedback/feedback.module';
 import { HttpExceptionFilter } from '../../backend/src/common/filters/http-exception.filter';
 import { FEEDBACK_MAX_PER_HOUR } from '../../backend/src/feedback/feedback.service';
+import { FeedbackNotifierService } from '../../backend/src/feedback/feedback-notifier.service';
 
 const USER = 'fb-user-1';
 const OTHER_USER = 'fb-user-2';
@@ -58,8 +59,29 @@ interface SnapshotEntry {
 describe('POST /api/v1/feedback', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
+  let notifier: FeedbackNotifierService;
 
   beforeAll(async () => {
+    // Pinned rather than trusted from config: `.env` is bind-mounted into the
+    // integration container (`volumes: ./:/work`, `working_dir: /work`), and a
+    // real token and chat id present on the dev machine would turn these tests
+    // into live Telegram sends into the operator's actual channel. Unset is
+    // also the state this file asserts about -- the write path must be
+    // complete and unaffected with no notifier configured.
+    //
+    // Both halves of the address, because either one alone is enough to make a
+    // send attempt: the bot token (which bot) and the chat id (which chat).
+    //
+    // ASSIGNED EMPTY, NOT `delete`d. `ConfigModule.forRoot` below reads `.env`
+    // and then runs `assignVariablesToProcess`, which copies every key
+    // matching `!(key in process.env)`. A deleted key is not `in process.env`,
+    // so `delete` is the one operation that RE-ENABLES the dotenv value --
+    // exactly backwards. An empty string keeps the key present, so dotenv
+    // skips it, and both the chat id (trimmed) and `hasToken()` (trimmed) read
+    // blank as unset.
+    process.env.FEEDBACK_TELEGRAM_CHAT_ID = '';
+    process.env.FEEDBACK_TELEGRAM_BOT_TOKEN = '';
+
     prisma = new PrismaClient();
     await prisma.$connect();
 
@@ -79,6 +101,7 @@ describe('POST /api/v1/feedback', () => {
     app.useGlobalFilters(new HttpExceptionFilter());
     app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
     app.useGlobalGuards(module.get(AppSessionGuard));
+    notifier = module.get(FeedbackNotifierService);
     await app.init();
 
     await prisma.feedback.deleteMany({});
@@ -379,6 +402,54 @@ describe('POST /api/v1/feedback', () => {
     // The other parent, on the same IP, is unaffected.
     const neighbour = await send({ subject: 'bug', content: 'שלי' }, OTHER_TOKEN);
     expect(neighbour.status).toBe(201);
+  });
+
+  /**
+   * The outbox columns, as a new row actually lands.
+   *
+   * The write path gained a notifier and must be unchanged by it: the report
+   * is stored, the parent gets their 201, and nothing in the request sends
+   * anything. The row is left pending for the cron to pick up, which is the
+   * whole point of the outbox -- `create()` has no hook point at all.
+   */
+  it('writes a new report as pending delivery, untriaged, with no chat configured', async () => {
+    const response = await send({ subject: 'bug', content: 'דיווח חדש' });
+    expect(response.status).toBe(201);
+
+    const row = await prisma.feedback.findUniqueOrThrow({
+      where: { id: response.body.data.id },
+    });
+
+    expect(row.notifiedAt).toBeNull();
+    expect(row.notifyAttempts).toBe(0);
+    expect(row.notifyError).toBeNull();
+    expect(row.readAt).toBeNull();
+    expect(row.respondedAt).toBeNull();
+  });
+
+  /**
+   * The gate, against the real table rather than a mocked Prisma.
+   *
+   * This is what proves nothing reaches the Bot API: the outbox refuses to
+   * run at all with its destination unconfigured, so it never builds a
+   * message and never opens a socket. Checked as a returned empty array AND
+   * as an untouched row -- a notifier that queried and then failed to send
+   * would leave notifyAttempts at 1, and before the token gate existed it
+   * would have burned all three in six minutes.
+   */
+  it('leaves the outbox inert when neither half of the address is configured', async () => {
+    const response = await send({ subject: 'bug', content: 'שום דבר לא נשלח' });
+    expect(response.status).toBe(201);
+
+    expect(notifier.isConfigured()).toBe(false);
+    await expect(notifier.deliverPending()).resolves.toEqual([]);
+
+    const row = await prisma.feedback.findUniqueOrThrow({
+      where: { id: response.body.data.id },
+    });
+    expect(row.notifiedAt).toBeNull();
+    expect(row.notifyAttempts).toBe(0);
+    expect(row.notifyError).toBeNull();
   });
 
   it('counts only the last hour', async () => {
