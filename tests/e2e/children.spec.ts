@@ -58,6 +58,27 @@ function makeBehaviorItem(overrides: object = {}) {
   };
 }
 
+function makeGradeItem(overrides: object = {}) {
+  return {
+    id: 'grade-1',
+    studentGuid: 'e2e-test-student-guid-00002',
+    gradingEventId: 18,
+    grade: 93,
+    gradingPeriod: 1,
+    gradeTypeId: 1,
+    gradeType: 'מבחן',
+    gradingEvent: 'מבחן ראשון',
+    groupId: 202,
+    groupName: 'מתמטיקה ז8',
+    subjectName: 'מתמטיקה',
+    teacherName: 'קליין יעל',
+    eventDate: '2026-11-19T00:00:00',
+    enteredAt: '2026-11-20T10:00:00',
+    updatedAt: '2026-11-20T10:00:00',
+    ...overrides,
+  };
+}
+
 function makeStudentRelease(overrides: object = {}) {
   return {
     id: 64,
@@ -458,6 +479,14 @@ test.describe('Child workspace page', () => {
       });
     });
 
+    page.route(`**/api/v1/children/${STUDENT_GUID}/grades**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [] }),
+      });
+    });
+
     return page.route(`**/api/v1/children/${STUDENT_GUID}`, async (route) => {
       await route.fulfill({
         status: 200,
@@ -700,6 +729,108 @@ test.describe('Child workspace page', () => {
     expect(sanitizedHtml.toLowerCase()).not.toContain('class=');
     expect(sanitizedHtml.toLowerCase()).not.toContain('align=');
     expect(sanitizedHtml.toLowerCase()).not.toContain('lang=');
+  });
+
+  test('grades tab navigates and groups assessments by subject with an average', async ({
+    page,
+  }) => {
+    await stubWorkspaceRoutes(page);
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/grades**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [
+            makeGradeItem({ id: 'g-math-old', grade: 90, eventDate: '2026-09-01T00:00:00' }),
+            makeGradeItem({
+              id: 'g-math-new',
+              grade: 95,
+              gradingEvent: 'מבחן שני',
+              eventDate: '2026-11-19T00:00:00',
+            }),
+            makeGradeItem({
+              id: 'g-eng',
+              grade: 60,
+              groupId: 301,
+              subjectName: 'אנגלית',
+              groupName: 'אנגלית ז8',
+              gradeType: 'בוחן',
+              gradeTypeId: 2,
+              gradingEvent: 'Unit 3 quiz',
+              eventDate: '2026-10-10T00:00:00',
+            }),
+          ],
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID);
+    await workspace.clickSection('grades');
+
+    await expect(page.getByTestId('grades-section')).toBeVisible();
+
+    // One card per subject, not one per grade.
+    const math = page.getByTestId('grades-subject-202');
+    const english = page.getByTestId('grades-subject-301');
+    await expect(math).toBeVisible();
+    await expect(english).toBeVisible();
+
+    // Plain mean of 90 and 95.
+    await expect(page.getByTestId('grades-subject-average-202')).toContainText('92.5');
+    await expect(page.getByTestId('grades-subject-average-301')).toContainText('60');
+
+    // Newest assessment first inside the subject.
+    const mathRows = math.getByTestId(/^grades-item-/);
+    await expect(mathRows).toHaveCount(2);
+    await expect(mathRows.first()).toHaveAttribute('data-testid', 'grades-item-g-math-new');
+
+    const englishRow = page.getByTestId('grades-item-g-eng');
+    await expect(englishRow).toContainText('Unit 3 quiz');
+    await expect(englishRow).toContainText('בוחן');
+    await expect(englishRow).toContainText('10/10/26');
+    await expect(englishRow).toContainText('60');
+  });
+
+  test('grades section shows its empty state when nothing has synced', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'grades');
+
+    await expect(page.getByTestId('grades-section')).toBeVisible();
+    await expect(page.getByText('אין ציונים')).toBeVisible();
+  });
+
+  test('grades section shows an error state and retries', async ({ page }) => {
+    await stubWorkspaceRoutes(page);
+    let attempts = 0;
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/grades**`, async (route) => {
+      attempts += 1;
+      if (attempts === 1) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'INTERNAL', message: 'boom' } }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: [makeGradeItem()] }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'grades');
+
+    await expect(page.getByText('לא ניתן לטעון ציונים')).toBeVisible();
+
+    await page.getByTestId('error-retry-button').click();
+
+    await expect(page.getByTestId('grades-item-grade-1')).toBeVisible();
+    await expect(page.getByTestId('grades-subject-average-202')).toContainText('93');
   });
 
   test('releases dialog edits a release and refreshes list', async ({ page }) => {
