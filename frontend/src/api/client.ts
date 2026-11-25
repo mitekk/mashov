@@ -14,6 +14,16 @@ export class ApiError extends Error {
   }
 }
 
+export interface ApiFetchOptions extends RequestInit {
+  /**
+   * Opt in to handing the browser over to Cloudflare Access when it answers
+   * with a redirect instead of data. Off by default: parent-facing calls are
+   * never behind Access, and letting `fetch` follow redirects is what they
+   * want.
+   */
+  reauthenticateOnRedirect?: boolean;
+}
+
 function handle401Redirect(): void {
   if (typeof window !== 'undefined') {
     const event = new CustomEvent('mashov:session-expired');
@@ -22,19 +32,47 @@ function handle401Redirect(): void {
   }
 }
 
+// Deliberately NOT handle401Redirect: the Access session expiring has nothing
+// to do with the parent session, and bouncing the operator to the parent
+// sign-in page would lose the admin screen. It is the same reason the admin
+// routes answer 403 rather than 401 (see api/adminFeedback.ts).
+function handleAccessReauth(): void {
+  if (typeof window !== 'undefined') {
+    // Only a document request can run the Access login — an XHR cannot follow
+    // the 302 (the login page is cross-origin and sends no CORS headers, so
+    // the browser reports it as a CORS failure). Reloading hands the browser
+    // to Access, which signs the operator in and returns them to this page.
+    window.location.reload();
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
-  options?: RequestInit,
+  options?: ApiFetchOptions,
 ): Promise<T> {
+  const { reauthenticateOnRedirect = false, ...init } = options ?? {};
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
-      ...(options?.headers ?? {}),
+      ...(init.headers ?? {}),
     },
     credentials: 'include',
-    ...options,
+    ...init,
+    ...(reauthenticateOnRedirect
+      ? { redirect: 'manual' as RequestRedirect }
+      : {}),
   });
+
+  // With `redirect: 'manual'` an Access redirect arrives as a readable
+  // sentinel instead of a CORS error: an opaque response with status 0.
+  if (
+    reauthenticateOnRedirect &&
+    (res.type === 'opaqueredirect' || res.status === 0)
+  ) {
+    handleAccessReauth();
+    throw new ApiError(0, 'Re-authenticating with Cloudflare Access', null);
+  }
 
   if (res.status === 401) {
     const body = await res.json().catch(() => ({}));
