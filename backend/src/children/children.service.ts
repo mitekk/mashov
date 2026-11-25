@@ -737,7 +737,10 @@ export class ChildrenService {
           await schoolYearForConnection(this.prisma, student.householdConnectionId),
         ),
       },
-      orderBy: [{ eventDate: 'desc' }],
+      // A test and a quiz on one day are common, and `eventDate` alone lets
+      // Postgres return those rows in either order, so a refetch can swap
+      // them on screen. `enteredAt` then `gradingEventId` make it total.
+      orderBy: [{ eventDate: 'desc' }, { enteredAt: 'desc' }, { gradingEventId: 'desc' }],
     });
 
     return {

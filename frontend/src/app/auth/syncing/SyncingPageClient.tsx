@@ -52,6 +52,7 @@ const TASK_LABELS: Record<string, string> = {
   mailInbox: 'תיבת הדואר',
   homework: 'שיעורי בית',
   behavior: 'הערות התנהגות',
+  grades: 'ציונים',
   achvas: 'הערכות',
   groups: 'קבוצות לימוד',
   lessonsCount: 'מצבת שיעורים',

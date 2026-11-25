@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { GradeItem } from '@/types/api';
-import { groupGradesBySubject, overallAverage } from './grades-model';
+import { groupGradesBySubject } from './grades-model';
 
 function makeGrade(overrides: Partial<GradeItem> = {}): GradeItem {
   return {
@@ -124,46 +124,41 @@ describe('groupGradesBySubject', () => {
   });
 });
 
-describe('overallAverage', () => {
-  it('is null with no groups', () => {
-    expect(overallAverage([])).toBeNull();
-  });
-
-  it('is null when no group has a numeric average', () => {
-    const groups = groupGradesBySubject([makeGrade({ grade: Number.NaN })]);
-
-    expect(overallAverage(groups)).toBeNull();
-  });
-
-  it('means the subject averages, not the raw grades', () => {
-    // Otherwise a subject with ten quizzes outweighs one with a single test,
-    // and the headline number stops describing the child's subjects.
+describe('ordering within a subject', () => {
+  it('breaks an eventDate tie by enteredAt, then by gradingEventId', () => {
+    // A test and a quiz on one day is ordinary, and without a tiebreaker the
+    // two rows could swap places between refetches.
     const groups = groupGradesBySubject([
-      makeGrade({ id: 'a', subjectName: 'מתמטיקה', grade: 100 }),
-      makeGrade({ id: 'b', subjectName: 'מתמטיקה', grade: 100 }),
-      makeGrade({ id: 'c', subjectName: 'מתמטיקה', grade: 100 }),
-      makeGrade({ id: 'd', subjectName: 'אנגלית', grade: 50 }),
+      makeGrade({
+        id: 'older-entry',
+        gradingEventId: 10,
+        enteredAt: '2026-11-20T08:00:00.000Z',
+      }),
+      makeGrade({
+        id: 'newer-entry',
+        gradingEventId: 11,
+        enteredAt: '2026-11-20T09:00:00.000Z',
+      }),
+      makeGrade({
+        id: 'same-entry-higher-event',
+        gradingEventId: 12,
+        enteredAt: '2026-11-20T09:00:00.000Z',
+      }),
     ]);
 
-    expect(overallAverage(groups)).toBe(75);
+    expect(groups[0].grades.map((g) => g.id)).toEqual([
+      'same-entry-higher-event',
+      'newer-entry',
+      'older-entry',
+    ]);
   });
 
-  it('skips a subject with no numeric average', () => {
-    const groups = groupGradesBySubject([
-      makeGrade({ id: 'a', subjectName: 'מתמטיקה', grade: 80 }),
-      makeGrade({ id: 'b', subjectName: 'אנגלית', grade: Number.NaN }),
-    ]);
+  it('is stable whatever order the rows arrive in', () => {
+    const ids = (grades: GradeItem[]) =>
+      groupGradesBySubject(grades)[0].grades.map((g) => g.id);
+    const a = makeGrade({ id: 'a', gradingEventId: 1, eventDate: '2026-11-18T00:00:00.000Z' });
+    const b = makeGrade({ id: 'b', gradingEventId: 2, eventDate: '2026-11-19T00:00:00.000Z' });
 
-    expect(overallAverage(groups)).toBe(80);
-  });
-
-  it('rounds to one decimal', () => {
-    const groups = groupGradesBySubject([
-      makeGrade({ id: 'a', subjectName: 'מתמטיקה', grade: 90 }),
-      makeGrade({ id: 'b', subjectName: 'אנגלית', grade: 91 }),
-      makeGrade({ id: 'c', subjectName: 'היסטוריה', grade: 93 }),
-    ]);
-
-    expect(overallAverage(groups)).toBe(91.3);
+    expect(ids([a, b])).toEqual(ids([b, a]));
   });
 });

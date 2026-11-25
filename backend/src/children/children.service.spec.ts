@@ -1310,7 +1310,7 @@ describe('ChildrenService', () => {
       expect(where.schoolYear.in).toContain(2027);
     });
 
-    it('asks for the newest assessment first', async () => {
+    it('asks for a total order, newest assessment first', async () => {
       const gradeFindMany = jest.fn().mockResolvedValue([]);
       const service = new ChildrenService(
         makeMockPrisma({ gradeFindMany }),
@@ -1323,7 +1323,13 @@ describe('ChildrenService', () => {
 
       await service.getGrades(TEST_GUID);
 
-      expect(gradeFindMany.mock.calls[0][0].orderBy).toEqual([{ eventDate: 'desc' }]);
+      // `eventDate` alone is not a total order -- a test and a quiz on one day
+      // could come back either way round and swap on screen between refetches.
+      expect(gradeFindMany.mock.calls[0][0].orderBy).toEqual([
+        { eventDate: 'desc' },
+        { enteredAt: 'desc' },
+        { gradingEventId: 'desc' },
+      ]);
     });
 
     it('resolves no upstream target at all', async () => {

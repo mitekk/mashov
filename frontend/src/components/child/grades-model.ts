@@ -42,8 +42,13 @@ function meanToOneDecimal(values: number[]): number | null {
   return Math.round((sum / values.length) * 10) / 10;
 }
 
+/** The same total order the backend applies, so neither side decides ties. */
 function byEventDateDesc(a: GradeItem, b: GradeItem): number {
-  return b.eventDate.localeCompare(a.eventDate);
+  return (
+    b.eventDate.localeCompare(a.eventDate) ||
+    b.enteredAt.localeCompare(a.enteredAt) ||
+    b.gradingEventId - a.gradingEventId
+  );
 }
 
 /**
@@ -80,17 +85,3 @@ export function groupGradesBySubject(grades: GradeItem[]): SubjectGrades[] {
     .sort((a, b) => a.subjectName.localeCompare(b.subjectName, 'he'));
 }
 
-/**
- * The mean of the subject averages, not of the raw grades.
- *
- * Weighting by grade count would let a subject with ten quizzes drown one with
- * a single test, and the headline number would stop describing the child's
- * subjects.
- */
-export function overallAverage(groups: SubjectGrades[]): number | null {
-  return meanToOneDecimal(
-    groups
-      .map((group) => group.average)
-      .filter((average): average is number => average !== null),
-  );
-}

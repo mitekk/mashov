@@ -446,7 +446,10 @@ function normalizeGrade(item: UnknownRecord) {
     id: String(item.id ?? ''),
     studentGuid: String(item.studentGuid ?? ''),
     gradingEventId: Number(item.gradingEventId ?? 0),
-    grade: Number(item.grade ?? 0),
+    // Not `?? 0`: 0 is a legitimate grade, so the sentinel would be averaged
+    // in as a real zero and drag the subject average down. NaN is what
+    // `isUsableGrade` already excludes, which is the FR-43 behaviour.
+    grade: Number(item.grade ?? NaN),
     gradingPeriod: Number(item.gradingPeriod ?? 0),
     gradeTypeId: Number(item.gradeTypeId ?? 0),
     gradeType: String(item.gradeType ?? ''),

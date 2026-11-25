@@ -301,15 +301,11 @@ export interface SubjectsResponse {
 // ─── Grades ────────────────────────────────────────────────────────────────
 
 /**
- * Upstream's assessment-type codes. Kept as a union for readability at call
- * sites; `GradeItem.gradeTypeId` stays a plain `number` because a code we have
- * not seen must render rather than fail to parse.
- *
+ * `gradeTypeId` is a plain `number` on purpose: a code we have not seen must
+ * render rather than fail to parse. The codes observed upstream are
  * 1 = מבחן, 2 = בוחן, 3 = הערכה חלופית (עבודה עצמאית),
- * 4 = הערכה חלופית (עבודת צוות), 7 = מטלה עם ציון
+ * 4 = הערכה חלופית (עבודת צוות), 7 = מטלה עם ציון.
  */
-export type GradeTypeId = 1 | 2 | 3 | 4 | 7;
-
 export interface GradeItem {
   id: string;
   studentGuid: string;

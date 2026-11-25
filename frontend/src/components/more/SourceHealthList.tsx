@@ -14,6 +14,7 @@ const SOURCE_LABELS: Record<string, string> = {
   mail_inbox: 'תיבת דואר נכנס',
   homework: 'שיעורי בית',
   behavior: 'התנהגות',
+  grades: 'ציונים',
   groups: 'קבוצות',
   lessons_count: 'ספירת שיעורים',
   message_board: 'לוח הודעות',
