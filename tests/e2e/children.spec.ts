@@ -804,10 +804,12 @@ test.describe('Child workspace page', () => {
 
   test('grades section shows an error state and retries', async ({ page }) => {
     await stubWorkspaceRoutes(page);
-    let attempts = 0;
+    // The app's QueryClient retries twice with backoff, so a stub that fails
+    // only the *first* attempt heals itself before the error state can render.
+    // Fail every attempt until this test decides to let one through.
+    let failing = true;
     await page.route(`**/api/v1/children/${STUDENT_GUID}/grades**`, async (route) => {
-      attempts += 1;
-      if (attempts === 1) {
+      if (failing) {
         await route.fulfill({
           status: 500,
           contentType: 'application/json',
@@ -825,8 +827,13 @@ test.describe('Child workspace page', () => {
     const workspace = new ChildWorkspacePage(page);
     await workspace.navigate(STUDENT_GUID, 'grades');
 
-    await expect(page.getByText('לא ניתן לטעון ציונים')).toBeVisible();
+    // Initial attempt plus two retries at 1s and 2s of backoff puts the error
+    // state ~3s out — inside the 5s default only on an unloaded runner.
+    await expect(page.getByText('לא ניתן לטעון ציונים')).toBeVisible({
+      timeout: 15_000,
+    });
 
+    failing = false;
     await page.getByTestId('error-retry-button').click();
 
     await expect(page.getByTestId('grades-item-grade-1')).toBeVisible();
