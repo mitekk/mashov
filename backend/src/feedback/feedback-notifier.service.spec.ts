@@ -310,6 +310,21 @@ describe('FeedbackNotifierService', () => {
       'Telegram send failed: Bad Request: need administrator rights in the channel chat',
       'Telegram send failed: Bad Request: CHAT_ADMIN_REQUIRED',
       'Telegram send failed: Forbidden: bot was kicked from the channel chat',
+      // An admin WITHOUT the "Post Messages" right -- the likeliest version of
+      // this mistake, because the runbook tells the operator that right is a
+      // toggle and the rest of the admin rights can be off.
+      'Telegram send failed: Bad Request: not enough rights to send text messages to the chat',
+      'Telegram send failed: Bad Request: CHAT_WRITE_FORBIDDEN',
+      'Telegram send failed: Bad Request: have no rights to send a message',
+      // A stale id: the channel/group was migrated and this one no longer
+      // addresses it. Still the address, not the row.
+      'Telegram send failed: Bad Request: group chat was upgraded to a supergroup chat',
+      // A wrong or revoked token. Same class of mistake as a typo'd chat id,
+      // in the same rollout window, with the same consequence -- and it never
+      // recovers on its own, so spending attempts on it only guarantees the
+      // waiting reports are lost.
+      'Telegram send failed: Unauthorized',
+      'Telegram send failed: HTTP 401',
     ];
 
     it.each(REFUSALS)('parks the row rather than spending an attempt: %s', async (message) => {
@@ -353,6 +368,36 @@ describe('FeedbackNotifierService', () => {
       // pending report every two minutes.
       expect(logError).toHaveBeenCalledTimes(1);
       expect(logError.mock.calls[0][0]).toContain('need administrator rights');
+    });
+
+    it.each([
+      'Telegram send failed: HTTP 502',
+      'Telegram send failed: HTTP 429',
+      'Telegram send failed: Too Many Requests: retry after 30',
+      'Telegram send failed: ECONNRESET: socket hang up',
+      'Telegram send failed: Telegram reported ok=false',
+    ])('does not park a failure that is about the transport, not the address: %s', async (message) => {
+      const { service, findMany, update, send } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row()]);
+      send.mockRejectedValue(new Error(message));
+
+      expect(await service.deliverPending()).toEqual([{ id: 'fb-1', status: 'failed' }]);
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'fb-1' },
+        data: { notifyAttempts: 1, notifyError: message },
+      });
+    });
+
+    it("cannot be tripped by a parent writing a refusal phrase in their own report", async () => {
+      // describeTelegramError only ever returns Telegram's own description, an
+      // HTTP status, or an axios code -- never the request body. Pinned
+      // because the alternative is a parent parking their own report forever
+      // by typing "chat not found" into the form.
+      const { service, findMany, send } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row({ content: 'chat not found, bot is not a member' })]);
+      send.mockRejectedValue(new Error('Telegram send failed: HTTP 502'));
+
+      expect(await service.deliverPending()).toEqual([{ id: 'fb-1', status: 'failed' }]);
     });
 
     it('still logs a genuinely transient failure per row', async () => {

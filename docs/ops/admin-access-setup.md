@@ -220,6 +220,12 @@ Do not set a public link.
 Channel → **Administrators** → **Add Admin** → search the bot's `@username` →
 add it with **Post Messages** granted. The rest of the admin rights can be off.
 
+**Post Messages** is its own toggle, and getting *that* wrong looks different
+from forgetting the step entirely: an admin without it is refused with `not
+enough rights to send text messages to the chat` rather than `need
+administrator rights`. Both park the row, so neither is destructive — but they
+point at different boxes in the Telegram UI.
+
 This is the step whose omission used to cost reports. A private channel refuses
 a non-admin bot with `bot is not a member of the channel chat` or `need
 administrator rights in the channel chat`, and neither phrase classifies as a
@@ -274,16 +280,34 @@ psql "$DATABASE_URL" -c 'SELECT id, "createdAt", "notifiedAt", "notifyAttempts",
 
 What the states mean:
 
+`notifyAttempts` alone does **not** tell you whether a row is parked or
+retrying — parking preserves whatever attempts the row had already spent, so a
+row that hit two 502s and then had the bot removed from the channel sits at
+`notifyAttempts` 2 *and* is parked. Read `notifyError` first:
+
 | Row state | Meaning |
 |---|---|
-| `notifiedAt` set, `notifyAttempts` 1 | delivered, first try. The happy path. |
-| `notifiedAt` null, `notifyAttempts` 0, `notifyError` set | **parked** — the destination refused. Fix the channel or the chat id; it delivers itself afterwards. |
-| `notifiedAt` null, `notifyAttempts` 1–2 | a transient failure. The next tick retries. |
-| `notifiedAt` null, `notifyAttempts` 3 | **retired.** Nothing will retry it. Re-arm below. |
+| `notifiedAt` set | delivered. `notifyAttempts` is how many tries it took. The happy path. |
+| `notifiedAt` null, `notifyError` matches a destination phrase¹ | **parked**, at any `notifyAttempts` value. Nothing is being charged; fix the channel, the chat id or the token and it delivers itself on the next tick. |
+| `notifiedAt` null, `notifyAttempts` 1–2, `notifyError` is a transport error (`HTTP 502`, `Too Many Requests`, a socket error) | a transient failure. The next tick retries. |
+| `notifiedAt` null, `notifyAttempts` 3 | **retired.** Nothing will retry it. Re-arm below. Can only be reached by transport failures, never by a parked one. |
 | `notifiedAt` null, `notifyAttempts` 0, `notifyError` null | nothing has tried yet — usually means the two vars are not both set. |
 
+¹ The parking phrases, as matched case-insensitively against Telegram's own
+description: `chat not found`, `group chat was upgraded`, `bot is not a
+member`, `need administrator rights`, `chat_admin_required`, `bot was kicked`,
+`not enough rights to send`, `chat_write_forbidden`, `have no rights to send a
+message`, `unauthorized`, `http 401`. The list lives in
+`backend/src/feedback/feedback-notifier.service.ts`.
+
 A parked destination logs **once per run**, not once per row, so grep the
-backend log for `Feedback notification parked`.
+backend log for `Feedback notification parked` — one line tells you about every
+row stuck behind the same problem.
+
+Note that the admin detail view renders a parked row as "Not delivered after
+*N* attempt(s)" using that same preserved count, so a freshly parked row reads
+as "after 0 attempt(s)" next to its error. That is the parking rule working,
+not a row nothing has tried.
 
 ### Re-arming retired rows
 
@@ -345,5 +369,7 @@ evidence, and it is the test to re-run.
 | No Telegram messages at all | `FEEDBACK_TELEGRAM_BOT_TOKEN` or `FEEDBACK_TELEGRAM_CHAT_ID` unset — by design, and silent. Check `feedback.notifyAttempts` / `notifyError` for the other case |
 | `notifyError` says "bot is not a member" / "need administrator rights" | the bot is not an admin of the channel — [step 5.3](#3-add-the-bot-as-an-administrator--do-not-skip-this). The rows are parked, not lost; they deliver themselves once it is |
 | `notifyError` says "chat not found" | `FEEDBACK_TELEGRAM_CHAT_ID` wrong — most often the `-100` prefix dropped. Also parked, not retired |
-| `notifyError` says "Unauthorized" | `FEEDBACK_TELEGRAM_BOT_TOKEN` wrong or revoked. This one is transient and **does** spend attempts |
+| `notifyError` says "not enough rights to send" / "CHAT_WRITE_FORBIDDEN" | the bot is a channel admin but **Post Messages** is off — [step 5.3](#3-add-the-bot-as-an-administrator--do-not-skip-this). Parked, not lost |
+| `notifyError` says "Unauthorized" or "HTTP 401" | `FEEDBACK_TELEGRAM_BOT_TOKEN` wrong or revoked. Also parked — a bad credential never recovers on its own, so spending attempts on it would only lose the reports already waiting |
+| `notifyError` says "group chat was upgraded" | the channel was migrated and `FEEDBACK_TELEGRAM_CHAT_ID` is now stale. Re-read the id ([step 5.4](#4-read-the-channels-chat-id)). Parked |
 | Reports arrive in a parent's digest chat | the feedback chat id points at a parent-linked chat, or something re-wired the notifier onto `TelegramSender`. `feedback.module.spec.ts` asserts the latter cannot resolve |

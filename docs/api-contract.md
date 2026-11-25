@@ -62,11 +62,21 @@ Write-only **for a parent**. There is still no reply thread and no email sending
 `contactEmail` is a way to reach a parent by hand, not a channel the app operates.
 
 What ADR-0044 left absent now exists, and neither part changes this route. A two-minute cron
-outbox (`FeedbackNotifyTask`) delivers one Telegram message per new row, retrying up to three
-attempts before retiring it, and the operator reads the reports on `/admin/feedback` through
-the three `GET`/`POST` routes above. `create()` itself is untouched: it writes the row and
-returns, with no send in the request path and no added latency. The notifier is gated on
-`FEEDBACK_TELEGRAM_CHAT_ID` alone — unset means no messages, silently. See ADR-0045.
+outbox (`FeedbackNotifyTask`) delivers one Telegram message per new row, and the operator reads
+the reports on `/admin/feedback` through the three `GET`/`POST` routes above. `create()` itself
+is untouched: it writes the row and returns, with no send in the request path and no added
+latency.
+
+A failed delivery retries up to three attempts and is then retired — **except** when the
+failure is about the destination or the credential rather than the row (`chat not found`, a bot
+that is not a channel admin or lacks post rights, a wrong token). Those **park** the row: the
+error is recorded, no attempt is charged, and it delivers itself once the channel is fixed. So
+`notifyAttempts` 0 with a non-null `notifyError` is a real and expected state, and it does not
+mean "untried".
+
+Delivery goes out as a **separate bot** from the one that messages parents, and is gated on
+both `FEEDBACK_TELEGRAM_BOT_TOKEN` and `FEEDBACK_TELEGRAM_CHAT_ID` — either missing means no
+messages, silently. See ADR-0045 §11 and §12.
 
 `subject` is one of seven codes, and the list is the server's (`FEEDBACK_SUBJECTS` in
 `backend/src/feedback/feedback.service.ts`). The Hebrew labels live in the client, typed

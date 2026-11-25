@@ -250,20 +250,47 @@ future re-import is a failing test rather than a one-typo cross-wire.
 ### 12. A failure about the **destination** does not spend the **row's** budget
 
 A private Telegram channel refuses a bot that is not one of its admins with `bot is not a
-member of the channel chat` or `need administrator rights in the channel chat`. Neither
-phrase is in `PERMANENT_TELEGRAM_FAILURES`, so both classify as transient under section 2:
-three attempts, six minutes, and then the row is retired permanently.
+member of the channel chat` or `need administrator rights in the channel chat`. A bot that
+*is* an admin but lacks the Post Messages right — a separate toggle, and the likelier version
+of the mistake — is refused with `not enough rights to send text messages to the chat`. None
+of those phrases is in `PERMANENT_TELEGRAM_FAILURES`, so all of them classify as transient
+under section 2: three attempts, six minutes, and then the row is retired permanently.
 
 That is precisely the rollout order an operator will use. Set the two env vars, then go and
 make the bot a channel admin — and in the gap, every report already waiting loses its
 notification for good. The reports are not lost; they stay in the table and on
 `/admin/feedback`. But nobody is ever pinged, and nothing says so.
 
-So `feedback-notifier.service.ts` carries a **feedback-local** `isDestinationFailure()` —
-`chat not found`, `bot is not a member`, `need administrator rights`, `chat_admin_required`,
-`bot was kicked` — checked **before** `isPermanentTelegramFailure()`, because the two lists
-overlap on "chat not found" and the destination reading is the right one here: a chat id with
-a typo in it is a setup mistake an operator fixes, not a dead recipient. On such a failure the
+So `feedback-notifier.service.ts` carries a **feedback-local** `isDestinationFailure()`,
+checked **before** `isPermanentTelegramFailure()`, because the two lists overlap on "chat not
+found" and the destination reading is the right one here: a chat id with a typo in it is a
+setup mistake an operator fixes, not a dead recipient. It matches, against Telegram's own
+description only:
+
+- the chat does not resolve — `chat not found`, `group chat was upgraded` (a stale id after a
+  migration);
+- the bot is not in the channel or not an admin — `bot is not a member`, `need administrator
+  rights`, `chat_admin_required`, `bot was kicked`;
+- the bot is an admin without post rights — `not enough rights to send`,
+  `chat_write_forbidden`, `have no rights to send a message`;
+- the credential is wrong — `unauthorized`, `http 401`.
+
+The last group is included deliberately, and it is the one that is about the *token* rather
+than the chat. A token pasted with a trailing character is the same class of mistake as a
+typo'd chat id, made in the same rollout window, with the same consequence — and unlike a 502
+it never recovers on its own, so spending the three attempts on it only guarantees that the
+reports already waiting are the ones that lose their notification. `hasToken()` already
+catches a *missing* token before any send; this catches a *malformed* one.
+
+The membership test is "is this about the address or the credential, or about this attempt?"
+Everything about the transport — a 502, a 429, a reset socket, an `ok=false` with no
+description — stays on the three-attempt path, because it recovers on its own and a row
+retrying forever through a real outage is the worse trade. Only Telegram's description is
+matched, never the report's text (`describeTelegramError` returns the description, an HTTP
+status or an axios code — never the request body), so a parent cannot park their own report by
+typing one of these phrases into the form.
+
+On such a failure the
 row **parks**: `notifyError` is recorded, `notifyAttempts` is left exactly as it was, and the
 row stays pending. It delivers by itself on the first tick after the channel is fixed. Same
 principle as the token gate in section 3 — a failure about the address must not consume the
@@ -325,8 +352,14 @@ button needs a route, a guard, a mutation and a test for a thing that has happen
 - **A permanently broken destination retries forever** (section 12) — the deliberate cost of
   not burning attempts on a channel nobody has finished configuring.
 - **Two bot tokens to hold.** One more secret in the Coolify UI, and one more thing to get
-  wrong — which is why there is no fallback: a wrong-shaped feedback token sends nothing
-  rather than sending as the parent-facing bot.
+  wrong. There is no fallback, so a *missing* feedback token sends nothing rather than sending
+  as the parent-facing bot. A *present but invalid* one does attempt a send — it simply cannot
+  reach any chat — and section 12 parks the row rather than charging it for that.
+- **A parked row's `notifyAttempts` is not "untried".** Parking preserves whatever the row had
+  already spent, so a row can be parked at 1 or 2 attempts, and the admin detail view renders
+  a freshly parked one as "Not delivered after 0 attempt(s)" beside its destination error.
+  Correct, and it reads oddly. The runbook's state table tells an operator to read
+  `notifyError` first for exactly this reason.
 - **The rate limit's race is unchanged**, and now so is the outbox's: two processes running
   this cron would both select the same row. There is one backend container, and the in-row
   `notifiedAt` makes a duplicate message rather than a lost one. Not worth a lock.

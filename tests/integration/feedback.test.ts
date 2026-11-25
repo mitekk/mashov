@@ -62,16 +62,25 @@ describe('POST /api/v1/feedback', () => {
   let notifier: FeedbackNotifierService;
 
   beforeAll(async () => {
-    // Pinned rather than trusted from config: `.env` leaks into the
-    // integration container, and a real chat id present on the dev machine
-    // would turn these tests into live Telegram sends. Unset is also the state
-    // this file asserts about -- the write path must be complete and
-    // unaffected with no notifier configured.
+    // Pinned rather than trusted from config: `.env` is bind-mounted into the
+    // integration container (`volumes: ./:/work`, `working_dir: /work`), and a
+    // real token and chat id present on the dev machine would turn these tests
+    // into live Telegram sends into the operator's actual channel. Unset is
+    // also the state this file asserts about -- the write path must be
+    // complete and unaffected with no notifier configured.
     //
     // Both halves of the address, because either one alone is enough to make a
     // send attempt: the bot token (which bot) and the chat id (which chat).
-    delete process.env.FEEDBACK_TELEGRAM_CHAT_ID;
-    delete process.env.FEEDBACK_TELEGRAM_BOT_TOKEN;
+    //
+    // ASSIGNED EMPTY, NOT `delete`d. `ConfigModule.forRoot` below reads `.env`
+    // and then runs `assignVariablesToProcess`, which copies every key
+    // matching `!(key in process.env)`. A deleted key is not `in process.env`,
+    // so `delete` is the one operation that RE-ENABLES the dotenv value --
+    // exactly backwards. An empty string keeps the key present, so dotenv
+    // skips it, and both the chat id (trimmed) and `hasToken()` (trimmed) read
+    // blank as unset.
+    process.env.FEEDBACK_TELEGRAM_CHAT_ID = '';
+    process.env.FEEDBACK_TELEGRAM_BOT_TOKEN = '';
 
     prisma = new PrismaClient();
     await prisma.$connect();

@@ -35,13 +35,24 @@ export const FEEDBACK_CONTENT_PREVIEW_MAX = 500;
  * Feedback-local on purpose, and deliberately the opposite call to the one
  * `isPermanentTelegramFailure` makes for the digest. A private channel refuses
  * a bot that is not one of its admins with "bot is not a member of the channel
- * chat" or "need administrator rights in the channel chat". Neither phrase is
- * in PERMANENT_TELEGRAM_FAILURES, so both classify as transient -- three
- * attempts, six minutes apart, and then the row is retired for good. During
- * rollout that is exactly what happens if the two env vars are set before the
- * bot is made a channel admin: every report already waiting silently loses its
- * notification forever. The reports survive -- they stay in the table and on
+ * chat" or "need administrator rights in the channel chat"; one that IS an
+ * admin but lacks the Post Messages right gets "not enough rights to send text
+ * messages to the chat". None of those is in PERMANENT_TELEGRAM_FAILURES, so
+ * all of them classify as transient -- three attempts, six minutes apart, and
+ * then the row is retired for good. During rollout that is exactly what
+ * happens if the two env vars are set before the bot is a channel admin with
+ * post rights: every report already waiting silently loses its notification
+ * forever. The reports survive -- they stay in the table and on
  * /admin/feedback -- but nobody is ever pinged.
+ *
+ * The test for membership is "is this about the address or the credential, or
+ * about this attempt?" Everything that is about the transport -- a 502, a 429,
+ * a reset socket, an ok=false with no description -- is left on the
+ * three-attempt path, because it recovers on its own and a row that retries
+ * forever on a real outage is a worse trade. Telegram's own description is the
+ * only thing matched, never the report's text (`describeTelegramError` returns
+ * the description, an HTTP status or an axios code -- never the request body),
+ * so a parent cannot park their own report by typing one of these phrases.
  *
  * So a failure about the destination parks the row instead of charging it an
  * attempt: same principle as the missing-token gate in `deliverPending`. The
@@ -61,11 +72,29 @@ export const FEEDBACK_CONTENT_PREVIEW_MAX = 500;
  * an operator looks.
  */
 const FEEDBACK_DESTINATION_FAILURES = [
+  // The chat id does not resolve -- most often the leading `-100` dropped.
   'chat not found',
+  // The channel/group was migrated and this id no longer addresses it.
+  'group chat was upgraded',
+  // The bot is not in the channel, or not an admin of it.
   'bot is not a member',
   'need administrator rights',
   'chat_admin_required',
   'bot was kicked',
+  // The bot IS an admin but without the "Post Messages" right. The likeliest
+  // version of the mistake, because that right is a separate toggle and the
+  // runbook tells the operator the other admin rights can be off.
+  'not enough rights to send',
+  'chat_write_forbidden',
+  'have no rights to send a message',
+  // The token is wrong or revoked. Included deliberately: it is the same class
+  // of mistake as a typo'd chat id, made in the same rollout window, with the
+  // same consequence -- and unlike a 502 it never recovers on its own, so
+  // spending the three attempts on it only guarantees that the reports already
+  // waiting are the ones that lose their notification. `hasToken()` catches a
+  // MISSING token before any send; this catches a malformed one.
+  'unauthorized',
+  'http 401',
 ];
 
 /** Whether a refusal is about the address rather than this row. */
