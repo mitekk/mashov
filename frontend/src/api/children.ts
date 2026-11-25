@@ -10,6 +10,7 @@ import type {
   BehaviorDetailResponse,
   BehaviorItem,
   SubjectsResponse,
+  GradesResponse,
   NoticesResponse,
   TimetableResponse,
   TimetableSchedule,
@@ -141,6 +142,21 @@ export async function fetchChildSubjects(studentGuid: string): Promise<SubjectsR
   const items = Array.isArray(response.data) ? response.data : [];
   return {
     data: items.map((item) => normalizeSubject(item as unknown as UnknownRecord)),
+  };
+}
+
+export async function fetchChildGrades(studentGuid: string): Promise<GradesResponse> {
+  const response = await apiFetch<GradesResponse | { data: unknown[] } | unknown[]>(
+    `/children/${encodeURIComponent(studentGuid)}/grades`,
+  );
+  if (Array.isArray(response)) {
+    return {
+      data: response.map((item) => normalizeGrade(item as unknown as UnknownRecord)),
+    };
+  }
+  const items = Array.isArray(response.data) ? response.data : [];
+  return {
+    data: items.map((item) => normalizeGrade(item as unknown as UnknownRecord)),
   };
 }
 
@@ -421,6 +437,26 @@ function normalizeSubject(item: UnknownRecord) {
       : [],
     weeklyHours: Number(item.weeklyHours ?? 0),
     lessonsCount: Number(item.lessonsCount ?? 0),
+    updatedAt: String(item.updatedAt ?? ''),
+  };
+}
+
+function normalizeGrade(item: UnknownRecord) {
+  return {
+    id: String(item.id ?? ''),
+    studentGuid: String(item.studentGuid ?? ''),
+    gradingEventId: Number(item.gradingEventId ?? 0),
+    grade: Number(item.grade ?? 0),
+    gradingPeriod: Number(item.gradingPeriod ?? 0),
+    gradeTypeId: Number(item.gradeTypeId ?? 0),
+    gradeType: String(item.gradeType ?? ''),
+    gradingEvent: String(item.gradingEvent ?? ''),
+    groupId: Number(item.groupId ?? 0),
+    groupName: String(item.groupName ?? ''),
+    subjectName: String(item.subjectName ?? ''),
+    teacherName: String(item.teacherName ?? ''),
+    eventDate: String(item.eventDate ?? ''),
+    enteredAt: String(item.enteredAt ?? ''),
     updatedAt: String(item.updatedAt ?? ''),
   };
 }
