@@ -1312,6 +1312,43 @@ test.describe('Child workspace page', () => {
     await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
   });
 
+  test('clicking a homework card outside the text panel opens the detail page', async ({
+    page,
+  }) => {
+    await stubWorkspaceRoutes(page);
+
+    await page.route(`**/api/v1/children/${STUDENT_GUID}/homework**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith(`/children/${STUDENT_GUID}/homework/hw-1`)) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(makeHomeworkItem()),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [makeHomeworkItem()],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        }),
+      });
+    });
+
+    const workspace = new ChildWorkspacePage(page);
+    await workspace.navigate(STUDENT_GUID, 'homework', 'all');
+
+    // The card's own padding — not the inner link panel — is the click target here.
+    await expect(page.getByTestId('homework-item-hw-1')).toBeVisible();
+    await page.getByTestId('homework-item-hw-1').click({ position: { x: 6, y: 6 } });
+
+    await expect(page).toHaveURL(`/children/${STUDENT_GUID}/homework/hw-1`);
+    await expect(page.getByTestId('homework-detail-hw-1')).toBeVisible();
+  });
+
   test('homework detail renders attachment download links', async ({ page }) => {
     await stubWorkspaceRoutes(page);
 
