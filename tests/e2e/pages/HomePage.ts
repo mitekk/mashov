@@ -4,6 +4,7 @@ export class HomePage {
   readonly page: Page;
   readonly homeHeader: Locator;
   readonly headerChildSelector: Locator;
+  readonly profileTrigger: Locator;
   readonly refreshButton: Locator;
   readonly latestFeed: Locator;
   readonly feedFilterAllButton: Locator;
@@ -21,7 +22,10 @@ export class HomePage {
     this.page = page;
     this.homeHeader = page.getByTestId('home-header');
     this.headerChildSelector = page.getByTestId('home-header-child-selector');
-    this.refreshButton = page.getByTestId('refresh-button');
+    this.profileTrigger = page.getByTestId('header-profile-trigger');
+    // Sync lives inside the header's profile menu, so it only has a box once
+    // `openProfileMenu` has opened that menu.
+    this.refreshButton = page.getByTestId('header-menu-refresh');
     this.latestFeed = page.getByTestId('latest-feed');
     this.feedFilterAllButton = page.getByTestId('home-feed-filter-all');
     this.feedFilterArchivedButton = page.getByTestId('home-feed-filter-archived');
@@ -40,7 +44,15 @@ export class HomePage {
     await expect(this.homeHeader).toBeVisible({ timeout: 15_000 });
   }
 
+  /** The avatar menu is the only way to any header action. */
+  async openProfileMenu(): Promise<void> {
+    await this.profileTrigger.click();
+    await expect(this.refreshButton).toBeVisible();
+  }
+
+  /** Opens the menu and fires a sync. Radix closes the menu on select. */
   async clickRefresh(): Promise<void> {
+    await this.openProfileMenu();
     await this.refreshButton.click();
   }
 

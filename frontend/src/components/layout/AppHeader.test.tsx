@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppUser } from '@/types/api';
 
 const useMe = vi.fn();
@@ -38,9 +38,26 @@ function me(overrides: Partial<AppUser> = {}): AppUser {
   };
 }
 
-function profileLink(): HTMLElement {
-  return screen.getByTestId('header-profile-link');
+function profileTrigger(): HTMLElement {
+  return screen.getByTestId('header-profile-trigger');
 }
+
+/** Radix opens the menu on keydown, which jsdom (no PointerEvent) can send. */
+function openMenu(): void {
+  fireEvent.keyDown(profileTrigger(), { key: 'Enter' });
+}
+
+beforeAll(() => {
+  // Radix's Popper measures its content once the menu actually opens. jsdom
+  // has neither observer.
+  class Observer {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver ??= Observer as unknown as typeof ResizeObserver;
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 beforeEach(() => {
   useMe.mockReset();
@@ -55,14 +72,14 @@ describe('AppHeader', () => {
     useMe.mockReturnValue({ data: me({ childrenCount: 0 }) });
     render(<AppHeader />);
 
-    expect(profileLink().textContent).toBe('קורס דמיטריקד');
+    expect(profileTrigger().textContent).toBe('קורס דמיטריקד');
   });
 
   it('says ילד אחד for one child', () => {
     useMe.mockReturnValue({ data: me({ childrenCount: 1 }) });
     render(<AppHeader />);
 
-    expect(profileLink().textContent).toContain('קורס דמיטרי · ילד אחד');
+    expect(profileTrigger().textContent).toContain('קורס דמיטרי · ילד אחד');
   });
 
   it('counts children in the plural', () => {
@@ -72,14 +89,14 @@ describe('AppHeader', () => {
     useMe.mockReturnValue({ data: me({ childrenCount: 2 }) });
     render(<AppHeader />);
 
-    expect(profileLink().textContent).toContain('קורס דמיטרי · 2 ילדים');
+    expect(profileTrigger().textContent).toContain('קורס דמיטרי · 2 ילדים');
   });
 
   it('puts the count in the aria-label too', () => {
     useMe.mockReturnValue({ data: me({ childrenCount: 2 }) });
     render(<AppHeader />);
 
-    expect(profileLink().getAttribute('aria-label')).toBe('קורס דמיטרי · 2 ילדים — הגדרות');
+    expect(profileTrigger().getAttribute('aria-label')).toBe('קורס דמיטרי · 2 ילדים — תפריט');
   });
 
   it('takes initials from the stripped name', () => {
@@ -104,21 +121,20 @@ describe('AppHeader', () => {
 
     const header = screen.getByTestId('app-header');
     expect(header.className).toContain('pt-safe');
-    expect(screen.queryByTestId('header-profile-link')).toBeNull();
   });
 
-  it('withholds feedback until there is a household to attach it to', () => {
+  /**
+   * The trigger is NOT gated on `me`: it is the only way into theme and sync,
+   * neither of which needs a household, and an avatar that appeared late
+   * would undo the fixed-`h-14` no-layout-shift property above.
+   */
+  it('renders the profile trigger with a placeholder before `me` resolves', () => {
     useMe.mockReturnValue({ data: undefined });
     render(<AppHeader />);
 
-    expect(screen.queryByTestId('feedback-launcher-button')).toBeNull();
-  });
-
-  it('offers feedback once the household is known', () => {
-    useMe.mockReturnValue({ data: me() });
-    render(<AppHeader />);
-
-    expect(screen.getByTestId('feedback-launcher-button')).not.toBeNull();
+    const trigger = profileTrigger();
+    expect(trigger.textContent).toBe('?');
+    expect(trigger.getAttribute('aria-label')).toBe('פרופיל — תפריט');
   });
 
   it('keeps a fixed row height so nothing shifts when `me` arrives', () => {
@@ -160,32 +176,45 @@ describe('AppHeader', () => {
     expect(screen.getByTestId('app-header').className).toContain('app-header');
   });
 
-  it('owns the four app-wide controls so no page has to remember them', () => {
-    useMe.mockReturnValue({ data: me() });
-    render(<AppHeader />);
-
-    expect(screen.getByTestId('feedback-launcher-button')).not.toBeNull();
-    expect(screen.getByTestId('theme-toggle')).not.toBeNull();
-    expect(screen.getByTestId('refresh-button')).not.toBeNull();
-    expect(screen.getByTestId('header-profile-link')).not.toBeNull();
-  });
-
   /**
-   * Both branches are mounted at every width and Tailwind hides one, so each
-   * testid still resolves to exactly one node -- Playwright's strict mode
-   * counts hidden matches.
+   * One action area at every width. The inline cluster this replaced kept a
+   * second live copy of theme, sync and feedback in the DOM -- hidden by
+   * Tailwind, but still counted by Playwright's strict mode.
    */
-  it('shows the inline row from sm up and the overflow menu below it', () => {
+  it('puts every app-wide action behind the one avatar trigger', () => {
     useMe.mockReturnValue({ data: me() });
     const { container } = render(<AppHeader />);
 
-    const inline = container.querySelector('[data-testid="app-header-inline"]');
-    expect(inline?.className).toContain('hidden');
-    expect(inline?.className).toContain('sm:flex');
-    expect(screen.getByTestId('header-menu-trigger').className).toContain('sm:hidden');
-    expect(screen.getAllByTestId('theme-toggle')).toHaveLength(1);
-    expect(screen.getAllByTestId('refresh-button')).toHaveLength(1);
-    expect(screen.getAllByTestId('feedback-launcher-button')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="app-header-inline"]')).toBeNull();
+    expect(screen.queryByTestId('theme-toggle')).toBeNull();
+    expect(screen.queryByTestId('refresh-button')).toBeNull();
+    expect(screen.queryByTestId('feedback-launcher-button')).toBeNull();
+    expect(screen.getAllByTestId('header-profile-trigger')).toHaveLength(1);
+  });
+
+  /**
+   * The gate is `canSendFeedback={Boolean(me)}`, and it is this component's
+   * expression to get right -- `AppHeaderMenu` only honours whatever prop it
+   * is handed. A report filed before `me` resolves has no household to attach
+   * itself to, so the item is withheld rather than shown and then failing.
+   * Theme and sync need no household and stay available throughout.
+   */
+  it('withholds feedback until the household is known', () => {
+    useMe.mockReturnValue({ data: undefined });
+    render(<AppHeader />);
+    openMenu();
+
+    expect(screen.queryByTestId('header-menu-feedback')).toBeNull();
+    expect(screen.getByTestId('header-menu-theme')).toBeTruthy();
+    expect(screen.getByTestId('header-menu-refresh')).toBeTruthy();
+  });
+
+  it('offers feedback once the household is known', () => {
+    useMe.mockReturnValue({ data: me() });
+    render(<AppHeader />);
+    openMenu();
+
+    expect(screen.getByTestId('header-menu-feedback')).toBeTruthy();
   });
 
   /**

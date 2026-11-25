@@ -1,14 +1,10 @@
 'use client';
 
 import React from 'react';
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useMe } from '@/hooks/useAuth';
 import { useDashboard } from '@/hooks/useDashboard';
-import { FeedbackLauncher } from '@/components/feedback/FeedbackLauncher';
 import { UnreadBadge } from '@/components/inbox/UnreadBadge';
-import { RefreshButton } from '@/components/ui/RefreshButton';
-import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { FeedbackDialogProvider } from '@/hooks/useFeedbackDialog';
 import { useHeaderScroll } from '@/hooks/useHeaderScroll';
 import { AppHeaderMenu } from './AppHeaderMenu';
@@ -49,8 +45,8 @@ function childrenSuffix(childrenCount: number): string {
 const INBOX_ITEM: NavItem | undefined = NAV_ITEMS.find((item) => item.href === '/inbox');
 
 /**
- * The one app-wide header: the page title, feedback, theme, household sync,
- * and the profile avatar.
+ * The one app-wide header: the page title, and the profile avatar that opens
+ * `AppHeaderMenu` -- where feedback, theme, household sync and הגדרות live.
  *
  * Theme and sync used to be copy-pasted into six page `<header>`s -- they are
  * household-wide actions (`useSyncRefresh()` takes no argument on purpose;
@@ -65,10 +61,11 @@ const INBOX_ITEM: NavItem | undefined = NAV_ITEMS.find((item) => item.href === '
  * - **`pt-safe` is here**, not on the `AppShell` wrapper: a `sticky top-0`
  *   element parks at the viewport top, under the notch, and the wrapper's
  *   padding sits above it and does nothing once stuck. That is only safe
- *   because this component NEVER returns null -- the shell always renders and
- *   only the avatar and `FeedbackLauncher` are gated on `me`. The fixed `h-14`
- *   is the other half: no layout shift when `me` resolves. `lg:pt-0` keeps the
- *   old behaviour -- at `lg` there is no status-bar overlay to clear.
+ *   because this component NEVER returns null -- the shell always renders, and
+ *   nothing in the row is gated on `me`: the avatar falls back to `?` and only
+ *   the menu's feedback item waits for a household. The fixed `h-14` is the
+ *   other half: no layout shift when `me` resolves. `lg:pt-0` keeps the old
+ *   behaviour -- at `lg` there is no status-bar overlay to clear.
  * - **`FreshnessBar` stays above this, non-sticky.** It scrolls away and the
  *   header then sticks to the viewport top, so there is no geometry to keep in
  *   sync between the two.
@@ -126,43 +123,15 @@ export function AppHeader() {
             <HeaderChildSwitcher />
           </div>
 
-          {/* From `sm` up there is room for all three side by side. */}
-          <div
-            data-testid="app-header-inline"
-            className="hidden items-center gap-2 sm:flex"
-          >
-            {/*
-              Gated on `me` on purpose: feedback needs a household to attach
-              itself to, so it is absent on `/auth/*` -- which has no header at
-              all -- and for the one paint before `me` resolves.
-            */}
-            {me && <FeedbackLauncher />}
-            <ThemeToggle />
-            <RefreshButton />
-          </div>
-
-          {/* Below `sm` the same three collapse into one button. */}
-          <AppHeaderMenu canSendFeedback={Boolean(me)} className="sm:hidden" />
-
-          {me && (
-            <Link
-              href="/more"
-              data-testid="header-profile-link"
-              aria-label={`${me.displayName ?? 'פרופיל'}${suffix} — הגדרות`}
-              className="flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors hover:text-foreground"
-            >
-              {/* `lg`, not `sm`: below that the page title owns the row. */}
-              {me.displayName && (
-                <span className="hidden text-xs font-medium lg:block">
-                  {me.displayName}
-                  {suffix}
-                </span>
-              )}
-              <span className="flex h-8 w-8 select-none items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                {initials}
-              </span>
-            </Link>
-          )}
+          <AppHeaderMenu
+            displayName={me?.displayName}
+            initials={initials}
+            suffix={suffix}
+            // Gated on `me` on purpose: feedback needs a household to attach
+            // itself to, so the item is absent for the one paint before `me`
+            // resolves. Theme and sync need no household.
+            canSendFeedback={Boolean(me)}
+          />
         </div>
       </header>
     </FeedbackDialogProvider>

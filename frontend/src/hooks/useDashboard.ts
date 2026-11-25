@@ -15,12 +15,13 @@ export function useDashboard() {
 /**
  * Shared by every sync trigger, so they report ONE pending state.
  *
- * The app header mounts two at once at every width -- the inline
- * `RefreshButton` and the overflow menu's sync item, with Tailwind hiding one.
- * Two bare `useMutation`s keep separate `isPending` flags, so a parent who
- * fires a sync from the phone menu and then crosses `sm` (rotation, or a
- * tablet) sees the inline button idle and enabled mid-sync, one tap from a
- * second concurrent household sync.
+ * The sync trigger lives inside the header's profile menu, and Radix unmounts
+ * the menu's content on close -- a bare `useMutation`'s `isPending` dies with
+ * it. A parent who fires a sync, closes the menu and opens it again would find
+ * the item idle and enabled mid-sync, one tap from a second concurrent
+ * household sync. `useIsMutating` against a shared key reads the mutation
+ * cache instead, which outlives any one consumer, and keeps the same guarantee
+ * for a second trigger added later.
  */
 const SYNC_REFRESH_KEY = ['sync-refresh'] as const;
 

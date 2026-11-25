@@ -17,9 +17,10 @@ vi.mock('@/api/dashboard', () => ({ fetchDashboard: vi.fn() }));
 const { useSyncRefresh } = await import('./useDashboard');
 
 /**
- * Two independent consumers, which is exactly how the app mounts them: the
- * header renders the inline `RefreshButton` and the overflow menu's sync item
- * at the same time, at every width, with Tailwind hiding one.
+ * Two independent consumers of the hook. The app mounts one sync trigger
+ * today -- the profile menu's item -- but shared pending state is what keeps
+ * that item honest across the menu's own unmount on close, and two live
+ * consumers is the sharpest way to assert the sharing.
  */
 const capture: Record<string, ReturnType<typeof useSyncRefresh> | undefined> = {};
 

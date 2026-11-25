@@ -1,5 +1,5 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const toggleTheme = vi.fn();
 const mutate = vi.fn();
@@ -16,6 +16,10 @@ vi.mock('@/hooks/useDashboard', () => ({
 vi.mock('@/hooks/useFeedbackDialog', () => ({
   useFeedbackDialog: () => ({ open: false, thanks: false, openDialog, closeDialog: vi.fn() }),
 }));
+// `next/link` renders an anchor without the app router in the tree.
+vi.mock('next/link', () => ({
+  default: ({ children, ...props }: React.ComponentProps<'a'>) => <a {...props}>{children}</a>,
+}));
 
 const { AppHeaderMenu } = await import('./AppHeaderMenu');
 
@@ -30,11 +34,6 @@ beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 
-afterEach(() => {
-  // @ts-expect-error -- only the rotation test installs a stub.
-  delete window.matchMedia;
-});
-
 beforeEach(() => {
   toggleTheme.mockClear();
   mutate.mockClear();
@@ -45,54 +44,84 @@ beforeEach(() => {
 
 /** Radix opens the menu on keydown, which jsdom (no PointerEvent) can send. */
 function openMenu(): void {
-  fireEvent.keyDown(screen.getByTestId('header-menu-trigger'), { key: 'Enter' });
+  fireEvent.keyDown(screen.getByTestId('header-profile-trigger'), { key: 'Enter' });
+}
+
+function renderMenu(props: Partial<React.ComponentProps<typeof AppHeaderMenu>> = {}) {
+  return render(
+    <AppHeaderMenu
+      displayName="קורס דמיטרי"
+      initials="קד"
+      suffix=" · 2 ילדים"
+      canSendFeedback
+      {...props}
+    />,
+  );
 }
 
 describe('AppHeaderMenu', () => {
-  it('names the trigger for a screen reader, having no visible text', () => {
-    render(<AppHeaderMenu canSendFeedback />);
+  it('names the trigger after the parent, since its visible text is initials', () => {
+    renderMenu();
 
-    expect(screen.getByTestId('header-menu-trigger').getAttribute('aria-label')).toBe(
-      'עוד פעולות',
+    expect(screen.getByTestId('header-profile-trigger').getAttribute('aria-label')).toBe(
+      'קורס דמיטרי · 2 ילדים — תפריט',
     );
+  });
+
+  it('falls back to פרופיל when the name has not arrived', () => {
+    renderMenu({ displayName: undefined, initials: '?', suffix: '' });
+
+    const trigger = screen.getByTestId('header-profile-trigger');
+    expect(trigger.getAttribute('aria-label')).toBe('פרופיל — תפריט');
+    expect(trigger.textContent).toBe('?');
+  });
+
+  /** `lg`, not `sm`: below that the page title owns the header row. */
+  it('hides the name below lg and keeps the initials at every width', () => {
+    renderMenu();
+
+    const name = screen.getByText(/קורס דמיטרי · 2 ילדים/);
+    expect(name.className).toContain('hidden');
+    expect(name.className).toContain('lg:block');
+    expect(screen.getByText('קד').className).not.toContain('hidden');
   });
 
   it('keeps the trigger a 44px tap target', () => {
     // responsive.spec.ts asserts >=44x44 in a real engine; this is the guard
     // for the class that gets it there.
-    render(<AppHeaderMenu canSendFeedback />);
+    renderMenu();
 
-    expect(screen.getByTestId('header-menu-trigger').className).toContain('tap-target');
+    expect(screen.getByTestId('header-profile-trigger').className).toContain('tap-target');
   });
 
-  it('shows feedback, theme and sync once opened', () => {
-    render(<AppHeaderMenu canSendFeedback />);
+  it('shows settings, feedback, theme and sync once opened', () => {
+    renderMenu();
 
     openMenu();
 
+    expect(screen.getByTestId('header-menu-settings')).not.toBeNull();
     expect(screen.getByTestId('header-menu-feedback')).not.toBeNull();
     expect(screen.getByTestId('header-menu-theme')).not.toBeNull();
     expect(screen.getByTestId('header-menu-refresh')).not.toBeNull();
   });
 
   /**
-   * The trap this component had to be written around. Both header branches are
-   * in the DOM at every width -- one hidden by Tailwind -- and Playwright's
-   * strict mode counts hidden matches, so reusing `theme-toggle`,
-   * `refresh-button` or `feedback-launcher-button` here would resolve every
-   * existing locator to two nodes and break theme.spec.ts and feedback.spec.ts.
+   * Keeps הגדרות a real anchor: `asChild` is what hands Radix's keyboard and
+   * `onSelect` handling to `next/link`, so the item navigates from the
+   * keyboard and not only under the mouse.
    */
-  it('reuses none of the inline controls testids', () => {
-    render(<AppHeaderMenu canSendFeedback />);
+  it('routes הגדרות to /more through a real link', () => {
+    renderMenu();
     openMenu();
 
-    expect(screen.queryByTestId('theme-toggle')).toBeNull();
-    expect(screen.queryByTestId('refresh-button')).toBeNull();
-    expect(screen.queryByTestId('feedback-launcher-button')).toBeNull();
+    const item = screen.getByTestId('header-menu-settings');
+    expect(item.tagName).toBe('A');
+    expect(item.getAttribute('href')).toBe('/more');
+    expect(item.textContent).toContain('הגדרות');
   });
 
   it('opens the shared feedback dialog rather than one of its own', () => {
-    render(<AppHeaderMenu canSendFeedback />);
+    renderMenu();
     openMenu();
 
     fireEvent.click(screen.getByTestId('header-menu-feedback'));
@@ -103,7 +132,7 @@ describe('AppHeaderMenu', () => {
   it('omits feedback with no household to attach it to', () => {
     // Same rule the inline branch follows: feedback needs a household, so it
     // is absent for the paint before `me` resolves.
-    render(<AppHeaderMenu canSendFeedback={false} />);
+    renderMenu({ canSendFeedback: false });
     openMenu();
 
     expect(screen.queryByTestId('header-menu-feedback')).toBeNull();
@@ -111,7 +140,7 @@ describe('AppHeaderMenu', () => {
   });
 
   it('labels the theme item with the mode it switches to', () => {
-    render(<AppHeaderMenu canSendFeedback />);
+    renderMenu();
     openMenu();
 
     expect(screen.getByTestId('header-menu-theme').textContent).toContain('מצב כהה');
@@ -119,14 +148,14 @@ describe('AppHeaderMenu', () => {
 
   it('labels the theme item the other way round in dark mode', () => {
     theme = 'dark';
-    render(<AppHeaderMenu canSendFeedback />);
+    renderMenu();
     openMenu();
 
     expect(screen.getByTestId('header-menu-theme').textContent).toContain('מצב בהיר');
   });
 
   it('toggles the theme from the menu', () => {
-    render(<AppHeaderMenu canSendFeedback />);
+    renderMenu();
     openMenu();
 
     fireEvent.click(screen.getByTestId('header-menu-theme'));
@@ -135,52 +164,16 @@ describe('AppHeaderMenu', () => {
   });
 
   it('triggers a household sync from the menu', () => {
-    render(<AppHeaderMenu canSendFeedback />);
+    renderMenu();
     openMenu();
 
     fireEvent.click(screen.getByTestId('header-menu-refresh'));
 
     expect(mutate).toHaveBeenCalledTimes(1);
   });
-
-  /**
-   * The trigger is `sm:hidden`, but the content is portaled to <body> and
-   * carries no width gating of its own. Open the menu at 360 and rotate to
-   * landscape (iPhone landscape is >= sm): the trigger goes `display: none`,
-   * its anchor rect collapses to 0x0, and Radix keeps the menu mounted -- an
-   * orphaned popover parked in the viewport corner over the content, with no
-   * visible trigger to explain it.
-   */
-  it('closes itself when the viewport grows past sm', () => {
-    const listeners: Array<() => void> = [];
-    const query = {
-      matches: false,
-      media: '(min-width: 640px)',
-      addEventListener: (_: string, listener: () => void) => listeners.push(listener),
-      removeEventListener: vi.fn(),
-    };
-    Object.defineProperty(window, 'matchMedia', {
-      value: () => query,
-      configurable: true,
-      writable: true,
-    });
-
-    render(<AppHeaderMenu canSendFeedback />);
-    openMenu();
-    expect(screen.getByTestId('header-menu-theme')).not.toBeNull();
-
-    // The parent rotates to landscape.
-    query.matches = true;
-    act(() => {
-      listeners.forEach((listener) => listener());
-    });
-
-    expect(screen.queryByTestId('header-menu-theme')).toBeNull();
-  });
-
   it('disables sync while one is already running', () => {
     isPending = true;
-    render(<AppHeaderMenu canSendFeedback />);
+    renderMenu();
     openMenu();
 
     const item = screen.getByTestId('header-menu-refresh');

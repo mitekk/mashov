@@ -486,14 +486,18 @@ test.describe('Home page', () => {
     const homePage = new HomePage(page);
     await homePage.navigate();
 
-    await expect(homePage.refreshButton).toBeVisible();
+    // Sync is a profile-menu item now, so it has to be opened before it has a
+    // box -- and Radix closes the menu on select, which is why the pending
+    // state is asserted in AppHeaderMenu.test.tsx rather than here. What this
+    // owns is the end-to-end effect, and only that: the dashboard is refetched.
+    // Asserting the item is gone afterwards would look like proof the sync
+    // fired and be none -- Radix unmounts the content on select whether or not
+    // `onSelect` did anything.
+    await homePage.openProfileMenu();
     await expect(homePage.refreshButton).toBeEnabled();
 
-    await homePage.clickRefresh();
-    await expect(homePage.refreshButton).toBeDisabled();
-    await expect(homePage.refreshButton.locator('svg')).toHaveClass(/animate-spin/);
-    await expect(homePage.refreshButton).toBeEnabled({ timeout: 10000 });
-    expect(dashboardCalls).toBeGreaterThanOrEqual(2);
+    await homePage.refreshButton.click();
+    await expect.poll(() => dashboardCalls, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
   });
 
   test('feed item with isNew=true shows new indicator', async ({ page }) => {
