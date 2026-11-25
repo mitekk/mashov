@@ -1,8 +1,7 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { TelegramSender } from '../digest/senders/telegram.sender';
-import { DigestSender } from '../digest/senders/digest-sender.interface';
+import { FeedbackTelegramSender } from './feedback-telegram.sender';
 import { isPermanentTelegramFailure } from '../telegram/telegram-http';
 import { resolvePublicBaseUrl } from '../telegram/public-base-url';
 import type { FeedbackSchoolSnapshot } from './feedback.service';
@@ -30,6 +29,51 @@ export const FEEDBACK_NOTIFY_DEFAULT_LIMIT = 20;
  */
 export const FEEDBACK_CONTENT_PREVIEW_MAX = 500;
 
+/**
+ * Refusals that describe the DESTINATION, not the report.
+ *
+ * Feedback-local on purpose, and deliberately the opposite call to the one
+ * `isPermanentTelegramFailure` makes for the digest. A private channel refuses
+ * a bot that is not one of its admins with "bot is not a member of the channel
+ * chat" or "need administrator rights in the channel chat". Neither phrase is
+ * in PERMANENT_TELEGRAM_FAILURES, so both classify as transient -- three
+ * attempts, six minutes apart, and then the row is retired for good. During
+ * rollout that is exactly what happens if the two env vars are set before the
+ * bot is made a channel admin: every report already waiting silently loses its
+ * notification forever. The reports survive -- they stay in the table and on
+ * /admin/feedback -- but nobody is ever pinged.
+ *
+ * So a failure about the destination parks the row instead of charging it an
+ * attempt: same principle as the missing-token gate in `deliverPending`. The
+ * row delivers by itself on the first tick after the channel is fixed.
+ *
+ * This is NOT the right call for the digest, and that classification must not
+ * change. There the address is a per-parent chat the parent themselves
+ * supplied, so a refusal means that recipient is gone and SHOULD be retired --
+ * retrying it forever would re-summarize and re-send on every run, with a
+ * model call each time. Here there is a single operator-owned address, no model
+ * call, at most 20 sends per two minutes against a table bounded at ten rows
+ * per household per hour. Different blast radius, different rule.
+ *
+ * Accepted cost: a destination that is permanently broken retries forever. It
+ * is bounded and cheap, it logs once per run rather than once per row, and the
+ * stored `notifyError` is rendered on the admin detail view -- which is where
+ * an operator looks.
+ */
+const FEEDBACK_DESTINATION_FAILURES = [
+  'chat not found',
+  'bot is not a member',
+  'need administrator rights',
+  'chat_admin_required',
+  'bot was kicked',
+];
+
+/** Whether a refusal is about the address rather than this row. */
+export function isDestinationFailure(description: string): boolean {
+  const text = description.toLowerCase();
+  return FEEDBACK_DESTINATION_FAILURES.some((phrase) => text.includes(phrase));
+}
+
 /** What the outbox pass reads. Narrower than the row on purpose. */
 export interface FeedbackOutboxRow {
   id: string;
@@ -47,7 +91,7 @@ export interface FeedbackOutboxRow {
   notifyError?: string | null;
 }
 
-export type FeedbackNotifyStatus = 'sent' | 'failed' | 'retired';
+export type FeedbackNotifyStatus = 'sent' | 'failed' | 'retired' | 'parked';
 
 export interface FeedbackNotifyResult {
   id: string;
@@ -78,13 +122,17 @@ const OUTBOX_SELECT = {
  * request a parent is waiting for. A two-minute cron calls
  * `deliverPending()`.
  *
- * The single switch is `FEEDBACK_TELEGRAM_CHAT_ID`. This diverges from the
- * house convention on purpose -- `DIGEST_ENABLED` and `INBOX_NOTIFY_ENABLED`
- * each gate a cron that is otherwise fully configured, because those features
- * have per-parent recipients and a wrong-on cron messages real households.
- * Here a configured chat id has no meaning other than "notify this chat", and
- * a second flag would only create a state where delivery is silently off while
- * everything needed for it is set.
+ * Delivery is on when, and only when, there is somewhere to deliver to:
+ * `FEEDBACK_TELEGRAM_BOT_TOKEN` (which bot) and `FEEDBACK_TELEGRAM_CHAT_ID`
+ * (which chat). Both unset is the off switch, and it is silent.
+ *
+ * There is deliberately no `FEEDBACK_NOTIFY_ENABLED` on top. That diverges
+ * from `DIGEST_ENABLED` and `INBOX_NOTIFY_ENABLED`, which each gate a cron
+ * that is otherwise fully configured -- those features have per-parent
+ * recipients, so a wrong-on cron messages real households. Here the two vars
+ * are not flags but the two halves of one address, and a third switch would
+ * only create a state where delivery is off while everything needed for it is
+ * set. Two coordinates, no flag.
  */
 @Injectable()
 export class FeedbackNotifierService {
@@ -93,11 +141,25 @@ export class FeedbackNotifierService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    // Concrete class as the token, interface as the type: the sender is
-    // DigestModule's export and the chunking / permanent-failure
-    // classification come with it rather than being copied here.
-    @Inject(TelegramSender) private readonly telegram: DigestSender,
+    // FeedbackTelegramSender, not TelegramSender: operator notifications go
+    // out as a separate bot from the one that talks to parents (ADR-0045).
+    // The concrete type is load-bearing twice over -- it carries `hasToken()`
+    // for the gate below, and it makes handing this service the parent-facing
+    // sender a compile error rather than a silent cross-wire.
+    private readonly telegram: FeedbackTelegramSender,
   ) {}
+
+  /**
+   * Whether the outbox has a destination: a bot and a chat.
+   *
+   * The task checks this before doing anything, so an unconfigured stack runs
+   * no query and writes no line on any of its 720 ticks a day. The token half
+   * is asked of the sender rather than read from config here, so the env var
+   * name lives in exactly one place.
+   */
+  isConfigured(): boolean {
+    return this.telegram.hasToken() && this.chatId() !== null;
+  }
 
   /**
    * One outbox pass: undelivered rows under the attempt ceiling, oldest first.
@@ -109,10 +171,15 @@ export class FeedbackNotifierService {
    */
   async deliverPending(limit?: number): Promise<FeedbackNotifyResult[]> {
     const chatId = this.chatId();
-    // Unset is the off switch, and it is silent: no query and no log line per
-    // tick. A stack nobody configured a chat for must not write 720 lines a
-    // day saying so.
-    if (!chatId) return [];
+    // Unconfigured is the off switch, and it is silent: no query and no log
+    // line per tick. A stack nobody configured must not write 720 lines a day
+    // saying so.
+    //
+    // The token is checked here and not left to the send: a send that throws
+    // costs the row an attempt, and three of those retire it permanently. A
+    // stack that is merely missing its token would otherwise burn through
+    // every pending report in six minutes and retire the lot.
+    if (!chatId || !this.telegram.hasToken()) return [];
 
     const rows = (await this.prisma.feedback.findMany({
       where: {
@@ -126,9 +193,14 @@ export class FeedbackNotifierService {
 
     const baseUrl = resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL'));
 
+    // Per run, not per row: a channel the bot has not been made an admin of
+    // would otherwise write one line for every pending report, every two
+    // minutes, forever.
+    const run = { destinationFailureLogged: false };
+
     const results: FeedbackNotifyResult[] = [];
     for (const row of rows) {
-      results.push(await this.deliverOne(chatId, row, baseUrl));
+      results.push(await this.deliverOne(chatId, row, baseUrl, run));
     }
     return results;
   }
@@ -180,6 +252,7 @@ export class FeedbackNotifierService {
     chatId: string,
     row: FeedbackOutboxRow,
     baseUrl: string | null,
+    run: { destinationFailureLogged: boolean },
   ): Promise<FeedbackNotifyResult> {
     const attempts = row.notifyAttempts + 1;
     try {
@@ -191,9 +264,41 @@ export class FeedbackNotifierService {
       return { id: row.id, status: 'sent' };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // A permanent failure -- a bad chat id, a blocked bot -- will fail
-      // identically twice more. Spend the remaining attempts now so the row is
-      // retired on this pass rather than four minutes from now.
+
+      // Checked BEFORE the permanent-failure test, because the two lists
+      // overlap on "chat not found" and the destination reading is the right
+      // one here: a chat id with a typo in it is a setup mistake an operator
+      // fixes, not a dead recipient. Park the row -- record the error, leave
+      // notifyAttempts untouched, stay pending -- so a destination nobody has
+      // finished configuring cannot spend the budget of the reports waiting on
+      // it. See FEEDBACK_DESTINATION_FAILURES.
+      if (isDestinationFailure(message)) {
+        if (!run.destinationFailureLogged) {
+          run.destinationFailureLogged = true;
+          this.logger.error(
+            `Feedback notification parked: the destination refused the message, so no attempt ` +
+              `was spent and the pending rows stay pending. Further rows this run are parked ` +
+              `without another line. Fix the channel (FEEDBACK_TELEGRAM_CHAT_ID, and the bot ` +
+              `must be a channel admin) and delivery resumes by itself: ${message}`,
+          );
+        }
+
+        try {
+          await this.prisma.feedback.update({
+            where: { id: row.id },
+            data: { notifyError: message },
+          });
+        } catch {
+          // Same reasoning as below: the log line is the record and the row is
+          // already pending, which is where parking wanted it anyway.
+        }
+        return { id: row.id, status: 'parked' };
+      }
+
+      // A permanent failure -- a recipient who blocked the bot or whose
+      // account is gone -- will fail identically twice more. Spend the
+      // remaining attempts now so the row is retired on this pass rather than
+      // four minutes from now.
       const permanent = isPermanentTelegramFailure(message);
       const spent = permanent ? FEEDBACK_NOTIFY_MAX_ATTEMPTS : attempts;
       const status: FeedbackNotifyStatus =

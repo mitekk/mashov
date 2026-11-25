@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import type { DigestSender } from '../digest/senders/digest-sender.interface';
+import type { FeedbackTelegramSender } from './feedback-telegram.sender';
 import {
   FEEDBACK_NOTIFY_MAX_ATTEMPTS,
   FeedbackNotifierService,
@@ -27,7 +27,9 @@ function row(overrides: Partial<FeedbackOutboxRow> = {}): FeedbackOutboxRow {
   };
 }
 
-function build(options: { chatId?: string; baseUrl?: string; maxPerRun?: string } = {}) {
+function build(
+  options: { chatId?: string; baseUrl?: string; maxPerRun?: string; hasToken?: boolean } = {},
+) {
   const findMany = jest.fn();
   const update = jest.fn().mockResolvedValue({});
   const prisma = { feedback: { findMany, update } } as unknown as PrismaService;
@@ -40,13 +42,27 @@ function build(options: { chatId?: string; baseUrl?: string; maxPerRun?: string 
   const config = { get: (key: string) => env[key] } as unknown as ConfigService;
 
   const send = jest.fn().mockResolvedValue(undefined);
-  const telegram = { channel: 'telegram', send } as unknown as DigestSender;
+  // The feedback bot, not the parent-facing one. `hasToken` is what the outbox
+  // gates on, so it defaults to configured and the token tests turn it off.
+  const hasToken = jest.fn().mockReturnValue(options.hasToken ?? true);
+  const telegram = {
+    channel: 'telegram',
+    send,
+    hasToken,
+  } as unknown as FeedbackTelegramSender;
 
   const service = new FeedbackNotifierService(prisma, config, telegram);
   // The run logs a retirement; silence it so a passing suite stays readable.
-  jest.spyOn((service as unknown as { logger: { error: () => void; warn: () => void } }).logger, 'error').mockImplementation(() => undefined);
+  // Returned as well, because "one log line per run, not one per row" is
+  // itself an assertion in the destination-failure tests below.
+  const logError = jest
+    .spyOn(
+      (service as unknown as { logger: { error: (message: string) => void } }).logger,
+      'error',
+    )
+    .mockImplementation(() => undefined);
 
-  return { service, findMany, update, send };
+  return { service, findMany, update, send, hasToken, logError };
 }
 
 describe('FeedbackNotifierService', () => {
@@ -137,6 +153,27 @@ describe('FeedbackNotifierService', () => {
       expect(findMany).not.toHaveBeenCalled();
     });
 
+    it('delivers nothing when the feedback bot token is missing', async () => {
+      // This is the one that protects the reports. A send without a token
+      // throws, a throw costs the row an attempt, and three attempts retire it
+      // for good -- so a stack with a chat id but no token would quietly
+      // destroy every pending report within six minutes. The gate must come
+      // before the query, not after the failure.
+      const { service, findMany, send } = build({ chatId: '-100123', hasToken: false });
+
+      expect(await service.deliverPending()).toEqual([]);
+      expect(findMany).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('asks the sender for the token rather than reading the env var itself', async () => {
+      const { service, hasToken } = build({ chatId: '-100123', hasToken: false });
+
+      await service.deliverPending();
+
+      expect(hasToken).toHaveBeenCalled();
+    });
+
     it('selects undelivered rows under the attempt ceiling, oldest first', async () => {
       const { service, findMany } = build({ chatId: '-100123' });
       findMany.mockResolvedValue([]);
@@ -209,10 +246,17 @@ describe('FeedbackNotifierService', () => {
       expect(await service.deliverPending()).toEqual([{ id: 'fb-1', status: 'retired' }]);
     });
 
-    it('retires a permanent failure immediately rather than spending three attempts', async () => {
+    it('retires a recipient-permanent failure immediately rather than spending three attempts', async () => {
+      // A bot a USER blocked is permanently undeliverable and nothing an
+      // operator can fix by editing config, so it still retires on the first
+      // attempt. Destination-shaped refusals -- a channel the bot has not been
+      // made an admin of -- are the opposite case and park instead; see the
+      // describe block below.
       const { service, findMany, update, send } = build({ chatId: '-100123' });
       findMany.mockResolvedValue([row()]);
-      send.mockRejectedValue(new Error('Telegram send failed: Bad Request: chat not found'));
+      send.mockRejectedValue(
+        new Error('Telegram send failed: Forbidden: bot was blocked by the user'),
+      );
 
       const results = await service.deliverPending();
 
@@ -221,7 +265,7 @@ describe('FeedbackNotifierService', () => {
         where: { id: 'fb-1' },
         data: {
           notifyAttempts: FEEDBACK_NOTIFY_MAX_ATTEMPTS,
-          notifyError: 'Telegram send failed: Bad Request: chat not found',
+          notifyError: 'Telegram send failed: Forbidden: bot was blocked by the user',
         },
       });
     });
@@ -249,6 +293,117 @@ describe('FeedbackNotifierService', () => {
       await expect(service.deliverPending()).resolves.toEqual([
         { id: 'fb-1', status: 'failed' },
       ]);
+    });
+  });
+  describe('a destination that refuses the bot', () => {
+    // The hazard this covers: a private channel refuses a non-admin bot with
+    // "bot is not a member of the channel chat" / "need administrator rights
+    // in the channel chat". Neither phrase is in PERMANENT_TELEGRAM_FAILURES,
+    // so it classifies as transient -- three attempts, six minutes, then
+    // retired for good. During rollout, with the token and chat id set before
+    // the bot is made a channel admin, every report already waiting would
+    // lose its notification permanently. A failure about the DESTINATION must
+    // not consume the ROW's budget.
+    const REFUSALS = [
+      'Telegram send failed: Bad Request: chat not found',
+      'Telegram send failed: Bad Request: bot is not a member of the channel chat',
+      'Telegram send failed: Bad Request: need administrator rights in the channel chat',
+      'Telegram send failed: Bad Request: CHAT_ADMIN_REQUIRED',
+      'Telegram send failed: Forbidden: bot was kicked from the channel chat',
+    ];
+
+    it.each(REFUSALS)('parks the row rather than spending an attempt: %s', async (message) => {
+      const { service, findMany, update, send } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row()]);
+      send.mockRejectedValue(new Error(message));
+
+      const results = await service.deliverPending();
+
+      expect(results).toEqual([{ id: 'fb-1', status: 'parked' }]);
+      // notifyAttempts is absent from the update, not set to 0: the row keeps
+      // whatever budget it had, and the error is still recorded for the
+      // dashboard.
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'fb-1' },
+        data: { notifyError: message },
+      });
+    });
+
+    it('leaves a row that has already spent attempts exactly where it was', async () => {
+      const { service, findMany, update, send } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row({ notifyAttempts: 2 })]);
+      send.mockRejectedValue(new Error(REFUSALS[1]));
+
+      expect(await service.deliverPending()).toEqual([{ id: 'fb-1', status: 'parked' }]);
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'fb-1' },
+        data: { notifyError: REFUSALS[1] },
+      });
+    });
+
+    it('logs once per run, not once per row', async () => {
+      const { service, findMany, send, logError } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row({ id: 'fb-1' }), row({ id: 'fb-2' }), row({ id: 'fb-3' })]);
+      send.mockRejectedValue(new Error(REFUSALS[2]));
+
+      const results = await service.deliverPending();
+
+      expect(results.map((result) => result.status)).toEqual(['parked', 'parked', 'parked']);
+      // A misconfigured channel must not flood the log with one line per
+      // pending report every two minutes.
+      expect(logError).toHaveBeenCalledTimes(1);
+      expect(logError.mock.calls[0][0]).toContain('need administrator rights');
+    });
+
+    it('still logs a genuinely transient failure per row', async () => {
+      const { service, findMany, send, logError } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row({ id: 'fb-1' }), row({ id: 'fb-2' })]);
+      send.mockRejectedValue(new Error('Telegram send failed: HTTP 502'));
+
+      await service.deliverPending();
+
+      expect(logError).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not stop the rows behind it from being delivered', async () => {
+      const { service, findMany, send } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row({ id: 'fb-1' }), row({ id: 'fb-2' })]);
+      send
+        .mockRejectedValueOnce(new Error(REFUSALS[1]))
+        .mockResolvedValueOnce(undefined);
+
+      expect(await service.deliverPending()).toEqual([
+        { id: 'fb-1', status: 'parked' },
+        { id: 'fb-2', status: 'sent' },
+      ]);
+    });
+
+    it('retires a transient failure at the ceiling even so', async () => {
+      // The parking rule is scoped to destination-shaped refusals. Everything
+      // else keeps the three-attempt ceiling: this is deliberately NOT a
+      // "retry forever" change.
+      const { service, findMany, update, send } = build({ chatId: '-100123' });
+      findMany.mockResolvedValue([row({ notifyAttempts: FEEDBACK_NOTIFY_MAX_ATTEMPTS - 1 })]);
+      send.mockRejectedValue(new Error('Telegram send failed: HTTP 502'));
+
+      expect(await service.deliverPending()).toEqual([{ id: 'fb-1', status: 'retired' }]);
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'fb-1' },
+        data: {
+          notifyAttempts: FEEDBACK_NOTIFY_MAX_ATTEMPTS,
+          notifyError: 'Telegram send failed: HTTP 502',
+        },
+      });
+    });
+  });
+
+  describe('isConfigured', () => {
+    it('needs both halves of the address: a bot and a chat', () => {
+      expect(build({ chatId: '-100123', hasToken: true }).service.isConfigured()).toBe(true);
+      expect(build({ chatId: '-100123', hasToken: false }).service.isConfigured()).toBe(false);
+      expect(build({ hasToken: true }).service.isConfigured()).toBe(false);
+      expect(build({ chatId: '   ', hasToken: true }).service.isConfigured()).toBe(false);
+      expect(build().service.isConfigured()).toBe(false);
     });
   });
 });

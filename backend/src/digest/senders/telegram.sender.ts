@@ -30,10 +30,34 @@ export class TelegramSender implements DigestSender {
     this.http = createTelegramHttp();
   }
 
+  /**
+   * The env var holding the bot token.
+   *
+   * A method rather than a field so a subclass can override it without
+   * depending on field-initialisation order, and read at send time rather than
+   * construction so a stack can be configured after boot. FeedbackTelegramSender
+   * overrides it to deliver operator notifications as a different bot; see
+   * ADR-0045.
+   */
+  protected tokenVar(): string {
+    return 'TELEGRAM_BOT_TOKEN';
+  }
+
+  /**
+   * Whether a token is configured at all. Callers that treat "unconfigured" as
+   * off rather than broken gate on this instead of sending and catching -- a
+   * failed send costs an attempt, and for the feedback outbox those are
+   * countable and spent.
+   */
+  hasToken(): boolean {
+    const token = this.config.get<string>(this.tokenVar());
+    return typeof token === 'string' && token.trim().length > 0;
+  }
+
   async send(address: string, text: string): Promise<void> {
-    const token = this.config.get<string>('TELEGRAM_BOT_TOKEN');
+    const token = this.config.get<string>(this.tokenVar());
     if (!token || token.trim().length === 0) {
-      throw new Error('Cannot send a digest: TELEGRAM_BOT_TOKEN is not configured.');
+      throw new Error(`Cannot send a message: ${this.tokenVar()} is not configured.`);
     }
 
     // Sequential, and it stops at the first refusal rather than pressing on.

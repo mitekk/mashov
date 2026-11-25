@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { ConfigService } from '@nestjs/config';
 import { FeedbackNotifierService } from '../feedback-notifier.service';
 
 /**
@@ -20,26 +19,26 @@ import { FeedbackNotifierService } from '../feedback-notifier.service';
  * pinned to UTC and nothing here should be reasoned about in two clocks --
  * though a fixed-interval expression does not actually depend on it.
  *
- * Gated on FEEDBACK_TELEGRAM_CHAT_ID alone, with no second `*_ENABLED` var.
- * That diverges from DIGEST_ENABLED / INBOX_NOTIFY_ENABLED deliberately: a
- * configured chat id has no meaning other than "notify this chat", and a
- * second flag only creates a state where delivery is silently off while fully
- * configured. See the doc comment on FeedbackNotifierService and ADR-0045.
+ * Gated on having somewhere to deliver to -- FEEDBACK_TELEGRAM_BOT_TOKEN and
+ * FEEDBACK_TELEGRAM_CHAT_ID -- with no second `*_ENABLED` var. That diverges
+ * from DIGEST_ENABLED / INBOX_NOTIFY_ENABLED deliberately: those two vars are
+ * not flags but the two halves of one address, and a third switch only creates
+ * a state where delivery is silently off while fully configured. The check
+ * itself lives on the notifier so the env var names appear in one place. See
+ * the doc comment on FeedbackNotifierService and ADR-0045.
  */
 @Injectable()
 export class FeedbackNotifyTask {
   private readonly logger = new Logger(FeedbackNotifyTask.name);
 
-  constructor(
-    private readonly notifier: FeedbackNotifierService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly notifier: FeedbackNotifierService) {}
 
   @Cron('*/2 * * * *', { timeZone: 'Asia/Jerusalem' })
   async run(): Promise<void> {
-    // Checked here as well as in the service so an unconfigured stack does no
-    // work at all -- not even the one query -- and writes no line per tick.
-    if (!this.isConfigured()) return;
+    // Checked here as well as inside deliverPending so an unconfigured stack
+    // does no work at all -- not even the one query -- and writes no line per
+    // tick.
+    if (!this.notifier.isConfigured()) return;
 
     try {
       const results = await this.notifier.deliverPending();
@@ -62,10 +61,5 @@ export class FeedbackNotifyTask {
         }`,
       );
     }
-  }
-
-  private isConfigured(): boolean {
-    const raw = this.config.get<string>('FEEDBACK_TELEGRAM_CHAT_ID');
-    return typeof raw === 'string' && raw.trim().length > 0;
   }
 }
