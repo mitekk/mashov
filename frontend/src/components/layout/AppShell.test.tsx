@@ -15,6 +15,8 @@ vi.mock('next/link', () => ({
   default: ({ children, ...props }: React.ComponentProps<'a'>) => <a {...props}>{children}</a>,
 }));
 vi.mock('./AppNav', () => ({ AppNav: () => <nav data-testid="bottom-nav" /> }));
+// Needs a mounted app router and the child list; it has its own suite.
+vi.mock('./HeaderChildSwitcher', () => ({ HeaderChildSwitcher: () => null }));
 
 const { AppShell } = await import('./AppShell');
 

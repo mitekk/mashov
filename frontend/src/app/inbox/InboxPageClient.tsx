@@ -4,14 +4,12 @@ import React, { Suspense, useMemo, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { ConversationList } from '@/components/inbox/ConversationList';
-import { UnreadBadge } from '@/components/inbox/UnreadBadge';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import {
   useArchive,
   useConversations,
-  useMailSummary,
   useMarkRead,
   useMarkUnread,
   useUnarchive,
@@ -43,7 +41,6 @@ function InboxPageContent() {
   const activeFilter = getFilterFromParam(searchParams.get('filter'));
   const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
 
-  const { data: summary } = useMailSummary();
   const { data: me, isError: isMeError } = useMe();
 
   // Both params coexist: /inbox?filter=new&school=540175 is a valid state, and
@@ -200,17 +197,18 @@ function InboxPageContent() {
       {/*
         At 360 this row was a title plus a three-segment filter (~190px) plus
         two 40px buttons, all on one non-wrapping line. The buttons are the app
-        header's now, and `.page-header` wraps below sm regardless -- the
-        filter group is still ~190px beside a title, and the wrapping is what
-        keeps that off one line.
+        header's now, and so are the title and the unread badge -- the filter
+        group has the row to itself.
+
+        `justify-end` is load-bearing now that the title is `sr-only`:
+        `.page-header` is `justify-between`, `sr-only` is `position: absolute`,
+        and a single in-flow child under `justify-between` resolves to
+        main-start -- which in RTL is the right edge, where the title used to
+        be. This keeps the filters where they have always been.
       */}
-      <header className="page-header items-center">
-        <div className="flex min-w-0 items-center gap-2">
-          <h1 className="page-title">דואר</h1>
-          {summary && summary.newConversations > 0 && (
-            <UnreadBadge count={summary.newConversations} />
-          )}
-        </div>
+      <header className="page-header items-center justify-end">
+        {/* Visible title lives in the app header; see AppHeader. */}
+        <h1 className="sr-only">דואר</h1>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           {/* Filter toggle */}

@@ -193,21 +193,24 @@ export default function MorePage() {
     <AppShell>
       <div data-testid="more-page" className="page-shell space-y-7">
         <header className="page-header">
-          <h1 className="page-title">עוד</h1>
+          {/* Visible title lives in the app header; see AppHeader. */}
+          <h1 className="sr-only">עוד</h1>
         </header>
 
         {/*
-          One column on a phone, content plus an aside at lg. Sync state and
-          Telegram go to the aside: they are status and a delivery preference,
-          not things a parent came here to change.
+          One column on a phone, content plus an aside at lg. Sync state goes
+          to the aside: it is status, not something a parent came here to
+          change. In RTL the `1fr` track is the right-hand column, so the
+          main column -- schools, parent details, Telegram -- is the one the
+          eye starts on.
 
           The account actions and the version line sit in a THIRD child that
           spans both columns at lg, rather than at the end of the main column.
           `.split-pane` is `grid-cols-1` below lg, so a two-child layout stacks
-          the aside AFTER them -- putting sync status and the Telegram
-          preference below "ניתוק מכל בתי הספר" and below the version footer on
-          every phone. Three children keep the phone order exactly as it was
-          and still give the desktop its aside.
+          the aside AFTER them -- putting sync status below
+          "ניתוק מכל בתי הספר" and below the version footer on every phone.
+          Three children keep the destructive actions and the version line last
+          on a phone and still give the desktop its aside.
         */}
         <div className="split-pane">
           <div className="space-y-7">
@@ -244,29 +247,11 @@ export default function MorePage() {
                 </div>
               </section>
             )}
-          </div>
 
-          {/* `.sticky-under-header` replaces `lg:top-4`, which being a
-              utility would win over it. See globals.css. */}
-          <aside className="sticky-under-header space-y-7 lg:sticky">
-            {/* Source health */}
-            <section>
-              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                מצב סנכרון
-              </h2>
-              {healthLoading && <LoadingState message="טוען..." />}
-              {healthError && <ErrorState />}
-              {health && (
-                <div className="space-y-3">
-                  <ContentFreshnessCard contentFreshness={health.contentFreshness} />
-                  <SourceHealthList sources={health.sources} />
-                </div>
-              )}
-            </section>
-
-            {/* Telegram updates. Beside sync state rather than with the account
-                actions: it is a delivery preference, not an account action --
-                disconnecting it removes a chat id, not a household. */}
+            {/* Telegram updates. In the main column, not the aside: picking
+                which children get a digest is something a parent comes here
+                to CHANGE, which is what this column is for -- the aside is
+                for status they only read. */}
             <section>
               <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                 עדכונים בטלגרם
@@ -293,6 +278,28 @@ export default function MorePage() {
                 onDisconnect={() => showTelegramDisconnect(true)}
               />
             </section>
+          </div>
+
+          {/* Deliberately not sticky: with Telegram moved to the main
+              column this holds sync status alone, and a lone status card
+              riding down the page while the content scrolls past it drew the
+              eye to the one thing here nobody came to read. */}
+          <aside className="space-y-7">
+            {/* Source health */}
+            <section>
+              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                מצב סנכרון
+              </h2>
+              {healthLoading && <LoadingState message="טוען..." />}
+              {healthError && <ErrorState />}
+              {health && (
+                <div className="space-y-3">
+                  <ContentFreshnessCard contentFreshness={health.contentFreshness} />
+                  <SourceHealthList sources={health.sources} />
+                </div>
+              )}
+            </section>
+
           </aside>
 
           {/* Spans both columns at lg; last on a phone, which is where the

@@ -17,10 +17,17 @@ export function NoticesSection({ studentGuid }: NoticesSectionProps) {
   const { data, isLoading, isError, refetch } = useChildNotices(studentGuid);
 
   return (
-    <section data-testid="notices-section" className="section-stack py-1">
-      <h2 className="text-lg font-semibold text-foreground">
-        הודעות בית הספר
-      </h2>
+    <section
+      data-testid="notices-section"
+      // The tab rail above already names this section, so the heading is
+      // `sr-only` -- the outline needs it, the eye does not.
+      // `aria-labelledby` rather than `aria-label`: the two would otherwise
+      // announce the same name twice, once as the region and once as the
+      // heading.
+      aria-labelledby="notices-section-title"
+      className="section-stack py-1"
+    >
+      <h2 id="notices-section-title" className="sr-only">הודעות בית הספר</h2>
       {isLoading && <FeedSkeleton count={2} />}
       {isError && (
         <ErrorState

@@ -2,13 +2,19 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useMe } from '@/hooks/useAuth';
+import { useDashboard } from '@/hooks/useDashboard';
 import { FeedbackLauncher } from '@/components/feedback/FeedbackLauncher';
+import { UnreadBadge } from '@/components/inbox/UnreadBadge';
 import { RefreshButton } from '@/components/ui/RefreshButton';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { FeedbackDialogProvider } from '@/hooks/useFeedbackDialog';
 import { useHeaderScroll } from '@/hooks/useHeaderScroll';
 import { AppHeaderMenu } from './AppHeaderMenu';
+import { HeaderChildSwitcher } from './HeaderChildSwitcher';
+import { resolveHeaderTitle } from './headerTitles';
+import { NAV_ITEMS, isNavItemActive, type NavItem } from './navItems';
 
 function getInitials(displayName: string): string {
   const parts = displayName.trim().split(/\s+/);
@@ -33,8 +39,18 @@ function childrenSuffix(childrenCount: number): string {
 }
 
 /**
- * The one app-wide header: feedback, theme, household sync, and the profile
- * avatar.
+ * The nav entry whose unread counter the דואר title carries.
+ *
+ * Resolved, not asserted: this header is in `AppShell` on every authenticated
+ * route, so a rename of the inbox href that left this `undefined` would throw
+ * inside `isNavItemActive` and white-screen the whole app rather than just
+ * drop a badge.
+ */
+const INBOX_ITEM: NavItem | undefined = NAV_ITEMS.find((item) => item.href === '/inbox');
+
+/**
+ * The one app-wide header: the page title, feedback, theme, household sync,
+ * and the profile avatar.
  *
  * Theme and sync used to be copy-pasted into six page `<header>`s -- they are
  * household-wide actions (`useSyncRefresh()` takes no argument on purpose;
@@ -59,10 +75,17 @@ function childrenSuffix(childrenCount: number): string {
  */
 export function AppHeader() {
   const { data: me } = useMe();
+  const pathname = usePathname() ?? '';
+  const { data: dashboard } = useDashboard();
   const ref = useHeaderScroll<HTMLElement>();
 
   const initials = me?.displayName ? getInitials(me.displayName) : '?';
   const suffix = childrenSuffix(me?.childrenCount ?? 0);
+  const title = resolveHeaderTitle(pathname);
+  const unreadCount = dashboard?.summary?.newConversations ?? 0;
+  const showsUnread = INBOX_ITEM !== undefined
+    && isNavItemActive(INBOX_ITEM, pathname)
+    && unreadCount > 0;
 
   return (
     <FeedbackDialogProvider>
@@ -74,7 +97,35 @@ export function AppHeader() {
         // opacity and a translate. Without it the header is simply sticky.
         className="app-header sticky top-0 z-40 border-b border-border/60 bg-background/80 pt-safe backdrop-blur lg:pt-0"
       >
-        <div className="flex h-14 items-center justify-end gap-2 px-4">
+        <div className="flex h-14 items-center gap-2 px-4">
+          {/*
+            `flex-1` here is what pushes the action cluster to the end of the
+            row, so dropping `justify-end` above changes no action's position.
+          */}
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {title && (
+              /*
+                `aria-hidden` is deliberate, and so is this being a `<span>`.
+                `useHeaderScroll` marks the whole header `inert` once it has
+                faded out, so an `<h1>` living here would leave the a11y tree
+                mid-scroll and the document would lose its heading. Each page
+                keeps its own `<h1 className="sr-only">` instead: structure
+                survives the fade, and the title is not announced twice.
+              */
+              <span
+                data-testid="app-header-title"
+                aria-hidden="true"
+                className="truncate text-lg font-semibold tracking-tight text-foreground"
+              >
+                {title}
+              </span>
+            )}
+            {/* Rides along with the דואר title -- same counter `AppNav`'s own
+                badge reads, so the two can never disagree. */}
+            {showsUnread && <UnreadBadge count={unreadCount} />}
+            <HeaderChildSwitcher />
+          </div>
+
           {/* From `sm` up there is room for all three side by side. */}
           <div
             data-testid="app-header-inline"
@@ -100,8 +151,9 @@ export function AppHeader() {
               aria-label={`${me.displayName ?? 'פרופיל'}${suffix} — הגדרות`}
               className="flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors hover:text-foreground"
             >
+              {/* `lg`, not `sm`: below that the page title owns the row. */}
               {me.displayName && (
-                <span className="hidden text-xs font-medium sm:block">
+                <span className="hidden text-xs font-medium lg:block">
                   {me.displayName}
                   {suffix}
                 </span>

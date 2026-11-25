@@ -30,21 +30,35 @@ export function classifyBehavior(
   );
 }
 
-export function getBucketLabel(bucket: BehaviorBucket | 'all'): string {
-  switch (bucket) {
-    case 'all': return 'הכל';
+const BUCKETS: readonly BehaviorBucket[] = ['attention', 'positive', 'neutral'];
+
+/**
+ * The API cannot send a fourth bucket today -- `ChildrenService.mapBehaviorBucket`
+ * narrows the free-form `classification` column to these three. This exists
+ * because the cost of being wrong is asymmetric: a `switch` with no `default`
+ * returns `undefined`, and the next `.border` on it white-screens the child page.
+ */
+export function normalizeBucket(bucket: string): BehaviorBucket {
+  return (BUCKETS as readonly string[]).includes(bucket)
+    ? (bucket as BehaviorBucket)
+    : 'neutral';
+}
+
+export function getBucketLabel(bucket: BehaviorBucket | 'all' | (string & {})): string {
+  if (bucket === 'all') return 'הכל';
+  switch (normalizeBucket(bucket)) {
     case 'attention': return 'תשומת לב';
     case 'positive': return 'חיובי';
     case 'neutral': return 'אחר';
   }
 }
 
-export function getBucketColor(bucket: BehaviorBucket): {
+export function getBucketColor(bucket: BehaviorBucket | (string & {})): {
   bg: string;
   text: string;
   border: string;
 } {
-  switch (bucket) {
+  switch (normalizeBucket(bucket)) {
     case 'attention':
       return { bg: 'bg-attention-subtle', text: 'text-attention', border: 'border-attention/45' };
     case 'positive':

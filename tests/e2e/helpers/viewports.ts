@@ -62,6 +62,11 @@ export const ROUTES: RouteUnderTest[] = [
     readyTestId: 'child-workspace',
   },
   {
+    name: 'child workspace (behavior)',
+    path: `/children/${STUDENT_GUID}?section=behavior`,
+    readyTestId: 'behavior-section',
+  },
+  {
     name: 'child workspace (timetable)',
     path: `/children/${STUDENT_GUID}?section=timetable`,
     readyTestId: 'timetable-section',
@@ -182,30 +187,57 @@ const EMPTY_PAGE = {
   pagination: { page: 1, limit: 50, total: 0, totalPages: 0, hasNext: false, hasPrev: false },
 };
 
+/**
+ * Must match `HomeworkItem` in `frontend/src/types/api.ts`. This sweep measures
+ * what a 360px screen does with real content, so a fixture missing half the
+ * contract measures a near-empty card and proves nothing.
+ */
 const HOMEWORK_ITEM = {
   id: HOMEWORK_ID,
   studentGuid: STUDENT_GUID,
-  subjectName: 'מתמטיקה',
-  teacherName: 'רונית לוי',
-  homework: 'תרגילים 1-10 בעמוד 42',
+  lessonId: 9101,
+  groupId: 7201,
   lessonDate: NOW,
+  lesson: 3,
+  subjectName: 'מתמטיקה',
+  homeworkText: 'תרגילים 1-10 בעמוד 42',
+  remark: 'להביא מחשבון ומחוגה לשיעור הבא',
+  files: [],
   isNew: true,
   isArchived: false,
-  syncedAt: NOW,
+  isPastYear: false,
+  updatedAt: NOW,
 };
 
+/**
+ * Must match `BehaviorItem` in `frontend/src/types/api.ts`.
+ *
+ * `achvaCode: 1` is what `BEHAVIOR_MAP` classifies as `attention`, so the
+ * fixture agrees with the classifier instead of contradicting it.
+ */
 const BEHAVIOR_ITEM = {
   id: BEHAVIOR_ID,
   studentGuid: STUDENT_GUID,
-  subjectName: 'אנגלית',
-  teacherName: 'דנה כהן',
-  eventType: 'איחור',
-  bucket: 'negative',
-  justified: false,
+  lessonId: 9102,
+  groupId: 7202,
+  eventCode: 1,
+  achvaCode: 1,
+  achvaName: 'איחור',
+  bucket: 'attention',
+  priority: 'medium',
+  justifiable: false,
   lessonDate: NOW,
+  lesson: 2,
+  subject: 'אנגלית',
+  reporter: 'דנה כהן',
+  remark: 'הגיע באיחור של 15 דקות לשיעור',
+  justification: null,
+  files: [],
+  eventAt: NOW,
   isNew: true,
   isArchived: false,
-  syncedAt: NOW,
+  isPastYear: false,
+  updatedAt: NOW,
 };
 
 /**

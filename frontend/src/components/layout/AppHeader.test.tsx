@@ -8,9 +8,18 @@ vi.mock('@/hooks/useAuth', () => ({ useMe: () => useMe() }));
 vi.mock('@/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'light', setTheme: vi.fn(), toggleTheme: vi.fn() }),
 }));
+const useDashboard = vi.fn(() => ({ data: undefined }) as { data: unknown });
 vi.mock('@/hooks/useDashboard', () => ({
   useSyncRefresh: () => ({ mutate: vi.fn(), isPending: false }),
+  useDashboard: () => useDashboard(),
 }));
+const pathname = vi.fn(() => '/home');
+vi.mock('next/navigation', () => ({
+  usePathname: () => pathname(),
+  useRouter: () => ({ push: vi.fn() }),
+}));
+// The switcher has its own suite; it needs a QueryClient and the child list.
+vi.mock('./HeaderChildSwitcher', () => ({ HeaderChildSwitcher: () => null }));
 // `next/link` renders an anchor without the app router in the tree.
 vi.mock('next/link', () => ({
   default: ({ children, ...props }: React.ComponentProps<'a'>) => <a {...props}>{children}</a>,
@@ -35,6 +44,10 @@ function profileLink(): HTMLElement {
 
 beforeEach(() => {
   useMe.mockReset();
+  useDashboard.mockReset();
+  useDashboard.mockReturnValue({ data: undefined });
+  pathname.mockReset();
+  pathname.mockReturnValue('/home');
 });
 
 describe('AppHeader', () => {
@@ -175,12 +188,86 @@ describe('AppHeader', () => {
     expect(screen.getAllByTestId('feedback-launcher-button')).toHaveLength(1);
   });
 
-  it('hides the name below sm, where only the avatar fits', () => {
+  /**
+   * `lg`, not `sm`: the page title moved into this row, and at `sm` a name
+   * plus a count plus a title plus four controls is more than 640px holds.
+   */
+  it('hides the name below lg, where the title owns the row', () => {
     useMe.mockReturnValue({ data: me({ childrenCount: 2 }) });
     render(<AppHeader />);
 
     const name = screen.getByText(/קורס דמיטרי · 2 ילדים/);
     expect(name.className).toContain('hidden');
-    expect(name.className).toContain('sm:block');
+    expect(name.className).toContain('lg:block');
+    expect(name.className).not.toContain('sm:block');
+  });
+
+  it('carries the title of the section the route is in', () => {
+    useMe.mockReturnValue({ data: me() });
+    pathname.mockReturnValue('/home');
+    render(<AppHeader />);
+
+    expect(screen.getByTestId('app-header-title').textContent).toBe('מרכז הורים');
+  });
+
+  it('gives a detail route its section title', () => {
+    useMe.mockReturnValue({ data: me() });
+    pathname.mockReturnValue('/children/guid-1/homework/hw-1');
+    render(<AppHeader />);
+
+    expect(screen.getByTestId('app-header-title').textContent).toBe('ילדים');
+  });
+
+  it('renders no title outside the four sections', () => {
+    useMe.mockReturnValue({ data: me() });
+    pathname.mockReturnValue('/onboarding/connect');
+    render(<AppHeader />);
+
+    expect(screen.queryByTestId('app-header-title')).toBeNull();
+  });
+
+  /**
+   * `useHeaderScroll` marks this header `inert` at the end of the fade. An
+   * `<h1>` living here would leave the a11y tree mid-scroll, so the title is
+   * an `aria-hidden` span and each page keeps its own `sr-only` heading.
+   */
+  it('keeps the title out of the a11y tree and out of the heading outline', () => {
+    useMe.mockReturnValue({ data: me() });
+    render(<AppHeader />);
+
+    const title = screen.getByTestId('app-header-title');
+    expect(title.getAttribute('aria-hidden')).toBe('true');
+    expect(title.tagName).toBe('SPAN');
+  });
+
+  it('shows the unread badge beside the דואר title', () => {
+    useMe.mockReturnValue({ data: me() });
+    useDashboard.mockReturnValue({ data: { summary: { newConversations: 4 } } });
+    pathname.mockReturnValue('/inbox');
+    render(<AppHeader />);
+
+    expect(screen.getByText('4')).not.toBeNull();
+  });
+
+  /**
+   * The title beside it is `aria-hidden`, so without a name of its own the
+   * badge is read out as a bare "4".
+   */
+  it('names what the unread badge counts', () => {
+    useMe.mockReturnValue({ data: me() });
+    useDashboard.mockReturnValue({ data: { summary: { newConversations: 4 } } });
+    pathname.mockReturnValue('/inbox');
+    render(<AppHeader />);
+
+    expect(screen.getByLabelText('4 שיחות שלא נקראו')).not.toBeNull();
+  });
+
+  it('keeps the unread badge off every other section', () => {
+    useMe.mockReturnValue({ data: me() });
+    useDashboard.mockReturnValue({ data: { summary: { newConversations: 4 } } });
+    pathname.mockReturnValue('/home');
+    render(<AppHeader />);
+
+    expect(screen.queryByText('4')).toBeNull();
   });
 });

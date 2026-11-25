@@ -119,7 +119,10 @@ function HomePageContent() {
         {/* Header strip */}
         <header data-testid="home-header" className="page-header">
           <div className="min-w-0 flex-1">
-            <h1 className="page-title">מרכז הורים</h1>
+            {/* The visible title is the app header's. This keeps the
+                document heading where the a11y tree expects it -- the header
+                goes `inert` at the end of its scroll fade. */}
+            <h1 className="sr-only">מרכז הורים</h1>
             <p className="page-subtitle">{currentDateHe}</p>
             {dashboard.freshness.lastSyncAt && (
               <p className="mt-1 text-xs text-muted-foreground">
