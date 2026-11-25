@@ -1,15 +1,22 @@
-# PRD: Mashov School Parent Command Center — v3 (Phase 2 + 2.1: Authentication, Multi-Household, Merged Household Access)
+# PRD: Mashov School Parent Command Center — v4 (Phase 2 + 2.1 + 2.2: Authentication, Multi-Household, Merged Household Access, Grades)
 
-**Date:** 2026-11-20
+**Date:** 2026-11-25
 **Status:** Active
-**Supersedes:** v2 (Phase 2 baseline)
-**Phase scope:** Phase 2 (auth, per-user data scoping, multi-household) plus **Phase 2.1**
+**Supersedes:** v3 (Phase 2 + 2.1)
+**Phase scope:** Phase 2 (auth, per-user data scoping, multi-household), **Phase 2.1**
 (merged household access — several schools per household, sign-in adoption, the household
-merge)
+merge) and **Phase 2.2** (the read-only grades view)
+
+**What changed from v3.** One thing: grades. v3 listed "Grade reports, performance analytics"
+and "Grades or report cards" under Out of Scope, and a parent who wanted to know how their
+child was actually doing had to leave the app and go back to Mashov itself. Phase 2.2 moves the
+**read-only** view into scope as FR-39 … FR-44 and narrows the exclusion to what stays out:
+analytics, trends and report cards. Everything v3 said about Phase 2 and 2.1 is carried forward
+unchanged, and FR-1 … FR-38 keep their numbers and meanings.
 
 **What changed from v2.** v2 assumed one parent = one household = one school. Phase 2.1 broke
-all three halves of that, so this version corrects the claims v2 made about them and records
-the questions it left open as answered. Phase 2's FR-1 … FR-30 keep their numbers and meanings;
+all three halves of that, so v3 corrected the claims v2 made about them and recorded the
+questions it left open as answered. Phase 2's FR-1 … FR-30 keep their numbers and meanings;
 Phase 2.1 is additive as FR-31 … FR-38. The decisions are in
 [ADR-0029](../adr/0029-household-merge-and-login-adoption.md) (adoption),
 [ADR-0030](../adr/0030-per-connection-data-scoping.md) (per-connection scoping),
@@ -32,6 +39,15 @@ a school's credentials attaches to whichever household already linked that schoo
 creating a second one that holds a copy of it. "Only their own children's data" therefore means
 *the set of children reachable through the caller's own connections*, not *the children of one
 connection* — and every read is scoped to that set at the service layer.
+
+**Phase 2.2 — the grades view.** A parent could see homework, behaviour, subjects, notices and
+the timetable for a child, but not a single grade: the one question most parents open the app to
+answer sent them back to Mashov. Phase 2.2 adds **ציונים** as a sixth section of the existing
+child workspace — one card per subject, that subject's average, and a row per assessment. It is
+read-only and it is deliberately small: no charts, no trends, no report cards, and none of the
+read-state, feed or digest machinery homework and behaviour carry. Grades are synced and served
+from our own store like every other section, so the view answers during an upstream outage
+rather than going blank.
 
 ---
 
@@ -118,6 +134,34 @@ Phase 1 had no auth. Phase 2 is a breaking change — all API endpoints become p
 - **FR-37:** Every cross-child response carries the school each item belongs to (`schoolId`, `schoolShortLabel`), resolved server-side and always naming one of the **caller's own** connections. `null` means "ownership not yet known" and must render as *no badge*, never as a school named "null"; such an item stays visible under every school filter, because hiding it behind a chip it can never match would make it unreachable.
 - **FR-38:** Contact details in Settings are shown **per school**, each labelled with the school it came from. Through Phase 2 the school label and the contact details were read by two different queries, so a two-school parent could be shown one school's phone number captioned with another school's name.
 
+### Grades (Phase 2.2)
+
+- **FR-39:** A parent can see every graded assessment of the **current school year** for a child
+  they are entitled to see: the numeric grade, the assessment title, its type, the subject, and
+  the date it was sat. Scoped to the current year like every other per-child read, so last
+  year's tests never appear beside this year's.
+- **FR-40:** Grades are held in the app's own store and refreshed on the same cadence as homework
+  and behaviour (every 12 minutes), **not** fetched from Mashov per page view. Two consequences
+  are requirements, not side effects: the view answers during a Mashov outage, and `grades`
+  appears in `GET /api/v1/settings/source-health` as a per-student source with the same 24-hour
+  staleness threshold as homework and behaviour.
+- **FR-41:** The child workspace gains **ציונים** as a sixth section, reachable from the existing
+  tab rail and at `/children/<guid>?section=grades`. The default section stays `homework`.
+- **FR-42:** Grades are grouped **by subject**, one card per subject, sorted by subject name,
+  with the assessments inside a card newest first. Each card shows that subject's **average**: a
+  plain mean of its grades to one decimal place. Mashov sends `rate` and `gradeRate` as `0.0` on
+  every observed row — the school weights nothing — so a weighted average would be arithmetic
+  with no basis.
+- **FR-43:** A grade that is not a usable number — a school on textual grades, or a value outside
+  0–100 — is **excluded from the average but still listed**. A subject with no usable grade shows
+  no average rather than a broken one. A parent must never be shown `NaN`, and a single
+  unparseable grade must not destroy the average of the subject it sits in.
+- **FR-44:** The section has the same four states as every other section of the workspace:
+  loading, an error with a retry that re-requests, an empty state when nothing has synced, and
+  the content. Authorisation is the same rule as the rest of the workspace — a child the caller
+  is not entitled to see answers `404`, not `403`, and no upstream request is made on their
+  behalf.
+
 ### Session Management
 
 - **FR-25:** Session validation uses Redis cache-aside: check Redis first (TTL 5 min); on cache miss, check DB; on valid session populate Redis. This eliminates a DB round-trip on the hot path (frontend polls every 3s).
@@ -201,6 +245,12 @@ were **removed** in Phase 2.1's cleanup; both paths now 404. See `docs/api-contr
 migration note.
 | GET | `/api/v1/sync/status` | — | `{ done, sourcesCompleted, sourcesTotal, phase, refreshId, startedAt, endedAt, tasksTotal, tasksSettled, tasksFailed, currentTask, tasks }` | Used by sync progress screen. `done` comes from the refresh envelope, not from a `sync_run` count; see `docs/api-contract.md` for the phase table |
 
+### Phase 2.2
+
+| Method | Path | Request | Response | Notes |
+|--------|------|---------|----------|-------|
+| GET | `/api/v1/children/:studentGuid/grades` | — | `{ data: GradeItem[] }` | Current school year, newest `eventDate` first. Full list, no pagination — one child's year is tens of rows. Flat and ungrouped: the grouping and the averages are the client's, so the arithmetic is testable without a renderer. 404 for a child the caller cannot see |
+
 ---
 
 ## New Database Schema
@@ -225,6 +275,16 @@ Add: `userId` (FK → app_user, nullable during migration, required after)
 - **`app_user.mergedIntoUserId`** — set on the retired `app_user` of a merged household (FR-34), making its state interpretable. Cleared when the merged-in school is unlinked, scoped by that connection's `upstreamUserId` so unlinking a *different* school does not release it.
 - **`household_connection.linkedByUserId` / `linkedAt`** — the audit trail for who asserted a claim over a school, and when.
 - **`householdConnectionId` on the per-school tables** — mail, notifications, releases, activities, sync runs and the parent profile are each scoped to the connection they came from (ADR-0030). `NULL` means "ownership not yet known" and is admitted by every reader, per FR-37.
+
+### Phase 2.2 schema additions
+
+- **`grade_item`** — one row per grading event per child per year, keyed
+  `(studentGuid, schoolYear, gradingEventId)`. Upstream sends `id` and `gradingEventId`
+  identically on every observed row, so one column carries both. Two dates, as on
+  `behavior_item`: `eventDate` is when the assessment was sat, `enteredAt` (upstream
+  `timestamp`) when the teacher keyed the grade in, and the second can be weeks after the
+  first. `rate`/`gradeRate` are **not** columns — both are `0.0` upstream, so there is nothing
+  to weight (FR-42).
 
 ### Removed columns (via migration):
 - `homework_item.isNew`, `homework_item.isArchived`
@@ -260,6 +320,14 @@ Add: `userId` (FK → app_user, nullable during migration, required after)
 - "Unlink" per school → confirmation modal → `DELETE /api/v1/school-links/:id`; the bulk action names how many schools it affects
 - Sign out button → `DELETE /api/v1/auth/session` → redirect to `/auth/sign-in`
 
+### Child workspace — ציונים section (Phase 2.2)
+- Sixth tab on the existing rail, after מקצועות; one rail only, no second copy
+- One card per subject: subject name and `ממוצע <average>` in the header, `—` when there is none
+- One row per assessment: the assessment title, a badge with its type, the date it was sat, and
+  the grade in a badge banded by value using the app's existing semantic colours — no new palette
+- RTL throughout (logical CSS properties only), and the usual loading / error+retry / empty /
+  content states
+
 ### App shell additions
 - Show current user's `displayName` or initials in header (tap → sign-out confirmation or settings link)
 - Session expiry: show a toast "Session expired — sign in again" when API returns `401`
@@ -272,16 +340,41 @@ Add: `userId` (FK → app_user, nullable during migration, required after)
 - Email-based or passwordless authentication (magic-link, OTP)
 - Admin user management UI
 - Account deletion (supported only via `DELETE /api/v1/school-links`, which removes every school's data; the `app_user` record persists — see Open Question 1)
-- Grade reports, performance analytics
 - Outbound messaging (compose, reply)
 - Attachment download
 - Justification submission
 - Push/email notifications for school events
 - Timetable live/rolling schedule (static weekly timetable already in Phase 1)
-- Grades or report cards
 
 **Moved into scope in Phase 2.1:** "multiple school connections per user (one user = one school
 account in Phase 2)" was listed here in v2. It is now FR-32, and the cap is 4.
+
+**Moved into scope in Phase 2.2:** "Grade reports, performance analytics" and "Grades or report
+cards" were both listed here in v3. The **read-only view** of numeric grades is now FR-39 … FR-44.
+What stays out is listed below.
+
+### Out of Scope (Phase 2.2 — the grades boundary)
+
+The grades view is read-only and deliberately narrow. Homework and behaviour carry read-state,
+feed entries and digest items, and the planner must not infer any of them here from that
+precedent — each is excluded explicitly:
+
+- **Performance analytics, trends, charts, averages over time.** A subject average is a number
+  on a card, not a graph.
+- **Report cards** (`/api/students/:guid/finalGrades` and the like). Only graded assessment
+  events are in scope.
+- **Read-state for grades** — no `isNew`, no `isArchived`, no mark-as-read, no bulk actions.
+  A grade is not a task a parent works through.
+- **Grades in the feed** on Home, and **grades in the digest** (Telegram/email). A grade is not
+  pushed to a parent in Phase 2.2; they come and look.
+- **A per-grade detail route.** The row on the subject card is the whole of it.
+- **Term filtering** by `gradingPeriod`. Every observed row is term 1; a filter with one value
+  is a control that does nothing.
+- **Historical-year grades.** Current year only. The history backfill writes a per-year
+  completion marker, so a year already recorded complete would never pick up a source added
+  afterwards — grades are deliberately absent from the backfill rather than silently partial.
+- **Teacher name on screen.** It is stored and served, but the subject card shows the assessment,
+  not who set it.
 
 ---
 
@@ -293,9 +386,10 @@ account in Phase 2)" was listed here in v2. It is now FR-32, and the cap is 4.
 | 2 | What happens if two parents share the same school account, or hold separate accounts at one school? | Multi-user isolation | **Resolved, and opposite to v2's default.** v2 answered "not a supported scenario; each user creates their own connection; same `mashovUserId` would collide on upsert — return 409". Two parents with their **own** credentials at one school is now supported and tested: visibility is a set (FR-31), so both see the shared children at once. The collision v2 predicted was real — under the single-stamp rule the second parent to sync evicted the first — and is fixed, not refused. Two parents sharing **one** Mashov account reach one household by FR-33, which is what that account entitles them to |
 | 3 | Should the sync progress screen block or allow skip? | Onboarding UX | **Resolved** — allow skip after 10 seconds |
 | 4 | Migration script: should it run automatically on first login or require explicit `npm run migrate:phase2`? | Ops simplicity | **Resolved** — explicit script; safer for production upgrades |
+| 5 | A school with `denyStudentsRegularGrades`, or a class in `textualGradesClasses`, syncs no grades at all and the parent is shown the bare empty state "אין ציונים". Should the app distinguish "this school does not publish grades" from "nothing has synced yet"? | Grades UX; requires surfacing two `schoolSettings` fields the app reads nowhere today | **Open.** The behaviour is correct but unexplained: the parent cannot tell a school policy from a sync that has not run. Both fields arrive in the `POST /api/login` response and are currently discarded. Not a blocker for FR-39 … FR-44 |
 
-No open question remains. The two operational items left on Phase 2.1 are a live-stack
-verification against real second-school credentials and a full cron cycle, tracked in
+Question 5 is open; questions 1–4 are resolved. The two operational items left on Phase 2.1 are a
+live-stack verification against real second-school credentials and a full cron cycle, tracked in
 `docs/plans/merged-household-access-followups.md` rather than here.
 
 ---
@@ -338,3 +432,21 @@ verification against real second-school credentials and a full cron cycle, track
     the merge.
 21. Unlinking the merged-in school releases the merge pointer, so signing in with that school
     re-forms its own household; unlinking a *different* school does not.
+
+### Phase 2.2
+
+22. A parent opens `/children/<guid>?section=grades` and sees one card per subject, each with
+    that subject's average and a row per assessment; the ציונים tab is reachable from the rail.
+23. The average is a plain mean to one decimal, and a subject whose grades are all unusable
+    shows no average. `NaN` appears nowhere on the page, and one unparseable grade does not
+    destroy the average of the subject it sits in (covered by unit tests on the model module,
+    not only through the UI).
+24. The read is year-scoped and ordered newest assessment first, and a child the caller is not
+    entitled to see answers `404` with **no** upstream request made (covered by the per-child
+    route-guard enumeration, which calls every `:studentGuid` route as both parents).
+25. `GET /api/v1/settings/source-health` reports a `grades` source for each of the caller's
+    children, attributed to the right student.
+26. The section renders its loading, error-with-working-retry, empty and content states, in RTL,
+    in both themes, and on a phone viewport.
+27. A live sync against real credentials lands rows in `grade_item` — the view is verified
+    against the real upstream, not only against mocks.
