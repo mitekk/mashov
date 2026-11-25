@@ -120,21 +120,6 @@ describe('AppHeaderMenu', () => {
     expect(item.textContent).toContain('הגדרות');
   });
 
-  /**
-   * The actions have no second home now, but the testids stay distinct from
-   * the standalone `ThemeToggle` / `RefreshButton` / `FeedbackLauncher` ones:
-   * those components are still mountable elsewhere, and a shared testid would
-   * resolve two nodes under Playwright's strict mode wherever they met.
-   */
-  it('reuses none of the standalone controls testids', () => {
-    renderMenu();
-    openMenu();
-
-    expect(screen.queryByTestId('theme-toggle')).toBeNull();
-    expect(screen.queryByTestId('refresh-button')).toBeNull();
-    expect(screen.queryByTestId('feedback-launcher-button')).toBeNull();
-  });
-
   it('opens the shared feedback dialog rather than one of its own', () => {
     renderMenu();
     openMenu();

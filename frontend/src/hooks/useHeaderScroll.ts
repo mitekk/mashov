@@ -39,9 +39,9 @@ export function headerProgress(scrollY: number): number {
  * Drive the app header's scroll fade without re-rendering React.
  *
  * The progress value does not live in state: a scroll-linked `setState` would
- * re-render the whole header subtree every frame, which includes
- * `RefreshButton` (a TanStack mutation) and the Radix dropdown, whose open
- * popover would be rebuilt mid-gesture. One rAF-throttled `passive` listener
+ * re-render the whole header subtree every frame, which includes the profile
+ * menu's sync item (a TanStack mutation) and the Radix dropdown it lives in,
+ * whose open popover would be rebuilt mid-gesture. One rAF-throttled `passive` listener
  * writes `--app-header-p` on `<html>` instead, and the `.app-header` and
  * `.sticky-under-header` rules in globals.css read it.
  *

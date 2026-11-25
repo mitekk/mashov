@@ -36,11 +36,12 @@ interface FeedbackDialogProviderProps {
  * One feedback dialog, one thank-you banner, one live region -- however many
  * triggers there are.
  *
- * The app header has two: the inline icon from `sm` up, and an item in the
- * overflow menu below it. Both branches are in the DOM at every width (one is
- * hidden by Tailwind), so a `FeedbackLauncher` that owned this state would
- * mount two `role="status"` regions and a screen reader would hear the
- * thank-you twice.
+ * The header has one trigger -- the profile menu's item -- and the state
+ * deliberately does not belong to it: Radix unmounts the menu's content on
+ * select, so a trigger that owned the dialog would close it in the same breath
+ * as opening it. Keeping the live region here also means one `role="status"`
+ * however many triggers are added later, rather than a thank-you a screen
+ * reader hears once per trigger.
  *
  * Calls no TanStack hook, deliberately. The provider mounts on every
  * authenticated screen; the query hooks stay inside `FeedbackDialog`, which is

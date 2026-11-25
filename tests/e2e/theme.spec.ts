@@ -262,9 +262,9 @@ async function isDarkMode(page: Page): Promise<boolean> {
 }
 
 /**
- * Theme lives behind the header's profile avatar: the standalone `ThemeToggle`
- * is no longer mounted anywhere in the shell, so every flip here is two
- * clicks. The menu closes on select, which is why this re-opens each time.
+ * Theme lives behind the header's profile avatar -- there is no standalone
+ * `ThemeToggle` any more -- so every flip here is two clicks. The menu closes
+ * on select, which is why this re-opens each time.
  */
 async function toggleThemeFromHeader(page: Page): Promise<void> {
   await page.getByTestId('header-profile-trigger').click();
