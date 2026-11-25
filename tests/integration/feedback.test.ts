@@ -33,6 +33,7 @@ import { AppSessionGuard } from '../../backend/src/app-session/app-session.guard
 import { FeedbackModule } from '../../backend/src/feedback/feedback.module';
 import { HttpExceptionFilter } from '../../backend/src/common/filters/http-exception.filter';
 import { FEEDBACK_MAX_PER_HOUR } from '../../backend/src/feedback/feedback.service';
+import { FeedbackNotifierService } from '../../backend/src/feedback/feedback-notifier.service';
 
 const USER = 'fb-user-1';
 const OTHER_USER = 'fb-user-2';
@@ -58,6 +59,7 @@ interface SnapshotEntry {
 describe('POST /api/v1/feedback', () => {
   let app: INestApplication;
   let prisma: PrismaClient;
+  let notifier: FeedbackNotifierService;
 
   beforeAll(async () => {
     // Pinned rather than trusted from config: `.env` leaks into the
@@ -65,7 +67,11 @@ describe('POST /api/v1/feedback', () => {
     // would turn these tests into live Telegram sends. Unset is also the state
     // this file asserts about -- the write path must be complete and
     // unaffected with no notifier configured.
+    //
+    // Both halves of the address, because either one alone is enough to make a
+    // send attempt: the bot token (which bot) and the chat id (which chat).
     delete process.env.FEEDBACK_TELEGRAM_CHAT_ID;
+    delete process.env.FEEDBACK_TELEGRAM_BOT_TOKEN;
 
     prisma = new PrismaClient();
     await prisma.$connect();
@@ -86,6 +92,7 @@ describe('POST /api/v1/feedback', () => {
     app.useGlobalFilters(new HttpExceptionFilter());
     app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
     app.useGlobalGuards(module.get(AppSessionGuard));
+    notifier = module.get(FeedbackNotifierService);
     await app.init();
 
     await prisma.feedback.deleteMany({});
@@ -409,6 +416,31 @@ describe('POST /api/v1/feedback', () => {
     expect(row.notifyError).toBeNull();
     expect(row.readAt).toBeNull();
     expect(row.respondedAt).toBeNull();
+  });
+
+  /**
+   * The gate, against the real table rather than a mocked Prisma.
+   *
+   * This is what proves nothing reaches the Bot API: the outbox refuses to
+   * run at all with its destination unconfigured, so it never builds a
+   * message and never opens a socket. Checked as a returned empty array AND
+   * as an untouched row -- a notifier that queried and then failed to send
+   * would leave notifyAttempts at 1, and before the token gate existed it
+   * would have burned all three in six minutes.
+   */
+  it('leaves the outbox inert when neither half of the address is configured', async () => {
+    const response = await send({ subject: 'bug', content: 'שום דבר לא נשלח' });
+    expect(response.status).toBe(201);
+
+    expect(notifier.isConfigured()).toBe(false);
+    await expect(notifier.deliverPending()).resolves.toEqual([]);
+
+    const row = await prisma.feedback.findUniqueOrThrow({
+      where: { id: response.body.data.id },
+    });
+    expect(row.notifiedAt).toBeNull();
+    expect(row.notifyAttempts).toBe(0);
+    expect(row.notifyError).toBeNull();
   });
 
   it('counts only the last hour', async () => {
