@@ -61,8 +61,17 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
   );
 
   return (
-    <section data-testid="timetable-section" className="section-stack py-1">
-      <h2 className="text-lg font-semibold text-foreground">לוח שיעורים</h2>
+    <section
+      data-testid="timetable-section"
+      // The tab rail above already names this section, so the heading is
+      // `sr-only` -- the outline needs it, the eye does not.
+      // `aria-labelledby` rather than `aria-label`: the two would otherwise
+      // announce the same name twice, once as the region and once as the
+      // heading.
+      aria-labelledby="timetable-section-title"
+      className="section-stack py-1"
+    >
+      <h2 id="timetable-section-title" className="sr-only">לוח שיעורים</h2>
       {gridModel && timetableData?.schedule?.source === 'default' && (
         <p
           data-testid="timetable-schedule-approximate"

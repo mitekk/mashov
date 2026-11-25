@@ -5,68 +5,49 @@ import { BookOpen, AlertTriangle, ThumbsUp, Info, Clock, DoorOpen, ClipboardList
 import type { ChildStudent, ChildSummary } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { getBucketLabel } from '@/lib/behavior';
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-} from '@/components/ui/Select';
 import { useSchoolActivities } from '@/hooks/useChild';
+import { useChildren } from '@/hooks/useChildren';
+import { groupOptionsBySchool } from './ChildSelect';
 import { ReleasesDialog } from './ReleasesDialog';
 import { SchoolActivitiesDialog } from './SchoolActivitiesDialog';
 
-export interface ChildHeaderOption {
-  studentGuid: string;
-  fullName: string;
-  isActive: boolean;
-  /** Used to group the list once a household has more than one school. */
-  schoolId?: string | null;
-  schoolShortLabel?: string | null;
-}
+export type { ChildHeaderOption } from './ChildSelect';
 
 interface ChildHeaderProps {
   student: ChildStudent;
   summary: ChildSummary;
   lastSyncAt: string | null;
-  childOptions: ChildHeaderOption[];
-  selectedChildGuid: string;
-  onChildChange: (studentGuid: string) => void;
   studentGuid: string;
 }
 
+/**
+ * The child workspace's hero card: class, school, the six summary chips, the
+ * two dialog buttons and the sync line.
+ *
+ * The name and the child switcher used to lead this card. They are the app
+ * header's now -- the header already reads ילדים on this route, and the card
+ * repeating the identity directly under it was two header bands stacked. The
+ * identity block therefore leads with the class.
+ */
 export function ChildHeader({
   student,
   summary,
   lastSyncAt,
-  childOptions,
-  selectedChildGuid,
-  onChildChange,
   studentGuid,
 }: ChildHeaderProps) {
   const [isReleasesDialogOpen, setIsReleasesDialogOpen] = useState(false);
-  // One group per distinct school, in the order the options arrive, so the
-  // grouping is stable between renders.
-  const schoolGroups = useMemo(() => {
-    const groups: Array<{ key: string; label: string; children: ChildHeaderOption[] }> = [];
-    for (const child of childOptions) {
-      const key = child.schoolId ?? '__unowned__';
-      const existing = groups.find((group) => group.key === key);
-      if (existing) existing.children.push(child);
-      else
-        groups.push({
-          key,
-          label: child.schoolShortLabel ?? 'בית ספר',
-          children: [child],
-        });
-    }
-    return groups;
-  }, [childOptions]);
 
+  // Read here rather than threaded in: the only thing this card still needs
+  // from the household list is whether there is more than one school, and
+  // which one this child attends.
+  const { data: childrenData } = useChildren();
+  const schoolGroups = useMemo(
+    () => groupOptionsBySchool(childrenData?.data ?? []),
+    [childrenData?.data],
+  );
   const selectedSchoolLabel =
-    childOptions.find((child) => child.studentGuid === selectedChildGuid)?.schoolShortLabel ??
-    null;
+    (childrenData?.data ?? []).find((child) => child.studentGuid === studentGuid)
+      ?.schoolShortLabel ?? null;
 
   const [isActivitiesDialogOpen, setIsActivitiesDialogOpen] = useState(false);
   const { data: activitiesData } = useSchoolActivities(studentGuid);
@@ -75,76 +56,34 @@ export function ChildHeader({
   return (
     <header className="card-base px-4 py-5">
       {/*
-        Defect 12, the 360px overflow: this row held a title whose select was
-        capped at a floor-less `max-w-xs` (320px) next to four 40px icon
-        buttons, inside `card-base px-4` -- about 296px of usable width for
-        roughly 480px of content, on a single non-wrapping line. It now wraps,
-        the identity block can shrink, and the name truncates.
+        Defect 12, the 360px overflow: this row held a 20rem child select next
+        to four 40px icon buttons inside `card-base px-4` -- about 296px of
+        usable width for roughly 480px of content, on a single non-wrapping
+        line. The select is the app header's now, and the row still wraps and
+        still lets the identity block shrink, which is what keeps the two
+        dialog buttons on the line at 360.
       */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div data-testid="child-header-identity" className="min-w-0 flex-1">
-          <h1 className="m-0 text-2xl font-semibold tracking-tight text-foreground leading-tight">
-            <Select
-              value={selectedChildGuid}
-              onValueChange={onChildChange}
-              disabled={childOptions.length === 0}
-              dir="rtl"
-            >
-              <SelectTrigger
-                id="child-header-selector"
-                aria-label="בחר ילד"
-                data-testid="child-header-selector"
-                className="tap-target h-auto w-auto max-w-[min(100%,20rem)] border-transparent bg-transparent px-0 text-inherit shadow-none hover:bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 gap-2 items-center font-inherit"
-              >
-                <span className="truncate">{student.fullName}</span>
-              </SelectTrigger>
-              <SelectContent align="start" className="max-h-72">
-                <div className="space-y-1">
-                  {/* Grouped only above one distinct school. With one, this is
-                      byte-for-byte the flat list it has always been, which is
-                      why children.spec.ts needs no change. */}
-                  {schoolGroups.length > 1
-                    ? schoolGroups.map((group) => (
-                        <SelectGroup key={group.key}>
-                          <SelectLabel>{group.label}</SelectLabel>
-                          {group.children.map((child) => (
-                            <SelectItem
-                              key={child.studentGuid}
-                              value={child.studentGuid}
-                              className="text-base"
-                            >
-                              {child.fullName}
-                              {child.isActive ? '' : ' (לא פעיל)'}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      ))
-                    : childOptions.map((child) => (
-                        <SelectItem
-                          key={child.studentGuid}
-                          value={child.studentGuid}
-                          className="text-base"
-                        >
-                          {child.fullName}
-                          {child.isActive ? '' : ' (לא פעיל)'}
-                        </SelectItem>
-                      ))}
-                </div>
-              </SelectContent>
-            </Select>
-          </h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
+          {/* The visible name, and the switcher that changes it, are the
+              app header's. This stays as the document's h1 -- the page needs
+              one heading, and the header's title is `aria-hidden` because it
+              goes `inert` at the end of the scroll fade. */}
+          <h1 className="sr-only">{student.fullName}</h1>
+          <p className="m-0 text-lg font-semibold tracking-tight text-foreground leading-tight">
             כיתה {student.classCode}{student.classNum}
-            {/* The school in the subtitle, so a parent moving between children
-                always knows whose school they are looking at. Only rendered
-                when there is more than one. */}
-            {schoolGroups.length > 1 && selectedSchoolLabel && (
-              <>
-                {' · '}
-                <span data-testid="child-header-school-label">{selectedSchoolLabel}</span>
-              </>
-            )}
           </p>
+          {/* The school, so a parent moving between children always knows
+              whose school they are looking at. Only rendered when there is
+              more than one. */}
+          {schoolGroups.length > 1 && selectedSchoolLabel && (
+            <p
+              data-testid="child-header-school-label"
+              className="mt-0.5 text-sm text-muted-foreground"
+            >
+              {selectedSchoolLabel}
+            </p>
+          )}
         </div>
         <div
           data-testid="child-header-actions"

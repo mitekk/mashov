@@ -131,10 +131,17 @@ export function BehaviorSection({
   };
 
   return (
-    <section data-testid="behavior-section" className="section-stack py-1">
-      <h2 className="text-lg font-semibold text-foreground">
-        אירועי התנהגות
-      </h2>
+    <section
+      data-testid="behavior-section"
+      // The tab rail above already names this section, so the heading is
+      // `sr-only` -- the outline needs it, the eye does not.
+      // `aria-labelledby` rather than `aria-label`: the two would otherwise
+      // announce the same name twice, once as the region and once as the
+      // heading.
+      aria-labelledby="behavior-section-title"
+      className="section-stack py-1"
+    >
+      <h2 id="behavior-section-title" className="sr-only">אירועי התנהגות</h2>
       {/* Status tabs */}
       <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm w-fit">
         <button

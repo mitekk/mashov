@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { AlertTriangle, BookOpen, Bell, GraduationCap, CalendarDays } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
-import { ChildHeader, type ChildHeaderOption } from '@/components/child/ChildHeader';
+import { ChildHeader } from '@/components/child/ChildHeader';
 import { HomeworkSection } from '@/components/child/HomeworkSection';
 import { BehaviorSection } from '@/components/child/BehaviorSection';
 import { SubjectsSection } from '@/components/child/SubjectsSection';
@@ -13,7 +13,6 @@ import { TimetableSection } from '@/components/child/TimetableSection';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useChild } from '@/hooks/useChild';
-import { useChildren } from '@/hooks/useChildren';
 import { useSelectedChild } from '@/hooks/useSelectedChild';
 import {
   buildChildSectionHref,
@@ -40,10 +39,8 @@ const SECTIONS: Array<{ id: ChildSectionId; label: string; icon: React.ReactNode
 export function ChildWorkspacePage({
   studentGuid,
 }: ChildWorkspacePageProps) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const { setSelectedChildGuid } = useSelectedChild();
-  const { data: childrenData } = useChildren();
   const { data, isLoading, isError, refetch } = useChild(studentGuid);
   const activeSection = parseChildSection(searchParams.get('section'));
   const activeBehaviorFilter = parseChildBehaviorFilter(searchParams.get('behavior'));
@@ -80,46 +77,6 @@ export function ChildWorkspacePage({
   const handleSectionChange = (nextSection: ChildSectionId) => {
     updateWorkspaceQuery(nextSection, activeBehaviorFilter, 'push');
   };
-
-  const handleChildChange = (nextStudentGuid: string) => {
-    if (!nextStudentGuid || nextStudentGuid === studentGuid) return;
-    setSelectedChildGuid(nextStudentGuid);
-
-    const href = buildChildSectionHref(nextStudentGuid, activeSection, {
-      behavior: activeBehaviorFilter,
-    });
-    if (!href) return;
-    router.push(href);
-  };
-
-  const childOptions = useMemo<ChildHeaderOption[]>(() => {
-    const optionsByGuid = new Map<string, ChildHeaderOption>();
-    for (const child of childrenData?.data ?? []) {
-      optionsByGuid.set(child.studentGuid, {
-        studentGuid: child.studentGuid,
-        fullName: child.fullName,
-        isActive: child.isActive,
-        schoolId: child.schoolId,
-        schoolShortLabel: child.schoolShortLabel,
-      });
-    }
-
-    if (data?.student.studentGuid) {
-      // The workspace response carries no school, so the list's entry is kept
-      // when there is one: overwriting it would drop the label and un-group
-      // the selector for the child currently open.
-      const existing = optionsByGuid.get(data.student.studentGuid);
-      optionsByGuid.set(data.student.studentGuid, {
-        studentGuid: data.student.studentGuid,
-        fullName: data.student.fullName,
-        isActive: data.student.isActive,
-        schoolId: existing?.schoolId ?? null,
-        schoolShortLabel: existing?.schoolShortLabel ?? null,
-      });
-    }
-
-    return Array.from(optionsByGuid.values());
-  }, [childrenData?.data, data?.student]);
 
   const summary = data?.summary ?? {
     recentHomeworkCount: 0,
@@ -166,7 +123,11 @@ export function ChildWorkspacePage({
       <div
         data-testid="child-workspace"
         className={cn(
-          'page-shell space-y-4 pb-6 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6 lg:space-y-0',
+          // `.page-shell` has no top padding by design -- every other
+          // page takes its own from `.page-header`'s `pt-5`, which this one
+          // does not use, so without this the hero card butts into the
+          // sticky header.
+          'page-shell space-y-4 pb-6 pt-5 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6 lg:space-y-0',
           // The week grid is the one surface here that reads better wider: at
           // 1280 the extra 8rem takes its columns from ~150px to ~190px. Driven
           // by the section in the URL, not by a media query, so SSR and the
@@ -179,9 +140,6 @@ export function ChildWorkspacePage({
             student={data.student}
             summary={summary}
             lastSyncAt={data.lastSyncAt}
-            childOptions={childOptions}
-            selectedChildGuid={data.student.studentGuid}
-            onChildChange={handleChildChange}
             studentGuid={data.student.studentGuid}
           />
         </div>

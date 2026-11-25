@@ -137,8 +137,13 @@ test.describe('Home page', () => {
     await homePage.navigate();
 
     await expect(homePage.homeHeader).toBeVisible();
-    const headerText = await homePage.homeHeader.textContent();
-    expect(headerText).toContain('מרכז הורים');
+    // `home-header` holds only an `sr-only` h1 now, so its textContent would
+    // still match a title nobody can see. The visible one is the app
+    // header's.
+    const headerTitle = page.getByTestId('app-header-title');
+    await expect(headerTitle).toBeVisible();
+    expect(await headerTitle.textContent()).toContain('מרכז הורים');
+    expect(await homePage.homeHeader.textContent()).toContain('מרכז הורים');
   });
 
   test('renders the latest feed section even when the feed is empty', async ({ page }) => {

@@ -53,7 +53,8 @@ function ChildrenPageContent() {
     <AppShell>
       <div className="page-shell page-shell-wide space-y-5">
         <header className="page-header">
-          <h1 className="page-title">ילדים</h1>
+          {/* Visible title lives in the app header; see AppHeader. */}
+          <h1 className="sr-only">ילדים</h1>
         </header>
 
         <SchoolFilterChips value={schoolFilter} onChange={setSchoolFilter} />

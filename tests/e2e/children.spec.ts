@@ -234,13 +234,17 @@ test.describe('Children page', () => {
     expect(page.url()).toContain('/children');
   });
 
+  // See the note in inbox.spec.ts: the visible title is the app header's, and
+  // the page `<h1>` is `sr-only` -- which Playwright would still call visible.
   test('children page shows page heading', async ({ page }) => {
     await page.goto('/children');
 
-    const heading = page.locator('h1');
+    const heading = page.getByTestId('app-header-title');
     await expect(heading).toBeVisible();
     const text = await heading.textContent();
     expect(text).toContain('ילדים');
+
+    expect(await page.locator('h1').textContent()).toContain('ילדים');
   });
 
   test('children page persists its empty state after reload', async ({ page }) => {

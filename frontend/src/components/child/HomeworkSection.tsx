@@ -118,10 +118,17 @@ export function HomeworkSection({ studentGuid }: HomeworkSectionProps) {
   };
 
   return (
-    <section data-testid="homework-section" className="section-stack py-1">
-      <h2 className="text-lg font-semibold text-foreground">
-        שיעורי בית אחרונים
-      </h2>
+    <section
+      data-testid="homework-section"
+      // The tab rail above already names this section, so the heading is
+      // `sr-only` -- the outline needs it, the eye does not.
+      // `aria-labelledby` rather than `aria-label`: the two would otherwise
+      // announce the same name twice, once as the region and once as the
+      // heading.
+      aria-labelledby="homework-section-title"
+      className="section-stack py-1"
+    >
+      <h2 id="homework-section-title" className="sr-only">שיעורי בית אחרונים</h2>
       <div className="flex overflow-hidden rounded-xl border border-border/80 bg-card text-sm shadow-sm w-fit">
         <button
           data-testid="homework-filter-new"

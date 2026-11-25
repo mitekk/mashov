@@ -124,14 +124,25 @@ test.describe('Inbox page', () => {
     await expect(inboxPage.inboxContainer).toBeVisible();
   });
 
+  /**
+   * The app header, not the page `<h1>`. That heading is `sr-only` now, and
+   * Tailwind's `sr-only` leaves a 1x1 box that Playwright counts as visible --
+   * so asserting on it would pass against a title no user can see. This is the
+   * only e2e cover for `resolveHeaderTitle`; drop `/inbox` from
+   * `HEADER_TITLES` and this is what fails.
+   */
   test('shows page heading "דואר"', async ({ page }) => {
     const inboxPage = new InboxPage(page);
     await inboxPage.navigate();
 
-    const heading = page.locator('h1');
+    const heading = page.getByTestId('app-header-title');
     await expect(heading).toBeVisible();
     const text = await heading.textContent();
     expect(text).toContain('דואר');
+
+    // The heading outline still has to name the page for a screen reader,
+    // visible or not.
+    expect(await page.locator('h1').textContent()).toContain('דואר');
   });
 
   test('shows empty state when no conversations exist', async ({ page }) => {
