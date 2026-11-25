@@ -42,6 +42,13 @@ import { SchoolLinksModule } from '../../backend/src/school-links/school-links.m
 
 const SEMEL = 540175;
 const KNOWN_ID = '303977367';
+/**
+ * The `NonceRef` Mashov mints at step 1 and demands back at step 2. Step 1
+ * always produces one, so the stub always does too; the end-to-end test below
+ * pins that it reaches the reset call, because a reset posted without it is
+ * refused `400 application/problem+json` and we used to call that a bad code.
+ */
+const NONCE = 'nonce-from-step-1';
 const UNKNOWN_ID = '000000001';
 const GOOD_PASSWORD = 'secret1';
 
@@ -164,7 +171,7 @@ describe('In-app Mashov password recovery', () => {
     await redisService.scanDel('recovery:*');
     await prisma.credentialRecoveryAudit.deleteMany({});
 
-    requestRecovery.mockResolvedValue({});
+    requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
     resetPassword.mockResolvedValue({ username: KNOWN_ID });
     resetPasswordVerify.mockResolvedValue({ username: KNOWN_ID });
   });
@@ -233,7 +240,7 @@ describe('In-app Mashov password recovery', () => {
       responses.push(poisoned);
       responses.push(await completeRecovery(poisoned.body.recoveryId));
 
-      requestRecovery.mockResolvedValue({});
+      requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
       const real = await startRecovery();
       responses.push(await completeRecovery(real.body.recoveryId, { newPassword: 'abc' }));
 
@@ -355,7 +362,10 @@ describe('In-app Mashov password recovery', () => {
 
   describe('two-channel recovery', () => {
     it('demands the second code based on the server-stored flag', async () => {
-      requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+      requestRecovery.mockResolvedValue({
+        body: { isResettingAndVerifying: true },
+        nonceRef: NONCE,
+      });
       const { body } = await startRecovery();
       expect(body.requiresSecondChannel).toBe(true);
 
@@ -365,7 +375,10 @@ describe('In-app Mashov password recovery', () => {
     });
 
     it('routes to the /verify endpoint with both codes', async () => {
-      requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+      requestRecovery.mockResolvedValue({
+        body: { isResettingAndVerifying: true },
+        nonceRef: NONCE,
+      });
       const { body } = await startRecovery();
 
       const res = await completeRecovery(body.recoveryId, {
@@ -374,12 +387,22 @@ describe('In-app Mashov password recovery', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(resetPasswordVerify).toHaveBeenCalledWith('AAA111', 'BBB222', GOOD_PASSWORD);
+      // The nonce from step 1 reaches step 2 end to end, through the encrypted
+      // Redis state. Without it Mashov refuses the reset outright.
+      expect(resetPasswordVerify).toHaveBeenCalledWith(
+        'AAA111',
+        'BBB222',
+        GOOD_PASSWORD,
+        NONCE,
+      );
       expect(resetPassword).not.toHaveBeenCalled();
     });
 
     it('cannot be downgraded to the single-code route by the client', async () => {
-      requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+      requestRecovery.mockResolvedValue({
+        body: { isResettingAndVerifying: true },
+        nonceRef: NONCE,
+      });
       const { body } = await startRecovery();
 
       // Even claiming otherwise in the step-2 body changes nothing: the flag
