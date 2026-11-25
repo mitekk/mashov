@@ -98,6 +98,44 @@ describe('MashovRecoveryService', () => {
       expect(lastPost().config.headers['X-Csrf-Token']).toBe(MASHOV_CSRF_TOKEN);
     });
 
+    /**
+     * The nonce is the whole reason step 2 was failing.
+     *
+     * Mashov mints `NonceRef` on THIS response and requires it back on the
+     * reset. It is read off `Set-Cookie` here because that is the only place
+     * it ever exists -- discard it and no later call can reconstruct it.
+     */
+    it('reports the NonceRef cookie Mashov minted for this recovery', async () => {
+      mockHttp.post.mockResolvedValue(
+        ok(
+          {},
+          {
+            'set-cookie': [
+              'NonceRef=194f915d-c39f-35bd-478b-6ef894b9e771; expires=Wed, 25 Nov 2026 07:14:09 GMT; domain=web.mashov.info; path=/; secure; samesite=none; httponly',
+            ],
+          },
+        ),
+      );
+
+      const result = await service.requestRecovery({
+        semel: 1,
+        idNumber: '1',
+        email: 'p@example.com',
+      });
+
+      expect(result.nonceRef).toBe('194f915d-c39f-35bd-478b-6ef894b9e771');
+    });
+
+    it('reports no nonce when Mashov set no cookie, rather than inventing one', async () => {
+      const result = await service.requestRecovery({
+        semel: 1,
+        idNumber: '1',
+        email: 'p@example.com',
+      });
+
+      expect(result.nonceRef).toBeUndefined();
+    });
+
     it('reports the two-channel flag back to the caller', async () => {
       mockHttp.post.mockResolvedValue(ok({ isResettingAndVerifying: true }));
 
@@ -107,7 +145,7 @@ describe('MashovRecoveryService', () => {
         email: 'p@example.com',
       });
 
-      expect(result.isResettingAndVerifying).toBe(true);
+      expect(result.body.isResettingAndVerifying).toBe(true);
     });
   });
 
@@ -145,12 +183,29 @@ describe('MashovRecoveryService', () => {
     });
 
     /**
-     * The capture records NO cookie on this route: it is genuinely
-     * unauthenticated and the single-use code is the whole authorisation. So
-     * the `uniquId` gap documented on `headers()` does not apply here, and a
-     * cookie would be a header asserting a session this call does not have.
+     * The nonce Mashov minted at step 1 -- NOT a session.
+     *
+     * An earlier capture recorded no cookie here, so this class sent none, and
+     * Mashov answered `400 application/problem+json` with no `Reason` for a
+     * code that was genuinely valid. We rendered that as
+     * INVALID_RECOVERY_CODE and burned the attempt budget on it.
+     *
+     * Captured 2026-11-25 in a clean incognito session: `POST
+     * /api/user/recover` answers `Set-Cookie: NonceRef=...` (10 minutes), and
+     * the reset sends exactly that value back and nothing else. Proven by
+     * replay with our own three headers plus the nonce: empty 200, password
+     * changed. The cookie is minted inside the flow, so a server can hold it.
+     *
+     * Still no `uniquId` anywhere on this route, so the gap documented on
+     * `headers()` genuinely does not apply.
      */
-    it('sends no Cookie at all, because the code is the authorisation', async () => {
+    it('sends back the NonceRef that step 1 minted', async () => {
+      await service.resetPassword('ABC123', 'secret1', 'nonce-1');
+      expect(lastPost().config.headers.Cookie).toBe('NonceRef=nonce-1');
+    });
+
+    it('sends no Cookie when there is no nonce to send', async () => {
+      // Not `NonceRef=undefined`, which asserts a nonce we do not hold.
       await service.resetPassword('ABC123', 'secret1');
       expect(lastPost().config.headers.Cookie).toBeUndefined();
     });
@@ -188,7 +243,12 @@ describe('MashovRecoveryService', () => {
       );
     });
 
-    it('sends no Cookie either, for the same reason', async () => {
+    it('sends back the NonceRef too, like its single-channel sibling', async () => {
+      await service.resetPasswordVerify('AAA111', 'BBB222', 'secret1', 'nonce-2');
+      expect(lastPost().config.headers.Cookie).toBe('NonceRef=nonce-2');
+    });
+
+    it('sends no Cookie when there is no nonce to send', async () => {
       await service.resetPasswordVerify('AAA111', 'BBB222', 'secret1');
       expect(lastPost().config.headers.Cookie).toBeUndefined();
     });

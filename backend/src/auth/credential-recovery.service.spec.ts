@@ -53,6 +53,13 @@ const ID = '303977367';
 const DESTINATION = 'parent@example.com';
 const SEMEL = 482273;
 const IP = '203.0.113.7';
+/**
+ * The `NonceRef` Mashov mints at step 1. On the default state because a real
+ * recovery always has one -- a state without it is the exception (an older
+ * deploy's handle, or a poisoned one that never called upstream), and the
+ * tests that care say so explicitly.
+ */
+const NONCE = 'nonce-from-step-1';
 
 /** An upstream rejection carrying a `Reason` header, as Mashov sends them. */
 function proxyErrorWithHeaders(
@@ -115,7 +122,7 @@ describe('CredentialRecoveryService', () => {
     jest.spyOn(axios, 'isCancel').mockReturnValue(false);
     jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
     mockRedis.incr.mockResolvedValue(1);
-    mockUpstream.requestRecovery.mockResolvedValue({});
+    mockUpstream.requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
     mockUpstream.resetPassword.mockResolvedValue({ username: ID });
     mockUpstream.resetPasswordVerify.mockResolvedValue({ username: ID });
     mockPrisma.credentialRecoveryAudit.create.mockResolvedValue({});
@@ -349,7 +356,7 @@ describe('CredentialRecoveryService', () => {
        * it, and `isResettingAndVerifying=absent` is the fingerprint.
        */
       it('records a 200 that sent nothing, which throws no error at all', async () => {
-        mockUpstream.requestRecovery.mockResolvedValue({});
+        mockUpstream.requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
         await start();
 
         const line = lines(log);
@@ -360,7 +367,10 @@ describe('CredentialRecoveryService', () => {
       });
 
       it('distinguishes a real two-channel success from that', async () => {
-        mockUpstream.requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+        mockUpstream.requestRecovery.mockResolvedValue({
+          body: { isResettingAndVerifying: true },
+          nonceRef: NONCE,
+        });
         await start();
         expect(lines(log)).toContain('isResettingAndVerifying=true');
       });
@@ -384,7 +394,7 @@ describe('CredentialRecoveryService', () => {
 
       it('never logs the ID number, on any path', async () => {
         for (const arrange of [
-          () => mockUpstream.requestRecovery.mockResolvedValue({}),
+          () => mockUpstream.requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE }),
           () => mockUpstream.requestRecovery.mockRejectedValue(reasonError('IdNumberNoMatch')),
           () => mockUpstream.requestRecovery.mockRejectedValue(bareError(503)),
         ]) {
@@ -405,7 +415,10 @@ describe('CredentialRecoveryService', () => {
     });
 
     it('reports the server-stored two-channel flag rather than trusting the client', async () => {
-      mockUpstream.requestRecovery.mockResolvedValue({ isResettingAndVerifying: true });
+      mockUpstream.requestRecovery.mockResolvedValue({
+          body: { isResettingAndVerifying: true },
+          nonceRef: NONCE,
+        });
       const result = await start();
       expect(result.requiresSecondChannel).toBe(true);
       expect(storedState().value.isResettingAndVerifying).toBe(true);
@@ -568,6 +581,7 @@ describe('CredentialRecoveryService', () => {
             isResettingAndVerifying: false,
             attempts: 0,
             poisoned: false,
+            nonceRef: NONCE,
             ...overrides,
           }),
         ),
@@ -590,7 +604,11 @@ describe('CredentialRecoveryService', () => {
 
     it('resets the password and reports the username back', async () => {
       await expect(complete()).resolves.toEqual({ ok: true, username: ID });
-      expect(mockUpstream.resetPassword).toHaveBeenCalledWith('ABC123', GOOD_PASSWORD);
+      expect(mockUpstream.resetPassword).toHaveBeenCalledWith(
+        'ABC123',
+        GOOD_PASSWORD,
+        NONCE,
+      );
     });
 
     it('consumes the recovery state on success, so a replay cannot reuse it', async () => {
@@ -658,6 +676,7 @@ describe('CredentialRecoveryService', () => {
           'ABC123',
           'DEF456',
           GOOD_PASSWORD,
+          NONCE,
         );
         expect(mockUpstream.resetPassword).not.toHaveBeenCalled();
       });
@@ -777,6 +796,97 @@ describe('CredentialRecoveryService', () => {
      * The RESPONSE is unchanged by any of this -- ADR-0042's indistinguishable
      * answer is the point -- and the tests above pin that. Only telemetry moves.
      */
+    /**
+     * The defect that made a real code answer INVALID_RECOVERY_CODE.
+     *
+     * Mashov mints a `NonceRef` cookie on step 1 and refuses step 2 without
+     * it: `400 application/problem+json`, no `Reason`, before the code is
+     * examined. We discarded it, posted the reset bare, and rendered that
+     * refusal as "that code is not valid" -- five times, against a code the
+     * parent was holding and which still worked when replayed by hand.
+     *
+     * Confirmed against prod on 2026-11-25: step 1 accepted, four step-2
+     * refusals, and the same code then changed the password in a one-line
+     * curl that differed from ours only by this cookie.
+     */
+    describe('the NonceRef that makes step 2 work at all', () => {
+      it('sends back the nonce step 1 minted', async () => {
+        stateIs({ nonceRef: 'nonce-abc' });
+        await complete();
+
+        expect(mockUpstream.resetPassword).toHaveBeenCalledWith(
+          'ABC123',
+          GOOD_PASSWORD,
+          'nonce-abc',
+        );
+      });
+
+      it('sends it on the two-code route too', async () => {
+        stateIs({ isResettingAndVerifying: true, nonceRef: 'nonce-abc' });
+        await complete({ secondCode: 'DEF456' });
+
+        expect(mockUpstream.resetPasswordVerify).toHaveBeenCalledWith(
+          'ABC123',
+          'DEF456',
+          GOOD_PASSWORD,
+          'nonce-abc',
+        );
+      });
+
+      it('passes undefined for a handle written before this field existed', async () => {
+        // A recovery already in flight across the deploy. It will fail
+        // upstream, as it would have anyway, rather than crashing here.
+        stateIs({ nonceRef: undefined });
+        await complete();
+
+        expect(mockUpstream.resetPassword).toHaveBeenCalledWith(
+          'ABC123',
+          GOOD_PASSWORD,
+          undefined,
+        );
+      });
+
+      /**
+       * The 400 Mashov actually answers without a nonce, reproduced by hand on
+       * 2026-11-25. `nonce=ABSENT` beside it is what turns the next occurrence
+       * of this bug from a week of archaeology into one grep.
+       */
+      it("says loudly when there is no nonce, which is this defect's fingerprint", async () => {
+        const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        mockUpstream.resetPassword.mockRejectedValue(bareError(400));
+
+        stateIs({ nonceRef: undefined });
+        await thrown(() => complete());
+
+        const written = warn.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(written).toContain('nonce=ABSENT');
+      });
+
+      it('records the nonce as present on a reset that worked', async () => {
+        const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+        stateIs({ nonceRef: 'nonce-abc' });
+        await complete();
+
+        const written = log.mock.calls.map(([first]) => String(first)).join('\n');
+        expect(written).toContain('nonce=present');
+      });
+
+      it('never writes the nonce into a log line', async () => {
+        const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+        const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+        const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+
+        stateIs({ nonceRef: 'nonce-abc' });
+        await complete();
+
+        const everything = [warn, log, error]
+          .flatMap((spy) => spy.mock.calls.map(([first]) => String(first)))
+          .join('\n');
+        expect(everything).not.toBe('');
+        expect(everything).not.toContain('nonce-abc');
+      });
+    });
+
     describe('the log that makes step 2 diagnosable', () => {
       let warn: jest.SpyInstance;
       let log: jest.SpyInstance;
@@ -1219,7 +1329,7 @@ describe('CredentialRecoveryService review fixes', () => {
     jest.spyOn(axios, 'isCancel').mockReturnValue(false);
     jest.spyOn(axios, 'isAxiosError').mockReturnValue(true);
     mockRedis.incr.mockResolvedValue(1);
-    mockUpstream.requestRecovery.mockResolvedValue({});
+    mockUpstream.requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
     mockUpstream.resetPassword.mockResolvedValue({ username: ID });
     mockPrisma.credentialRecoveryAudit.create.mockResolvedValue({});
     mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
@@ -1249,6 +1359,7 @@ describe('CredentialRecoveryService review fixes', () => {
           isResettingAndVerifying: false,
           attempts: 0,
           poisoned: false,
+          nonceRef: NONCE,
           ...overrides,
         }),
       ),
@@ -1363,7 +1474,11 @@ describe('CredentialRecoveryService review fixes', () => {
       mockRedis.get.mockResolvedValue(written);
 
       await expect(complete()).resolves.toEqual({ ok: true, username: ID });
-      expect(mockUpstream.resetPassword).toHaveBeenCalledWith('ABC123', GOOD_PASSWORD);
+      expect(mockUpstream.resetPassword).toHaveBeenCalledWith(
+        'ABC123',
+        GOOD_PASSWORD,
+        NONCE,
+      );
     });
 
     it('treats an unreadable state as expired rather than throwing', async () => {
@@ -1391,7 +1506,7 @@ describe('CredentialRecoveryService non-axios failures', () => {
     // a bad code.
     jest.spyOn(axios, 'isCancel').mockReturnValue(false);
     mockRedis.incr.mockResolvedValue(1);
-    mockUpstream.requestRecovery.mockResolvedValue({});
+    mockUpstream.requestRecovery.mockResolvedValue({ body: {}, nonceRef: NONCE });
     mockPrisma.credentialRecoveryAudit.create.mockResolvedValue({});
     mockPrisma.householdConnection.findUnique.mockResolvedValue(null);
     mockRedis.get.mockResolvedValue(

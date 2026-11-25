@@ -6,7 +6,7 @@ import {
   resolveMashovBaseUrl,
 } from '../http/mashov-http';
 import { MASHOV_CSRF_TOKEN } from './mashov-login-body';
-import { readLoginHeaders } from './mashov-login-headers';
+import { readCookie, readLoginHeaders } from './mashov-login-headers';
 import type { MashovLoginPayload } from './mashov-credential-validator.service';
 
 /**
@@ -57,12 +57,24 @@ export class MashovRecoveryService {
     if (input.email !== undefined) body.email = input.email;
     if (input.cellphone !== undefined) body.cellphone = input.cellphone;
 
-    const response = await this.http.post<RequestRecoveryResult>(
+    const response = await this.http.post<RecoveryBody>(
       '/api/user/recover',
       body,
       { headers: this.headers() },
     );
-    return response.data ?? {};
+
+    // The `NonceRef` cookie is minted HERE and nowhere else. Step 2 is refused
+    // without it, and it never appears in a response body -- so a caller that
+    // reads only `response.data` cannot complete the reset it just started.
+    return {
+      body: response.data ?? {},
+      nonceRef: readCookie(
+        (response.headers as Record<string, unknown> | undefined)?.[
+          'set-cookie'
+        ] as string | string[] | undefined,
+        NONCE_COOKIE_NAME,
+      ),
+    };
   }
 
   /**
@@ -81,11 +93,21 @@ export class MashovRecoveryService {
    * on success, so there is no field to read. The caller decides success from
    * the status code — axios throws on a non-2xx, so reaching here IS the 2xx.
    */
-  async resetPassword(code: string, newPassword: string): Promise<ResetResult> {
+  async resetPassword(
+    code: string,
+    newPassword: string,
+    nonceRef?: string,
+  ): Promise<ResetResult> {
     const response = await this.http.post<ResetResult>(
       `/api/user/reset/${pathSegment(code)}`,
       { newPassword },
-      { headers: this.headers({}, undefined, RESET_REFERER_PATH) },
+      {
+        headers: this.headers(
+          nonceCookie(nonceRef),
+          undefined,
+          RESET_REFERER_PATH,
+        ),
+      },
     );
     return response.data ?? {};
   }
@@ -99,6 +121,7 @@ export class MashovRecoveryService {
     code: string,
     secondCode: string | undefined,
     newPassword: string,
+    nonceRef?: string,
   ): Promise<ResetResult> {
     const first = pathSegment(code);
     const second = secondCode ? pathSegment(secondCode) : '';
@@ -109,7 +132,13 @@ export class MashovRecoveryService {
     const response = await this.http.post<ResetResult>(
       path,
       { newPassword },
-      { headers: this.headers({}, undefined, RESET_REFERER_PATH) },
+      {
+        headers: this.headers(
+          nonceCookie(nonceRef),
+          undefined,
+          RESET_REFERER_PATH,
+        ),
+      },
     );
     return response.data ?? {};
   }
@@ -275,6 +304,31 @@ export class MashovRecoveryService {
  * routes, so this is not by itself the cause of a refusal; send the page the
  * parent is actually on regardless.
  */
+/**
+ * The cookie Mashov binds a recovery to.
+ *
+ * Minted by `POST /api/user/recover`, required by both reset routes. Without
+ * it Mashov answers `400 application/problem+json` with no `Reason` header --
+ * a request-validation refusal, before the code is ever examined. Captured in
+ * a clean incognito session on 2026-11-25 and proven by replay: the same three
+ * headers we already send, plus this cookie, change the password.
+ *
+ * Deliberately NOT `uniquId`. That is a login session cookie, and this route
+ * neither sets nor wants one.
+ */
+const NONCE_COOKIE_NAME = 'NonceRef';
+
+/**
+ * The `Cookie` header for a reset, or no header at all.
+ *
+ * Never `NonceRef=undefined`: a header asserting a nonce we do not hold cannot
+ * be told apart upstream from a forged one, and reads as a malformed request
+ * rather than as the missing session it actually is.
+ */
+function nonceCookie(nonceRef: string | undefined): Record<string, string> {
+  return nonceRef ? { Cookie: `${NONCE_COOKIE_NAME}=${nonceRef}` } : {};
+}
+
 const LOGIN_REFERER_PATH = '/students/login';
 const RESET_REFERER_PATH = '/students/reset';
 
@@ -306,9 +360,29 @@ export interface RequestRecoveryInput {
   cellphone?: string;
 }
 
-export interface RequestRecoveryResult {
+/** What Mashov's own `POST /api/user/recover` body carries. */
+export interface RecoveryBody {
   /** True when Mashov sent codes on both channels and needs both back. */
   isResettingAndVerifying?: boolean;
+}
+
+export interface RequestRecoveryResult {
+  /**
+   * Mashov's response body, verbatim and on its own.
+   *
+   * Kept separate from `nonceRef` on purpose. The caller logs
+   * `Object.keys(body)` as the fingerprint of a 200 that sent no code at all,
+   * so a field WE synthesise must never be able to appear in it -- that would
+   * quietly disable the only signal that failure has.
+   */
+  body: RecoveryBody;
+  /**
+   * The `NonceRef` cookie Mashov minted for this recovery, if it set one.
+   *
+   * Step 2 MUST send it back. It lives about ten minutes and is not refreshed,
+   * so it is the real deadline on a reset -- shorter than our own handle's.
+   */
+  nonceRef: string | undefined;
 }
 
 export interface ResetResult {
