@@ -1,20 +1,26 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
+import Link from 'next/link';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { MessageSquarePlus, MoonStar, MoreHorizontal, RefreshCw, Sun } from 'lucide-react';
+import { MessageSquarePlus, MoonStar, RefreshCw, Settings, Sun } from 'lucide-react';
 import { useSyncRefresh } from '@/hooks/useDashboard';
 import { useFeedbackDialog } from '@/hooks/useFeedbackDialog';
 import { useTheme } from '@/hooks/useTheme';
 import { cn } from '@/lib/utils';
 
 interface AppHeaderMenuProps {
+  /** The parent's name, shown beside the initials from `lg` up. */
+  displayName?: string | null;
+  /** Initials for the avatar circle. `AppHeader` falls back to `?`. */
+  initials: string;
+  /** "· 2 ילדים", or an empty string. Part of the accessible name. */
+  suffix: string;
   /**
-   * Whether feedback has a household to attach itself to. Same gate the inline
-   * branch applies to `FeedbackLauncher`.
+   * Whether feedback has a household to attach itself to. The one item that
+   * is gated: theme and sync act on no household in particular.
    */
   canSendFeedback: boolean;
-  className?: string;
 }
 
 const itemClassName = cn(
@@ -27,19 +33,25 @@ const itemClassName = cn(
 );
 
 /**
- * The header's app-wide actions, collapsed into one button below `sm`.
+ * The single home for the header's app-wide actions: settings, feedback,
+ * theme and household sync.
  *
- * Three 44px icon buttons plus an avatar do not fit beside a page title on a
- * 360px phone, so the inline row is `hidden sm:flex` and this takes its place.
+ * The trigger is the profile avatar -- the parent's name and initials. There
+ * is no inline copy of these controls at any width: three 44px icon buttons
+ * plus an avatar do not fit beside a page title on a 360px phone, and keeping
+ * both an inline row and a menu meant two live copies of every action in the
+ * DOM, one hidden by Tailwind, with Playwright's strict mode counting the
+ * hidden matches. One shape everywhere instead.
  *
- * None of these items reuses the inline controls' testids. Both branches are
- * in the DOM at every width -- one hidden by Tailwind -- and Playwright's
- * strict mode counts hidden matches, so a duplicate `theme-toggle` would
- * resolve two nodes and break every existing locator. Same trap
- * responsive.spec.ts guards by asserting `bottom-nav` resolves to exactly one
- * node.
+ * הגדרות is what keeps `/more` reachable from the header now that the avatar
+ * is a button rather than a link to it.
  */
-export function AppHeaderMenu({ canSendFeedback, className }: AppHeaderMenuProps) {
+export function AppHeaderMenu({
+  displayName,
+  initials,
+  suffix,
+  canSendFeedback,
+}: AppHeaderMenuProps) {
   const { theme, toggleTheme } = useTheme();
   const { openDialog } = useFeedbackDialog();
   const sync = useSyncRefresh();
@@ -47,41 +59,30 @@ export function AppHeaderMenu({ canSendFeedback, className }: AppHeaderMenuProps
   const isDark = theme === 'dark';
   const themeLabel = isDark ? 'מצב בהיר' : 'מצב כהה';
 
-  const [open, setOpen] = useState(false);
-
-  // The trigger is `sm:hidden`, but the content is portaled to <body> and has
-  // no width gating of its own. A parent who opens this at 360 and rotates to
-  // landscape (>= sm on a phone) would leave the trigger `display: none` with
-  // its anchor rect collapsed to 0x0, and Radix would keep the menu mounted:
-  // an orphaned popover in the viewport corner with nothing to explain it.
-  // Same rotation-across-`sm` case the shared sync state in useDashboard.ts
-  // exists for.
-  useEffect(() => {
-    if (!open) return undefined;
-    const wideEnoughForInline = window.matchMedia?.('(min-width: 640px)');
-    if (!wideEnoughForInline) return undefined;
-
-    const closeIfInlineTakesOver = (): void => {
-      if (wideEnoughForInline.matches) setOpen(false);
-    };
-
-    closeIfInlineTakesOver();
-    wideEnoughForInline.addEventListener?.('change', closeIfInlineTakesOver);
-    return () => {
-      wideEnoughForInline.removeEventListener?.('change', closeIfInlineTakesOver);
-    };
-  }, [open]);
-
   return (
     // `dir` belongs on the root: it is what makes the arrow keys and the
     // content's alignment follow the writing direction.
-    <DropdownMenuPrimitive.Root dir="rtl" open={open} onOpenChange={setOpen}>
+    <DropdownMenuPrimitive.Root dir="rtl">
       <DropdownMenuPrimitive.Trigger
-        data-testid="header-menu-trigger"
-        aria-label="עוד פעולות"
-        className={cn('icon-button tap-target', className)}
+        data-testid="header-profile-trigger"
+        aria-label={`${displayName ?? 'פרופיל'}${suffix} — תפריט`}
+        // `.tap-target` is what holds the 44px touch floor on a row whose
+        // avatar circle is only 32px.
+        className={cn(
+          'flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors',
+          'tap-target hover:text-foreground data-[state=open]:text-foreground',
+        )}
       >
-        <MoreHorizontal className="h-5 w-5" />
+        {/* `lg`, not `sm`: below that the page title owns the row. */}
+        {displayName && (
+          <span className="hidden text-xs font-medium lg:block">
+            {displayName}
+            {suffix}
+          </span>
+        )}
+        <span className="flex h-8 w-8 select-none items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+          {initials}
+        </span>
       </DropdownMenuPrimitive.Trigger>
 
       <DropdownMenuPrimitive.Portal>
@@ -97,6 +98,22 @@ export function AppHeaderMenu({ canSendFeedback, className }: AppHeaderMenuProps
             'data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1',
           )}
         >
+          {/*
+            `asChild`, so Radix hands the keyboard and `onSelect` to a real
+            `next/link` rather than wrapping an anchor in a div that only the
+            mouse can reach.
+          */}
+          <DropdownMenuPrimitive.Item
+            asChild
+            data-testid="header-menu-settings"
+            className={itemClassName}
+          >
+            <Link href="/more">
+              <Settings className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span>הגדרות</span>
+            </Link>
+          </DropdownMenuPrimitive.Item>
+
           {canSendFeedback && (
             <DropdownMenuPrimitive.Item
               data-testid="header-menu-feedback"

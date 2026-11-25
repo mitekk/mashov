@@ -4,18 +4,18 @@ import { Page, Locator, expect } from '@playwright/test';
  * The feedback channel: a header icon on every authenticated screen, and the
  * dialog behind it.
  *
- * There is no route of its own -- the launcher lives in `AppHeader`, the
+ * There is no route of its own -- the trigger lives in `AppHeader`, the
  * app-wide sticky header -- so this object takes whichever page the parent is
  * already on rather than navigating.
  *
- * `launcherButton` is the inline trigger, visible from `sm` up. Below `sm` the
- * same dialog is opened from `header-menu-feedback` inside the header's
- * overflow menu; both reach one dialog and one thank-you banner, because the
- * state lives in `FeedbackDialogProvider`. Every spec using this class runs in
- * the 1280 `chromium` project, so the inline trigger is the one it needs.
+ * `launcherButton` is the `header-menu-feedback` item inside the header's
+ * profile menu, which is where every header action lives at every width. One
+ * dialog and one thank-you banner however it is opened, because the state
+ * lives in `FeedbackDialogProvider`.
  */
 export class FeedbackPage {
   readonly page: Page;
+  readonly profileTrigger: Locator;
   readonly launcherButton: Locator;
   readonly dialog: Locator;
   readonly subjectSelect: Locator;
@@ -31,7 +31,8 @@ export class FeedbackPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.launcherButton = page.getByTestId('feedback-launcher-button');
+    this.profileTrigger = page.getByTestId('header-profile-trigger');
+    this.launcherButton = page.getByTestId('header-menu-feedback');
     this.dialog = page.getByTestId('feedback-dialog');
     this.subjectSelect = page.getByTestId('feedback-subject-select');
     this.subjectOtherInput = page.getByTestId('feedback-subject-other-input');
@@ -45,8 +46,10 @@ export class FeedbackPage {
     this.thanksDismiss = page.getByTestId('feedback-thanks-dismiss');
   }
 
-  /** Press the header icon and wait for the form. */
+  /** Open the header's profile menu, press שליחת משוב, wait for the form. */
   async open(): Promise<void> {
+    await this.profileTrigger.click();
+    // Gated on `me`, so it appears a paint after the trigger does.
     await expect(this.launcherButton).toBeVisible();
     await this.launcherButton.click();
     await expect(this.dialog).toBeVisible();

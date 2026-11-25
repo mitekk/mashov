@@ -11,9 +11,10 @@ import { CONVERSATION_ID, STUDENT_GUID, installApiStubs } from './helpers/viewpo
  * src/hooks/useHeaderScroll.test.ts covers the curve; this covers what the
  * curve does to the page.
  *
- * This runs in the `chromium` project only, at 1280x720, so it exercises the
- * inline control row. The overflow menu below `sm` belongs to
- * responsive.spec.ts, the one spec with a 360px project.
+ * This runs in the `chromium` project only, at 1280x720. The header has one
+ * shape at every width -- title, child switcher, profile avatar -- so the
+ * per-width assertions belong to responsive.spec.ts, the one spec with a
+ * 360px project.
  *
  * Every `/api/v1/**` call is stubbed, like responsive.spec.ts and for the same
  * reason: scroll geometry must not depend on how many rows a seeded database
@@ -42,6 +43,29 @@ async function ensureScrollable(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Take the spacer away again, for the one test that interacts with the header
+ * after scrolling it.
+ *
+ * The spacer hangs off `document.body`, OUTSIDE the Next root -- deliberately,
+ * so it survives a client-side navigation -- which leaves the document taller
+ * than the header's sticky containing block. In that geometry Chromium's
+ * focus-driven `scrollIntoView` for the sticky, transformed header jumps the
+ * document to its maximum offset: focusing `header-profile-trigger` at offset
+ * 0 lands at 1668, the header fades to `p: 1` and `useHeaderScroll` marks it
+ * `inert` mid-gesture, so a menu opened in that frame is torn straight back
+ * down. It does not reproduce when the scroll height comes from content inside
+ * the sticky container, which is every real page -- responsive.spec.ts drives
+ * the same menu after the same scroll round trip and passes. So the spacer
+ * goes once it has done its job, rather than the header's geometry bending to
+ * accommodate it.
+ */
+async function removeSpacer(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    document.querySelector('[data-testid="header-spec-spacer"]')?.remove();
+  });
+}
+
 async function scrollTo(page: Page, y: number): Promise<void> {
   await page.evaluate((top) => window.scrollTo({ top, behavior: 'instant' }), y);
   // Two frames: one for the listener's rAF callback, one for the style to land.
@@ -51,6 +75,14 @@ async function scrollTo(page: Page, y: number): Promise<void> {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       }),
   );
+}
+
+/**
+ * Every header action lives behind the avatar now, so reaching one is two
+ * clicks. The menu closes on select, which is why each caller re-opens.
+ */
+async function openHeaderMenu(page: Page): Promise<void> {
+  await page.getByTestId('header-profile-trigger').click();
 }
 
 function progress(page: Page): Promise<number> {
@@ -74,9 +106,12 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe('app header', () => {
-  test('owns the four household controls on every authenticated route', async ({ page }) => {
+  test('offers the one action trigger on every authenticated route', async ({ page }) => {
     // The whole point of the change: theme and sync used to be copy-pasted
     // into six page headers, and a seventh page would simply not have them.
+    // They now have exactly one home, and `toHaveCount(1)` is what keeps it
+    // that way -- Playwright's strict mode counts hidden matches, so a second
+    // copy of the trigger anywhere in the tree would resolve two nodes here.
     const routes = [
       '/home',
       '/children',
@@ -89,28 +124,9 @@ test.describe('app header', () => {
     for (const route of routes) {
       await page.goto(route);
       await expect(page.getByTestId('app-header')).toBeVisible();
-      await expect(page.getByTestId('theme-toggle')).toBeVisible();
-      await expect(page.getByTestId('refresh-button')).toBeVisible();
-      await expect(page.getByTestId('feedback-launcher-button')).toBeVisible();
-      await expect(page.getByTestId('header-profile-link')).toBeVisible();
+      await expect(page.getByTestId('header-profile-trigger')).toHaveCount(1);
+      await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
     }
-  });
-
-  test('resolves each control to exactly one node, inline branch and menu both mounted', async ({
-    page,
-  }) => {
-    // Both branches are in the DOM at every width, one hidden by Tailwind, and
-    // Playwright's strict mode counts hidden matches. A duplicate testid here
-    // would break theme.spec.ts and feedback.spec.ts.
-    await page.goto('/home');
-    await expect(page.getByTestId('app-header')).toBeVisible();
-
-    await expect(page.getByTestId('theme-toggle')).toHaveCount(1);
-    await expect(page.getByTestId('refresh-button')).toHaveCount(1);
-    await expect(page.getByTestId('feedback-launcher-button')).toHaveCount(1);
-    await expect(page.getByTestId('header-menu-trigger')).toHaveCount(1);
-    // ...and at 1280 the menu trigger is the hidden one.
-    await expect(page.getByTestId('header-menu-trigger')).toBeHidden();
   });
 
   test('sticks to the viewport top while the page scrolls under it', async ({ page }) => {
@@ -272,7 +288,8 @@ test.describe('app header', () => {
     await page.goto('/more');
     await expect(page.getByTestId('more-page')).toBeVisible();
 
-    await page.getByTestId('feedback-launcher-button').click();
+    await openHeaderMenu(page);
+    await page.getByTestId('header-menu-feedback').click();
     await expect(page.getByTestId('feedback-dialog')).toBeVisible();
 
     const zIndexes = await page.evaluate(() => {
@@ -294,7 +311,8 @@ test.describe('app header', () => {
     await page.goto('/more');
     await expect(page.getByTestId('more-page')).toBeVisible();
 
-    await page.getByTestId('feedback-launcher-button').click();
+    await openHeaderMenu(page);
+    await page.getByTestId('header-menu-feedback').click();
     await expect(page.getByTestId('feedback-dialog')).toBeVisible();
 
     // One provider, so one live region -- not one per trigger.
@@ -365,8 +383,13 @@ test.describe('app header', () => {
     expect(await progress(page)).toBe(0);
     expect(await opacity(page)).toBe(1);
     await expect(page.getByTestId('app-header')).not.toHaveAttribute('inert', '');
-    await expect(page.getByTestId('theme-toggle')).toBeVisible();
-    await page.getByTestId('theme-toggle').click();
+
+    // Every assertion above is about the scroll offset surviving the
+    // navigation, so the spacer has done its job by here. See `removeSpacer`.
+    await removeSpacer(page);
+    await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
+    await openHeaderMenu(page);
+    await page.getByTestId('header-menu-theme').click();
     await expect
       .poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')))
       .toBe(true);

@@ -142,45 +142,36 @@ test.describe('tap targets at every width', () => {
 });
 
 test.describe('app header', () => {
-  test('collapses its controls into one menu below sm', async ({ page }, testInfo) => {
-    // The header's three app-wide buttons plus an avatar do not fit beside a
-    // page title at 360, so below `sm` they become one overflow menu. Both
-    // branches are in the DOM at every width -- Tailwind hides one -- which is
-    // why each control still resolves to exactly one node.
+  test('keeps the profile trigger a 44x44 tap target', async ({ page }) => {
+    // The avatar circle is 32px; `.tap-target` on the button is what gets the
+    // hit area to the WCAG floor, at every width.
     await page.goto('/home');
     await expect(page.getByTestId('app-header')).toBeVisible();
 
-    const trigger = page.getByTestId('header-menu-trigger');
-    const inline = page.getByTestId('theme-toggle');
-
-    await expect(trigger).toHaveCount(1);
-    await expect(inline).toHaveCount(1);
-
-    if (testInfo.project.name === MOBILE) {
-      await expect(trigger).toBeVisible();
-      await expect(inline).toBeHidden();
-      await expect(page.getByTestId('refresh-button')).toBeHidden();
-      await expect(page.getByTestId('feedback-launcher-button')).toBeHidden();
-    } else {
-      await expect(trigger).toBeHidden();
-      await expect(inline).toBeVisible();
-      await expect(page.getByTestId('refresh-button')).toBeVisible();
-    }
+    const box = await page.getByTestId('header-profile-trigger').boundingBox();
+    expect(box, 'header-profile-trigger has no box').not.toBeNull();
+    expect(box!.width, 'header-profile-trigger width').toBeGreaterThanOrEqual(MIN_TAP_TARGET);
+    expect(box!.height, 'header-profile-trigger height').toBeGreaterThanOrEqual(MIN_TAP_TARGET);
   });
 
-  test('keeps the overflow trigger a 44x44 tap target', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== MOBILE, 'The trigger is hidden from sm up.');
+  test('holds one action trigger and no inline cluster at any width', async ({ page }) => {
+    // The header used to carry an inline row of theme/sync/feedback from `sm`
+    // up AND an overflow menu below it -- two live copies of every action in
+    // the DOM, one hidden by Tailwind, which Playwright's strict mode still
+    // counts. One shape everywhere now.
     await page.goto('/home');
     await expect(page.getByTestId('app-header')).toBeVisible();
 
-    const box = await page.getByTestId('header-menu-trigger').boundingBox();
-    expect(box, 'header-menu-trigger has no box').not.toBeNull();
-    expect(box!.width, 'header-menu-trigger width').toBeGreaterThanOrEqual(MIN_TAP_TARGET);
-    expect(box!.height, 'header-menu-trigger height').toBeGreaterThanOrEqual(MIN_TAP_TARGET);
+    await expect(page.getByTestId('app-header-inline')).toHaveCount(0);
+    await expect(page.getByTestId('theme-toggle')).toHaveCount(0);
+    await expect(page.getByTestId('refresh-button')).toHaveCount(0);
+    await expect(page.getByTestId('feedback-launcher-button')).toHaveCount(0);
+
+    await expect(page.getByTestId('header-profile-trigger')).toHaveCount(1);
+    await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
   });
 
-  test('toggles the theme from the overflow menu', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== MOBILE, 'The menu exists only below sm.');
+  test('toggles the theme from the profile menu', async ({ page }) => {
     await page.goto('/home');
     await expect(page.getByTestId('app-header')).toBeVisible();
 
@@ -188,7 +179,7 @@ test.describe('app header', () => {
       document.documentElement.classList.contains('dark'),
     );
 
-    await page.getByTestId('header-menu-trigger').click();
+    await page.getByTestId('header-profile-trigger').click();
     await expect(page.getByTestId('header-menu-theme')).toBeVisible();
     await page.getByTestId('header-menu-theme').click();
 
@@ -197,60 +188,56 @@ test.describe('app header', () => {
       .toBe(!wasDark);
   });
 
-  test('keeps the avatar out of the menu at every width', async ({ page }) => {
-    // The one control that does NOT collapse: the profile link stays on the
-    // bar at 360, because it is the way back to /more and an identity cue, not
-    // an action.
-    await page.goto('/home');
-    await expect(page.getByTestId('app-header')).toBeVisible();
-
-    await expect(page.getByTestId('header-profile-link')).toBeVisible();
-    await expect(page.getByTestId('header-profile-link')).toHaveCount(1);
-  });
-
-  test('drives the overflow menu from the keyboard and gives focus back', async ({
-    page,
-  }, testInfo) => {
-    test.skip(testInfo.project.name !== MOBILE, 'The menu exists only below sm.');
+  test('drives the profile menu from the keyboard and gives focus back', async ({ page }) => {
     // `dir="rtl"` on the Radix root is what makes the arrow keys follow the
     // writing direction, and Escape restoring focus to the trigger is the only
     // thing that stops a keyboard user being dumped at the top of the document.
     await page.goto('/home');
-    // `header-profile-link`, not the header shell: the shell renders before
-    // `me` resolves, and the feedback item is gated on `me`. Opening the menu
-    // in that window makes THEME the first item, and `toBeFocused()` does not
-    // self-heal -- focus does not move when the item appears later.
-    await expect(page.getByTestId('header-profile-link')).toBeVisible();
+    await expect(page.getByTestId('app-header')).toBeVisible();
 
-    const trigger = page.getByTestId('header-menu-trigger');
+    const trigger = page.getByTestId('header-profile-trigger');
     await trigger.focus();
     await page.keyboard.press('Enter');
     // Opening from the keyboard lands on the first item, so the parent is
-    // already somewhere useful rather than on the panel itself.
-    await expect(page.getByTestId('header-menu-feedback')).toBeFocused();
+    // already somewhere useful rather than on the panel itself. הגדרות is
+    // first and -- unlike feedback -- is not gated on `me`, so it is the one
+    // item that is there however early the menu is opened.
+    await expect(page.getByTestId('header-menu-settings')).toBeFocused();
 
     await page.keyboard.press('ArrowDown');
-    await expect(page.getByTestId('header-menu-theme')).toBeFocused();
+    await expect(page.getByTestId('header-menu-settings')).not.toBeFocused();
 
     await page.keyboard.press('Escape');
-    await expect(page.getByTestId('header-menu-theme')).toBeHidden();
+    await expect(page.getByTestId('header-menu-settings')).toBeHidden();
     await expect(trigger).toBeFocused();
   });
 
-  test('offers feedback and sync from the overflow menu', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== MOBILE, 'The menu exists only below sm.');
+  test('offers settings, feedback and sync from the profile menu', async ({ page }) => {
     await page.goto('/home');
+    // The trigger renders before `me` does, and the feedback item is gated on
+    // `me` -- so wait for the name, not just the shell, before opening.
     await expect(page.getByTestId('app-header')).toBeVisible();
 
-    await page.getByTestId('header-menu-trigger').click();
+    await page.getByTestId('header-profile-trigger').click();
 
-    // None of these reuses an inline testid: strict mode counts hidden
-    // matches, so a duplicate would resolve two nodes everywhere.
-    await expect(page.getByTestId('header-menu-feedback')).toBeVisible();
+    await expect(page.getByTestId('header-menu-settings')).toBeVisible();
     await expect(page.getByTestId('header-menu-refresh')).toBeVisible();
+    await expect(page.getByTestId('header-menu-feedback')).toBeVisible();
 
     await page.getByTestId('header-menu-feedback').click();
     await expect(page.getByTestId('feedback-dialog')).toBeVisible();
+  });
+
+  test('keeps /more reachable from the header now the avatar is a button', async ({ page }) => {
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    await page.getByTestId('header-profile-trigger').click();
+    const settings = page.getByTestId('header-menu-settings');
+    await expect(settings).toHaveAttribute('href', '/more');
+    await settings.click();
+
+    await expect(page.getByTestId('more-page')).toBeVisible();
   });
 });
 

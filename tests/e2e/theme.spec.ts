@@ -261,17 +261,28 @@ async function isDarkMode(page: Page): Promise<boolean> {
   return page.evaluate(() => document.documentElement.classList.contains('dark'));
 }
 
+/**
+ * Theme lives behind the header's profile avatar: the standalone `ThemeToggle`
+ * is no longer mounted anywhere in the shell, so every flip here is two
+ * clicks. The menu closes on select, which is why this re-opens each time.
+ */
+async function toggleThemeFromHeader(page: Page): Promise<void> {
+  await page.getByTestId('header-profile-trigger').click();
+  const item = page.getByTestId('header-menu-theme');
+  await expect(item).toBeVisible();
+  await item.click();
+}
+
 test.describe('Theme toggle', () => {
   test('toggles dark/light mode and persists on reload', async ({ page }) => {
     await mockCoreRoutes(page);
 
     await page.goto('/home');
     await expect(page.getByTestId('home-header')).toBeVisible();
-    const toggle = page.getByTestId('theme-toggle');
-    await expect(toggle).toBeVisible();
+    await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
 
     const initialIsDark = await isDarkMode(page);
-    await toggle.click();
+    await toggleThemeFromHeader(page);
 
     await expect.poll(() => isDarkMode(page)).toBe(!initialIsDark);
 
@@ -281,20 +292,20 @@ test.describe('Theme toggle', () => {
     ).toBe(expectedTheme);
 
     await page.reload();
-    await expect(page.getByTestId('theme-toggle')).toBeVisible();
+    await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
     await expect.poll(() => isDarkMode(page)).toBe(!initialIsDark);
   });
 
-  test('keeps selected theme across navigation and shows toggle in major headers', async ({
+  test('keeps selected theme across navigation and the header trigger on every route', async ({
     page,
   }) => {
     await mockCoreRoutes(page);
 
     await page.goto('/home');
-    await expect(page.getByTestId('theme-toggle')).toBeVisible();
+    await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
 
     if (!(await isDarkMode(page))) {
-      await page.getByTestId('theme-toggle').click();
+      await toggleThemeFromHeader(page);
     }
     await expect.poll(() => isDarkMode(page)).toBe(true);
 
@@ -308,7 +319,7 @@ test.describe('Theme toggle', () => {
 
     for (const route of majorRoutes) {
       await page.goto(route);
-      await expect(page.getByTestId('theme-toggle')).toBeVisible();
+      await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
       await expect.poll(() => isDarkMode(page)).toBe(true);
     }
   });
