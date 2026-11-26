@@ -3,7 +3,16 @@
 import React from 'react';
 import Link from 'next/link';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { MessageSquarePlus, MoonStar, RefreshCw, Settings, Sun } from 'lucide-react';
+import {
+  ChevronDown,
+  ExternalLink,
+  MessageSquarePlus,
+  MoonStar,
+  RefreshCw,
+  Settings,
+  Sun,
+  User,
+} from 'lucide-react';
 import { useSyncRefresh } from '@/hooks/useDashboard';
 import { useFeedbackDialog } from '@/hooks/useFeedbackDialog';
 import { useTheme } from '@/hooks/useTheme';
@@ -70,7 +79,13 @@ export function AppHeaderMenu({
         // avatar circle is only 32px.
         className={cn(
           'flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors',
-          'tap-target hover:text-foreground data-[state=open]:text-foreground',
+          // `group` is what lets the chevron read the trigger's `data-state`:
+          // Tailwind cannot target a parent's state from the child otherwise.
+          'group tap-target hover:text-foreground data-[state=open]:text-foreground',
+          // A transparent border reserves the pill's box, so showing it on
+          // hover does not shift the header row.
+          'border border-transparent px-1.5 lg:px-2',
+          'hover:border-border hover:bg-accent/60 data-[state=open]:border-border data-[state=open]:bg-accent/60',
           // The global `:focus-visible` ring reads as a stray outline on this
           // pill, and the open menu already shows where focus is.
           'focus-visible:ring-0 focus-visible:ring-offset-0',
@@ -86,6 +101,14 @@ export function AppHeaderMenu({
         <span className="flex h-8 w-8 select-none items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
           {initials}
         </span>
+        {/*
+          Last child, so under `dir="rtl"` it sits leftmost: `⌄ (קד) שם`. The
+          accessible name already ends in `— תפריט`, so this is decorative.
+        */}
+        <ChevronDown
+          aria-hidden="true"
+          className="h-4 w-4 shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-180"
+        />
       </DropdownMenuPrimitive.Trigger>
 
       <DropdownMenuPrimitive.Portal>
@@ -154,6 +177,35 @@ export function AppHeaderMenu({
               )}
             />
             <span>{sync.isPending ? 'מסנכרן...' : 'רענן נתונים'}</span>
+          </DropdownMenuPrimitive.Item>
+
+          <DropdownMenuPrimitive.Separator className="-mx-1 my-1 h-px bg-border" />
+
+          {/*
+            External, so a plain `<a>` rather than `next/link` -- the same
+            convention `CaptchaEscapeHatch` follows for off-app links.
+          */}
+          <DropdownMenuPrimitive.Item
+            asChild
+            data-testid="header-menu-about"
+            className={itemClassName}
+          >
+            <a
+              href="https://profile.mitya.dev/"
+              target="_blank"
+              rel="noopener noreferrer"
+              // The new tab is not visible in the item's text, and the ↗ glyph
+              // is decorative, so it goes in the accessible name instead.
+              aria-label="אודות (נפתח בלשונית חדשה)"
+            >
+              <User className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span>אודות</span>
+              {/* `ms-auto`, not `ml-auto`, so the glyph pins to the far edge in RTL. */}
+              <ExternalLink
+                className="ms-auto h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            </a>
           </DropdownMenuPrimitive.Item>
         </DropdownMenuPrimitive.Content>
       </DropdownMenuPrimitive.Portal>
