@@ -57,6 +57,14 @@ function SignInForm() {
   // string and used to be pushed into the router verbatim.
   const nextParam = searchParams.get('next');
   const nextPath = safeNextPath(nextParam);
+  // A journey worth resuming, which is narrower than "`next` is set". `/` is a
+  // protected path too, so a cold visitor who just types the domain is bounced
+  // here with `?next=%2F` -- the single commonest arrival at this page. There
+  // is nothing to resume for them, and probing would hold the form behind a
+  // round trip they gain nothing from. `safeNextPath` already collapses
+  // everything that is not a parent destination to `/`, so one comparison
+  // covers `?next=%2F`, a junk `next`, and an attacker's.
+  const resumePath = nextPath === '/' ? null : nextPath;
 
   /**
    * Is there already a live session?
@@ -78,13 +86,14 @@ function SignInForm() {
    * stale-but-present cookie renders the form instead of ping-ponging
    * /auth/sign-in -> /home -> /auth/sign-in.
    *
-   * Gated on `next` being PRESENT, which is load-bearing rather than an
-   * optimisation. `middleware.ts:81` is the only thing in the system that ever
-   * appends `next` -- every in-app navigation here (`useAuth`'s sign-out and
-   * its 401 handler, `MorePageClient`'s sign-out and disconnect-all,
-   * `handle401Redirect`) pushes a BARE /auth/sign-in. So `next` present means
-   * "something sent me here to resume a journey", and absent means "I just
-   * left the app". Without the gate, a sign-out whose DELETE failed --
+   * Gated on there being a journey to RESUME (`resumePath`), which is
+   * load-bearing rather than an optimisation. `middleware.ts:81` is the only
+   * thing in the system that ever appends `next` -- every in-app navigation
+   * here (`useAuth`'s sign-out and its 401 handler, `MorePageClient`'s
+   * sign-out and disconnect-all, `handle401Redirect`) pushes a BARE
+   * /auth/sign-in. So a resumable `next` means "something sent me here
+   * mid-journey", and its absence means "I just left the app, or I am
+   * arriving cold". Without the gate, a sign-out whose DELETE failed --
    * `useSignOut` redirects here on error anyway, with the cookie possibly
    * still live -- would read 200 and throw the parent straight back in: an app
    * that cannot be signed out of.
@@ -97,7 +106,7 @@ function SignInForm() {
   const session = useQuery({
     queryKey: ['sign-in-session-probe'],
     queryFn: getMeOrNull,
-    enabled: nextParam !== null,
+    enabled: resumePath !== null,
     // Not optional: `providers.tsx` sets a global `retry: 2` with a 1s/2s
     // backoff, so a signed-out parent would watch the spinner for 3s before
     // the form appeared.
@@ -108,12 +117,12 @@ function SignInForm() {
   });
 
   useEffect(() => {
-    if (!session.data) return;
+    if (!session.data || resumePath === null) return;
     queryClient.setQueryData(['me'], session.data);
     // `replace`, not `push`: this page must not sit in history, or Back from
     // the destination returns here and bounces forward again.
-    router.replace(nextPath);
-  }, [session.data, nextPath, router, queryClient]);
+    router.replace(resumePath);
+  }, [session.data, resumePath, router, queryClient]);
 
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
   const [username, setUsername] = useState('');
@@ -250,16 +259,16 @@ function SignInForm() {
 
   const pending = loginMutation.isPending;
 
-  // The `nextParam` term is NOT redundant: a disabled react-query sits at
+  // The `resumePath` term is NOT redundant: a disabled react-query sits at
   // `status: 'pending'` with `fetchStatus: 'idle'` forever, so `isPending`
-  // alone would spin for every parent who arrives without `next` -- which is
-  // all of them, bar a deep link.
+  // alone would spin for every parent who arrives without a resumable `next`
+  // -- which is all of them, bar a deep link.
   //
   // `session.data` stays in the condition so the form never flashes during the
   // `replace` above. Any error -- 401, a network failure, the 4s timeout --
   // leaves `isPending` false and `data` undefined, so the form renders: there
   // is no path to a stuck spinner.
-  const bouncing = nextParam !== null && (session.isPending || session.data != null);
+  const bouncing = resumePath !== null && (session.isPending || session.data != null);
   if (bouncing) return <SignInFormFallback />;
 
   return (

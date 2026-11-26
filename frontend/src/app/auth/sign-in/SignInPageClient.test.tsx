@@ -408,13 +408,16 @@ describe('SignInPageClient existing-session bounce', () => {
     expect(screen.getByTestId('sign-in-loading')).toBeInTheDocument();
   });
 
-  it('refuses to bounce off-site, which is now reachable before authentication', async () => {
+  it('refuses to bounce off-site, which would be reachable before authentication', async () => {
+    // `safeNextPath` collapses it to `/`, which is not a resumable journey, so
+    // the probe never runs and nothing navigates -- stricter than sanitising
+    // the destination alone.
     nav.search = 'next=https%3A%2F%2Fevil.com';
     getMeOrNull.mockResolvedValue(MOCK_USER);
     renderPage();
 
-    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'));
-    expect(String(replace.mock.calls[0][0])).not.toContain('evil.com');
+    expect(await screen.findByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it('shows the form when the probe fails outright', async () => {
@@ -425,6 +428,30 @@ describe('SignInPageClient existing-session bounce', () => {
     renderPage();
 
     expect(await screen.findByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('does not probe for a cold arrival at the app root', async () => {
+    // `/` is a protected path too, so a visitor who just types the domain is
+    // bounced here with `?next=%2F` -- the commonest arrival at this page.
+    // There is nothing to resume, and probing would hold the form behind a
+    // round trip they gain nothing from.
+    nav.search = 'next=%2F';
+    getMeOrNull.mockResolvedValue(MOCK_USER);
+    renderPage();
+
+    expect(await screen.findByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(getMeOrNull).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('does not probe for a next that is not a parent destination', async () => {
+    nav.search = 'next=%2Fadmin%2Ffeedback';
+    getMeOrNull.mockResolvedValue(MOCK_USER);
+    renderPage();
+
+    expect(await screen.findByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(getMeOrNull).not.toHaveBeenCalled();
     expect(replace).not.toHaveBeenCalled();
   });
 

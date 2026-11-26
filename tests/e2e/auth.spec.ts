@@ -730,18 +730,20 @@ test.describe('Auth — session protection', () => {
 
   test('refuses to resume an off-site next', async ({ page }) => {
     // The probe fires before any credential is supplied, so the open redirect
-    // `?next=` used to carry would be reachable pre-auth.
+    // `?next=` used to carry would be reachable pre-auth. An off-site `next`
+    // is not a resumable journey, so nothing navigates at all: the parent
+    // stays on the form, and never goes off-origin.
     await page.route('**/api/v1/auth/me', async (route) => {
       await route.fulfill({ json: MOCK_ME });
     });
-    await page.route('**/api/v1/dashboard', async (route) => {
-      await route.fulfill({ json: MOCK_EMPTY_DASHBOARD });
+    await page.route('**/api/v1/auth/schools', async (route) => {
+      await route.fulfill({ json: MOCK_SCHOOLS });
     });
 
     await seedAuthenticatedCookie(page);
     await page.goto('/auth/sign-in?next=https%3A%2F%2Fexample.com');
 
-    await expect(page.getByTestId('home-header')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('sign-in-submit')).toBeVisible({ timeout: 15_000 });
     expect(page.url()).toContain(BASE_URL);
     expect(page.url()).not.toContain('example.com');
   });
