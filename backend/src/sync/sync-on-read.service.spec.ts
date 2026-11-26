@@ -99,14 +99,115 @@ describe('SyncOnReadService', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('counts a per-student run for its base source', async () => {
+  it('counts a per-student run for its base source when the caller names no variant', async () => {
     // Variant keys: a `timetable:<guid>` run is what the task actually writes.
+    // This is the base-keyed caller -- the dashboard, which freshens once per
+    // connection with an emptiness probe spanning every child at once (see
+    // `children.service.ts:106`), and for which any student's run is the
+    // freshness it asked about. A caller that *does* know the student passes
+    // `variantKey`; see the block below.
     withRun('timetable:student-1', 60);
     const fetch = jest.fn();
 
     await service.ensureFresh('timetable', fetch, { connectionId: 'conn-1', localIsEmpty: notEmpty });
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  describe('per-student freshness (variantKey)', () => {
+    it("does not call a student fresh because a sibling's run succeeded", async () => {
+      // THE REGRESSION. The cron's final pass wrote `grades:<nelly>` success
+      // and `grades:<mika>` failed, both with a null connection -- and a
+      // null-connection row is admitted into every connection's snapshot. Under
+      // base-plus-any-variant matching, Nelly's success answered the question
+      // "is Mika's copy fresh?", so no fetch ran and Mika's section stayed
+      // empty for the whole 6h TTL. `localIsEmpty` cannot rescue it: it is
+      // consulted only AFTER a fetch has been committed to.
+      withRun('grades:student-2', 60); // grades TTL is 6h, so well inside it
+      const fetch = jest.fn().mockResolvedValue(okResult());
+
+      await service.ensureFresh('grades', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: empty,
+        variantKey: 'grades:student-1',
+      });
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("still suppresses the fetch on this student's own successful run", async () => {
+      // The other half: student-keyed matching must not turn the gate off.
+      withRun('grades:student-1', 60);
+      const fetch = jest.fn();
+
+      await service.ensureFresh('grades', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: notEmpty,
+        variantKey: 'grades:student-1',
+      });
+
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it("backs off on this student's own failed sentinel, so there is no amplifier", async () => {
+      // The sentinel has to be written under the key the probe reads. Were it
+      // still `grades:<connId>`, a student-keyed probe would never see it and a
+      // failing source would re-fetch on every single view -- exactly the login
+      // amplifier this class exists to prevent.
+      withFailedRun('grades:student-1', 2); // retry window is 15 minutes
+      const fetch = jest.fn();
+
+      await service.ensureFresh('grades', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: empty,
+        variantKey: 'grades:student-1',
+      });
+
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('records the sentinel under the same key the probe reads', async () => {
+      const fetch = jest.fn().mockRejectedValue(new Error('upstream 502'));
+
+      await service.ensureFresh('grades', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: empty,
+        variantKey: 'grades:student-1',
+      });
+
+      expect(openRun).toHaveBeenCalledWith('grades:student-1', 'conn-1');
+    });
+
+    it('does not dedupe two students at one school onto one operation', async () => {
+      // The in-flight marker covers the freshness READ as well as the fetch, so
+      // a shared key means the second student joins the first's decision and
+      // inherits it -- a second route into the same bug.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const first = jest.fn().mockImplementation(async () => {
+        await gate;
+        return okResult();
+      });
+      const second = jest.fn().mockResolvedValue(okResult());
+
+      const pending = service.ensureFresh('grades', first, {
+        connectionId: 'conn-1',
+        localIsEmpty: notEmpty,
+        variantKey: 'grades:student-1',
+      });
+      await service.ensureFresh('grades', second, {
+        connectionId: 'conn-1',
+        localIsEmpty: notEmpty,
+        variantKey: 'grades:student-2',
+      });
+
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(1);
+      release();
+      await pending;
+    });
   });
 
   it('serves the stale copy rather than failing the page when upstream throws', async () => {
@@ -161,6 +262,9 @@ describe('SyncOnReadService', () => {
     // only looked at successes was never satisfied by it and every request to
     // `/children`, `/timetable`, `/subjects`, `/notices` and `/profile`
     // performed a fresh upstream login while Mashov was down.
+    // Base-keyed caller, so the sentinel is the per-connection one. A caller
+    // that names a `variantKey` gets its sentinel under that key instead --
+    // see 'records the sentinel under the same key the probe reads'.
     withFailedRun('timetable:conn-1', 2);
     const fetch = jest.fn();
 

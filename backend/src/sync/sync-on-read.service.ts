@@ -25,6 +25,23 @@ export interface EnsureFreshOptions {
    */
   localIsEmpty: () => Promise<boolean>;
   /**
+   * The full `sync_run.source` key this read is about, e.g.
+   * `grades:<studentGuid>`. Omitted means base-source matching.
+   *
+   * Without it, freshness is decided across every variant of the source — so
+   * for a `perStudent` source one child's successful run answers the question
+   * "is *this* child's copy fresh?" and the unlucky sibling's section is
+   * pinned empty for the whole TTL (6h for grades, 7 days for the grid). The
+   * caller decides whether to pass one by asking the policy table:
+   * `policyForSource(source).perStudent`.
+   *
+   * Omit it when the read genuinely spans students — the dashboard freshens
+   * `groups` + `lessons_count` once per connection behind an emptiness probe
+   * covering every child, and keying that per student would multiply its
+   * fetches by the child count.
+   */
+  variantKey?: string;
+  /**
    * An absolute epoch-ms cap on how long *this request* may block in total.
    *
    * One request freshens several sources across several connections, and each
@@ -107,14 +124,21 @@ export class SyncOnReadService {
       return;
     }
 
-    const key = `${options.connectionId}::${source}`;
+    // Keyed on the variant, not the base source: the marker covers the
+    // freshness READ too (below), so a shared key means two children at one
+    // school join a single operation and the second inherits the first's
+    // decision — the same bug the student-keyed probe exists to fix, by
+    // another route.
+    const key = `${options.connectionId}::${options.variantKey ?? source}`;
 
     // The in-flight marker covers the freshness READ as well as the fetch.
     // Registering it after the read is a race: three concurrent page loads all
     // clear the TTL check before any of them registers, and all three fetch --
     // which is the amplifier this class exists to prevent.
     const existing = this.inFlight.get(key);
-    const operation = existing ?? this.beginOperation(key, source, fetch, options.connectionId);
+    const operation =
+      existing ??
+      this.beginOperation(key, source, fetch, options.connectionId, options.variantKey);
 
     // Nothing is being fetched -- the copy was fresh, or the cap is spent, or
     // freshness could not be read. There is nothing to wait for, and no reason
@@ -159,6 +183,7 @@ export class SyncOnReadService {
     source: string,
     fetch: FetchFn,
     connectionId: string,
+    variantKey?: string,
   ): ReadPathOperation {
     let settle!: (committed: boolean) => void;
     const committed = new Promise<boolean>((resolve) => {
@@ -172,7 +197,7 @@ export class SyncOnReadService {
 
         let fresh: boolean;
         try {
-          fresh = await this.isFresh(source, policy.syncTtlMinutes, connectionId);
+          fresh = await this.isFresh(source, policy.syncTtlMinutes, connectionId, variantKey);
         } catch (error) {
           // Cannot tell: do nothing rather than fetch blind on every request.
           this.logger.warn(
@@ -192,7 +217,7 @@ export class SyncOnReadService {
         }
 
         settle(true);
-        await this.runFetch(source, fetch, connectionId);
+        await this.runFetch(source, fetch, connectionId, variantKey);
       } finally {
         // A no-op once `settle(true)` has run. Every early return lands here,
         // so no caller can wait on a decision that was never made.
@@ -206,7 +231,12 @@ export class SyncOnReadService {
     return operation;
   }
 
-  private async runFetch(source: string, fetch: FetchFn, connectionId: string): Promise<void> {
+  private async runFetch(
+    source: string,
+    fetch: FetchFn,
+    connectionId: string,
+    variantKey?: string,
+  ): Promise<void> {
     this.fetchesInFlight += 1;
 
     try {
@@ -215,12 +245,17 @@ export class SyncOnReadService {
       // reads. A task that reported failure without opening one would leave
       // the gate unsatisfied, so record a sentinel in that case.
       if (result.status === 'failed') {
-        await this.recordAttempt(source, connectionId, result.errorMessages.join('; '));
+        await this.recordAttempt(
+          source,
+          connectionId,
+          result.errorMessages.join('; '),
+          variantKey,
+        );
       }
     } catch (error) {
       const message = describe(error);
       this.logger.warn(`${source}: read-path fetch failed, serving local copy: ${message}`);
-      await this.recordAttempt(source, connectionId, message);
+      await this.recordAttempt(source, connectionId, message, variantKey);
     } finally {
       this.fetchesInFlight -= 1;
     }
@@ -243,26 +278,44 @@ export class SyncOnReadService {
    * failure must not strand a source for the whole TTL (7 days, for the grid),
    * so one blip costs minutes, not a week.
    *
-   * Matching follows the variant-key rule, so a `homework:<guid>` or
-   * `mail_inbox:<connId>` run counts for its base source. No run at all is
-   * never fresh, which is what makes a first view fetch.
+   * ## What counts as "this source"
+   *
+   * With no `variantKey`, matching follows the variant-key rule, so a
+   * `homework:<guid>` or `mail_inbox:<connId>` run counts for its base source.
+   * That is right for a caller whose read spans students, and wrong for one
+   * that does not: a `perStudent` source writes `${SOURCE}:${studentGuid}`, so
+   * base-plus-any-variant matching let one child's successful run declare
+   * *another* child's copy fresh. With a `variantKey`, that key must match
+   * **exactly**. Per-student tasks always write the guid-suffixed key, so exact
+   * matching is complete rather than partial.
+   *
+   * No run at all is never fresh, which is what makes a first view fetch.
    */
-  private async isFresh(source: string, ttlMinutes: number, connectionId: string): Promise<boolean> {
+  private async isFresh(
+    source: string,
+    ttlMinutes: number,
+    connectionId: string,
+    variantKey?: string,
+  ): Promise<boolean> {
     const { successRuns, allRuns } = await this.freshness.loadSyncRuns(connectionId);
     const now = Date.now();
 
-    if (newestRunAt(successRuns, source) >= now - ttlMinutes * 60_000) return true;
+    if (newestRunAt(successRuns, source, variantKey) >= now - ttlMinutes * 60_000) return true;
 
     // Clamped to the TTL so a source whose TTL is shorter than the retry
     // window cannot be held back longer than its own schedule.
     const retryMinutes = Math.min(ttlMinutes, this.envInt('SYNC_ON_READ_RETRY_MINUTES', 15));
-    return newestRunAt(allRuns, source) >= now - retryMinutes * 60_000;
+    return newestRunAt(allRuns, source, variantKey) >= now - retryMinutes * 60_000;
   }
 
   /**
    * Records a failed attempt so the retry window above is satisfied.
    *
-   * Suffixed per connection, never bare: `FreshnessService.getAllSourceHealth`
+   * **It writes the key the probe reads**, which is the whole point: a
+   * student-keyed probe would never see a `${source}:${connectionId}` sentinel,
+   * so a failing source would re-fetch on every view — the exact amplifier.
+   *
+   * Suffixed either way, never bare: `FreshnessService.getAllSourceHealth`
    * reads the bare key for the source's own health, and a connectionless row
    * is admitted into every connection's snapshot — so a bare failure would be
    * shown to every household on a shared deployment.
@@ -274,9 +327,13 @@ export class SyncOnReadService {
     source: string,
     connectionId: string,
     errorMessage: string,
+    variantKey?: string,
   ): Promise<void> {
     try {
-      const run = await this.syncRunService.openRun(`${source}:${connectionId}`, connectionId);
+      const run = await this.syncRunService.openRun(
+        variantKey ?? `${source}:${connectionId}`,
+        connectionId,
+      );
       await this.syncRunService.closeRun(run.id, 'failed', {
         errorMessage: errorMessage || 'read-path fetch failed with no detail',
       });
@@ -307,13 +364,23 @@ interface ReadPathOperation {
 }
 
 /**
- * When this source last ran, across its variant keys. `-Infinity` when never,
- * so every comparison against a cutoff is false without a null branch.
+ * When this source last ran. `-Infinity` when never, so every comparison
+ * against a cutoff is false without a null branch.
+ *
+ * With a `variantKey`, only that exact key counts — the caller is asking about
+ * one student, and a sibling's run is not an answer. Without one, every variant
+ * of `source` counts, which is right for a read that spans students.
  */
-function newestRunAt(runs: Map<string, { endedAt?: Date | null; startedAt?: Date | null }>, source: string): number {
+function newestRunAt(
+  runs: Map<string, { endedAt?: Date | null; startedAt?: Date | null }>,
+  source: string,
+  variantKey?: string,
+): number {
   let newest = -Infinity;
   for (const [runKey, run] of runs) {
-    if (runKey !== source && !runKey.startsWith(`${source}:`)) continue;
+    if (variantKey !== undefined) {
+      if (runKey !== variantKey) continue;
+    } else if (runKey !== source && !runKey.startsWith(`${source}:`)) continue;
     // `startedAt` as the fallback so a row still running counts: another
     // worker is already on it, and a second fetch would be the amplifier.
     const at = run.endedAt ?? run.startedAt;
