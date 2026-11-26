@@ -94,6 +94,25 @@ describe('AppHeaderMenu', () => {
     expect(screen.getByTestId('header-profile-trigger').className).toContain('tap-target');
   });
 
+  /** The trigger has to read as a menu button, not a static avatar. */
+  it('gives the trigger a hover/open pill', () => {
+    renderMenu();
+
+    const className = screen.getByTestId('header-profile-trigger').className;
+    // `group` is what lets the chevron read the trigger's open state.
+    expect(className).toContain('group');
+    expect(className).toContain('data-[state=open]:bg-accent/60');
+    expect(className).toContain('data-[state=open]:border-border');
+  });
+
+  it('flips the chevron when the menu opens', () => {
+    // jsdom has no layout, so this guards the class that does the rotating.
+    renderMenu();
+
+    const chevron = screen.getByTestId('header-profile-trigger').querySelector('svg');
+    expect(chevron?.getAttribute('class')).toContain('group-data-[state=open]:rotate-180');
+  });
+
   it('shows settings, feedback, theme and sync once opened', () => {
     renderMenu();
 
@@ -171,6 +190,29 @@ describe('AppHeaderMenu', () => {
 
     expect(mutate).toHaveBeenCalledTimes(1);
   });
+
+  it('links אודות to the profile site in a new tab', () => {
+    renderMenu();
+    openMenu();
+
+    const item = screen.getByTestId('header-menu-about');
+    expect(item.tagName).toBe('A');
+    expect(item.getAttribute('href')).toBe('https://profile.mitya.dev/');
+    expect(item.getAttribute('target')).toBe('_blank');
+    expect(item.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(item.textContent).toContain('אודות');
+  });
+
+  /** Appended at the bottom, so the existing keyboard order stays as it was. */
+  it('puts אודות last, below the sync item', () => {
+    renderMenu();
+    openMenu();
+
+    const about = screen.getByTestId('header-menu-about');
+    const refresh = screen.getByTestId('header-menu-refresh');
+    expect(refresh.compareDocumentPosition(about) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('disables sync while one is already running', () => {
     isPending = true;
     renderMenu();

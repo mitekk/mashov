@@ -249,6 +249,20 @@ test.describe('app header', () => {
     await expect(page.getByTestId('feedback-dialog')).toBeVisible();
   });
 
+  test('points אודות at the profile site in a new tab', async ({ page }) => {
+    // Asserted on the attributes only: following the link would hit a live
+    // external site from the suite.
+    await page.goto('/home');
+    await expect(page.getByTestId('app-header')).toBeVisible();
+
+    await page.getByTestId('header-profile-trigger').click();
+    const about = page.getByTestId('header-menu-about');
+    await expect(about).toBeVisible();
+    await expect(about).toHaveAttribute('href', 'https://profile.mitya.dev/');
+    await expect(about).toHaveAttribute('target', '_blank');
+    await expect(about).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
   test('keeps /more reachable from the header now the avatar is a button', async ({ page }) => {
     await page.goto('/home');
     await expect(page.getByTestId('app-header')).toBeVisible();
