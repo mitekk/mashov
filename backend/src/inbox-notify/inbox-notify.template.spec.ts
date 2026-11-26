@@ -173,6 +173,29 @@ describe('renderInboxMessage', () => {
       expect((line.match(/<[a-z]/g) ?? []).length).toBe((line.match(/<\//g) ?? []).length);
     }
   });
+
+  it('wraps a paragraph past the line budget instead of losing its tail', () => {
+    // A body budget above TELEGRAM_LINE_BUDGET is a supported configuration
+    // (INBOX_NOTIFY_BODY_CHARS), and a parent must not silently receive a
+    // school letter with the end of a paragraph cut off.
+    const paragraph = Array.from({ length: 500 }, (_, index) => `מילה${index}`).join(' ');
+    const text = renderInboxMessage(
+      makeMessage({ bodyHtmlSanitized: `<p>${paragraph}</p>` }),
+      {},
+      4000,
+    );
+
+    const quotes = text
+      .split('\n')
+      .filter((line) => line.startsWith('<blockquote>'))
+      .map((line) => line.replace(/^<blockquote>|<\/blockquote>$/g, ''));
+
+    expect(quotes.length).toBeGreaterThan(1);
+    expect(quotes.map(stripTelegramHtml).join(' ')).toBe(paragraph);
+    for (const line of text.split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(TELEGRAM_CHUNK_LIMIT);
+    }
+  });
 });
 
 describe('renderInboxSummary', () => {

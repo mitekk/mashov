@@ -1617,7 +1617,7 @@ describe('DigestService.runAll', () => {
   it('marks the delivery as not having used the model when it fell back', async () => {
     const harness = makeHarness();
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
-      prose: { headline: 'ח', behaviorLine: 'ח', homeworkLine: '', dueTomorrowLine: '' },
+      prose: { headline: 'ח', intros: {}, itemLines: {} },
       deadlineResolutions: [],
       usedLlm: false,
     });

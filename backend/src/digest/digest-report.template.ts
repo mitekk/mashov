@@ -162,14 +162,30 @@ const SECTION_TITLES: Record<DigestSectionId, string> = {
 
 const FILES_TITLE = '📎 קבצים';
 
-/** Where a section's header points, and with which filter. */
-const SECTION_TARGETS: Record<DigestSectionId, { section: ChildSection; behavior?: ChildBehaviorFilter } | null> = {
+/**
+ * The header's share of the line budget. A first name needs a small fraction
+ * of it; the rest of the line is a weekday and a date this module formats.
+ */
+const HEADER_NAME_BUDGET = 120;
+
+/**
+ * Where a section's header points.
+ *
+ * `'child'` means the child's page with no section selected -- as close as the
+ * message can get to something that lives in a dialog. `null` means the
+ * section genuinely has no web surface, and a dead header is the honest
+ * rendering.
+ */
+type SectionTarget = { section: ChildSection; behavior?: ChildBehaviorFilter } | 'child' | null;
+
+const SECTION_TARGETS: Record<DigestSectionId, SectionTarget> = {
   behavior: { section: 'behavior', behavior: 'attention' },
   positive: { section: 'behavior', behavior: 'positive' },
   homeworkNew: { section: 'homework' },
   // An early release lives in a dialog with no URL of its own, so the child's
-  // page is as close as the message can get.
-  release: null,
+  // page is as close as the message can get -- and closer than nothing, which
+  // is what a dead header among six live ones amounts to.
+  release: 'child',
   // A consent form has no web surface at all: no route, no section, no dialog.
   // Linking anywhere would take the parent somewhere that cannot answer it.
   activity: null,
@@ -195,8 +211,12 @@ export function renderReport(
   // Who and when first: this is what a parent scans for in a list of Telegram
   // chats, and it is the only place the child's name appears. The weekday is
   // deterministic and the cheapest readability win in the message.
+  //
+  // Clamped like every other interpolation: the name comes from upstream, and
+  // the stated invariant is that NO value escapes the per-line budget -- not
+  // "no value whose line happens to carry a tag".
   const blocks: string[] = [
-    `${escapeTelegramHtml(payload.childFirstName)} · ${formatHebrewWeekday(payload.reportFor)}, ${formatSchoolDate(payload.reportFor)}`,
+    `${escapeTelegramHtml(clampLine(payload.childFirstName, HEADER_NAME_BUDGET))} · ${formatHebrewWeekday(payload.reportFor)}, ${formatSchoolDate(payload.reportFor)}`,
   ];
 
   const headline = line(prose.headline);
@@ -311,7 +331,12 @@ function section(
   extraLines: string[],
 ): string {
   const target = SECTION_TARGETS[id];
-  const href = target ? childSectionUrl(base, guid, target.section, target.behavior ?? 'all') : null;
+  const href =
+    target === 'child'
+      ? childUrl(base, guid)
+      : target
+        ? childSectionUrl(base, guid, target.section, target.behavior ?? 'all')
+        : null;
   const title = SECTION_TITLES[id];
 
   // The emoji stays outside the anchor: a marker is not a link, and Telegram
@@ -329,6 +354,8 @@ function section(
   const intro = line(introText);
   if (intro) lines.push(intro);
 
+  let rendered = 0;
+
   for (const item of items) {
     const text = itemLines[item.ref];
     const clamped = clampLine(typeof text === 'string' ? text : '');
@@ -338,6 +365,7 @@ function section(
     if (clamped.length === 0) continue;
 
     lines.push(`• ${item.href ? anchor(item.href, clamped) : escapeTelegramHtml(clamped)}`);
+    rendered += 1;
 
     // The teacher's own words, visibly theirs, and the template's to render --
     // so the model never has to carry them and cannot drop them.
@@ -347,8 +375,10 @@ function section(
     }
   }
 
-  // A section whose every item lost its line is not a section.
-  if (!lines.some((entry) => entry.startsWith('• '))) return '';
+  // A section whose every item lost its line is not a section. Counted rather
+  // than detected: a model intro that happens to open with a bullet would
+  // satisfy a `startsWith('• ')` scan and keep an itemless heading alive.
+  if (rendered === 0) return '';
 
   for (const extra of extraLines) {
     const clamped = clampLine(extra);

@@ -1,4 +1,5 @@
 import {
+  splitLine,
   TELEGRAM_LINE_BUDGET,
   clampLine,
   escapeTelegramHtml,
@@ -146,5 +147,48 @@ describe('looksLikeParseFailure', () => {
     // A transient failure must stay a failure: retrying it as plain text would
     // report success for a message that never arrived.
     expect(looksLikeParseFailure(description)).toBe(false);
+  });
+});
+
+describe('splitLine', () => {
+  it('leaves a paragraph that already fits as a single line', () => {
+    expect(splitLine('קצר ופשוט', 900)).toEqual(['קצר ופשוט']);
+  });
+
+  it('keeps every word of a paragraph past the budget instead of truncating it', () => {
+    const paragraph = Array.from({ length: 400 }, (_, index) => `מילה${index}`).join(' ');
+
+    const parts = splitLine(paragraph, 200);
+
+    // Nothing is dropped: the whole paragraph is still readable, across lines.
+    expect(parts.join(' ')).toBe(paragraph);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      expect(escapeTelegramHtml(part).length).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it('measures the budget after escaping, like clampLine does', () => {
+    const parts = splitLine(Array.from({ length: 80 }, () => '&').join(' '), 40);
+
+    for (const part of parts) {
+      expect(escapeTelegramHtml(part).length).toBeLessThanOrEqual(40);
+    }
+  });
+
+  it('breaks a single unbroken word rather than exceeding the budget', () => {
+    const parts = splitLine('א'.repeat(300), 100);
+
+    expect(parts.join('')).toBe('א'.repeat(300));
+    for (const part of parts) expect(part.length).toBeLessThanOrEqual(100);
+  });
+
+  it('collapses newlines, so one part can never split a tag across two lines', () => {
+    expect(splitLine('a\nb\tc', 900)).toEqual(['a b c']);
+  });
+
+  it('returns nothing for blank or non-string input', () => {
+    expect(splitLine('   ', 900)).toEqual([]);
+    expect(splitLine(undefined as unknown as string, 900)).toEqual([]);
   });
 });

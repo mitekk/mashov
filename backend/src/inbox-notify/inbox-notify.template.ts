@@ -2,7 +2,7 @@ import {
   DEFAULT_BODY_CHARS,
   stripMailHtmlToText,
 } from '../telegram/html-to-text';
-import { clampLine, escapeTelegramHtml } from '../telegram/telegram-html';
+import { clampLine, escapeTelegramHtml, splitLine } from '../telegram/telegram-html';
 import { inboxConversationUrl } from '../telegram/notify-links';
 
 /**
@@ -22,8 +22,9 @@ import { inboxConversationUrl } from '../telegram/notify-links';
  * Everything interpolated is escaped and clamped to one line. The clamping is
  * what keeps `chunkTelegramText`'s hard cut -- its only tag-unsafe cut -- out
  * of reach; the body is already budgeted by `DEFAULT_BODY_CHARS`, and
- * collapsing its paragraphs onto one line is what stops a `<blockquote>` from
- * spanning two.
+ * one `<blockquote>` per paragraph -- wrapped across
+ * several when a paragraph is longer than a line -- is what stops a quote from
+ * spanning two lines.
  *
  * The HTML stripper itself lives in `src/telegram/html-to-text.ts`, because the
  * digest's message-board section needs the same reading and must not import
@@ -99,7 +100,7 @@ export function renderInboxMessage(
   //
   // Not one quote around the whole body, and for two reasons.
   //
-  // `clampLine` would collapse the paragraph breaks that
+  // Collapsing the body onto one line would lose the paragraph breaks that
   // `stripMailHtmlToText` goes to deliberate trouble to preserve (it separates
   // paragraphs with a single `\n`), and a school letter would read as one
   // run-on block -- in the one feature whose point is that a message scans in
@@ -115,8 +116,13 @@ export function renderInboxMessage(
   // time, because the inbox list payload carries none until a parent opens the
   // thread.
   for (const paragraph of body.split(/\n+/)) {
-    const quoted = escaped(paragraph);
-    if (quoted.length > 0) lines.push(`<blockquote>${quoted}</blockquote>`);
+    // Wrapped, not clamped: `INBOX_NOTIFY_BODY_CHARS` may be configured above
+    // `TELEGRAM_LINE_BUDGET`, and a clamp would then drop the end of a long
+    // paragraph with nothing in the message to say so. Every part still obeys
+    // the per-line budget on its own, so the invariant holds unchanged.
+    for (const part of splitLine(paragraph)) {
+      lines.push(`<blockquote>${escapeTelegramHtml(part)}</blockquote>`);
+    }
   }
 
   const href = inboxConversationUrl(options.publicBaseUrl, message.conversationId);

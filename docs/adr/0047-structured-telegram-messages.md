@@ -89,7 +89,13 @@ Templates hold it with `clampLine`, which collapses newlines out of every
 interpolated value and caps it at `TELEGRAM_LINE_BUDGET` (900). The budget is
 measured **after** escaping: one `&` becomes five characters, so a raw-length
 budget of 900 would admit a 4500-character line and defeat the invariant.
-Mail bodies were already budgeted by `DEFAULT_BODY_CHARS`.
+
+A mail paragraph is the one value that is wrapped rather than clamped, with
+`splitLine`: `INBOX_NOTIFY_BODY_CHARS` is a configurable body budget and may
+be set above `TELEGRAM_LINE_BUDGET`, where a clamp would drop the end of a
+paragraph the school wrote with nothing in the message to say so. Each part
+still obeys the budget on its own, and one `<blockquote>` per part keeps every
+tag inside one line.
 
 ### 2. Deep links that carry the studentGuid
 
@@ -109,7 +115,7 @@ whole repo.
 | Homework item | `/children/<guid>/homework/<id>` |
 | Section header | `/children/<guid>?section=<s>&behavior=<f>` |
 | Board notice | `/children/<guid>?section=notices&behavior=all` (no detail route exists) |
-| Early release | `/children/<guid>` (lives in a dialog, no URL) |
+| Early release | `/children/<guid>` (the item lives in a dialog with no URL, so the section header and its item both point at the child's page) |
 | Consent form | **no link** — no web surface at all |
 | Mail | `/inbox/<conversationId>` (unchanged) |
 

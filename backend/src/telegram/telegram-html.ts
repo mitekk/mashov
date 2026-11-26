@@ -127,6 +127,73 @@ export function clampLine(text: string, budget: number = TELEGRAM_LINE_BUDGET): 
   return `${kept}…`;
 }
 
+/**
+ * The same budget as `clampLine`, but across as many lines as it takes.
+ *
+ * `clampLine` is right for a value that is a line by nature -- a filename, a
+ * subject, a one-sentence item line -- where a tail past the budget is noise
+ * and an ellipsis is honest. It is the wrong answer for a paragraph the
+ * school wrote: a configured body budget above `TELEGRAM_LINE_BUDGET` would
+ * silently lose the end of every long paragraph, and the parent would never
+ * know a sentence was missing.
+ *
+ * So this wraps instead of truncating. Each returned part obeys the escaped
+ * budget on its own, which is what the chunker needs; nothing is dropped,
+ * which is what the reader needs. Word boundaries are preferred, and a single
+ * word longer than the budget is cut on a code-point boundary rather than
+ * allowed to break the invariant.
+ */
+export function splitLine(text: string, budget: number = TELEGRAM_LINE_BUDGET): string[] {
+  if (typeof text !== 'string') return [];
+
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  if (oneLine.length === 0) return [];
+  if (budget < 1) return [];
+  if (escapedLength(oneLine) <= budget) return [oneLine];
+
+  const parts: string[] = [];
+  let current = '';
+  let currentLength = 0;
+
+  const flush = (): void => {
+    if (current.length > 0) parts.push(current);
+    current = '';
+    currentLength = 0;
+  };
+
+  for (const word of oneLine.split(' ')) {
+    if (word.length === 0) continue;
+    const wordLength = escapedLength(word);
+    const separator = current.length > 0 ? 1 : 0;
+
+    if (currentLength + separator + wordLength <= budget) {
+      current += separator === 1 ? ` ${word}` : word;
+      currentLength += separator + wordLength;
+      continue;
+    }
+
+    flush();
+
+    if (wordLength <= budget) {
+      current = word;
+      currentLength = wordLength;
+      continue;
+    }
+
+    // One word longer than a whole line. Cut it on code-point boundaries:
+    // a lone surrogate renders as a replacement character in the chat.
+    for (const codePoint of word) {
+      const cost = escapedLength(codePoint);
+      if (currentLength + cost > budget) flush();
+      current += codePoint;
+      currentLength += cost;
+    }
+  }
+
+  flush();
+  return parts;
+}
+
 /** What `escapeTelegramHtml(text).length` would be, without building it. */
 function escapedLength(text: string): number {
   let length = 0;

@@ -268,6 +268,47 @@ describe('renderReport structure', () => {
     expect(text).not.toContain('צפי הגשה למחר');
   });
 
+  it("anchors the early-release header on the child's page, like every other header", () => {
+    // The release itself lives in a dialog with no URL, but the section header
+    // is a link everywhere else in the message; leaving this one dead made the
+    // header row read as inconsistently tappable.
+    const payload = makePayload({ releases: [RELEASE] });
+
+    const text = renderReport(payload, deterministicProse(payload), {
+      publicBaseUrl: BASE,
+      studentGuid: GUID,
+    });
+
+    const header = text.split('\n').find((line) => line.includes('שחרור מוקדם'));
+    expect(header).toBe(
+      `<b>🕑 <a href="${BASE}/children/${GUID}">שחרור מוקדם</a></b>`,
+    );
+  });
+
+  it('clamps the header line, so even a pathological name cannot break the budget', () => {
+    const payload = makePayload({ childFirstName: 'א'.repeat(4000), behavior: [BEHAVIOR] });
+
+    const text = renderReport(payload, deterministicProse(payload));
+
+    for (const line of text.split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(TELEGRAM_CHUNK_LIMIT);
+    }
+    expect(text.split('\n')[0].length).toBeLessThan(1000);
+  });
+
+  it('drops a section whose items all lost their lines, even when the intro starts with a bullet', () => {
+    const payload = makePayload({ behavior: [BEHAVIOR] });
+
+    const text = renderReport(payload, {
+      headline: 'עדכון',
+      intros: { behavior: '• הנה מה שקרה' },
+      itemLines: {},
+    });
+
+    expect(text).not.toContain('התנהגות ונוכחות');
+    expect(text).not.toContain('הנה מה שקרה');
+  });
+
   it('renders every section a full day has, each with its marker', () => {
     const payload = makePayload({
       behavior: [ABSENCE],
