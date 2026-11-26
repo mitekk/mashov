@@ -217,6 +217,7 @@ export class TelegramMediaService implements MediaDelivery {
       buffer: downloaded.buffer,
       contentType: downloaded.contentType,
       ...(ref.caption ? { caption: ref.caption } : {}),
+      ...(ref.caption && ref.captionParseMode ? { captionParseMode: ref.captionParseMode } : {}),
     };
   }
 

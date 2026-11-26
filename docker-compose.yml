@@ -146,6 +146,12 @@ services:
       # Telegram allows roughly one message per second per chat, tighter in
       # groups, so the uploads are paced rather than burst.
       MEDIA_SEND_DELAY_MS: ${MEDIA_SEND_DELAY_MS:-1100}
+      # Telegram HTML parse mode (ADR-0047). Defaults TRUE: every template
+      # escapes what it interpolates and the senders retry a parse complaint as
+      # plain text, so the message cannot be lost to markup. It is here anyway
+      # so a parse problem in production is a restart rather than a deploy --
+      # `false` sends the same messages flat, with the tags stripped.
+      TELEGRAM_HTML_ENABLED: ${TELEGRAM_HTML_ENABLED:-true}
       # Parent-driven Telegram linking (ADR-0033). All optional, and all inert
       # without TELEGRAM_BOT_TOKEN below: the poller checks for the token before
       # it starts, and the mint route answers 503.

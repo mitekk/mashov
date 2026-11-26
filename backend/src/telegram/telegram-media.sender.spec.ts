@@ -57,12 +57,67 @@ describe('TelegramMediaSender', () => {
     expect(bodyOf(post)).toContain('name="photo"');
   });
 
-  it('sends the caption, and no parse_mode with it', async () => {
+  it('sends the caption, and no parse_mode for a caller that did not render HTML', async () => {
     await makeSender().sendMedia('chat-1', pdf({ caption: 'אישור הורים.pdf — טיול שנתי' }));
 
     const body = bodyOf(post);
     expect(body).toContain('name="caption"');
     expect(body).not.toContain('parse_mode');
+  });
+
+  it('sends parse_mode HTML for a caption the caller rendered as HTML', async () => {
+    // The caption now anchors a deep link to the item the file came from, so
+    // it has to be parsed. See ADR-0047.
+    await makeSender().sendMedia(
+      'chat-1',
+      pdf({
+        caption: '📎 <a href="https://x/children/g/homework/1">דף 42</a>',
+        captionParseMode: 'HTML',
+      }),
+    );
+
+    const body = bodyOf(post);
+    expect(body).toContain('name="parse_mode"');
+    expect(body).toContain('HTML');
+  });
+
+  it('retries the upload with a flat caption when Telegram cannot parse it', async () => {
+    // One unparseable caption must not cost the parent the file.
+    post.mockResolvedValueOnce({
+      data: { ok: false, description: "Bad Request: can't parse entities: Unclosed start tag" },
+    });
+
+    await makeSender().sendMedia(
+      'chat-1',
+      pdf({ caption: '📎 <a href="https://x/a">דף 42</a> &amp; עוד', captionParseMode: 'HTML' }),
+    );
+
+    expect(post).toHaveBeenCalledTimes(2);
+    const retried = bodyOf(post, 1);
+    expect(retried).not.toContain('name="parse_mode"');
+    expect(retried).toContain('&');
+    expect(retried).not.toContain('<a href');
+  });
+
+  it('does not retry an upload Telegram refused for a reason other than the markup', async () => {
+    post.mockResolvedValue({ data: { ok: false, description: 'Bad Request: chat not found' } });
+
+    await expect(
+      makeSender().sendMedia('chat-1', pdf({ caption: '<b>x</b>', captionParseMode: 'HTML' })),
+    ).rejects.toThrow(/chat not found/);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a flat caption when TELEGRAM_HTML_ENABLED is off', async () => {
+    await makeSender({ TELEGRAM_HTML_ENABLED: 'false' }).sendMedia(
+      'chat-1',
+      pdf({ caption: '📎 <a href="https://x/a">דף 42</a>', captionParseMode: 'HTML' }),
+    );
+
+    expect(post).toHaveBeenCalledTimes(1);
+    const body = bodyOf(post);
+    expect(body).not.toContain('name="parse_mode"');
+    expect(body).not.toContain('<a href');
   });
 
   it('truncates a caption past the Bot API limit, since a caption cannot be chunked', async () => {

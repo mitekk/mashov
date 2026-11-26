@@ -13,6 +13,7 @@ import {
   DEFAULT_PHOTO_MAX_BYTES,
   chooseTelegramMediaMethod,
 } from './telegram-media-method';
+import { looksLikeParseFailure, stripTelegramHtml } from './telegram-html';
 
 /** Telegram's own ceiling for a caption, in UTF-16 code units. */
 const CAPTION_LIMIT = 1024;
@@ -37,6 +38,13 @@ export interface TelegramMediaFile {
   contentType: string | null;
   /** One line. Telegram caps it at 1024 and it cannot be split. */
   caption?: string;
+  /**
+   * Set by a caller that rendered the caption as Telegram HTML -- which the
+   * digest and inbox captions now do, because a caption anchors a deep link
+   * to the item the file came from. The sender still decides whether the
+   * markup goes out as markup, and owns the strip-and-retry. See ADR-0047.
+   */
+  captionParseMode?: 'HTML';
 }
 
 /**
@@ -63,7 +71,8 @@ export interface MediaSender {
  * `sendMediaGroup` is deliberately not used. Only the first item's caption
  * renders, and one bad item fails the whole group -- the opposite of the
  * per-file isolation the callers need, where a single unreadable attachment
- * must not cost the parent the other two.
+ * must not cost the parent the other two. Captions carrying a deep link each
+ * do not change that reasoning (ADR-0047 leaves ADR-0039 standing).
  */
 @Injectable()
 export class TelegramMediaSender implements MediaSender {
@@ -103,17 +112,49 @@ export class TelegramMediaSender implements MediaSender {
       file.buffer.byteLength,
       this.readBytes('TELEGRAM_PHOTO_MAX_BYTES', DEFAULT_PHOTO_MAX_BYTES),
     );
+
+    // Same bargain as the text sender. A caption that anchors a link has to be
+    // parsed; a caption Telegram cannot parse must not cost the parent the
+    // file, so the one failure a retry can fix is retried flat and nothing
+    // else is. The bytes are already in memory, so the retry re-uploads them
+    // -- which is the price of a parse complaint, and it is rare.
+    const wantsHtml = file.captionParseMode === 'HTML';
+    const asHtml = wantsHtml && this.htmlEnabled();
+    const caption = truncateCaption(
+      wantsHtml && !asHtml ? stripTelegramHtml(file.caption ?? '') : file.caption,
+    );
+
+    const refusal = await this.upload(token, address, method, file, caption, asHtml);
+    if (refusal === null) return;
+
+    if (asHtml && looksLikeParseFailure(refusal)) {
+      const flat = truncateCaption(stripTelegramHtml(file.caption ?? ''));
+      const retried = await this.upload(token, address, method, file, flat, false);
+      if (retried === null) return;
+      throw new Error(`Telegram ${method} failed: ${redact(retried, token)}`);
+    }
+
+    throw new Error(`Telegram ${method} failed: ${redact(refusal, token)}`);
+  }
+
+  /** Null when Telegram accepted it, otherwise its own description. */
+  private async upload(
+    token: string,
+    address: string,
+    method: string,
+    file: TelegramMediaFile,
+    caption: string | undefined,
+    asHtml: boolean,
+  ): Promise<string | null> {
     const field = method === 'sendPhoto' ? 'photo' : 'document';
 
     const form = new FormData();
     form.append('chat_id', address);
-    const caption = truncateCaption(file.caption);
     // Appended only when there is one: an empty caption field is a field
-    // Telegram has to parse for nothing.
+    // Telegram has to parse for nothing. The same goes for parse_mode, so a
+    // flat caption is byte-for-byte the upload this project always sent.
     if (caption) form.append('caption', caption);
-    // No parse_mode, for the same reason the text sender sends none: a
-    // filename routinely contains . - _ ( ), and unbalanced markup fails the
-    // whole upload.
+    if (caption && asHtml) form.append('parse_mode', 'HTML');
     form.append(field, file.buffer, {
       filename: safeFileName(file.fileName),
       contentType: file.contentType ?? 'application/octet-stream',
@@ -128,16 +169,25 @@ export class TelegramMediaSender implements MediaSender {
       );
       data = response.data;
     } catch (error) {
+      // Thrown rather than returned, so a transport failure never reaches the
+      // caption retry: re-uploading after a 502 would be a second upload, not
+      // a fix.
       throw new Error(`Telegram ${method} failed: ${redact(describeTelegramError(error), token)}`);
     }
 
-    if (data?.ok !== true) {
-      const described =
-        data?.description && data.description.length > 0
-          ? data.description
-          : 'Telegram reported ok=false';
-      throw new Error(`Telegram ${method} failed: ${redact(described, token)}`);
-    }
+    if (data?.ok === true) return null;
+    return data?.description && data.description.length > 0
+      ? data.description
+      : 'Telegram reported ok=false';
+  }
+
+  /** Mirrors `TelegramSender.htmlEnabled`: the kill switch is one env var. */
+  private htmlEnabled(): boolean {
+    const raw = this.config.get<string | boolean>('TELEGRAM_HTML_ENABLED');
+    if (raw === undefined || raw === null) return true;
+    const normalized = String(raw).trim().toLowerCase();
+    if (normalized.length === 0) return true;
+    return !['false', '0', 'no', 'off'].includes(normalized);
   }
 
   private readBytes(key: string, fallback: number): number {
