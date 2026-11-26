@@ -242,5 +242,5 @@ describe('TimetableTask', () => {
   // REMOVED: 'run() delegates to execute()'. The per-task `@Cron` and its
   // `run()` shell are gone -- background sync is scheduled by
   // `NotificationWindowTask`, for notification-enabled households only. See
-  // ADR-0046 and `docs/public-resource-progress.md`.
+  // ADR-0046.
 });
