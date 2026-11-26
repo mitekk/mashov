@@ -22,6 +22,14 @@ export interface ApiFetchOptions extends RequestInit {
    * want.
    */
   reauthenticateOnRedirect?: boolean;
+  /**
+   * Opt out of `handle401Redirect` for this call. Only the sign-in page's own
+   * session probe wants this: it runs ON /auth/sign-in, so the global
+   * handler's `location.href = '/auth/sign-in'` would reload the page,
+   * re-probe, and loop. A 401 here is an answer ("not signed in"), not a
+   * session that has expired.
+   */
+  treat401AsAnswer?: boolean;
 }
 
 function handle401Redirect(): void {
@@ -50,7 +58,11 @@ export async function apiFetch<T>(
   path: string,
   options?: ApiFetchOptions,
 ): Promise<T> {
-  const { reauthenticateOnRedirect = false, ...init } = options ?? {};
+  const {
+    reauthenticateOnRedirect = false,
+    treat401AsAnswer = false,
+    ...init
+  } = options ?? {};
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
     headers: {
@@ -84,7 +96,7 @@ export async function apiFetch<T>(
     // UNAUTHORIZED, the Mashov credential validator always answers
     // INVALID_CREDENTIALS.
     const code = (body as { error?: { code?: string } })?.error?.code;
-    if (code !== 'INVALID_CREDENTIALS') {
+    if (code !== 'INVALID_CREDENTIALS' && !treat401AsAnswer) {
       handle401Redirect();
     }
     const message =
