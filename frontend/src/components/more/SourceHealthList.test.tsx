@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import type { SourceHealth } from '@/types/api';
 import { SourceHealthList } from './SourceHealthList';
 
@@ -48,6 +48,14 @@ function entry(overrides: Partial<SourceHealth> & Pick<SourceHealth, 'source'>):
   };
 }
 
+/**
+ * The list starts folded, so every row assertion needs this first -- the rows
+ * are not merely hidden, they are not mounted.
+ */
+const expand = () => {
+  fireEvent.click(screen.getByTestId('source-health-toggle'));
+};
+
 /** The red error line under a row, if the row rendered one. */
 function errorTexts(): string[] {
   return Array.from(document.querySelectorAll('.text-destructive'))
@@ -71,8 +79,10 @@ describe('SourceHealthList', () => {
         ]}
       />,
     );
+    expand();
 
-    expect(screen.getByText('תקין')).toBeTruthy();
+    // Twice: once in the header summary, once on the row.
+    expect(screen.getAllByText('תקין')).toHaveLength(2);
     expect(errorTexts()).toEqual([]);
   });
 
@@ -91,7 +101,9 @@ describe('SourceHealthList', () => {
       />,
     );
 
-    expect(screen.getByText('שגיאה')).toBeTruthy();
+    expand();
+
+    expect(screen.getAllByText('שגיאה')).toHaveLength(2);
     expect(errorTexts()).toEqual([GENERIC_ERROR]);
   });
 
@@ -111,7 +123,9 @@ describe('SourceHealthList', () => {
       />,
     );
 
-    expect(screen.getByText('ישן')).toBeTruthy();
+    expand();
+
+    expect(screen.getAllByText('ישן')).toHaveLength(2);
     expect(errorTexts()).toEqual([GENERIC_ERROR]);
   });
 
@@ -130,6 +144,8 @@ describe('SourceHealthList', () => {
       />,
     );
 
+    expand();
+
     // Both entries map to the same summary, so the title attribute is what
     // says WHICH run it came from.
     expect(errorTexts()).toEqual([GENERIC_ERROR]);
@@ -142,6 +158,7 @@ describe('SourceHealthList', () => {
     render(
       <SourceHealthList sources={POLICY_SOURCES.map((source) => entry({ source }))} />,
     );
+    expand();
 
     for (const source of POLICY_SOURCES) {
       // The fallback renders the raw id, so finding the id on screen IS the
@@ -165,11 +182,13 @@ describe('SourceHealthList', () => {
       />,
     );
 
+    expand();
+
     expect(screen.getByTestId('source-syncing-message_board')).toBeTruthy();
     expect(screen.queryByTestId('source-syncing-grades')).toBeNull();
     expect(screen.getByText('מסנכרן…')).toBeTruthy();
-    // The other row still reports its own status.
-    expect(screen.getByText('תקין')).toBeTruthy();
+    // The other row still reports its own status, as does the header.
+    expect(screen.getAllByText('תקין')).toHaveLength(2);
   });
 
   it('suppresses the error line while a row is syncing', () => {
@@ -185,6 +204,7 @@ describe('SourceHealthList', () => {
         syncingSources={new Set(['message_board'])}
       />,
     );
+    expand();
 
     expect(errorTexts()).toEqual([]);
   });
@@ -206,6 +226,8 @@ describe('SourceHealthList', () => {
       />,
     );
 
+    expand();
+
     expect(errorTexts()).toEqual(['לא ניתן היה לגשת לנתוני התלמיד']);
     expect(document.body.textContent).not.toContain('1a2b3c4d-dead-beef-0000-999999999999');
     expect(document.body.textContent).not.toContain('tried 2');
@@ -213,5 +235,116 @@ describe('SourceHealthList', () => {
     expect(
       document.querySelector('.text-destructive.truncate')?.getAttribute('title'),
     ).toContain('1a2b3c4d-dead-beef-0000-999999999999');
+  });
+
+  describe('folded header', () => {
+    it('mounts no rows until the header is expanded', () => {
+      render(<SourceHealthList sources={[entry({ source: 'grades' })]} />);
+
+      expect(screen.queryByText('ציונים')).toBeNull();
+      expand();
+      expect(screen.getByText('ציונים')).toBeTruthy();
+    });
+
+    it('flips aria-expanded on the toggle', () => {
+      render(<SourceHealthList sources={[entry({ source: 'grades' })]} />);
+
+      const toggle = screen.getByTestId('source-health-toggle');
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('summarises an all-fresh list as תקין plus the source count', () => {
+      render(
+        <SourceHealthList
+          sources={[
+            entry({ source: 'grades' }),
+            entry({ source: 'homework' }),
+            entry({ source: 'bells' }),
+          ]}
+        />,
+      );
+
+      const summary = screen.getByTestId('source-health-summary');
+      expect(summary.textContent).toContain('תקין');
+      expect(summary.textContent).toContain('3 מקורות');
+      expect(screen.getByTestId('source-health-list').getAttribute('data-status')).toBe('fresh');
+    });
+
+    // The worst status wins, and the count says how many sources are not fresh
+    // -- a single failure must not be summarised as `ישן` just because a stale
+    // source happens to sort first.
+    it('summarises the worst status and how many sources carry a problem', () => {
+      render(
+        <SourceHealthList
+          sources={[
+            entry({ source: 'grades' }),
+            entry({ source: 'homework', status: 'stale' }),
+            entry({ source: 'bells', status: 'failed', lastSuccessAt: null }),
+          ]}
+        />,
+      );
+
+      const summary = screen.getByTestId('source-health-summary');
+      expect(summary.textContent).toContain('שגיאה');
+      expect(summary.textContent).not.toContain('ישן');
+      expect(summary.textContent).toContain('2 מתוך 3');
+      expect(screen.getByTestId('source-health-list').getAttribute('data-status')).toBe('failed');
+    });
+
+    it('keeps the header with 0 מקורות when there are no sources', () => {
+      render(<SourceHealthList sources={[]} />);
+
+      expect(screen.getByTestId('source-health-summary').textContent).toContain('0 מקורות');
+    });
+
+    // The statuses on screen describe the run BEFORE the one in flight, so the
+    // summary is replaced rather than sat next to a spinner.
+    it('replaces the summary with מסנכרן while a refresh is in flight', () => {
+      render(
+        <SourceHealthList
+          sources={[entry({ source: 'grades', status: 'failed', lastSuccessAt: null })]}
+          isSyncing
+        />,
+      );
+
+      const summary = screen.getByTestId('source-health-summary');
+      expect(summary.textContent).toContain('מסנכרן…');
+      expect(summary.textContent).not.toContain('שגיאה');
+    });
+
+    it('calls onSync from the header without expanding the list', () => {
+      const onSync = vi.fn();
+      render(<SourceHealthList sources={[entry({ source: 'grades' })]} onSync={onSync} />);
+
+      fireEvent.click(screen.getByTestId('source-health-sync-btn'));
+
+      expect(onSync).toHaveBeenCalledTimes(1);
+      // The click must not bubble into the toggle.
+      expect(screen.getByTestId('source-health-toggle').getAttribute('aria-expanded')).toBe(
+        'false',
+      );
+    });
+
+    it('disables the sync button while a refresh is in flight', () => {
+      render(
+        <SourceHealthList
+          sources={[entry({ source: 'grades' })]}
+          onSync={() => {}}
+          isSyncing
+        />,
+      );
+
+      expect(screen.getByTestId<HTMLButtonElement>('source-health-sync-btn').disabled).toBe(true);
+    });
+
+    it('renders no sync button when onSync is not provided', () => {
+      render(<SourceHealthList sources={[entry({ source: 'grades' })]} />);
+
+      expect(screen.queryByTestId('source-health-sync-btn')).toBeNull();
+    });
   });
 });

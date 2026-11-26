@@ -17,6 +17,10 @@ export class MorePage {
   readonly unlinkModal: Locator;
   readonly unlinkError: Locator;
   readonly disconnectError: Locator;
+  /** The sync-status card in the aside; starts folded behind its header. */
+  readonly sourceHealthList: Locator;
+  readonly sourceHealthToggle: Locator;
+  readonly sourceHealthSummary: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -28,6 +32,9 @@ export class MorePage {
     this.unlinkModal = page.getByTestId('settings-unlink-modal');
     this.unlinkError = page.getByTestId('settings-unlink-error');
     this.disconnectError = page.getByTestId('settings-disconnect-error');
+    this.sourceHealthList = page.getByTestId('source-health-list');
+    this.sourceHealthToggle = page.getByTestId('source-health-toggle');
+    this.sourceHealthSummary = page.getByTestId('source-health-summary');
   }
 
   async navigate(): Promise<void> {
