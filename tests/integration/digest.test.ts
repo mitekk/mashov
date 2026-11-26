@@ -35,6 +35,7 @@ import {
   mashovDayFromJsDate,
 } from '../../backend/src/digest/digest-deadline.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
+import type { TelegramSendOptions } from '../../backend/src/digest/senders/digest-sender.interface';
 import type { ConfigService } from '../../backend/node_modules/@nestjs/config';
 import type { SchoolYearService } from '../../backend/src/common/school-year/school-year.service';
 import type { DigestSender } from '../../backend/src/digest/senders/digest-sender.interface';
@@ -58,27 +59,34 @@ function occurrences(haystack: string, needle: string): number {
 /** Captures what would have been delivered, so assertions can read the text. */
 class CapturingSender implements DigestSender {
   readonly channel = 'telegram';
-  readonly sent: { address: string; text: string }[] = [];
+  readonly sent: { address: string; text: string; options?: TelegramSendOptions }[] = [];
 
-  async send(address: string, text: string): Promise<void> {
-    this.sent.push({ address, text });
+  async send(address: string, text: string, options?: TelegramSendOptions): Promise<void> {
+    this.sent.push({ address, text, options });
   }
 }
 
-function makeConfig(): ConfigService {
+function makeConfig(overrides: Record<string, string> = {}): ConfigService {
   const values: Record<string, string> = {
     DIGEST_TIMEZONE: TIMEZONE,
     DIGEST_DRY_RUN: 'false',
     DIGEST_DUE_LOOKBACK_DAYS: '14',
     // Deliberately absent: ANTHROPIC_API_KEY. The summarizer then renders the
-    // deterministic fallback and no network call is made.
+    // deterministic fallback and no network call is made. Also deliberately
+    // absent by default: PUBLIC_BASE_URL, so most of these assertions read a
+    // message with no anchors in it.
+    ...overrides,
   };
   return { get: (key: string) => values[key] } as unknown as ConfigService;
 }
 
-function makeService(prisma: PrismaClient, sender: DigestSender) {
+function makeService(
+  prisma: PrismaClient,
+  sender: DigestSender,
+  configOverrides: Record<string, string> = {},
+) {
   const prismaService = prisma as unknown as PrismaService;
-  const config = makeConfig();
+  const config = makeConfig(configOverrides);
   const schoolYear = {
     currentSchoolYearFor: async () => SCHOOL_YEAR,
   } as unknown as SchoolYearService;
@@ -343,7 +351,60 @@ describe('Per-child daily digest', () => {
     // First names only, and never the reporting teacher. See ADR-0026.
     expect(text).not.toContain('כהן');
     expect(text).not.toContain('רחל לוי');
+    // No anchors are rendered at all here, because this config sets no
+    // PUBLIC_BASE_URL -- so the guid cannot appear. The test below is the one
+    // that reads a message with links in it.
     expect(text).not.toContain(CHILD_WITH_NEWS);
+  });
+
+  it('structures the report as HTML the sender is told to parse', async () => {
+    const sender = new CapturingSender();
+
+    await makeService(prisma, sender).runAll({ now: NOW });
+
+    const { text, options } = sender.sent[0];
+    expect(options).toEqual({ parseMode: 'HTML' });
+    // A bold emoji-marked title and one bullet per item -- see ADR-0047.
+    expect(text).toContain('<b>');
+    expect(text).toContain('⚠️');
+    expect(text.split('\n').some((line) => line.startsWith('• '))).toBe(true);
+    // The weekday, which is deterministic and the cheapest readability win.
+    expect(text.split('\n')[0]).toMatch(/^אבי · (יום \S+|שבת), \d{2}\/\d{2}\/\d{4}$/);
+  });
+
+  it('links the report to the item it is about, guid and all', async () => {
+    // The deliberate reversal of the identifier-free rule. A parent told about
+    // an unexcused absence used to land on /home and have to find the child
+    // and the note themselves. See ADR-0047.
+    const sender = new CapturingSender();
+    const service = makeService(prisma, sender, {
+      PUBLIC_BASE_URL: 'https://mashov.example',
+    });
+
+    await service.runAll({ now: NOW });
+
+    const text = sender.sent[0].text;
+    expect(text).toContain(`https://mashov.example/children/${CHILD_WITH_NEWS}/behavior/`);
+    expect(text).toContain(`https://mashov.example/children/${CHILD_WITH_NEWS}?section=`);
+    // Every URL is an anchor's href: no bare link, and no /home line.
+    expect(text).not.toMatch(/\/home(?!work)/);
+    for (const line of text.split('\n')) {
+      expect(line.replace(/href="[^"]*"/g, '')).not.toContain('http');
+    }
+  });
+
+  it('keeps a hostile teacher remark visible and escaped rather than losing the message', async () => {
+    await prisma.behaviorItem.updateMany({
+      where: { studentGuid: CHILD_WITH_NEWS },
+      data: { remark: 'אמר <b>שלום</b> & חייך' },
+    });
+    const sender = new CapturingSender();
+
+    await makeService(prisma, sender).runAll({ now: NOW });
+
+    const text = sender.sent[0].text;
+    expect(text).toContain('&lt;b&gt;שלום&lt;/b&gt; &amp; חייך');
+    expect(text).not.toContain('<b>שלום</b>');
   });
 
   it('records the delivery against the school day and keeps the sent text', async () => {

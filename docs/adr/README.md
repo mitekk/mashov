@@ -54,3 +54,4 @@ For authoring conventions, see `.claude/skills/adr/` or the `/adr` skill.
 | [ADR-0044](0044-feedback-rows-are-self-contained.md) | A Feedback Row Is a Self-Contained Snapshot, Not a Set of References | Accepted | User, Backend agent, Frontend agent | 2026-11-24 |
 | [ADR-0045](0045-operator-feedback-delivery-and-admin-access.md) | A Cron Outbox Delivers Each Report, and the Admin Surface Is Gated by a JWT We Verify Ourselves | Accepted | User, Backend agent, Frontend agent | 2026-11-24 |
 | [ADR-0046](0046-no-shared-mashov-account.md) | The App Holds No Mashov Account of Its Own | Accepted | User, Backend agent | 2026-11-25 |
+| [ADR-0047](0047-structured-telegram-messages.md) | Telegram Messages Get HTML, Deep Links, and One Model Line per Item | Accepted | User, Backend agent | 2026-11-26 |
