@@ -80,7 +80,9 @@ Copy `backend/src/sync/tasks/behavior.task.ts` structure exactly, minus the
 `BehaviorClassifierService` dependency (grades need no classification):
 
 - `public static readonly SOURCE = 'grades';`
-- `@Cron('*/12 * * * *')` — same cadence as homework/behaviour.
+- ~~`@Cron('*/12 * * * *')` — same cadence as homework/behaviour.~~ Removed
+  with every other per-task cron (ADR-0046). `grades` is now freshened when
+  the ציונים section is opened, behind a 6h TTL.
 - Local `interface MashovGrade` mirroring the fields in `apis/get-api-students-id-grades.md`.
 - Keep the whole fan-out skeleton verbatim: `studentScopeForContext`,
   `orderConnectionsForStudent`, the shared-session refusal when `requestedYear` is set,

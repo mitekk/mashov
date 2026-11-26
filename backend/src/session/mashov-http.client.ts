@@ -17,28 +17,6 @@ export class MashovHttpClient {
     this.httpClient = createMashovAxios(this.baseUrl);
   }
 
-  async get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
-    const response = await this.getResponse<T>(url, config);
-    return response.data;
-  }
-
-  async getResponse<T>(
-    url: string,
-    config?: AxiosRequestConfig,
-  ): Promise<AxiosResponse<T>> {
-    return this.requestWithRetryResponse<T>('GET', url, undefined, config);
-  }
-
-  async put<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
-    const response = await this.requestWithRetryResponse<T>('PUT', url, data, config);
-    return response.data;
-  }
-
-  async delete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
-    const response = await this.requestWithRetryResponse<T>('DELETE', url, undefined, config);
-    return response.data;
-  }
-
   /**
    * Make a GET request scoped to a specific household connection's credentials.
    * Authenticates using stored encrypted credentials for that connection.
@@ -201,6 +179,11 @@ export class MashovHttpClient {
     return `Upstream ${method} ${url} (connection ${connectionId}) failed with status ${status ?? 'unknown'}: ${detail}`;
   }
 
+  /**
+   * The shared request primitive. Not part of the retired env-credential
+   * surface: `requestForConnection` builds the per-connection auth headers and
+   * then dispatches through here.
+   */
   private async send<T>(
     method: 'GET' | 'PUT' | 'DELETE',
     url: string,
@@ -212,45 +195,5 @@ export class MashovHttpClient {
     // axios.delete takes (url, config): passing a body here would be read as
     // the config and silently drop the auth headers.
     return this.httpClient.delete<T>(url, config);
-  }
-
-  private async requestWithRetryResponse<T>(
-    method: string,
-    url: string,
-    data?: unknown,
-    config?: AxiosRequestConfig,
-    isRetry = false,
-  ): Promise<AxiosResponse<T>> {
-    const authHeaders = await this.sessionService.getAuthHeaders();
-    const headers = {
-      ...authHeaders,
-      ...(config?.headers ?? {}),
-    };
-
-    try {
-      let response: AxiosResponse<T>;
-      if (method === 'GET') {
-        response = await this.httpClient.get<T>(url, { ...config, headers });
-      } else if (method === 'PUT') {
-        response = await this.httpClient.put<T>(url, data, { ...config, headers });
-      } else if (method === 'DELETE') {
-        response = await this.httpClient.delete<T>(url, { ...config, headers });
-      } else {
-        throw new Error(`Unsupported HTTP method: ${method}`);
-      }
-      return response;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const status = error.response?.status;
-        if ((status === 401 || status === 403) && !isRetry) {
-          this.logger.debug(`Received ${status} from upstream, refreshing session and retrying`);
-          await this.sessionService.refreshIfExpired();
-          return this.requestWithRetryResponse<T>(method, url, data, config, true);
-        }
-        const msg = `Upstream request ${method} ${url} failed with status ${status ?? 'unknown'}: ${error.message}`;
-        throw new Error(msg);
-      }
-      throw error;
-    }
   }
 }

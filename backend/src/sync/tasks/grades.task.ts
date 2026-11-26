@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   orderConnectionsForStudent,
+  reportNoConnectionTarget,
+  skipNoConnections,
   stampOwnershipIfChanged,
   studentScopeForContext,
 } from '../connection-fanout';
@@ -52,11 +53,6 @@ export class GradesTask {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  @Cron('*/12 * * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
-
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({
       where: {
@@ -66,24 +62,20 @@ export class GradesTask {
       },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
+    if (connections.length === 0) {
+      return context.connectionId
+        ? reportNoConnectionTarget(
+            this.syncRunService,
+            this.logger,
+            GradesTask.SOURCE,
+            context.connectionId,
+          )
+        : skipNoConnections(this.logger, GradesTask.SOURCE);
+    }
+
     // One value feeds both the login year and the row stamp.
     const requestedYear = context.schoolYear;
     const sourcePrefix = context.sourcePrefix ?? '';
-
-    const useSharedSession = !context.connectionId && connections.length === 0;
-
-    // The shared session is process-global and carries no per-year identity,
-    // so it would answer with the current year while this run stamps another.
-    // Refuse the combination rather than writing mislabelled rows.
-    if (useSharedSession && requestedYear !== undefined) {
-      const message = `${GradesTask.SOURCE}: refusing year ${requestedYear} on the shared-session path; a historical year needs an explicit connectionId`;
-      this.logger.warn(message);
-      return {
-        status: 'failed',
-        summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
-        errorMessages: [message],
-      };
-    }
 
     const students = await this.prisma.student.findMany({
       where: studentScopeForContext(context),
@@ -93,10 +85,10 @@ export class GradesTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
-    // The fallback for the shared-session path, which has no user-owned
-    // connection: it resolves the SAME stored year the year-scoped reads use,
-    // so writes and reads cannot drift when the schools API runs ahead of the
-    // calendar.
+    // The last fallback, for a child no connection lists (the deliberate
+    // unlinked-child edge in `connection-fanout.ts`): it resolves the SAME
+    // stored year the year-scoped reads use, so writes and reads cannot drift
+    // when the schools API runs ahead of the calendar.
     const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
 
     for (const student of students) {
@@ -117,53 +109,53 @@ export class GradesTask {
       let upsertCount = 0;
 
       try {
-        let items: MashovGrade[];
-
-        if (useSharedSession) {
-          items = await this.mashovClient.get<MashovGrade[]>(path, { headers });
-        } else {
-          items = [];
-          let answered = false;
-          for (const conn of ordered) {
-            try {
-              const password = this.encryptionService.decrypt(conn.encryptedPassword);
-              const connYear = requestedYear ?? conn.schoolYear;
-              items = await this.mashovClient.getForConnection<MashovGrade[]>(
-                path,
-                conn.id,
-                conn.schoolCode,
-                connYear,
-                conn.username,
-                password,
-                { headers },
-              );
-              schoolYear = connYear;
-              answered = true;
-              // A success on a non-owner re-stamps, so a child who moved
-              // school stops costing a failed call on every later run.
-              await stampOwnershipIfChanged(
-                this.prisma,
-                student,
-                conn,
-                this.logger,
-                // An empty 200 is not proof the child is in this account --
-                // and a child with no grades yet legitimately returns one.
-                Array.isArray(items) && items.length > 0,
-              );
-              break;
-            } catch (connErr) {
-              const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
-              this.logger.warn(`Grades: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
-            }
-          }
-          // Every connection failed. Reporting success here would hide a
-          // broken live sync behind a green run. The per-student catch below
-          // records the failure.
-          if (!answered) {
-            throw new Error(
-              `every connection failed for ${student.studentGuid} (tried ${connections.length})`,
+        let items: MashovGrade[] = [];
+        let answered = false;
+        // Collected so the thrown error carries WHY. This is the only fetch
+        // path now, so a bare "every connection failed" would strand the real
+        // cause in a per-connection warn line and hand /more an error with no
+        // diagnosis in it.
+        const connFailures: string[] = [];
+        for (const conn of ordered) {
+          try {
+            const password = this.encryptionService.decrypt(conn.encryptedPassword);
+            const connYear = requestedYear ?? conn.schoolYear;
+            items = await this.mashovClient.getForConnection<MashovGrade[]>(
+              path,
+              conn.id,
+              conn.schoolCode,
+              connYear,
+              conn.username,
+              password,
+              { headers },
             );
+            schoolYear = connYear;
+            answered = true;
+            // A success on a non-owner re-stamps, so a child who moved
+            // school stops costing a failed call on every later run.
+            await stampOwnershipIfChanged(
+              this.prisma,
+              student,
+              conn,
+              this.logger,
+              // An empty 200 is not proof the child is in this account --
+              // and a child with no grades yet legitimately returns one.
+              Array.isArray(items) && items.length > 0,
+            );
+            break;
+          } catch (connErr) {
+            const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
+            connFailures.push(connMsg);
+            this.logger.warn(`Grades: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
           }
+        }
+        // Every connection failed, or the child is listed by none. Reporting
+        // success here would hide a broken live sync behind a green run. The
+        // per-student catch below records the failure.
+        if (!answered) {
+          throw new Error(
+            `every connection failed for ${student.studentGuid} (tried ${connections.length}): ${connFailures.join('; ')}`,
+          );
         }
 
         fetchedCount = items.length;

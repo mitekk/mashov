@@ -40,6 +40,13 @@ import { ConnectionScopeService } from '../../backend/src/common/connection-scop
 import { MailService } from '../../backend/src/mail/mail.service';
 import { DashboardService } from '../../backend/src/dashboard/dashboard.service';
 import { FeedService } from '../../backend/src/feed/feed.service';
+import type { SyncOnReadService } from '../../backend/src/sync/sync-on-read.service';
+import type { TimetableTask } from '../../backend/src/sync/tasks/timetable.task';
+import type { BellsTask } from '../../backend/src/sync/tasks/bells.task';
+import type { GroupsTask } from '../../backend/src/sync/tasks/groups.task';
+import type { LessonsCountTask } from '../../backend/src/sync/tasks/lessons-count.task';
+import type { MessageBoardTask } from '../../backend/src/sync/tasks/message-board.task';
+import type { GradesTask } from '../../backend/src/sync/tasks/grades.task';
 import { ChildrenService } from '../../backend/src/children/children.service';
 import { UserItemStateService } from '../../backend/src/common/user-item-state.service';
 import { FreshnessService } from '../../backend/src/sync/freshness.service';
@@ -588,6 +595,15 @@ describe('Two parents, one school, shared children', () => {
           prisma as unknown as PrismaService,
           { decrypt: (value: string) => value } as unknown as EncryptionService,
         ),
+        // Read-path freshening. `SyncOnReadService.ensureFresh` returns early
+        // under NODE_ENV=test, so these are inert here.
+        { ensureFresh: async () => undefined, deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService,
+        { execute: async () => undefined } as unknown as TimetableTask,
+        { execute: async () => undefined } as unknown as BellsTask,
+        { execute: async () => undefined } as unknown as GroupsTask,
+        { execute: async () => undefined } as unknown as LessonsCountTask,
+        { execute: async () => undefined } as unknown as MessageBoardTask,
+        { execute: async () => undefined } as unknown as GradesTask,
       );
     }
 
@@ -797,6 +813,14 @@ describe('Two parents, one school, shared children', () => {
           new ConnectionScopeService(prisma as unknown as PrismaService, {
             decrypt: (value: string) => value,
           } as unknown as EncryptionService),
+          // Read-path freshening, inert under NODE_ENV=test.
+          { ensureFresh: async () => undefined, deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService,
+          { execute: async () => undefined } as unknown as TimetableTask,
+          { execute: async () => undefined } as unknown as BellsTask,
+          { execute: async () => undefined } as unknown as GroupsTask,
+          { execute: async () => undefined } as unknown as LessonsCountTask,
+          { execute: async () => undefined } as unknown as MessageBoardTask,
+          { execute: async () => undefined } as unknown as GradesTask,
         );
       }
 
@@ -1554,6 +1578,14 @@ describe('Two schools whose short labels collide', () => {
         prisma as unknown as PrismaService,
         { decrypt: (value: string) => value } as unknown as EncryptionService,
       ),
+      // Read-path freshening, inert under NODE_ENV=test.
+      { ensureFresh: async () => undefined, deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService,
+      { execute: async () => undefined } as unknown as TimetableTask,
+      { execute: async () => undefined } as unknown as BellsTask,
+      { execute: async () => undefined } as unknown as GroupsTask,
+      { execute: async () => undefined } as unknown as LessonsCountTask,
+      { execute: async () => undefined } as unknown as MessageBoardTask,
+      { execute: async () => undefined } as unknown as GradesTask,
     );
   }
 

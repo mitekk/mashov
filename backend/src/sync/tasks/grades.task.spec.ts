@@ -287,39 +287,52 @@ describe('GradesTask', () => {
       );
     });
 
-    it('refuses a historical year on the shared-session path', async () => {
-      // The shared session is process-global and has no per-year identity, so
-      // it would silently answer with the current year's data under a 2026 label.
+    it('reports success without touching upstream when no connection exists', async () => {
+      // Was three shared-session tests. There is no shared session any more:
+      // with no connection there are no credentials to fetch with, and the
+      // empty deployment is not a failure. A `failed` run here could only be
+      // keyed on the bare source name, which the NULL-owner rule shows to
+      // every household.
       prisma.householdConnection.findMany.mockResolvedValue([]);
-
-      const result = await task.execute({ schoolYear: 2026 });
-
-      expect(result.status).toBe('failed');
-      expect(mashovClient.get).not.toHaveBeenCalled();
-      expect(prisma.gradeItem.upsert).not.toHaveBeenCalled();
-    });
-
-    it('still runs the shared-session path when no year is asked for', async () => {
-      prisma.householdConnection.findMany.mockResolvedValue([]);
-      mashovClient.get.mockResolvedValue([makeGrade()]);
 
       const result = await task.execute();
 
       expect(result.status).toBe('success');
-      expect(mashovClient.get).toHaveBeenCalled();
-      expect(prisma.gradeItem.upsert).toHaveBeenCalled();
+      expect(result.summary.failedCount).toBe(0);
+      expect(syncRunService.openRun).not.toHaveBeenCalled();
+      expect(prisma.gradeItem.upsert).not.toHaveBeenCalled();
     });
 
-    it('stamps shared-session rows with the stored connection year', async () => {
+    it('reports a failure when a named connection resolves to nothing', async () => {
+      // A targeted refresh has a requester, so silence would be a lie.
       prisma.householdConnection.findMany.mockResolvedValue([]);
-      prisma.householdConnection.findFirst.mockResolvedValue({ schoolYear: 2028 });
-      mashovClient.get.mockResolvedValue([makeGrade()]);
 
-      await task.execute();
+      const result = await task.execute({ connectionId: 'conn-gone' });
 
-      expect(prisma.gradeItem.upsert).toHaveBeenCalledWith(
+      expect(result.status).toBe('failed');
+      expect(syncRunService.openRun).toHaveBeenCalledWith('grades:conn-gone', 'conn-gone');
+      expect(prisma.gradeItem.upsert).not.toHaveBeenCalled();
+    });
+
+    it('carries every connection failure into the error it throws', async () => {
+      // Without this the real cause is stranded in a per-connection warn line
+      // and `/more` shows a diagnosis-free "every connection failed".
+      prisma.householdConnection.findMany.mockResolvedValue([
+        { ...CONNECTION, id: 'conn-a' },
+        { ...CONNECTION, id: 'conn-b' },
+      ]);
+      mashovClient.getForConnection
+        .mockRejectedValueOnce(new Error('401 from Mashov'))
+        .mockRejectedValueOnce(new Error('503 from Mashov'));
+
+      const result = await task.execute();
+
+      expect(result.status).toBe('failed');
+      expect(syncRunService.closeRun).toHaveBeenCalledWith(
+        'run-1',
+        'failed',
         expect.objectContaining({
-          create: expect.objectContaining({ schoolYear: 2028 }),
+          errorMessage: expect.stringContaining('401 from Mashov'),
         }),
       );
     });

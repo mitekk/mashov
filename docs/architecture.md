@@ -268,7 +268,7 @@ Tasks are ordered by dependency. Each task is scoped for a single agent session.
 1. **[MVP]** Create project structure: `backend/`, `frontend/`, `tests/`, `docs/`, `.github/workflows/`
 2. **[MVP]** Write `docker-compose.yml` with services: `db` (postgres:16-alpine), `backend`, `frontend`; health checks on all services; named volume for DB
 3. **[MVP]** Write `docker-compose.override.yml` with source volume mounts and hot-reload commands for backend (`tsx watch`) and frontend (`next dev`)
-4. **[MVP]** Write `.env.example` with all required variables: `DATABASE_URL`, `MASHOV_SEMEL`, `MASHOV_USERNAME`, `MASHOV_PASSWORD`, `MASHOV_BASE_URL`, `NODE_ENV`, `PORT`. `MASHOV_YEAR` is optional and is *not* the year in scope — it is the earliest year to fetch; the current year is resolved from upstream ([ADR-0025](adr/0025-school-year-history-window.md)).
+4. **[MVP]** Write `.env.example` with all required variables: `DATABASE_URL`, `ENCRYPTION_KEY`, `MASHOV_BASE_URL`, `NODE_ENV`, `PORT` (the `MASHOV_SEMEL`/`USERNAME`/`PASSWORD` trio this originally listed was removed with the shared env session — see ADR-0030). `MASHOV_YEAR` is optional and is *not* the year in scope — it is the earliest year to fetch; the current year is resolved from upstream ([ADR-0025](adr/0025-school-year-history-window.md)).
 5. **[MVP]** Write `README.md` with: setup steps, env vars, `docker compose up`, test commands, hot reload instructions, port map
 
 ### Backend — Foundation
@@ -408,8 +408,8 @@ Tasks are ordered by dependency. Each task is scoped for a single agent session.
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | Upstream Mashov API changes (field names, auth flow) | Medium | High | Raw payload stored in `rawPayload` jsonb on every table; adapter layer isolated in sync tasks |
-| CSRF token extraction changes (different header name) | Low | High | Isolate CSRF extraction in `SessionService.bootstrap()`; add logging for raw response headers on auth failure |
-| Rate limiting from Mashov | Medium | Medium | Conservative cron cadence; single shared session; retry with exponential backoff; sync_run failure logged |
+| CSRF token extraction changes (different header name) | Low | High | Isolate CSRF extraction in the per-connection login path (`MashovSessionService`); add logging for raw response headers on auth failure |
+| Rate limiting from Mashov | Medium | Medium | Conservative cron cadence; per-connection session cache (one login per connection+year, reused until it expires) rather than the retired single shared session; refresh-and-retry once on 401/403; sync_run failure logged |
 | Session cookie expiry mid-sync | Medium | Medium | `MashovHttpClient` detects 401/403 on every request, triggers re-auth, retries once |
 | Large homework/behavior history payload performance | Low | Low | Full history returned per call; PostgreSQL upsert is fast; index on `(studentGuid, lessonId)` |
 | HTML injection via upstream message bodies | High (certainty) | High | `sanitize-html` / `isomorphic-dompurify` applied server-side before storing `bodyHtmlSanitized`; never render raw body |

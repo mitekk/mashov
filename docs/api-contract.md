@@ -955,7 +955,7 @@ Used in both list and mutation responses:
 ### GET /api/v1/children/:studentGuid/grades
 
 Every graded assessment of the current school year, newest `eventDate` first. Read from
-our own Postgres (`grade_item`), synced every 12 minutes — not an upstream passthrough, so
+our own Postgres (`grade_item`), freshened on view behind a 6h TTL — not an upstream passthrough, so
 it answers through a Mashov outage. Full list, no pagination: one child's year is tens of
 rows.
 

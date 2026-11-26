@@ -274,7 +274,9 @@ export class SchoolLinksService {
     // Fired, not awaited. The response returns as soon as the children exist;
     // the frontend then watches /sync/status for this school.
     void this.syncService
-      .refreshAll({ connectionId })
+      // The `login` set: the parent is waiting on `/auth/syncing` and lands on
+      // `/children`, whose own sources are fetched on view.
+      .refreshAll({ connectionId, taskSet: 'login', respectTtl: false })
       .catch((error: unknown) =>
         this.logger.error(
           `Background refresh for new connection ${connectionId} failed: ${

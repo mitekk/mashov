@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService, PER_STUDENT_SOURCES } from '../sync/freshness.service';
 import type { SyncRunSnapshot } from '../sync/freshness.service';
+import { SyncOnReadService } from '../sync/sync-on-read.service';
+import { UserDetailsTask } from '../sync/tasks/user-details.task';
 import { linksForStudents } from '../common/student-links';
 import { parentDisplayName } from '../common/parent-name';
 
@@ -18,6 +20,11 @@ export class SettingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly freshnessService: FreshnessService,
+    // `user_details` lost its daily cron: it is read on one page, by one
+    // person, and its own freshness threshold already called it fresh for a
+    // week.
+    private readonly syncOnRead: SyncOnReadService,
+    private readonly userDetailsTask: UserDetailsTask,
   ) {}
 
   /**
@@ -211,6 +218,34 @@ export class SettingsService {
       orderBy: [{ lastLoginAt: 'desc' }, { createdAt: 'asc' }],
     });
     if (connections.length === 0) return [];
+
+    // Freshened on view. The profile is the only thing reading it, so nobody
+    // is served a stale row that a cron would have fixed unseen.
+    //
+    // Every connection, not just the first: `UserDetailsTask.execute` narrows
+    // to `id: context.connectionId`, so with the `user_details` cron gone a
+    // two-school household's SECOND school profile would never be refreshed
+    // again. One shared deadline bounds the whole request regardless of how
+    // many schools are linked.
+    const freshenDeadline = this.syncOnRead.deadlineFromNow();
+    for (const connection of connections) {
+      await this.syncOnRead.ensureFresh(
+        UserDetailsTask.SOURCE,
+        (context) => this.userDetailsTask.execute(context),
+        {
+          connectionId: connection.id,
+          // Scoped to THIS connection. Counting across all of them meant that
+          // once school A had a row, the first view of a school-B card with
+          // none never waited for its fetch and rendered blank.
+          localIsEmpty: async () =>
+            (await this.prisma.parentProfile.count({
+              where: { householdConnectionId: connection.id },
+              take: 1,
+            })) === 0,
+          deadline: freshenDeadline,
+        },
+      );
+    }
 
     const profiles = await this.prisma.parentProfile.findMany({
       where: { householdConnectionId: { in: connections.map((conn) => conn.id) } },

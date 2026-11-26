@@ -129,8 +129,8 @@ describe('The unattributed mail orphan the sweep exists for', () => {
    * session, and that gate is the production guard. The archive is empty,
    * which is fine: only hitting the archive page *cap* is a gate.
    */
-  function fakeClient(liveFor: 'connection' | 'shared' | 'nothing') {
-    const page = (url: string, wanted: 'connection' | 'shared') => {
+  function fakeClient(liveFor: 'connection' | 'nothing') {
+    const page = (url: string, wanted: 'connection') => {
       if (liveFor !== wanted) return [];
       if (!url.includes('/api/mail/inbox/conversations')) return [];
       if (!url.includes('skip=0')) return [];
@@ -138,11 +138,10 @@ describe('The unattributed mail orphan the sweep exists for', () => {
     };
     return {
       getForConnection: jest.fn(async (url: string) => page(url, 'connection')),
-      get: jest.fn(async (url: string) => page(url, 'shared')),
     };
   }
 
-  function makeTask(client: { getForConnection: unknown; get: unknown }): MailInboxTask {
+  function makeTask(client: { getForConnection: unknown }): MailInboxTask {
     return new MailInboxTask(
       client as unknown as MashovHttpClient,
       prisma as unknown as PrismaService,
@@ -259,14 +258,15 @@ describe('The unattributed mail orphan the sweep exists for', () => {
   }
 
   /**
-   * Makes the shared-session path reachable: it is taken only when the task
-   * finds no active user-owned connection anywhere, and a neighbouring suite's
+   * Leaves exactly one active user-owned connection: the post-ownership shape
+   * of the old "no stamped mail" deployment, and the only run in which an
+   * unattributed orphan is reconcilable at all. A neighbouring suite's
    * leftovers would otherwise decide this test's outcome. Restores them, so
    * this suite leaves nothing deactivated behind it.
    */
-  async function withNoActiveConnections<T>(body: () => Promise<T>): Promise<T> {
+  async function withOnlyConnection<T>(keep: string, body: () => Promise<T>): Promise<T> {
     const active = await prisma.householdConnection.findMany({
-      where: { active: true, userId: { not: null } },
+      where: { active: true, userId: { not: null }, id: { not: keep } },
       select: { id: true },
     });
     const ids = active.map((row) => row.id);
@@ -323,9 +323,9 @@ describe('The unattributed mail orphan the sweep exists for', () => {
     // The shared session owns the NULL rows, so this is the one run that could
     // clear it -- and it refuses, because stamped rows mean per-connection
     // walks are running and this run cannot tell what they refreshed.
-    await withNoActiveConnections(async () => {
-      await makeTask(fakeClient('shared')).execute();
-    });
+    // Two active connections, so ownership of an unattributed row is
+    // unknowable and both walks would race to claim it. Left alone.
+    await makeTask(fakeClient('connection')).execute();
 
     const state = await unreadState();
     expect(state[ORPHAN_NULL]).toBe(true);
@@ -335,10 +335,14 @@ describe('The unattributed mail orphan the sweep exists for', () => {
     ).resolves.toBeGreaterThan(0);
   });
 
-  it('is swept by the shared-session run on a deployment with no stamped mail', async () => {
-    // The pre-ownership shape, and the only run in which this row is
-    // reconcilable at all: one mailbox, no stamps, so `lastFetchedAt <
-    // runStartedAt` is a sound orphan test over the whole table.
+  it('is swept by the only connection\'s run on a deployment with no stamped mail', async () => {
+    // The pre-ownership shape, carried forward: one mailbox, legacy unowned
+    // rows. The retired shared session used to sweep these; with it gone, the
+    // sole connection's walk adopts them, because on a one-connection
+    // deployment they can only ever have been this mailbox's -- so
+    // `lastFetchedAt < runStartedAt` stays a sound orphan test over them.
+    // Without this they would be swept by nobody and inflate the badge
+    // forever.
     await prisma.mailMessage.deleteMany({});
     await prisma.mailConversation.deleteMany({ where: { householdConnectionId: { not: null } } });
     await prisma.mailConversation.create({
@@ -353,8 +357,8 @@ describe('The unattributed mail orphan the sweep exists for', () => {
       },
     });
 
-    await withNoActiveConnections(async () => {
-      await makeTask(fakeClient('shared')).execute();
+    await withOnlyConnection(CONN_A, async () => {
+      await makeTask(fakeClient('connection')).execute();
     });
 
     const state = await unreadState();

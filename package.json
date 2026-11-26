@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "lint": "npm run lint:backend && npm run typecheck:backend && npm run lint:frontend && npm run lint:tests",
+    "lint": "npm run lint:backend && npm run typecheck:backend && npm run lint:frontend && npm run lint:tests && npm run typecheck:tests",
     "lint:backend": "npm --prefix backend run lint",
     "typecheck:backend": "npm --prefix backend run typecheck",
     "lint:frontend": "npm --prefix frontend run lint",
     "lint:tests": "backend/node_modules/.bin/eslint --resolve-plugins-relative-to backend --config tests/.eslintrc.cjs \"tests/**/*.ts\" --max-warnings 0",
+    "typecheck:tests": "backend/node_modules/typescript/bin/tsc -p tsconfig.integration.json --noEmit",
     "format": "npm run format:backend && npm run format:frontend && npm run format:tests",
     "format:backend": "npm --prefix backend run lint -- --fix",
     "format:frontend": "npm --prefix frontend run lint -- --fix",

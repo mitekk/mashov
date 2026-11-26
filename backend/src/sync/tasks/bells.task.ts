@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
@@ -55,10 +54,6 @@ export class BellsTask {
   ) {}
 
   // Weekly on Sunday at 3 AM — a bell schedule changes once a year at most.
-  @Cron('0 3 * * 0')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({

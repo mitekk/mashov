@@ -37,8 +37,16 @@ current.
 - Reads split in two. `historyScope()` widens the lists and feeds, where more data is the point.
   `currentYearScope()` — the old `schoolYearScope()`, now its alias — keeps every present-tense
   view and **every staleness signal** on the current year alone.
-- The crons keep fetching the current year only. A separate nightly `HistoryBackfillTask` fetches
-  each historical year **once**, resumably, and no-ops when complete.
+- The crons keep fetching the current year only. ~~A separate nightly
+  `HistoryBackfillTask` fetches each historical year **once**, resumably, and no-ops when
+  complete.~~
+
+  > **Amended 2026-11-26 by [ADR-0046](0046-no-shared-mashov-account.md).**
+  > `HistoryBackfillTask` is deleted along with the rest of the unsolicited background
+  > work. Years already fetched stay in the database and remain readable, and `MASHOV_YEAR`
+  > still widens the read window over them — but no new historical year is ever fetched.
+  > Everything else in this ADR (the scoping helpers, the single-year staleness signals)
+  > stands unchanged.
 
 ### Why the staleness signals stay single-year
 

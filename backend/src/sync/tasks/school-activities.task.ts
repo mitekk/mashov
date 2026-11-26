@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import sanitizeHtml = require('sanitize-html');
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -73,10 +72,6 @@ export class SchoolActivitiesTask {
   ) {}
 
   // Twice a day is plenty: a consent deadline is days away, never minutes.
-  @Cron('23 5,17 * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({

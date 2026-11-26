@@ -70,10 +70,13 @@ docker compose logs backend | grep "resolved year"
 ```
 
 `MASHOV_YEAR` is **not** a lever on the current year, despite the name — it is the *earliest year
-to fetch*, which is a different thing. Setting it opens a history window: the nightly
-`HistoryBackfillTask` fills in that year once, capped at two years back, and the lists and feeds
-widen to span it. It cannot move the year the crons ask for, and a value later than the current
-year is ignored with a warning rather than honoured. See
+to read*, which is a different thing. Setting it widens the lists and feeds to span that year.
+
+**It no longer fetches anything.** The nightly `HistoryBackfillTask` that used to fill a
+historical year in was deleted with the rest of the unsolicited background work
+([ADR-0046](../adr/0046-no-shared-mashov-account.md)), so this only opens a window over history
+already in the database. If the year you want was never fetched, setting this will not bring it
+in. A value later than the current year is ignored with a warning rather than honoured. See
 [ADR-0025](../adr/0025-school-year-history-window.md).
 
 To change the year the app actually uses, use step 2's `UPDATE` — and if the stored year and

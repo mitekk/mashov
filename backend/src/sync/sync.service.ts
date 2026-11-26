@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { NotificationsTask } from './tasks/notifications.task';
 import { MailCountsTask } from './tasks/mail-counts.task';
 import { MailInboxTask } from './tasks/mail-inbox.task';
 import { HomeworkTask } from './tasks/homework.task';
@@ -19,6 +18,10 @@ import { BellsTask } from './tasks/bells.task';
 import { StudentsTask } from './tasks/students.task';
 import { HEARTBEAT_INTERVAL_MS, RefreshProgressService } from './refresh-progress.service';
 import type { RefreshEnvelope } from './refresh-progress.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { FreshnessService } from './freshness.service';
+import { policyForTask, sourcesForSet } from './source-policy';
+import { studentScopeForContext } from './connection-fanout';
 import type {
   ManualSyncRefreshResponse,
   ManualSyncTaskResult,
@@ -36,6 +39,29 @@ import type {
  */
 function firstOutstanding(envelope: RefreshEnvelope): string | null {
   return envelope.tasks.find((task) => task.status === 'running')?.task ?? null;
+}
+
+/**
+ * A source the TTL already covers: reported as a zero-count success rather
+ * than dropped, so a caller reading `tasks` can see it was considered and
+ * found fresh instead of inferring it from an absence.
+ *
+ * These are deliberately NOT counted in `tasksTotal`, which covers only what
+ * actually runs -- the progress bar must not sit at 4/9 forever because five
+ * sources were skipped before it opened. So `tasks.length > tasksTotal`
+ * whenever anything is skipped, and that is the intended shape.
+ */
+function skippedResult(task: string, at: Date): ManualSyncTaskResult {
+  const stamp = at.toISOString();
+  return {
+    task,
+    status: 'success',
+    summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 0 },
+    errorMessages: [],
+    startedAt: stamp,
+    endedAt: stamp,
+    durationMs: 0,
+  };
 }
 
 @Injectable()
@@ -56,7 +82,6 @@ export class SyncService {
   private inFlightManualRefreshByConnection = new Map<string, Promise<ManualSyncRefreshResponse>>();
 
   constructor(
-    private readonly notificationsTask: NotificationsTask,
     private readonly mailCountsTask: MailCountsTask,
     private readonly mailInboxTask: MailInboxTask,
     private readonly homeworkTask: HomeworkTask,
@@ -75,7 +100,57 @@ export class SyncService {
     private readonly bellsTask: BellsTask,
     private readonly studentsTask: StudentsTask,
     private readonly refreshProgress: RefreshProgressService,
+    private readonly prisma: PrismaService,
+    private readonly freshness: FreshnessService,
   ) {}
+
+  /**
+   * The tasks whose newest successful run is still inside their TTL.
+   *
+   * One `sync_run` read for the whole decision, reusing `loadSyncRuns` -- the
+   * same "one read, many questions" the freshness page does. Matching follows
+   * the variant-key rule (`key === base || key.startsWith(base + ':')`), so a
+   * per-student or per-connection run counts for its base source.
+   *
+   * A source with NO successful run is never skipped, which is what makes a
+   * first login fetch everything in its set.
+   */
+  private async tasksInsideTtl(
+    context: SyncExecutionContext,
+    tasks: Array<{ name: string }>,
+  ): Promise<Set<string>> {
+    const skip = new Set<string>();
+    // A historical backfill is not 'recent work on this source' in the sense
+    // the TTL asks about, and its prefixed keys must not satisfy the gate.
+    if (context.sourcePrefix !== undefined) return skip;
+
+    const { successRuns } = await this.freshness.loadSyncRuns(context.connectionId);
+    const now = Date.now();
+
+    for (const task of tasks) {
+      const policy = policyForTask(task.name);
+      if (!policy) continue;
+      let newest: number | null = null;
+      for (const [key, run] of successRuns) {
+        if (key !== policy.source && !key.startsWith(`${policy.source}:`)) continue;
+        const endedAt = run.endedAt ? new Date(run.endedAt).getTime() : null;
+        if (endedAt !== null && (newest === null || endedAt > newest)) newest = endedAt;
+      }
+      if (newest !== null && now - newest < policy.syncTtlMinutes * 60_000) {
+        skip.add(task.name);
+      }
+    }
+    return skip;
+  }
+
+  /** Whether this run has any child to iterate at all. */
+  private async scopedRosterIsEmpty(context: SyncExecutionContext): Promise<boolean> {
+    const count = await this.prisma.student.count({
+      where: studentScopeForContext(context),
+      take: 1,
+    });
+    return count === 0;
+  }
 
   async refreshAll(context: SyncExecutionContext = {}): Promise<ManualSyncRefreshResponse> {
     // The prefix is part of the key, not just the connection: a prefixed
@@ -83,7 +158,14 @@ export class SyncService {
     // with different output. Joined together, the manual refresh would return
     // the backfill's result and open no envelope, leaving /sync/status on
     // `idle` for as long as the backfill ran.
-    const dedupeKey = `${context.connectionId ?? '__global__'}::${context.sourcePrefix ?? ''}`;
+    //
+    // The task set is part of the key too. Without it a background `digest`
+    // run could be joined and RETURNED to a user's `login` refresh: the user
+    // would be handed a result covering five sources as though it covered
+    // theirs, and no envelope would be opened for the screen they are watching.
+    const dedupeKey =
+      `${context.connectionId ?? '__global__'}::${context.sourcePrefix ?? ''}` +
+      `::${context.taskSet ?? 'full'}`;
     const existing = this.inFlightManualRefreshByConnection.get(dedupeKey);
     if (existing) {
       this.logger.debug(`Manual refresh already running for key=${dedupeKey}, joining existing request`);
@@ -99,23 +181,53 @@ export class SyncService {
 
   private async runManualRefresh(context: SyncExecutionContext): Promise<ManualSyncRefreshResponse> {
     this.logger.log(
-      `Manual refresh triggered — running all sync tasks (connectionId=${context.connectionId ?? 'global'})`,
+      `Refresh triggered (set=${context.taskSet ?? 'full'}, ` +
+        `connectionId=${context.connectionId ?? 'global'})`,
     );
 
     const refreshStartedAt = new Date();
-    const tasks = this.buildTasks(context);
+    const set = context.taskSet ?? 'full';
+    const wanted = new Set(sourcesForSet(set).map((policy) => policy.task));
+    const allTasks = this.buildTasks(context).filter((task) => wanted.has(task.name));
+    // `students` is probed alongside them although it is NOT in `buildTasks`:
+    // the roster runs on its own, ahead of the rest. Omit it here and
+    // `skipped.has('students')` is false by construction, so `rosterInSet`
+    // collapses to `wanted.has('students')` and the roster -- a full upstream
+    // login, with no TTL gate of its own inside `StudentsTask` -- runs on
+    // EVERY digest-lead tick. That is nine logins per connection per day for
+    // data that changes once a year, which is the opposite of this change.
+    const ttlProbe = wanted.has('students') ? [...allTasks, { name: 'students' }] : allTasks;
+    const skipped = context.respectTtl ? await this.tasksInsideTtl(context, ttlProbe) : new Set<string>();
+    const tasks = allTasks.filter((task) => !skipped.has(task.name));
     // +1 for the roster, which runs on its own ahead of the rest. Derived from
     // the wired list and known before anything runs: the status endpoint used
     // to compare a count of successful `sync_run` sources against a hardcoded
     // 16, a number nothing made reachable.
-    const tasksTotal = tasks.length + 1;
+    //
+    // The roster runs when its set includes it, or when the scoped roster is
+    // EMPTY. Skipping it unconditionally for the `digest`/`mail` sets looks
+    // right but is not: every other task iterates `prisma.student.findMany`,
+    // so with no local roster a digest-set run does literally nothing and
+    // reports `success` with every count zero.
+    const rosterInSet = wanted.has('students') && !skipped.has('students');
+    const runRoster = rosterInSet || (await this.scopedRosterIsEmpty(context));
+    if (runRoster && !rosterInSet) {
+      this.logger.warn(
+        `Roster is empty for connectionId=${context.connectionId ?? 'global'}; ` +
+          `running students ahead of the ${set} set, which would otherwise fetch nothing`,
+      );
+    }
+    const tasksTotal = tasks.length + (runRoster ? 1 : 0);
 
-    // Only a real, unprefixed, per-connection refresh owns an envelope. The
-    // global cron path has no connection to key it on, and a prefixed history
-    // backfill is not what the first-login screen is waiting for — it must not
-    // overwrite the envelope of a live refresh.
+    // Only a real, unprefixed, per-connection refresh that somebody is
+    // WATCHING owns an envelope. The global path has no connection to key it
+    // on; a prefixed history backfill is not what the first-login screen is
+    // waiting for and must not overwrite a live refresh's envelope; and a
+    // `silent` background run must not either -- publishing under the
+    // connection's key would tell `/sync/status` a refresh is `running` to a
+    // parent who is only browsing.
     const envelope =
-      context.connectionId && context.sourcePrefix === undefined
+      context.connectionId && context.sourcePrefix === undefined && !context.silent
         ? this.refreshProgress.open(context.connectionId, tasksTotal)
         : null;
 
@@ -136,15 +248,23 @@ export class SyncService {
       // The roster goes first, on its own: every other task iterates
       // `prisma.student.findMany`, so a child who moved up a grade — or a child
       // who is new — is invisible to them until this has landed.
-      const rosterResult = await this.runTracked(envelope, 'students', () =>
-        this.studentsTask.execute(context),
-      );
+      const rosterResults = runRoster
+        ? [
+            await this.runTracked(envelope, 'students', () =>
+              this.studentsTask.execute(context),
+            ),
+          ]
+        : [];
 
       const taskResults = [
-        rosterResult,
+        ...rosterResults,
         ...(await Promise.all(
           tasks.map((task) => this.runTracked(envelope, task.name, task.fn)),
         )),
+        // Reported, not dropped. A caller reading `tasks` must be able to see
+        // that a source was considered and found fresh, rather than infer it
+        // from an absence.
+        ...[...skipped].map((name) => skippedResult(name, refreshStartedAt)),
       ];
       // Stopped before the terminal write, so no heartbeat can land after it
       // and resurrect `phase: 'running'`.
@@ -200,7 +320,6 @@ export class SyncService {
     context: SyncExecutionContext,
   ): Array<{ name: string; fn: () => Promise<SyncTaskRunResult> }> {
     return [
-      { name: 'notifications', fn: () => this.notificationsTask.execute(context) },
       { name: 'mailCounts', fn: () => this.mailCountsTask.execute(context) },
       { name: 'mailInbox', fn: () => this.mailInboxTask.execute(context) },
       { name: 'homework', fn: () => this.homeworkTask.execute(context) },

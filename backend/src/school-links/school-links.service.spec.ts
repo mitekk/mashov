@@ -465,7 +465,7 @@ describe('SchoolLinksService.createLink', () => {
       service.createLink('user-1', { semel: 999999, username: 'parent-b', password: 'pw' }),
     ).resolves.toBeTruthy();
 
-    expect(refreshAll).toHaveBeenCalledWith({ connectionId: 'conn-new' });
+    expect(refreshAll).toHaveBeenCalledWith({ connectionId: 'conn-new', taskSet: 'login', respectTtl: false });
     resolveRefresh?.();
   });
 

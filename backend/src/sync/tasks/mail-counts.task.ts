@@ -1,10 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import { reportNoConnectionTarget } from '../connection-fanout';
+import { reportNoConnectionTarget, skipNoConnections } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import { MailInboxTask } from './mail-inbox.task';
 
@@ -24,10 +23,6 @@ export class MailCountsTask {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  @Cron('*/5 * * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   /**
    * The three populations that can make the local unread count disagree with Mashov's.
@@ -91,48 +86,40 @@ export class MailCountsTask {
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
 
-    // R11: a named connection with no usable target. `useSharedSession` is
-    // false here, so the loop below would not run at all -- no run, nothing
-    // fetched, `success` with every count zero.
-    if (context.connectionId && connections.length === 0) {
-      return reportNoConnectionTarget(
-        this.syncRunService,
-        this.logger,
-        MailCountsTask.SOURCE,
-        context.connectionId,
-      );
+    // No usable target: the loop below would not run at all -- no run,
+    // nothing fetched, `success` with every count zero. A named connection
+    // that resolves to nothing is a reportable failure; no connections at all
+    // is the empty deployment.
+    if (connections.length === 0) {
+      return context.connectionId
+        ? reportNoConnectionTarget(
+            this.syncRunService,
+            this.logger,
+            MailCountsTask.SOURCE,
+            context.connectionId,
+          )
+        : skipNoConnections(this.logger, MailCountsTask.SOURCE);
     }
-
-    const useSharedSession = !context.connectionId && connections.length === 0;
-    const connectionList = useSharedSession ? [null] : connections;
 
     let totalUpdatedCount = 0;
     let totalFailedCount = 0;
     const allErrorMessages: string[] = [];
 
-    for (const conn of connectionList) {
-      const source = conn ? `${MailCountsTask.SOURCE}:${conn.id}` : MailCountsTask.SOURCE;
-      const syncRun = await this.syncRunService.openRun(source, conn?.id ?? context.connectionId);
+    for (const conn of connections) {
+      const source = `${MailCountsTask.SOURCE}:${conn.id}`;
+      const syncRun = await this.syncRunService.openRun(source, conn.id);
       let updatedCount = 0;
 
       try {
-        let data: MailCountsResponse;
-
-        if (conn) {
-          const password = this.encryptionService.decrypt(conn.encryptedPassword);
-          data = await this.mashovClient.getForConnection<MailCountsResponse>(
-            '/api/mail/counts?$select=unreadConversations',
-            conn.id,
-            conn.schoolCode,
-            conn.schoolYear,
-            conn.username,
-            password,
-          );
-        } else {
-          data = await this.mashovClient.get<MailCountsResponse>(
-            '/api/mail/counts?$select=unreadConversations',
-          );
-        }
+        const password = this.encryptionService.decrypt(conn.encryptedPassword);
+        const data = await this.mashovClient.getForConnection<MailCountsResponse>(
+          '/api/mail/counts?$select=unreadConversations',
+          conn.id,
+          conn.schoolCode,
+          conn.schoolYear,
+          conn.username,
+          password,
+        );
 
         const unreadCount = data?.unreadConversations ?? 0;
 
@@ -142,28 +129,23 @@ export class MailCountsTask {
         // union once per school. Two schools, double the real number.
         const localUnreadCount = await this.prisma.mailConversation.count({
           where: {
-            householdConnectionId: conn ? conn.id : null,
+            householdConnectionId: conn.id,
             isUnread: true,
             NOT: { labels: { array_contains: ['archived'] } },
           },
         });
 
-        // Written only for the connection this run belongs to. The shared
-        // session owns the NULL-stamped rows but has no connection row of its
-        // own, and the fallback that wrote its count into
-        // `findFirst({ active: true })` picked an arbitrary household -- a
-        // cross-household write, and now a double count as well: under R15's
-        // rule the reader already adds the unattributed rows itself, so a
-        // household holding them in `cachedNewCount` too would be counted
-        // twice. `localCount` below still reports the number in the run
-        // telemetry, which is where an operator reads it.
-        if (conn) {
-          await this.prisma.householdConnection.update({
-            where: { id: conn.id },
-            data: { cachedNewCount: localUnreadCount },
-          });
-          updatedCount = 1;
-        }
+        // Written only for the connection this run belongs to. Historical
+        // NULL-stamped rows (written by the retired shared session) are still
+        // added by the reader itself under R15's rule, so no connection may
+        // hold them in `cachedNewCount` as well or they count twice.
+        // `localCount` below still reports the number in the run telemetry,
+        // which is where an operator reads it.
+        await this.prisma.householdConnection.update({
+          where: { id: conn.id },
+          data: { cachedNewCount: localUnreadCount },
+        });
+        updatedCount = 1;
 
         // Deliberately 'success', never 'partial', even when the two numbers disagree:
         // FreshnessService derives source health from the latest *successful* run, so a
@@ -175,7 +157,7 @@ export class MailCountsTask {
           localCount: localUnreadCount,
         });
 
-        const label = `conn=${conn?.id ?? 'shared'}`;
+        const label = `conn=${conn.id}`;
         if (unreadCount === localUnreadCount) {
           this.logger.debug(
             `Mail counts sync (${label}): upstream=${unreadCount} local=${localUnreadCount}`,
@@ -184,7 +166,7 @@ export class MailCountsTask {
           // Drift means the badge is lying to the user, so it is a warning, and it
           // carries the breakdown that tells an operator which cause is live. The extra
           // queries run only when drifting.
-          const breakdown = await this.describeDrift(conn?.id);
+          const breakdown = await this.describeDrift(conn.id);
           this.logger.warn(
             `Mail counts drift (${label}): upstream=${unreadCount} local=${localUnreadCount} ` +
               `archived=${breakdown.archived} orphans=${breakdown.orphans} ` +
@@ -194,7 +176,7 @@ export class MailCountsTask {
         totalUpdatedCount += updatedCount;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`Mail counts sync failed (conn=${conn?.id ?? 'shared'}): ${msg}`);
+        this.logger.error(`Mail counts sync failed (conn=${conn.id}): ${msg}`);
         await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
         totalFailedCount++;
         allErrorMessages.push(msg);
@@ -204,7 +186,7 @@ export class MailCountsTask {
     return {
       status: totalFailedCount > 0 ? 'failed' : 'success',
       summary: {
-        fetchedCount: connectionList.length,
+        fetchedCount: connections.length,
         createdCount: 0,
         updatedCount: totalUpdatedCount,
         failedCount: totalFailedCount,

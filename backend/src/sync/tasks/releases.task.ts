@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -49,10 +48,6 @@ export class ReleasesTask {
 
   // Hourly. A release filed this morning for this afternoon has to be in the
   // database before the digest run that would remind anyone about it.
-  @Cron('7 * * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({

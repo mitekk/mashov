@@ -2,6 +2,13 @@ import { NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChildrenService } from './children.service';
+import type { SyncOnReadService } from '../sync/sync-on-read.service';
+import type { TimetableTask } from '../sync/tasks/timetable.task';
+import type { BellsTask } from '../sync/tasks/bells.task';
+import type { GroupsTask } from '../sync/tasks/groups.task';
+import type { LessonsCountTask } from '../sync/tasks/lessons-count.task';
+import type { MessageBoardTask } from '../sync/tasks/message-board.task';
+import type { GradesTask } from '../sync/tasks/grades.task';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
 import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
@@ -115,6 +122,7 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     },
     gradeItem: {
       findMany: overrides.gradeFindMany ?? jest.fn().mockResolvedValue([]),
+      count: overrides.gradeCount ?? jest.fn().mockResolvedValue(0),
     },
     messageBoardItem: {
       findMany: overrides.noticeFindMany ?? jest.fn().mockResolvedValue([]),
@@ -194,6 +202,34 @@ const SCOPE_TARGET = {
  * school through it; one connection means every lookup answers the same way,
  * which is what keeps these assertions identical to the pre-ownership ones.
  */
+/**
+ * The read-path freshening dependencies, which every construction needs and no
+ * assertion in this file cares about. `SyncOnReadService.ensureFresh` returns
+ * early under NODE_ENV=test anyway, so these are never called -- they exist to
+ * satisfy the constructor.
+ */
+function readPathDeps(): [
+  SyncOnReadService,
+  TimetableTask,
+  BellsTask,
+  GroupsTask,
+  LessonsCountTask,
+  MessageBoardTask,
+  GradesTask,
+] {
+  const noop = { ensureFresh: jest.fn(), deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService;
+  const task = { execute: jest.fn() };
+  return [
+    noop,
+    task as unknown as TimetableTask,
+    task as unknown as BellsTask,
+    task as unknown as GroupsTask,
+    task as unknown as LessonsCountTask,
+    task as unknown as MessageBoardTask,
+    task as unknown as GradesTask,
+  ];
+}
+
 function makeMockScope(overrides: Partial<Record<string, jest.Mock>> = {}) {
   const target = {
     id: 'conn-1',
@@ -274,6 +310,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildren();
@@ -323,6 +360,7 @@ describe('ChildrenService', () => {
         mockUserItemState,
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildren('user-1');
@@ -351,6 +389,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildren('user-1');
@@ -386,6 +425,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildren('user-1');
@@ -423,6 +463,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -448,6 +489,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getChildWorkspace('missing-guid')).rejects.toThrow(
@@ -469,6 +511,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -495,6 +538,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       // No userId → defaults to isNew=true, isArchived=false → 'archived' filter returns 0
@@ -514,6 +558,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20, 'all');
@@ -536,6 +581,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getHomework(TEST_GUID, 1, 20);
@@ -554,6 +600,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -576,6 +623,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getHomeworkDetail(TEST_GUID, 'hw-1');
@@ -592,6 +640,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'missing-hw')).rejects.toThrow(
@@ -611,6 +660,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getHomeworkDetail(TEST_GUID, 'hw-1')).rejects.toThrow(
@@ -632,6 +682,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', false);
@@ -652,6 +703,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.setHomeworkIsNew(TEST_GUID, 'hw-1', false)).rejects.toThrow(
@@ -677,6 +729,7 @@ describe('ChildrenService', () => {
         mockUserItemState,
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkIsNew(TEST_GUID, 'hw-1', true, 'user-1');
@@ -696,6 +749,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, ['hw-1', 'hw-2'], false);
@@ -714,6 +768,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkManyIsNew(TEST_GUID, [], false);
@@ -732,6 +787,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(
@@ -753,6 +809,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', true);
@@ -774,6 +831,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkArchived(TEST_GUID, 'hw-1', false);
@@ -794,6 +852,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.setHomeworkArchived(TEST_GUID, 'hw-1', true)).rejects.toThrow(
@@ -812,6 +871,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1', 'hw-2', 'hw-3'], true);
@@ -829,6 +889,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setHomeworkManyArchived(TEST_GUID, ['hw-1'], false);
@@ -850,6 +911,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'new');
@@ -879,6 +941,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'all');
@@ -897,6 +960,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getBehavior(TEST_GUID, 1, 50, 'attention', 'all');
@@ -923,6 +987,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -947,6 +1012,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getBehaviorDetail(TEST_GUID, 'beh-1');
@@ -963,6 +1029,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'missing-beh')).rejects.toThrow(
@@ -982,6 +1049,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getBehaviorDetail(TEST_GUID, 'beh-1')).rejects.toThrow(
@@ -1003,6 +1071,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', false);
@@ -1022,6 +1091,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.setBehaviorIsNew(TEST_GUID, 'beh-1', false)).rejects.toThrow(
@@ -1047,6 +1117,7 @@ describe('ChildrenService', () => {
         mockUserItemState,
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorIsNew(TEST_GUID, 'beh-1', true, 'user-1');
@@ -1066,6 +1137,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, ['beh-1', 'beh-2'], false);
@@ -1083,6 +1155,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorManyIsNew(TEST_GUID, [], true);
@@ -1105,6 +1178,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', true);
@@ -1125,6 +1199,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorArchived(TEST_GUID, 'beh-1', false);
@@ -1145,6 +1220,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.setBehaviorArchived(TEST_GUID, 'beh-1', true)).rejects.toThrow(
@@ -1163,6 +1239,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1', 'beh-2'], true);
@@ -1180,6 +1257,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.setBehaviorManyArchived(TEST_GUID, ['beh-1'], false);
@@ -1223,6 +1301,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const subjects = await service.getSubjects(TEST_GUID);
@@ -1266,6 +1345,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getGrades(TEST_GUID);
@@ -1301,6 +1381,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getGrades(TEST_GUID);
@@ -1319,6 +1400,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getGrades(TEST_GUID);
@@ -1336,6 +1418,10 @@ describe('ChildrenService', () => {
       // Deliberately NOT in the `targetForStudent` ROUTES table: this is a
       // read of our own Postgres. Touching the router would mean a Mashov
       // login on every tab open, and an upstream outage would empty the view.
+      //
+      // The read path does freshen `grades` behind a 6h TTL, but through
+      // `SyncOnReadService` and `GradesTask`, never through the passthrough
+      // router -- so neither of these may be touched here.
       const targetForStudent = jest.fn();
       const client = makeMockMashovClient();
       const service = new ChildrenService(
@@ -1345,6 +1431,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope({ targetForStudent }),
+        ...readPathDeps(),
       );
 
       await service.getGrades(TEST_GUID, 'user-1');
@@ -1380,6 +1467,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getTimetable(TEST_GUID);
@@ -1421,6 +1509,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getTimetable(TEST_GUID);
@@ -1455,6 +1544,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getTimetable(TEST_GUID);
@@ -1479,6 +1569,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getTimetable(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -1512,6 +1603,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1553,6 +1645,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1568,6 +1661,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getLessonHistory(TEST_GUID);
@@ -1597,6 +1691,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getStudentReleases(TEST_GUID);
@@ -1637,6 +1732,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.createStudentRelease(TEST_GUID, body);
@@ -1673,6 +1769,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.updateStudentRelease(TEST_GUID, 84, body);
@@ -1692,6 +1789,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.deleteStudentRelease(TEST_GUID, 84);
@@ -1719,6 +1817,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getSchoolActivities(TEST_GUID);
@@ -1747,6 +1846,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildren('user-1');
@@ -1769,6 +1869,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildren('user-1');
@@ -1787,6 +1888,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getChildren('user-1');
@@ -1807,6 +1909,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getChildren('user-1');
@@ -1827,6 +1930,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getChildren('user-1');
@@ -1854,6 +1958,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getHomework(TEST_GUID, 1, 20, 'new', 'user-1');
@@ -1874,6 +1979,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getHomework(TEST_GUID, 1, 20, 'all', 'user-1');
@@ -1894,6 +2000,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getHomework(TEST_GUID, 1, 20, 'archived', 'user-1');
@@ -1920,6 +2027,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const archived = await service.getHomework(TEST_GUID, 1, 20, 'archived', 'user-1');
@@ -1951,6 +2059,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const unread = await service.getHomework(TEST_GUID, 1, 20, 'new', 'user-1');
@@ -1982,6 +2091,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const list = await service.getHomework(TEST_GUID, 1, 20, 'new', 'user-1');
@@ -2000,6 +2110,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getBehavior(TEST_GUID, 1, 20, 'all', 'new', 'user-1');
@@ -2020,6 +2131,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getBehavior(TEST_GUID, 1, 20, 'all', 'archived', 'user-1');
@@ -2042,6 +2154,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2026'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const archived = await service.getBehavior(TEST_GUID, 1, 20, 'all', 'archived', 'user-1');
@@ -2068,6 +2181,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getTimetable(TEST_GUID, 'user-1');
@@ -2089,6 +2203,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getChildren('user-1');
@@ -2109,6 +2224,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getChildWorkspace(TEST_GUID, 'user-1');
@@ -2132,6 +2248,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig('2025'),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildren('user-1');
@@ -2158,6 +2275,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getSubjects(TEST_GUID);
@@ -2183,6 +2301,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.getChildWorkspace(TEST_GUID);
@@ -2201,6 +2320,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getSubjects(TEST_GUID)).rejects.toMatchObject({
@@ -2228,6 +2348,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getChildWorkspace(TEST_GUID, 'user-9');
@@ -2244,6 +2365,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await service.getChildren('user-9');
@@ -2262,6 +2384,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(service.getSubjects(TEST_GUID)).rejects.toThrow(NotFoundException);
@@ -2295,6 +2418,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.downloadHomeworkAttachment(TEST_GUID, 'hw-1', 'hw-file-1');
@@ -2323,6 +2447,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(
@@ -2367,6 +2492,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       const result = await service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1');
@@ -2393,6 +2519,7 @@ describe('ChildrenService', () => {
         makeMockUserItemStateService(),
         makeMockConfig(),
         makeMockScope(),
+        ...readPathDeps(),
       );
 
       await expect(
@@ -2615,6 +2742,7 @@ describe('ChildrenService household isolation', () => {
       makeMockUserItemStateService(),
       makeMockConfig(),
       makeMockScope(),
+      ...readPathDeps(),
     );
   }
 
@@ -2890,6 +3018,7 @@ describe('ChildrenService ownership guard coverage', () => {
       makeMockUserItemStateService(),
       makeMockConfig(),
       makeMockScope(),
+      ...readPathDeps(),
     );
     return { service, client };
   }
@@ -3021,6 +3150,7 @@ describe('ChildrenService per-child reads and the connection router', () => {
       makeMockUserItemStateService(),
       makeMockConfig(),
       makeMockScope({ targetForStudent }),
+      ...readPathDeps(),
     );
   }
 
@@ -3080,6 +3210,7 @@ describe('ChildrenService attachment timeout override', () => {
       makeMockUserItemStateService(),
       makeMockConfig(),
       makeMockScope(),
+      ...readPathDeps(),
     );
   }
 
@@ -3127,6 +3258,7 @@ describe('ChildrenService attachment timeout override', () => {
       makeMockUserItemStateService(),
       makeMockConfig(),
       makeMockScope(),
+      ...readPathDeps(),
     );
 
     await service.downloadBehaviorAttachment(TEST_GUID, 'beh-1', 'beh-file-1', undefined, {

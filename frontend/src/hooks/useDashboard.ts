@@ -7,8 +7,15 @@ export function useDashboard() {
   return useQuery({
     queryKey: ['dashboard'],
     queryFn: fetchDashboard,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
+    // `FreshnessBar` consumes this hook and is mounted app-wide, so this
+    // interval is a per-open-tab load on our own database, not a user action.
+    // It used to be 60s against sources a cron rewrote every 5-12 minutes;
+    // nothing writes on that cadence any more, so polling that fast could only
+    // re-read rows that had not changed. Window focus covers coming back to a
+    // tab, and the refresh button covers wanting it now.
+    staleTime: 120_000,
+    refetchInterval: 300_000,
+    refetchOnWindowFocus: true,
   });
 }
 

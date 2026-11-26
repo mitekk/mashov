@@ -10,22 +10,28 @@
  *  2. The timetable stays one row per slot when two years are present. That is
  *     the single read where a widened scope would be visibly wrong, and it is
  *     only wrong once there are two years in the table.
- *  3. The backfill's completion ledger survives a second run. Idempotency here
- *     is a `syncRun` row being found by a real query, not a mock returning
- *     what the test told it to.
+ *
+ * A third case — the backfill's completion ledger surviving a second run —
+ * was removed with `HistoryBackfillTask` itself (ADR-0046). Nothing fetches a
+ * historical year any more; `MASHOV_YEAR` only widens the read window over
+ * years already in the database, which is what 1 and 2 cover.
  */
 
 import { PrismaClient } from '../../backend/node_modules/@prisma/client';
 import { FeedService } from '../../backend/src/feed/feed.service';
+import type { SyncOnReadService } from '../../backend/src/sync/sync-on-read.service';
+import type { TimetableTask } from '../../backend/src/sync/tasks/timetable.task';
+import type { BellsTask } from '../../backend/src/sync/tasks/bells.task';
+import type { GroupsTask } from '../../backend/src/sync/tasks/groups.task';
+import type { LessonsCountTask } from '../../backend/src/sync/tasks/lessons-count.task';
+import type { MessageBoardTask } from '../../backend/src/sync/tasks/message-board.task';
+import type { GradesTask } from '../../backend/src/sync/tasks/grades.task';
 import { ChildrenService } from '../../backend/src/children/children.service';
-import { HistoryBackfillTask } from '../../backend/src/sync/tasks/history-backfill.task';
-import { SyncRunService } from '../../backend/src/sync/sync-run.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { MashovSessionService } from '../../backend/src/session/mashov-session.service';
 import type { MashovHttpClient } from '../../backend/src/session/mashov-http.client';
 import type { UserItemStateService } from '../../backend/src/common/user-item-state.service';
 import type { ConnectionScopeService } from '../../backend/src/common/connection-scope/connection-scope.service';
-import type { SyncTaskRunResult } from '../../backend/src/sync/sync.types';
 
 const STUDENT_GUID = 'hist-student-1';
 const SEMEL = 997755;
@@ -42,24 +48,20 @@ function config(startYear?: string) {
   } as never;
 }
 
-function okResult(): SyncTaskRunResult {
-  // Non-zero: the backfill refuses to record a year complete when nothing
-  // came back, because a refused historical login looks exactly like an
-  // empty year.
-  return {
-    status: 'success',
-    summary: { fetchedCount: 1, createdCount: 0, updatedCount: 1, failedCount: 0 },
-    errorMessages: [],
-  };
-}
-
 describe('School-year history window', () => {
+  // REMOVED: two `HistoryBackfillTask` tests (idempotence across runs, and
+  // resumption after a failed run). The task and its nightly cron are deleted
+  // -- no historical year is fetched any more. Years already in the database
+  // stay readable, and the read-window tests in this suite still cover that,
+  // which is all `MASHOV_YEAR` now affects. See ADR-0046 and the amendment on
+  // ADR-0025.
+
   let prisma: PrismaClient;
   /**
-   * Every assertion about the backfill is scoped to this connection. The
-   * database is shared with the other integration suites, whose connections
-   * are also `active: true` and are also backfilled by the same run — so a
-   * bare call count measures the fixture, not the behaviour.
+   * Every assertion here is scoped to this connection. The database is shared
+   * with the other integration suites, whose connections are also
+   * `active: true`, so an unscoped query measures the fixture rather than the
+   * behaviour.
    */
   let connectionId: string;
 
@@ -148,6 +150,15 @@ describe('School-year history window', () => {
       {} as unknown as UserItemStateService,
       config(startYear),
       {} as unknown as ConnectionScopeService,
+      // Read-path freshening. `SyncOnReadService.ensureFresh` returns early
+      // under NODE_ENV=test, so these are inert here.
+      { ensureFresh: async () => undefined, deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService,
+      { execute: async () => undefined } as unknown as TimetableTask,
+      { execute: async () => undefined } as unknown as BellsTask,
+      { execute: async () => undefined } as unknown as GroupsTask,
+      { execute: async () => undefined } as unknown as LessonsCountTask,
+      { execute: async () => undefined } as unknown as MessageBoardTask,
+      { execute: async () => undefined } as unknown as GradesTask,
     );
   }
 
@@ -235,6 +246,15 @@ describe('School-year history window', () => {
       // ConnectionScopeService: this read never leaves the database, so the
       // upstream target resolver is never reached.
       {} as unknown as ConnectionScopeService,
+      // Read-path freshening. `SyncOnReadService.ensureFresh` returns early
+      // under NODE_ENV=test, so these are inert here.
+      { ensureFresh: async () => undefined, deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService,
+      { execute: async () => undefined } as unknown as TimetableTask,
+      { execute: async () => undefined } as unknown as BellsTask,
+      { execute: async () => undefined } as unknown as GroupsTask,
+      { execute: async () => undefined } as unknown as LessonsCountTask,
+      { execute: async () => undefined } as unknown as MessageBoardTask,
+      { execute: async () => undefined } as unknown as GradesTask,
     );
 
     const result = await children.getTimetable(STUDENT_GUID);
@@ -245,109 +265,9 @@ describe('School-year history window', () => {
   });
 
   /**
-   * The coercion guard compares the newest row stamped with the backfilled
+   * The coercion guard compares the newest row stamped with the historical
    * year against that year's span (Sep year-1 .. Aug year). Seeding one row
-   * inside the span is what a real successful fetch would have left behind.
+   * inside the span is what a real successful fetch would have left behind --
+   * which is now the only way such rows arrive, since nothing backfills them.
    */
-  async function seedInSpanContent(year: number): Promise<void> {
-    await seedHomeworkYears([year]);
-  }
-
-  it('is idempotent across two backfill runs', async () => {
-    await seedInSpanContent(2026);
-    const executed: Array<{ connectionId?: string; schoolYear: number }> = [];
-    const task = {
-      execute: jest
-        .fn()
-        .mockImplementation((context: { connectionId?: string; schoolYear: number }) => {
-          executed.push({ connectionId: context.connectionId, schoolYear: context.schoolYear });
-          return Promise.resolve(okResult());
-        }),
-    };
-
-    const backfill = new HistoryBackfillTask(
-      prisma as unknown as PrismaService,
-      config('2026'),
-      new SyncRunService(prisma as unknown as PrismaService),
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-    );
-
-    const mine = () =>
-      executed.filter((call) => call.connectionId === connectionId).map((c) => c.schoolYear);
-
-    await backfill.run();
-    const afterFirst = mine();
-
-    await backfill.run();
-
-    // Eight tasks for 2026 on the first run, nothing at all on the second:
-    // the `history:2026:complete` syncRun row is the ledger, and it is read
-    // back out of Postgres rather than from a mock.
-    expect(afterFirst).toEqual(Array(8).fill(2026));
-    expect(mine()).toEqual(afterFirst);
-
-    const ledger = await prisma.syncRun.findMany({
-      where: { source: 'history:2026:complete', householdConnectionId: connectionId },
-    });
-    expect(ledger).toHaveLength(1);
-    expect(ledger[0].status).toBe('success');
-  });
-
-  it('retries a year whose ledger row failed', async () => {
-    await seedInSpanContent(2026);
-    const mineCalls: number[] = [];
-    let run = 0;
-    const task = {
-      execute: jest.fn().mockImplementation((context: { connectionId?: string }) => {
-        if (context.connectionId === connectionId) mineCalls.push(run);
-        // Fail every task on the first run, succeed on the second.
-        return Promise.resolve(
-          run === 0
-            ? {
-                status: 'failed' as const,
-                summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
-                errorMessages: ['upstream said no'],
-              }
-            : okResult(),
-        );
-      }),
-    };
-
-    const backfill = new HistoryBackfillTask(
-      prisma as unknown as PrismaService,
-      config('2026'),
-      new SyncRunService(prisma as unknown as PrismaService),
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-      task as never,
-    );
-
-    run = 0;
-    await backfill.run();
-    run = 1;
-    await backfill.run();
-
-    // Eight tasks attempted in each run: a failed ledger row does not count as
-    // complete, so the year is retried rather than skipped.
-    expect(mineCalls.filter((r) => r === 0)).toHaveLength(8);
-    expect(mineCalls.filter((r) => r === 1)).toHaveLength(8);
-
-    const ledger = await prisma.syncRun.findMany({
-      where: { source: 'history:2026:complete', householdConnectionId: connectionId },
-      orderBy: { startedAt: 'asc' },
-    });
-    expect(ledger.map((entry) => entry.status)).toEqual(['failed', 'success']);
-  });
 });

@@ -1,6 +1,8 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { FreshnessService } from '../sync/freshness.service';
 import { SettingsService } from './settings.service';
+import type { SyncOnReadService } from '../sync/sync-on-read.service';
+import type { UserDetailsTask } from '../sync/tasks/user-details.task';
 
 function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
   return {
@@ -51,6 +53,17 @@ function makeMockFreshnessService(overrides: Partial<Record<string, jest.Mock>>)
   } as unknown as jest.Mocked<FreshnessService>;
 }
 
+/**
+ * The read-path freshening dependencies. `ensureFresh` returns early under
+ * NODE_ENV=test, so these exist only to satisfy the constructor.
+ */
+function readPathDeps(): [SyncOnReadService, UserDetailsTask] {
+  return [
+    { ensureFresh: jest.fn(), deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService,
+    { execute: jest.fn() } as unknown as UserDetailsTask,
+  ];
+}
+
 describe('SettingsService', () => {
   describe('getSourceHealth', () => {
     it('returns contract shape with sources + overallState + lastFullSyncAt', async () => {
@@ -79,6 +92,7 @@ describe('SettingsService', () => {
             staleSources: [],
           }),
         }),
+        ...readPathDeps(),
       );
 
       const result = await service.getSourceHealth('conn-1');
@@ -92,6 +106,44 @@ describe('SettingsService', () => {
   });
 
   describe('getProfile', () => {
+    it('freshens every linked school, not just the first', async () => {
+      // `UserDetailsTask.execute` narrows to `context.connectionId`, so with
+      // the `user_details` cron gone, freshening only `connections[0]` left a
+      // two-school household's second profile never refreshed again.
+      const syncOnRead = {
+        ensureFresh: jest.fn(),
+        deadlineFromNow: () => Date.now() + 4_000,
+      } as unknown as SyncOnReadService;
+      const service = new SettingsService(
+        makeMockPrisma({
+          appUserFindUnique: jest
+            .fn()
+            .mockResolvedValue({ mashovUserId: 'mashov-a', displayName: 'App User' }),
+          profileFindMany: jest.fn().mockResolvedValue([]),
+          householdFindMany: jest.fn().mockResolvedValue([
+            { id: 'conn-b', schoolName: 'School B', schoolYear: 2026, schoolCode: 2222 },
+            { id: 'conn-a', schoolName: 'School A', schoolYear: 2026, schoolCode: 1111 },
+          ]),
+        }),
+        makeMockFreshnessService({}),
+        syncOnRead,
+        { execute: jest.fn() } as unknown as UserDetailsTask,
+      );
+
+      await service.getProfile('app-user-1');
+
+      const connectionIds = (syncOnRead.ensureFresh as jest.Mock).mock.calls.map(
+        (call) => call[2].connectionId,
+      );
+      expect(connectionIds).toEqual(['conn-b', 'conn-a']);
+      // One shared budget, so a household with more schools cannot make the
+      // page wait longer.
+      const deadlines = new Set(
+        (syncOnRead.ensureFresh as jest.Mock).mock.calls.map((call) => call[2].deadline),
+      );
+      expect(deadlines.size).toBe(1);
+    });
+
     // One school: the same fields the screen always showed, now in a list and
     // carrying the connection they were read for.
     it('returns one entry per school in contract shape', async () => {
@@ -115,6 +167,7 @@ describe('SettingsService', () => {
             ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       const result = await service.getProfile('app-user-1');
@@ -194,6 +247,7 @@ describe('SettingsService', () => {
           ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       const result = await service.getProfile('app-user-1');
@@ -273,6 +327,7 @@ describe('SettingsService', () => {
           ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       const result = await service.getProfile('app-user-1');
@@ -322,6 +377,7 @@ describe('SettingsService', () => {
           studentConnectionFindMany,
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       const result = await service.getProfile('app-user-1');
@@ -351,6 +407,7 @@ describe('SettingsService', () => {
             ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       await expect(service.getProfile('app-user-1')).resolves.toEqual([]);
@@ -382,6 +439,7 @@ describe('SettingsService', () => {
           ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       const result = await service.getProfile('app-user-1');
@@ -445,6 +503,7 @@ describe('SettingsService', () => {
           ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       const result = await service.getProfile('app-user-1');
@@ -486,6 +545,7 @@ describe('SettingsService', () => {
           ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       await expect(service.getProfile('app-user-1')).resolves.toEqual([
@@ -516,6 +576,7 @@ describe('SettingsService', () => {
             ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       await expect(service.getProfile('app-user-1')).resolves.toEqual([]);
@@ -554,6 +615,7 @@ describe('SettingsService', () => {
           householdFindMany,
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       await service.getProfile('app-user-1');
@@ -582,6 +644,7 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({ appUserFindUnique, profileFindMany, householdFindMany }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       await expect(service.getProfile(null)).resolves.toEqual([]);
@@ -598,6 +661,7 @@ describe('SettingsService', () => {
           profileFindMany,
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       await expect(service.getProfile('ghost')).resolves.toEqual([]);
@@ -632,6 +696,7 @@ describe('SettingsService', () => {
             ]),
         }),
         makeMockFreshnessService({}),
+        ...readPathDeps(),
       );
 
       const result = await service.getProfile('app-user-1');
@@ -660,6 +725,7 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({ studentFindMany }),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+        ...readPathDeps(),
       );
 
       await service.getSourceHealth('conn-1');
@@ -694,6 +760,7 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({ studentFindMany }),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+        ...readPathDeps(),
       );
 
       await service.getSourceHealth('conn-1');
@@ -715,6 +782,7 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({ studentFindMany }),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+        ...readPathDeps(),
       );
 
       await service.getSourceHealth('conn-1');
@@ -739,6 +807,7 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({}),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+        ...readPathDeps(),
       );
 
       await service.getSourceHealth('conn-1');
@@ -775,6 +844,7 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({ studentConnectionFindMany, studentFindMany }),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+        ...readPathDeps(),
       );
 
       await service.getSourceHealth('conn-1');
@@ -805,6 +875,7 @@ describe('SettingsService', () => {
       const service = new SettingsService(
         makeMockPrisma({ studentConnectionFindMany, studentFindMany }),
         makeMockFreshnessService({ loadSyncRuns, getAllSourceHealth }) as never,
+        ...readPathDeps(),
       );
 
       await service.getSourceHealth('conn-1');
@@ -827,6 +898,7 @@ describe('SettingsService', () => {
           getAllSourceHealth,
           computeFreshness,
         }) as never,
+        ...readPathDeps(),
       );
 
       const result = await service.getSourceHealth(null);
@@ -873,6 +945,7 @@ describe('SettingsService', () => {
           getAllSourceHealth,
           computeFreshness,
         }) as never,
+        ...readPathDeps(),
       );
 
       await service.getSourceHealth('conn-1', 'user-1');

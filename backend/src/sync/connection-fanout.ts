@@ -135,6 +135,43 @@ export async function reportNoConnectionTarget(
 }
 
 /**
+ * No connections exist at all: nothing to attempt, and nothing to report.
+ *
+ * The sibling of `reportNoConnectionTarget`, for the opposite case. That one
+ * fires when a *requester named a connection* -- a targeted refresh -- where
+ * silence would be a user-visible lie, so it writes a `failed` run under
+ * `${source}:${connectionId}`. This one fires only when the caller named no
+ * connection and `household_connection` has no active, user-owned row: the
+ * empty-deployment state. There is no requester, no student any connection can
+ * claim, and nothing was skipped -- there is nothing.
+ *
+ * Deliberately opens NO `syncRun`, which is the whole point. A row here could
+ * only be keyed on the bare `source`, and `getAllSourceHealth`'s own comment
+ * records what that caused last time (T13 finding 3): the branch-wide NULL
+ * rule admits a connectionless run into *every* connection's snapshot, so a
+ * bare `failed` row put "Missing required Mashov credentials..." underneath a
+ * green row for every household on a shared deployment. The reader was fixed
+ * to pull status and attempt from the same variant-key set, but the row would
+ * still be a failure attributed to nobody, shown to everybody. `success` with
+ * zero counts is the honest shape: on an empty deployment every source then
+ * reads `never_synced`, which is exactly what it is.
+ *
+ * Logged at `warn`, not `debug`: once the per-task crons are gone this is
+ * close to unreachable -- the scheduler only selects active connections and a
+ * login always has one -- so reaching it means something upstream of here
+ * picked a target it should not have.
+ */
+export function skipNoConnections(logger: Logger, source: string): SyncTaskRunResult {
+  logger.warn(`${source}: no active, user-owned connection exists; nothing to sync`);
+
+  return {
+    status: 'success',
+    summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 0 },
+    errorMessages: [],
+  };
+}
+
+/**
  * Record which connection actually answered for a child.
  *
  * Called on every success, so it writes only on a change: ten tasks per
