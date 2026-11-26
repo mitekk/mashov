@@ -341,6 +341,53 @@ describe('FreshnessService', () => {
   });
 
   describe('getAllSourceHealth', () => {
+    // The /more defect: both rows read a permanent `לא סונכרן`. Their tasks
+    // return before opening a `sync_run` while the flag is off, so no run is
+    // ever written and no retry can change the answer -- a feed this
+    // deployment was never going to run, reported as a broken one.
+    describe('feature-flagged sources', () => {
+      const saved = {
+        daily: process.env.FEATURE_DAILY_BEHAVE,
+        out: process.env.FEATURE_OUT_BEHAVE,
+      };
+
+      beforeEach(() => {
+        mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
+        mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
+      });
+
+      afterEach(() => {
+        // Assigned back, never deleted: a `delete` restores the .env value
+        // instead of clearing it.
+        process.env.FEATURE_DAILY_BEHAVE = saved.daily ?? '';
+        process.env.FEATURE_OUT_BEHAVE = saved.out ?? '';
+      });
+
+      it('omits a flagged-off source instead of reporting it never_synced', async () => {
+        process.env.FEATURE_DAILY_BEHAVE = 'false';
+        process.env.FEATURE_OUT_BEHAVE = '';
+
+        const results = await service.getAllSourceHealth([]);
+        const sources = results.map((r) => r.source);
+
+        expect(sources).not.toContain('daily_behave');
+        expect(sources).not.toContain('out_behave');
+        // The rest of the list is untouched -- this narrows one thing only.
+        expect(sources).toContain('mail_counts');
+        expect(sources).toContain('behavior');
+      });
+
+      it('reports a flagged-on source again, never_synced until it runs', async () => {
+        process.env.FEATURE_DAILY_BEHAVE = 'true';
+        process.env.FEATURE_OUT_BEHAVE = 'true';
+
+        const results = await service.getAllSourceHealth([]);
+
+        expect(results.find((r) => r.source === 'daily_behave')?.status).toBe('never_synced');
+        expect(results.find((r) => r.source === 'out_behave')?.status).toBe('never_synced');
+      });
+    });
+
     it('returns never_synced status when no runs exist for a source', async () => {
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map());
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());

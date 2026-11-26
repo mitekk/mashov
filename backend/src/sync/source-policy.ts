@@ -43,6 +43,16 @@ export interface SourcePolicy {
   sets: SyncTaskSet[];
   /** Whether run keys carry a `:<studentGuid>` suffix. */
   perStudent: boolean;
+  /**
+   * The env var that must be `'true'` for this source to run at all, if any.
+   *
+   * Recorded as the NAME, not as a resolved boolean, and read per call by
+   * `sourceIsEnabled` rather than at module load. `ConfigModule.forRoot`
+   * populates `process.env` during Nest's bootstrap, which happens after this
+   * module is first imported -- a value frozen at import time could be read
+   * before the deployment's own setting had landed.
+   */
+  enabledWhen?: string;
 }
 
 /**
@@ -83,6 +93,8 @@ interface PolicyInput {
   perStudent?: boolean;
   /** Only where the reported threshold must not follow the sync interval. */
   staleThresholdMinutes?: number;
+  /** The env var that must be `'true'` for this source to run at all. */
+  enabledWhen?: string;
 }
 
 function policy(input: PolicyInput): SourcePolicy {
@@ -108,6 +120,7 @@ function policy(input: PolicyInput): SourcePolicy {
     staleThresholdMinutes: envMinutes(`SYNC_STALE_${key}_MINUTES`, defaultStale),
     sets: input.sets,
     perStudent: input.perStudent ?? false,
+    enabledWhen: input.enabledWhen,
   };
 }
 
@@ -187,8 +200,17 @@ export const SOURCE_POLICY: SourcePolicy[] = [
   policy({ source: 'user_details', task: 'userDetails', syncTtlMinutes: 7 * DAY, sets: ['full'] }),
 
   // Feature-flagged off by default, and gated inside their own `execute`.
-  policy({ source: 'daily_behave', task: 'dailyBehave', syncTtlMinutes: 12 * HOUR, sets: ['full'] }),
-  policy({ source: 'out_behave', task: 'outBehave', syncTtlMinutes: 12 * HOUR, sets: ['full'] }),
+  //
+  // `enabledWhen` repeats that gate as data because the task's own check is
+  // invisible to everything else: with the flag off, `execute` returns before
+  // opening a `sync_run`, so nothing is ever written for these sources and
+  // `/more` reported a permanent `לא סונכרן` for a feed that was never meant
+  // to run. That is the same trap the `notifications` note above describes --
+  // a source listed here with no writer -- reached through a flag rather than
+  // a deletion. Both write into `behavior_item`, which the enabled `behavior`
+  // task already fills, so hiding them costs the user no data.
+  policy({ source: 'daily_behave', task: 'dailyBehave', syncTtlMinutes: 12 * HOUR, sets: ['full'], enabledWhen: 'FEATURE_DAILY_BEHAVE' }),
+  policy({ source: 'out_behave', task: 'outBehave', syncTtlMinutes: 12 * HOUR, sets: ['full'], enabledWhen: 'FEATURE_OUT_BEHAVE' }),
 ];
 
 const BY_SOURCE = new Map(SOURCE_POLICY.map((p) => [p.source, p]));
@@ -200,6 +222,28 @@ export function policyForSource(source: string): SourcePolicy | undefined {
 
 export function policyForTask(task: string): SourcePolicy | undefined {
   return BY_TASK.get(task);
+}
+
+/**
+ * Whether this deployment runs this source at all.
+ *
+ * Read per call, never cached: see `enabledWhen`. An ungated source is always
+ * enabled, so the common case needs no env read.
+ */
+export function sourceIsEnabled(policy: SourcePolicy): boolean {
+  return !policy.enabledWhen || process.env[policy.enabledWhen] === 'true';
+}
+
+/**
+ * The sources this deployment actually syncs — what `/more` should report on.
+ *
+ * `SOURCE_POLICY` stays the full catalogue: it is what `buildTasks` schedules
+ * (each flagged-off task self-gates and no-ops), and what the TTL and
+ * threshold invariants are asserted over. Only the health readback narrows,
+ * because only it makes a promise to the user about every row it prints.
+ */
+export function enabledSourcePolicies(): SourcePolicy[] {
+  return SOURCE_POLICY.filter(sourceIsEnabled);
 }
 
 export function sourcesForSet(set: SyncTaskSet): SourcePolicy[] {

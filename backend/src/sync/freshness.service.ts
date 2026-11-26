@@ -10,7 +10,7 @@ import {
   calendarSchoolYear,
   SchoolYearService,
 } from '../common/school-year/school-year.service';
-import { PER_STUDENT_SOURCES, SOURCE_POLICY } from './source-policy';
+import { PER_STUDENT_SOURCES, SOURCE_POLICY, enabledSourcePolicies } from './source-policy';
 
 export type FreshnessState = 'fresh' | 'syncing' | 'stale' | 'degraded';
 
@@ -372,7 +372,15 @@ export class FreshnessService {
     const now = new Date();
     const results: SourceHealth[] = [];
 
-    for (const policy of SOURCE_POLICY) {
+    // `enabledSourcePolicies()`, not the whole catalogue. A source behind a
+    // feature flag that is off never opens a `sync_run` -- its task returns
+    // before doing so -- so every row it produced here was `never_synced`, for
+    // ever, describing a feed this deployment was never going to run. That is
+    // exactly what `source-policy.ts` says about listing a source with no
+    // writer. `computeFreshness` needs no such filter: a source with no runs
+    // and no failures already falls through its `continue`, so it never
+    // reaches `staleSources` or the app-wide FreshnessBar.
+    for (const policy of enabledSourcePolicies()) {
       const baseSource = policy.source;
       const threshold = { staleThresholdMinutes: policy.staleThresholdMinutes };
       // Add global sources + per-student sources
