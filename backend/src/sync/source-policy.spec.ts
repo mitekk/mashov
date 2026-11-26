@@ -1,4 +1,5 @@
 import {
+  enabledSourcePolicies,
   PER_STUDENT_SOURCES,
   policyForSource,
   policyForTask,
@@ -73,6 +74,62 @@ describe('SOURCE_POLICY', () => {
   // cannot import this file, so this count is the link: a new source fails
   // here until whoever adds it has also added the label and the id to
   // `SourceHealthList.test.tsx`'s `POLICY_SOURCES`.
+  describe('feature-flagged sources', () => {
+    // Saved and restored around each case: these read `process.env` live, by
+    // design, so a leaked value would change what a LATER test sees.
+    const saved = {
+      daily: process.env.FEATURE_DAILY_BEHAVE,
+      out: process.env.FEATURE_OUT_BEHAVE,
+    };
+
+    afterEach(() => {
+      // Assigning the saved value back, never `delete`: on this project a
+      // `delete` restores the .env value instead of clearing it.
+      process.env.FEATURE_DAILY_BEHAVE = saved.daily ?? '';
+      process.env.FEATURE_OUT_BEHAVE = saved.out ?? '';
+    });
+
+    const flagged = (): string[] => enabledSourcePolicies().map((p) => p.source);
+
+    it('leaves a flagged-off source out of the enabled set', () => {
+      process.env.FEATURE_DAILY_BEHAVE = 'false';
+      process.env.FEATURE_OUT_BEHAVE = '';
+
+      expect(flagged()).not.toContain('daily_behave');
+      expect(flagged()).not.toContain('out_behave');
+      // The catalogue itself is unchanged: `buildTasks` still schedules them,
+      // and each self-gates.
+      expect(SOURCE_POLICY.map((p) => p.source)).toContain('daily_behave');
+    });
+
+    it('includes them once the flag is on', () => {
+      process.env.FEATURE_DAILY_BEHAVE = 'true';
+      process.env.FEATURE_OUT_BEHAVE = 'true';
+
+      expect(flagged()).toContain('daily_behave');
+      expect(flagged()).toContain('out_behave');
+    });
+
+    it('reads the flag per call rather than freezing it at import', () => {
+      // The ordering hazard this guards: `ConfigModule.forRoot` populates
+      // `process.env` during Nest bootstrap, AFTER this module is imported.
+      process.env.FEATURE_DAILY_BEHAVE = 'false';
+      expect(flagged()).not.toContain('daily_behave');
+
+      process.env.FEATURE_DAILY_BEHAVE = 'true';
+      expect(flagged()).toContain('daily_behave');
+    });
+
+    it('leaves every ungated source enabled', () => {
+      process.env.FEATURE_DAILY_BEHAVE = '';
+      process.env.FEATURE_OUT_BEHAVE = '';
+
+      const ungated = SOURCE_POLICY.filter((p) => !p.enabledWhen).map((p) => p.source);
+      expect(flagged()).toEqual(ungated);
+      expect(ungated).toHaveLength(15);
+    });
+  });
+
   it('has the source count the frontend label table is written against', () => {
     expect(SOURCE_POLICY).toHaveLength(17);
   });
