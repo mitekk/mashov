@@ -703,6 +703,84 @@ test.describe('Auth — session protection', () => {
     await expect(page.getByTestId('home-header')).toBeVisible();
     expect(page.url()).not.toContain('/auth/sign-in');
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Telegram deep links point at /home. A browser that does not send the
+  // cookie on that first hop is bounced to /auth/sign-in?next=%2Fhome even
+  // for a parent with a live session -- who was then asked to retype
+  // credentials they did not need. /auth/ is public to middleware, so nothing
+  // upstream of the page itself checks.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  test('a live session skips the sign-in form and resumes next', async ({ page }) => {
+    await page.route('**/api/v1/auth/me', async (route) => {
+      await route.fulfill({ json: MOCK_ME });
+    });
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: MOCK_EMPTY_DASHBOARD });
+    });
+
+    await seedAuthenticatedCookie(page);
+    await page.goto('/auth/sign-in?next=%2Fhome');
+
+    await page.waitForURL('**/home', { timeout: 15_000 });
+    await expect(page.getByTestId('home-header')).toBeVisible();
+    expect(page.url()).not.toContain('/auth/sign-in');
+  });
+
+  test('refuses to resume an off-site next', async ({ page }) => {
+    // The probe fires before any credential is supplied, so the open redirect
+    // `?next=` used to carry would be reachable pre-auth.
+    await page.route('**/api/v1/auth/me', async (route) => {
+      await route.fulfill({ json: MOCK_ME });
+    });
+    await page.route('**/api/v1/dashboard', async (route) => {
+      await route.fulfill({ json: MOCK_EMPTY_DASHBOARD });
+    });
+
+    await seedAuthenticatedCookie(page);
+    await page.goto('/auth/sign-in?next=https%3A%2F%2Fexample.com');
+
+    await expect(page.getByTestId('home-header')).toBeVisible({ timeout: 15_000 });
+    expect(page.url()).toContain(BASE_URL);
+    expect(page.url()).not.toContain('example.com');
+  });
+
+  test('a stale cookie shows the form once, without a reload loop', async ({ page }) => {
+    // The regression guard for the probe's 401 opt-out. `handle401Redirect`
+    // answers any non-INVALID_CREDENTIALS 401 with
+    // `location.href = '/auth/sign-in'` -- from this page that is a full
+    // reload that probes again, forever.
+    let documentLoads = 0;
+    page.on('request', (request) => {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+        documentLoads++;
+      }
+    });
+
+    await page.route('**/api/v1/auth/me', async (route) => {
+      await route.fulfill({
+        status: 401,
+        json: { error: { code: 'UNAUTHORIZED', message: 'Authentication required', details: [] } },
+      });
+    });
+    await page.route('**/api/v1/auth/schools', async (route) => {
+      await route.fulfill({ json: MOCK_SCHOOLS });
+    });
+
+    // Present but revoked server-side: exactly the case middleware cannot
+    // resolve, and the reason the probe asks the endpoint instead.
+    await seedAuthenticatedCookie(page);
+    await page.goto('/auth/sign-in?next=%2Fhome');
+
+    await expect(page.getByTestId('sign-in-submit')).toBeVisible({ timeout: 15_000 });
+    expect(page.url()).toContain('/auth/sign-in');
+
+    // Give a loop time to manifest before claiming there isn't one.
+    await page.waitForTimeout(2_000);
+    await expect(page.getByTestId('sign-in-submit')).toBeVisible();
+    expect(documentLoads).toBe(1);
+  });
 });
 
 test.describe('Auth — sign-out', () => {

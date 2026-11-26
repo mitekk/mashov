@@ -4,11 +4,12 @@ import React, { useState, useEffect, Suspense } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useQuery, useMutation } from '@tanstack/react-query';
-import { getSchools, login } from '@/api/auth';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { getMeOrNull, getSchools, login } from '@/api/auth';
 import { SchoolAutocomplete } from '@/components/auth/SchoolAutocomplete';
 import { CaptchaEscapeHatch } from '@/components/auth/CaptchaEscapeHatch';
 import { readAuthError } from '@/lib/authErrors';
+import { safeNextPath } from '@/lib/next-path';
 import type { School } from '@/types/api';
 // Static import, not /public: it hands <Image> the intrinsic 1000x750 so the
 // box is reserved before the bytes land, and it is served from
@@ -17,6 +18,26 @@ import type { School } from '@/types/api';
 // the signed-out visitor who is looking at it.
 import signInIllustration from '@/assets/images/sign-in-illustration.png';
 import { CenteredShell } from '@/components/layout/CenteredShell';
+
+/**
+ * The spinner card, shared by the Suspense boundary below and by the form
+ * itself while the session probe is in flight.
+ *
+ * It MUST be one component, not two copies: `useQuery` does not suspend, so
+ * the Suspense fallback will not re-show for the probe, and the
+ * anti-layout-shift height contract documented at the boundary has to hold
+ * for both states or the illustration jumps.
+ */
+function SignInFormFallback() {
+  return (
+    <div
+      data-testid="sign-in-loading"
+      className="flex min-h-[31rem] items-center justify-center rounded-2xl border border-border/60 bg-card p-6 shadow-sm"
+    >
+      <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+    </div>
+  );
+}
 
 /**
  * The form only -- no page chrome.
@@ -30,7 +51,69 @@ import { CenteredShell } from '@/components/layout/CenteredShell';
 function SignInForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const nextPath = searchParams.get('next') ?? '/';
+  const queryClient = useQueryClient();
+  // Sanitised at the boundary, so BOTH consumers below -- the bounce and the
+  // post-login push -- are safe by construction. `next` arrives from a query
+  // string and used to be pushed into the router verbatim.
+  const nextParam = searchParams.get('next');
+  const nextPath = safeNextPath(nextParam);
+
+  /**
+   * Is there already a live session?
+   *
+   * Telegram deep links point at /home, and a browser that does not send the
+   * cookie on that first hop gets bounced here -- so a signed-in parent was
+   * being asked for credentials they did not need to retype. /auth/ is in
+   * middleware's PUBLIC_PATHS, so nothing upstream of this component checks.
+   *
+   * Why the check cannot simply move to the edge: `mashov_session` is set
+   * `sameSite: 'strict'` (`auth.controller.ts:90`), so a top-level navigation
+   * STARTED BY Telegram is cross-site and carries no cookie at all --
+   * middleware is blind on exactly the request that matters, and bounces a
+   * validly signed-in parent here regardless. This probe is an XHR issued by a
+   * document already on our origin, so it is same-site and does carry it.
+   *
+   * Probing the real endpoint rather than the cookie in middleware is also
+   * what makes this loop-free: the answer is the session's actual validity, so a
+   * stale-but-present cookie renders the form instead of ping-ponging
+   * /auth/sign-in -> /home -> /auth/sign-in.
+   *
+   * Gated on `next` being PRESENT, which is load-bearing rather than an
+   * optimisation. `middleware.ts:81` is the only thing in the system that ever
+   * appends `next` -- every in-app navigation here (`useAuth`'s sign-out and
+   * its 401 handler, `MorePageClient`'s sign-out and disconnect-all,
+   * `handle401Redirect`) pushes a BARE /auth/sign-in. So `next` present means
+   * "something sent me here to resume a journey", and absent means "I just
+   * left the app". Without the gate, a sign-out whose DELETE failed --
+   * `useSignOut` redirects here on error anyway, with the cookie possibly
+   * still live -- would read 200 and throw the parent straight back in: an app
+   * that cannot be signed out of.
+   *
+   * A distinct key, NOT ['me']: `useMe()` is typed `AppUser` and four pages
+   * consume it, so writing `null` there would hand them a null user. Seeding
+   * ['me'] on success only (below) is safe, and saves the destination a round
+   * trip.
+   */
+  const session = useQuery({
+    queryKey: ['sign-in-session-probe'],
+    queryFn: getMeOrNull,
+    enabled: nextParam !== null,
+    // Not optional: `providers.tsx` sets a global `retry: 2` with a 1s/2s
+    // backoff, so a signed-out parent would watch the spinner for 3s before
+    // the form appeared.
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+  });
+
+  useEffect(() => {
+    if (!session.data) return;
+    queryClient.setQueryData(['me'], session.data);
+    // `replace`, not `push`: this page must not sit in history, or Back from
+    // the destination returns here and bounces forward again.
+    router.replace(nextPath);
+  }, [session.data, nextPath, router, queryClient]);
 
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
   const [username, setUsername] = useState('');
@@ -79,7 +162,7 @@ function SignInForm() {
       if (data.isFirstLogin) {
         router.push('/auth/syncing');
       } else {
-        router.push(nextPath.startsWith('/auth') ? '/' : nextPath);
+        router.push(nextPath);
       }
     },
     onError: (err) => {
@@ -166,6 +249,18 @@ function SignInForm() {
   }
 
   const pending = loginMutation.isPending;
+
+  // The `nextParam` term is NOT redundant: a disabled react-query sits at
+  // `status: 'pending'` with `fetchStatus: 'idle'` forever, so `isPending`
+  // alone would spin for every parent who arrives without `next` -- which is
+  // all of them, bar a deep link.
+  //
+  // `session.data` stays in the condition so the form never flashes during the
+  // `replace` above. Any error -- 401, a network failure, the 4s timeout --
+  // leaves `isPending` false and `data` undefined, so the form renders: there
+  // is no path to a stuck spinner.
+  const bouncing = nextParam !== null && (session.isPending || session.data != null);
+  if (bouncing) return <SignInFormFallback />;
 
   return (
 <form
@@ -307,13 +402,7 @@ export default function SignInPage() {
           passwordless variants differ in height, but reaching one takes a
           click, by which point hydration is long done.
         */}
-        <Suspense
-          fallback={
-            <div className="flex min-h-[31rem] items-center justify-center rounded-2xl border border-border/60 bg-card p-6 shadow-sm">
-              <div className="h-8 w-8 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
-            </div>
-          }
-        >
+        <Suspense fallback={<SignInFormFallback />}>
           <SignInForm />
         </Suspense>
       </div>

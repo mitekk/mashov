@@ -1,4 +1,4 @@
-import { apiFetch } from './client';
+import { ApiError, apiFetch } from './client';
 import type {
   AppUser,
   School,
@@ -30,14 +30,42 @@ export function signOut(): Promise<{ ok: true }> {
   return apiFetch<{ ok: true }>('/auth/session', { method: 'DELETE' });
 }
 
-export async function getMe(): Promise<AppUser> {
-  const response = await apiFetch<AppUser>('/auth/me');
-  // Same reason as `fetchProfile`'s `children`: a backend without the field
-  // yet must render a header with no count, not `undefined ילדים`.
+// Same reason as `fetchProfile`'s `children`: a backend without the field
+// yet must render a header with no count, not `undefined ילדים`.
+function normalizeUser(response: AppUser): AppUser {
   return {
     ...response,
     childrenCount: typeof response.childrenCount === 'number' ? response.childrenCount : 0,
   };
+}
+
+export async function getMe(): Promise<AppUser> {
+  return normalizeUser(await apiFetch<AppUser>('/auth/me'));
+}
+
+/**
+ * 200 -> the signed-in user, 401 -> null. Never bounces the browser; see
+ * `treat401AsAnswer`. Used only by the sign-in page, which has to be able to
+ * ask "is there already a session?" from a page the global 401 handler
+ * redirects TO.
+ *
+ * The 4s budget is deliberately far below the proxy's own 15s
+ * (`PROXY_TIMEOUT_MS`): a parent on a bad connection must get the form, not
+ * stare at a spinner for fifteen seconds. A timeout is treated as "no
+ * session", which costs them nothing but one wasted bounce.
+ */
+export async function getMeOrNull(): Promise<AppUser | null> {
+  try {
+    return normalizeUser(
+      await apiFetch<AppUser>('/auth/me', {
+        treat401AsAnswer: true,
+        signal: AbortSignal.timeout(4000),
+      }),
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
+  }
 }
 
 // ─── In-app Mashov auth: recovery, MFA ─────────────────────────────────────

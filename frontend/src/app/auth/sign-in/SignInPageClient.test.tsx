@@ -10,16 +10,24 @@ import { AUTH_ERROR_COPY } from '@/lib/authErrors';
 import SignInPageClient from './SignInPageClient';
 
 const push = vi.fn();
+const replace = vi.fn();
+// Parameterised so a test can supply `?next=...`. Reset to '' in `beforeEach`,
+// which is what keeps every pre-existing test on its original no-`next` path.
+const nav = vi.hoisted(() => ({ search: '' }));
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push, replace: vi.fn(), back: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(''),
+  useRouter: () => ({ push, replace, back: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(nav.search),
 }));
 
 const getSchools = vi.fn();
 const login = vi.fn();
+const getMeOrNull = vi.fn();
+// The factory is partial, so an export missing from it imports as `undefined`
+// and throws inside the queryFn. `getMeOrNull` has to be listed here.
 vi.mock('@/api/auth', () => ({
   getSchools: (...args: unknown[]) => getSchools(...args),
   login: (...args: unknown[]) => login(...args),
+  getMeOrNull: (...args: unknown[]) => getMeOrNull(...args),
 }));
 
 const SCHOOL = { semel: 482273, name: 'תיכון הרצוג', years: [2027] };
@@ -28,11 +36,14 @@ function renderPage() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={client}>
-      <SignInPageClient />
-    </QueryClientProvider>,
-  );
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>
+        <SignInPageClient />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 async function submitSignIn() {
@@ -59,6 +70,8 @@ function rejectWith(status: number, code: string, extra: Record<string, unknown>
 beforeEach(() => {
   vi.clearAllMocks();
   getSchools.mockResolvedValue([SCHOOL]);
+  getMeOrNull.mockResolvedValue(null);
+  nav.search = '';
   localStorage.clear();
 });
 
@@ -350,5 +363,114 @@ describe('SignInPageClient has no passwordless sign-in', () => {
     fireEvent.submit(screen.getByTestId('sign-in-submit'));
 
     await waitFor(() => expect(login).toHaveBeenCalled());
+  });
+});
+
+
+/**
+ * Skipping sign-in when a session already exists.
+ *
+ * Telegram deep links point at /home, and a browser that does not send the
+ * cookie on that first hop is bounced here by middleware with `?next=/home` --
+ * so a signed-in parent was being asked to retype credentials they did not
+ * need. These tests pin the bounce, the gate that keeps it off every other
+ * path to this page, and the open redirect that the bounce would otherwise
+ * make reachable before authentication.
+ */
+describe('SignInPageClient existing-session bounce', () => {
+  const MOCK_USER = {
+    mashovUserId: 'u-1',
+    username: 'parent',
+    displayName: 'Parent',
+    schools: [],
+    childrenCount: 2,
+  };
+
+  it('renders the form when the probe says there is no session', async () => {
+    nav.search = 'next=%2Fhome';
+    getMeOrNull.mockResolvedValue(null);
+    renderPage();
+
+    expect(await screen.findByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('goes straight to next, without showing the form, when a session exists', async () => {
+    nav.search = 'next=%2Fhome';
+    getMeOrNull.mockResolvedValue(MOCK_USER);
+    renderPage();
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/home'));
+    expect(screen.queryByTestId('sign-in-submit')).toBeNull();
+    // Reused, not re-created: `useQuery` does not suspend, so the Suspense
+    // fallback does not re-show for the probe and the form would otherwise
+    // flash at its own height.
+    expect(screen.getByTestId('sign-in-loading')).toBeInTheDocument();
+  });
+
+  it('refuses to bounce off-site, which is now reachable before authentication', async () => {
+    nav.search = 'next=https%3A%2F%2Fevil.com';
+    getMeOrNull.mockResolvedValue(MOCK_USER);
+    renderPage();
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/'));
+    expect(String(replace.mock.calls[0][0])).not.toContain('evil.com');
+  });
+
+  it('shows the form when the probe fails outright', async () => {
+    // A network failure or the 4s timeout. There is no path to a stuck
+    // spinner.
+    nav.search = 'next=%2Fhome';
+    getMeOrNull.mockRejectedValue(new Error('network down'));
+    renderPage();
+
+    expect(await screen.findByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('does not probe at all when there is no next', async () => {
+    // The gate, pinned. `next` is set ONLY by middleware; every in-app
+    // navigation here -- sign-out included -- arrives bare. A sign-out whose
+    // DELETE failed must not be read as a live session and bounced back into
+    // the app.
+    nav.search = '';
+    getMeOrNull.mockResolvedValue(MOCK_USER);
+    renderPage();
+
+    expect(await screen.findByTestId('sign-in-submit')).toBeInTheDocument();
+    expect(getMeOrNull).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('seeds the user cache so the destination renders without a refetch', async () => {
+    nav.search = 'next=%2Fhome';
+    getMeOrNull.mockResolvedValue(MOCK_USER);
+    const { client } = renderPage();
+
+    await waitFor(() => expect(replace).toHaveBeenCalled());
+    expect(client.getQueryData(['me'])).toEqual(MOCK_USER);
+  });
+
+  it('never writes a null user into the key four pages read', async () => {
+    // `useMe` is typed `AppUser`; a null there is `status: 'success'` with
+    // `data === null`, which consumers would read as a valid user.
+    nav.search = 'next=%2Fhome';
+    getMeOrNull.mockResolvedValue(null);
+    const { client } = renderPage();
+
+    await screen.findByTestId('sign-in-submit');
+    expect(client.getQueryData(['me'])).toBeUndefined();
+  });
+
+  it('does not push an off-site next after a successful login either', async () => {
+    // The pre-existing open redirect: `router.push` took `next` verbatim, and
+    // only `/auth*` was filtered.
+    nav.search = 'next=%2F%2Fevil.com';
+    getMeOrNull.mockResolvedValue(null);
+    login.mockResolvedValue({ ok: true, isFirstLogin: false });
+    renderPage();
+    await submitSignIn();
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/'));
   });
 });
