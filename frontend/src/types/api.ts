@@ -837,8 +837,17 @@ export type SyncStatusPhase =
   | 'unknown';
 
 export interface SyncTaskProgress {
+  /** The camelCase name `SyncService.buildTasks` uses. */
   task: string;
   status: 'running' | 'success' | 'failed';
+  /**
+   * The `sync_run.source` base name this task writes, which is how `/more`
+   * keys its rows. Mapped on the backend (`sync.controller.ts`) from the
+   * camelCase `task` via `policyForTask`, because the two naming conventions
+   * are different strings for the same thing. Optional: an older backend
+   * does not send it.
+   */
+  source?: string;
 }
 
 export interface SyncStatus {

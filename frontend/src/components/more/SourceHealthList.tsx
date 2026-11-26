@@ -1,15 +1,34 @@
 import React from 'react';
-import { CheckCircle, XCircle, AlertCircle, Clock } from 'lucide-react';
+import { CheckCircle, XCircle, AlertCircle, Clock, Loader2 } from 'lucide-react';
 import type { SourceHealth, SourceStatus } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
 
 interface SourceHealthListProps {
   sources?: SourceHealth[];
+  /**
+   * The base source ids currently being fetched, from `GET /sync/status`.
+   * A row in this set spins instead of reporting the status of the run
+   * before the one in flight.
+   */
+  syncingSources?: Set<string>;
 }
 
+/**
+ * Hebrew name per `sync_run.source` base name.
+ *
+ * Every id in `backend/src/sync/source-policy.ts`'s `SOURCE_POLICY` needs an
+ * entry here: the fallback renders the raw English id, which is what put six
+ * of them on screen in English. `SourceHealthList.test.tsx` pins the full id
+ * list against that table.
+ *
+ * `notifications` is deliberately absent, matching `source-policy.ts` — the
+ * source no longer exists.
+ *
+ * Wording is shared with `auth/syncing/SyncingPageClient.tsx`'s `TASK_LABELS`
+ * so the two screens name the same thing the same way.
+ */
 const SOURCE_LABELS: Record<string, string> = {
-  notifications: 'התראות',
   mail_counts: 'ספירת הודעות',
   mail_inbox: 'תיבת דואר נכנס',
   homework: 'שיעורי בית',
@@ -21,7 +40,29 @@ const SOURCE_LABELS: Record<string, string> = {
   achvas: 'קודי התנהגות',
   user_details: 'פרטי משתמש',
   students: 'רשימת תלמידים',
+  releases: 'אישורי יציאה',
+  // The one camelCase id in the table, and it must stay camelCase: existing
+  // `sync_run` rows already carry it.
+  schoolActivities: 'פעילויות בית הספר',
+  timetable: 'מערכת שעות',
+  bells: 'לוח זמנים',
+  daily_behave: 'נוכחות יומית',
+  out_behave: 'יציאות מהשיעור',
 };
+
+/**
+ * `every connection failed for <studentGuid> (tried N): <per-connection causes>`
+ * — the template ten per-student tasks share. Matching it does two things: it
+ * keeps a raw `studentGuid` out of the rendered DOM (the privacy edge
+ * `settings.service.ts` flags), and it replaces a long LTR string that Tailwind
+ * `truncate` clips from the visually-wrong end inside this RTL document.
+ */
+const CONNECTION_FAILURE_RE = /^every connection failed for\b/i;
+
+function errorSummary(message: string): string {
+  if (CONNECTION_FAILURE_RE.test(message)) return 'לא ניתן היה לגשת לנתוני התלמיד';
+  return 'הסנכרון נכשל';
+}
 
 const STATUS_PRIORITY: Record<SourceStatus, number> = {
   fresh: 0,
@@ -154,42 +195,62 @@ function normalizeSources(sources: SourceHealth[]): SourceHealth[] {
     });
 }
 
-export function SourceHealthList({ sources }: SourceHealthListProps) {
+export function SourceHealthList({ sources, syncingSources }: SourceHealthListProps) {
   const safeSources = normalizeSources(sources ?? []);
 
   return (
     <div data-testid="source-health-list" className="card-base divide-y divide-border">
-      {safeSources.map((source) => (
-        <div key={source.source} className="flex items-center gap-3 px-4 py-3">
-          <StatusIcon status={source.status} />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-foreground">
-              {SOURCE_LABELS[source.source] ?? source.source}
-            </p>
-            {source.lastErrorMessage && (
-              <p className="text-xs text-destructive truncate mt-0.5">
-                {source.lastErrorMessage}
-              </p>
+      {safeSources.map((source) => {
+        const isSyncing = syncingSources?.has(source.source) ?? false;
+
+        return (
+          <div key={source.source} className="flex items-center gap-3 px-4 py-3">
+            {isSyncing ? (
+              <Loader2
+                data-testid={`source-syncing-${source.source}`}
+                aria-hidden
+                className="h-4 w-4 shrink-0 animate-spin text-muted-foreground"
+              />
+            ) : (
+              <StatusIcon status={source.status} />
             )}
-          </div>
-          <div className="text-end flex-shrink-0">
-            <p className={cn(
-              'text-xs font-medium',
-              source.status === 'fresh' && 'text-positive',
-              source.status === 'stale' && 'text-attention',
-              source.status === 'failed' && 'text-destructive',
-              source.status === 'never_synced' && 'text-muted-foreground',
-            )}>
-              {statusLabel(source.status)}
-            </p>
-            {source.lastSuccessAt && (
-              <p className="text-xs text-muted-foreground">
-                {formatRelativeHe(source.lastSuccessAt)}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                {SOURCE_LABELS[source.source] ?? source.source}
               </p>
-            )}
+              {/* Suppressed while the row is syncing: the error describes the
+                  run BEFORE the one in flight. */}
+              {source.lastErrorMessage && !isSyncing && (
+                <p
+                  className="text-xs text-destructive truncate mt-0.5"
+                  // The raw technical string stays reachable for debugging
+                  // without ever being rendered as text.
+                  title={source.lastErrorMessage}
+                >
+                  {errorSummary(source.lastErrorMessage)}
+                </p>
+              )}
+            </div>
+            <div className="text-end flex-shrink-0">
+              <p className={cn(
+                'text-xs font-medium',
+                source.status === 'fresh' && 'text-positive',
+                source.status === 'stale' && 'text-attention',
+                source.status === 'failed' && 'text-destructive',
+                source.status === 'never_synced' && 'text-muted-foreground',
+                isSyncing && 'text-muted-foreground',
+              )}>
+                {isSyncing ? 'מסנכרן…' : statusLabel(source.status)}
+              </p>
+              {source.lastSuccessAt && (
+                <p className="text-xs text-muted-foreground">
+                  {formatRelativeHe(source.lastSuccessAt)}
+                </p>
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

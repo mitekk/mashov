@@ -65,6 +65,18 @@ describe('SOURCE_POLICY', () => {
     expect(policyForSource('notifications')).toBeUndefined();
   });
 
+  // A tripwire, not a fact worth asserting for its own sake. `/more` renders
+  // a Hebrew name per source from `SOURCE_LABELS` in
+  // `frontend/src/components/more/SourceHealthList.tsx`, whose fallback is the
+  // raw English id — and six ids once reached production that way, because
+  // nothing connected adding a source here to naming it there. The frontend
+  // cannot import this file, so this count is the link: a new source fails
+  // here until whoever adds it has also added the label and the id to
+  // `SourceHealthList.test.tsx`'s `POLICY_SOURCES`.
+  it('has the source count the frontend label table is written against', () => {
+    expect(SOURCE_POLICY).toHaveLength(17);
+  });
+
   it('has no duplicate source or task keys', () => {
     expect(new Set(SOURCE_POLICY.map((p) => p.source)).size).toBe(SOURCE_POLICY.length);
     expect(new Set(SOURCE_POLICY.map((p) => p.task)).size).toBe(SOURCE_POLICY.length);

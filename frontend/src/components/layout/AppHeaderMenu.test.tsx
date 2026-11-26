@@ -182,4 +182,19 @@ describe('AppHeaderMenu', () => {
     fireEvent.click(item);
     expect(mutate).not.toHaveBeenCalled();
   });
+
+  // Radix's modal mode wraps the content in `react-remove-scroll`, which sets
+  // `body { overflow: hidden !important; margin-right: <gap>px }`. Under
+  // `dir="rtl"` the scrollbar is on the LEFT, so removing it slides the page
+  // left while the compensation lands on the right -- the shift reported on
+  // the live app. The `overflow: hidden` also defeats `globals.css`'s
+  // deliberate `overflow-x: clip`, which keeps `position: sticky` working.
+  it('does not lock body scroll while the menu is open', () => {
+    renderMenu();
+    openMenu();
+
+    expect(screen.getByTestId('header-menu-settings')).toBeTruthy();
+    expect(document.body.style.overflow).not.toBe('hidden');
+    expect(document.body.style.marginRight).toBe('');
+  });
 });

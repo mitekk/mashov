@@ -5,6 +5,37 @@ import { SourceHealthList } from './SourceHealthList';
 
 const ONE_WEEK_MINUTES = 7 * 24 * 60;
 
+/** What an unrecognised backend message is summarised to. */
+const GENERIC_ERROR = 'הסנכרון נכשל';
+
+/**
+ * Every `sync_run.source` base name in `SOURCE_POLICY`, hardcoded.
+ *
+ * Deliberately a copy rather than an import: the frontend cannot reach
+ * `backend/src/sync/source-policy.ts`, and six of these ids once rendered as
+ * raw English on `/more` because the label table had silently fallen behind.
+ * A new source added there fails this test until it is named in Hebrew.
+ */
+const POLICY_SOURCES = [
+  'students',
+  'homework',
+  'behavior',
+  'mail_inbox',
+  'mail_counts',
+  'achvas',
+  'releases',
+  'schoolActivities',
+  'grades',
+  'message_board',
+  'timetable',
+  'bells',
+  'groups',
+  'lessons_count',
+  'user_details',
+  'daily_behave',
+  'out_behave',
+] as const;
+
 function entry(overrides: Partial<SourceHealth> & Pick<SourceHealth, 'source'>): SourceHealth {
   return {
     status: 'fresh',
@@ -61,7 +92,7 @@ describe('SourceHealthList', () => {
     );
 
     expect(screen.getByText('שגיאה')).toBeTruthy();
-    expect(errorTexts()).toEqual(['upstream 500']);
+    expect(errorTexts()).toEqual([GENERIC_ERROR]);
   });
 
   // Not suppressed on `status !== 'failed'`: a stale-but-failing source is the
@@ -81,7 +112,7 @@ describe('SourceHealthList', () => {
     );
 
     expect(screen.getByText('ישן')).toBeTruthy();
-    expect(errorTexts()).toEqual(['timed out']);
+    expect(errorTexts()).toEqual([GENERIC_ERROR]);
   });
 
   it('picks the error from the worst-status entry that has one', () => {
@@ -99,6 +130,88 @@ describe('SourceHealthList', () => {
       />,
     );
 
-    expect(errorTexts()).toEqual(['failed error']);
+    // Both entries map to the same summary, so the title attribute is what
+    // says WHICH run it came from.
+    expect(errorTexts()).toEqual([GENERIC_ERROR]);
+    expect(
+      document.querySelector('.text-destructive.truncate')?.getAttribute('title'),
+    ).toBe('failed error');
+  });
+
+  it('names every source in SOURCE_POLICY in Hebrew', () => {
+    render(
+      <SourceHealthList sources={POLICY_SOURCES.map((source) => entry({ source }))} />,
+    );
+
+    for (const source of POLICY_SOURCES) {
+      // The fallback renders the raw id, so finding the id on screen IS the
+      // failure this asserts against.
+      expect(screen.queryByText(source)).toBeNull();
+    }
+    // The six that were missing, by their expected wording.
+    expect(screen.getByText('אישורי יציאה')).toBeTruthy();
+    expect(screen.getByText('פעילויות בית הספר')).toBeTruthy();
+    expect(screen.getByText('מערכת שעות')).toBeTruthy();
+    expect(screen.getByText('לוח זמנים')).toBeTruthy();
+    expect(screen.getByText('נוכחות יומית')).toBeTruthy();
+    expect(screen.getByText('יציאות מהשיעור')).toBeTruthy();
+  });
+
+  it('spins a row named in syncingSources and says מסנכרן', () => {
+    render(
+      <SourceHealthList
+        sources={[entry({ source: 'message_board' }), entry({ source: 'grades' })]}
+        syncingSources={new Set(['message_board'])}
+      />,
+    );
+
+    expect(screen.getByTestId('source-syncing-message_board')).toBeTruthy();
+    expect(screen.queryByTestId('source-syncing-grades')).toBeNull();
+    expect(screen.getByText('מסנכרן…')).toBeTruthy();
+    // The other row still reports its own status.
+    expect(screen.getByText('תקין')).toBeTruthy();
+  });
+
+  it('suppresses the error line while a row is syncing', () => {
+    render(
+      <SourceHealthList
+        sources={[
+          entry({
+            source: 'message_board',
+            status: 'stale',
+            lastErrorMessage: 'every connection failed for abc (tried 2): 403',
+          }),
+        ]}
+        syncingSources={new Set(['message_board'])}
+      />,
+    );
+
+    expect(errorTexts()).toEqual([]);
+  });
+
+  // The row reported on /more: a leaked studentGuid plus `(tried 2)`, clipped
+  // from the visually-wrong end because an LTR run inside this RTL document is
+  // bidi-reordered before `truncate` gets to it.
+  it('summarises the every-connection-failed template and hides the guid', () => {
+    render(
+      <SourceHealthList
+        sources={[
+          entry({
+            source: 'message_board',
+            status: 'stale',
+            lastErrorMessage:
+              'every connection failed for 1a2b3c4d-dead-beef-0000-999999999999 (tried 2): 403 Forbidden; 404 Not Found',
+          }),
+        ]}
+      />,
+    );
+
+    expect(errorTexts()).toEqual(['לא ניתן היה לגשת לנתוני התלמיד']);
+    expect(document.body.textContent).not.toContain('1a2b3c4d-dead-beef-0000-999999999999');
+    expect(document.body.textContent).not.toContain('tried 2');
+    // Still reachable for debugging.
+    expect(
+      document.querySelector('.text-destructive.truncate')?.getAttribute('title'),
+    ).toContain('1a2b3c4d-dead-beef-0000-999999999999');
   });
 });

@@ -62,7 +62,30 @@ export function AppHeaderMenu({
   return (
     // `dir` belongs on the root: it is what makes the arrow keys and the
     // content's alignment follow the writing direction.
-    <DropdownMenuPrimitive.Root dir="rtl">
+    //
+    // `modal={false}`, which is NOT Radix's default: modal mode wraps the
+    // content in `react-remove-scroll`, which sets
+    // `body { overflow: hidden !important; margin-right: <scrollbar>px }`.
+    // The document is `dir="rtl"` (`app/layout.tsx`), so the scrollbar lives
+    // on the LEFT -- removing it slides the page left while the compensating
+    // gap is added on the right, so the shift is double-counted and never
+    // compensated. The `overflow: hidden` also overrides the deliberate
+    // `overflow-x: clip` in `globals.css`, which exists so `position: sticky`
+    // descendants keep working. A header menu has no reason to lock scroll at
+    // all; this takes `react-remove-scroll` out of the tree entirely.
+    // Outside pointer events are no longer blocked, which is the wanted
+    // behaviour here -- clicking the page closes the menu and reaches the page.
+    //
+    // The genuinely modal consumers (`ConfirmDialog`, `FeedbackDialog`,
+    // `ReleasesDialog`, `SchoolActivitiesDialog`, `AttachmentViewer`,
+    // `ui/Select`) keep modal mode: they SHOULD lock scroll. A
+    // `scrollbar-gutter: stable` on `html` would stop the same RTL gutter
+    // double-count reaching them, and was tried -- but it reserves the gutter
+    // permanently, which narrows the layout by the scrollbar width and so
+    // breaks every "full-bleed element is exactly viewport-wide" assertion in
+    // `tests/e2e/responsive.spec.ts` (6px short at tablet and desktop). Not
+    // worth a visible layout cost for a shift nobody has reported.
+    <DropdownMenuPrimitive.Root dir="rtl" modal={false}>
       <DropdownMenuPrimitive.Trigger
         data-testid="header-profile-trigger"
         aria-label={`${displayName ?? 'פרופיל'}${suffix} — תפריט`}

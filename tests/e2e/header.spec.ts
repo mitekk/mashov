@@ -430,6 +430,48 @@ test.describe('app header', () => {
       .toBe(true);
   });
 
+  // The reported defect: clicking the avatar shifted the whole page sideways.
+  // Radix's dropdown defaults to `modal`, which wraps its content in
+  // `react-remove-scroll` -- `body { overflow: hidden !important;
+  // margin-right: <scrollbar>px }`. This document is `dir="rtl"`, so the
+  // scrollbar is on the LEFT: removing it slides the content left while the
+  // compensation is added on the right, doubling the shift instead of
+  // cancelling it. Only a real engine can show this, because it is a measured
+  // scrollbar width and a computed `body` style -- jsdom has neither.
+  test('opening the header menu does not move the page sideways', async ({ page }) => {
+    await page.goto('/home');
+    await expect(page.getByTestId('header-profile-trigger')).toBeVisible();
+
+    // A stable landmark INSIDE the document flow, measured in viewport
+    // coordinates. The header itself is sticky and transformed, so its own box
+    // is the one thing that would not register the shift.
+    const title = page.getByTestId('app-header-title');
+    const before = await title.boundingBox();
+    expect(before, 'app-header-title has no box').not.toBeNull();
+
+    await openHeaderMenu(page);
+    await expect(page.getByTestId('header-menu-settings')).toBeVisible();
+
+    const after = await title.boundingBox();
+    expect(after, 'app-header-title has no box while the menu is open').not.toBeNull();
+    expect(Math.abs(after!.x - before!.x), 'page shifted horizontally').toBeLessThanOrEqual(1);
+
+    // The direct cause, and the half that actually catches the regression:
+    // this container's Chromium reports a zero-width scrollbar, so there is no
+    // gutter for the lock to reclaim and the geometry above holds even unfixed.
+    // The geometry assertion stays because it is the symptom a user reported
+    // and it WILL fire wherever the scrollbar has width. Asserted separately so
+    // a failure says which half broke.
+    // `overflow-x: clip` on body is deliberate (`globals.css`) and keeps
+    // `position: sticky` descendants working; the scroll lock overrode it.
+    const bodyStyle = await page.evaluate(() => ({
+      overflow: getComputedStyle(document.body).overflow,
+      marginRight: document.body.style.marginRight,
+    }));
+    expect(bodyStyle.overflow).not.toContain('hidden');
+    expect(bodyStyle.marginRight).toBe('');
+  });
+
   test('is absent from the centred shell, which has no household to act on', async ({ page }) => {
     await page.goto('/more/telegram');
     await expect(page.getByTestId('telegram-setup-page')).toBeVisible();
