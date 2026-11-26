@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AppShell } from '@/components/layout/AppShell';
@@ -12,7 +12,8 @@ import { TelegramCard } from '@/components/more/TelegramCard';
 import { LoadingState } from '@/components/ui/LoadingState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { ConfirmDialog } from '@/components/more/ConfirmDialog';
-import { useSourceHealth, useProfile } from '@/hooks/useSettings';
+import { useSourceHealth, useProfile, useSyncStatus } from '@/hooks/useSettings';
+import { useSyncRefresh } from '@/hooks/useDashboard';
 import { useSchoolLinks } from '@/hooks/useSchoolLinks';
 import { useChildren } from '@/hooks/useChildren';
 import {
@@ -42,6 +43,45 @@ export default function MorePage() {
   const queryClient = useQueryClient();
 
   const { data: health, isLoading: healthLoading, isError: healthError } = useSourceHealth();
+
+  // Which source rows should spin. A refresh can be started from anywhere --
+  // the header menu is the usual place -- so the trigger is the cross-component
+  // `isPending` from `useSyncRefresh`, and `/sync/status` is what turns that
+  // single boolean into per-row detail.
+  const sync = useSyncRefresh();
+  const [syncRunning, setSyncRunning] = useState(false);
+  const { data: syncStatus, isError: syncStatusError } = useSyncStatus(
+    sync.isPending || syncRunning,
+  );
+  // The poll outlives the mutation: `POST /sync/refresh` returns as soon as the
+  // work is queued, so without this the rows would stop spinning while the
+  // fetches were still running.
+  const statusPhase = syncStatus?.phase;
+  useEffect(() => {
+    setSyncRunning(statusPhase === 'running');
+  }, [statusPhase]);
+
+  /**
+   * The base source ids to spin.
+   *
+   * The fallback matters: when `/sync/status` is unreachable, or answers
+   * `unknown` because Redis could not be read, a refresh IS in flight and we
+   * simply cannot say which part of it. Spinning every row is honest;
+   * spinning none makes a working feature look broken.
+   */
+  const syncingSources = useMemo((): Set<string> | undefined => {
+    if (!sync.isPending && statusPhase !== 'running') return undefined;
+
+    const running = (syncStatus?.tasks ?? [])
+      .filter((task) => task.status === 'running')
+      .map((task) => task.source ?? task.task);
+
+    if (!syncStatusError && statusPhase === 'running' && running.length > 0) {
+      return new Set(running);
+    }
+    // No per-task detail to go on -- spin everything we are showing.
+    return new Set((health?.sources ?? []).map((entry) => entry.source.split(':')[0]));
+  }, [sync.isPending, statusPhase, syncStatus, syncStatusError, health]);
   const { data: profiles } = useProfile();
   const { data: me } = useMe();
   const { data: schoolLinks } = useSchoolLinks();
@@ -295,7 +335,7 @@ export default function MorePage() {
               {health && (
                 <div className="space-y-3">
                   <ContentFreshnessCard contentFreshness={health.contentFreshness} />
-                  <SourceHealthList sources={health.sources} />
+                  <SourceHealthList sources={health.sources} syncingSources={syncingSources} />
                 </div>
               )}
             </section>

@@ -16,6 +16,20 @@ import type { ManualSyncRefreshResponse, ManualSyncStatus } from './sync.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { RefreshProgressService } from './refresh-progress.service';
 import type { RefreshEnvelope, RefreshTaskProgress } from './refresh-progress.service';
+import { policyForTask } from './source-policy';
+
+/**
+ * One task's progress, plus the `sync_run.source` base name it writes.
+ *
+ * The envelope stores only the camelCase `task`, while `/more` keys its rows
+ * on the snake_case `source`. `source-policy.ts` states the rule: a map keyed
+ * on one and read by the other silently matches nothing. The translation
+ * happens here, where `policyForTask` already lives, rather than in a second
+ * copy of the table in the frontend.
+ */
+export interface SyncTaskStatus extends RefreshTaskProgress {
+  source: string;
+}
 
 /**
  * What the client is told about the refresh it is waiting on.
@@ -58,7 +72,7 @@ export interface SyncStatusResponse {
   tasksSettled: number;
   tasksFailed: number;
   currentTask: string | null;
-  tasks: RefreshTaskProgress[];
+  tasks: SyncTaskStatus[];
   /**
    * Per-school breakdown. One entry per active connection, so the first-login
    * screen can name the school it is waiting on rather than showing a bar that
@@ -92,6 +106,39 @@ const PHASE_RANK: Record<SyncStatusPhase, number> = {
   failed: 5,
   running: 6,
 };
+
+/** `running` beats a settled status, and a failure beats a success. */
+const TASK_STATUS_RANK: Record<RefreshTaskProgress['status'], number> = {
+  success: 0,
+  failed: 1,
+  running: 2,
+};
+
+/**
+ * One entry per task across every school's envelope.
+ *
+ * With two connections the same task appears twice, and the two are rarely at
+ * the same point: `running` has to win, or a `/more` row would stop spinning
+ * the moment the FIRST school finished while the second was still fetching.
+ */
+function mergeTasks(tasks: RefreshTaskProgress[]): SyncTaskStatus[] {
+  const byTask = new Map<string, SyncTaskStatus>();
+
+  for (const task of tasks) {
+    const existing = byTask.get(task.task);
+    if (existing && TASK_STATUS_RANK[existing.status] >= TASK_STATUS_RANK[task.status]) {
+      continue;
+    }
+    byTask.set(task.task, {
+      ...task,
+      // A task with no policy entry keys its row on its own name: wrong is
+      // better than absent, and `source-policy.spec.ts` pins the table.
+      source: policyForTask(task.task)?.source ?? task.task,
+    });
+  }
+
+  return Array.from(byTask.values());
+}
 
 @Controller('sync')
 export class SyncController {
@@ -360,7 +407,7 @@ export class SyncController {
       currentTask:
         schools.find((school) => school.phase === 'running')?.currentTask ??
         envelopes[0].currentTask,
-      tasks: envelopes.flatMap((envelope) => envelope.tasks),
+      tasks: mergeTasks(envelopes.flatMap((envelope) => envelope.tasks)),
       schools,
     };
   }

@@ -314,6 +314,83 @@ describe('SyncController across two schools', () => {
       expect(status.phase).toBe('success');
     });
 
+    // `/more` keys its rows on the snake_case `sync_run.source` base name
+    // while the envelope stores only the camelCase task name, so the
+    // translation has to happen here -- `source-policy.ts` warns that a map
+    // keyed on one and read by the other matches nothing.
+    it('names the sync_run source of every task', async () => {
+      const { controller } = makeController({
+        ok: true,
+        envelope: makeEnvelope({
+          tasks: [
+            { task: 'messageBoard', status: 'running' },
+            { task: 'mailInbox', status: 'success' },
+            { task: 'schoolActivities', status: 'success' },
+          ],
+        }),
+      });
+
+      const status = await controller.getStatus(REQUEST);
+
+      expect(status.tasks).toEqual([
+        { task: 'messageBoard', status: 'running', source: 'message_board' },
+        { task: 'mailInbox', status: 'success', source: 'mail_inbox' },
+        // The one camelCase source id, which must not be snake_cased.
+        { task: 'schoolActivities', status: 'success', source: 'schoolActivities' },
+      ]);
+    });
+
+    it('falls back to the task name for a task with no policy entry', async () => {
+      const { controller } = makeController({
+        ok: true,
+        envelope: makeEnvelope({ tasks: [{ task: 'somethingNew', status: 'running' }] }),
+      });
+
+      const status = await controller.getStatus(REQUEST);
+
+      expect(status.tasks).toEqual([
+        { task: 'somethingNew', status: 'running', source: 'somethingNew' },
+      ]);
+    });
+
+    // With two connections the same task appears in both envelopes, and
+    // rarely at the same point. `running` has to win, or a `/more` row would
+    // stop spinning the moment the FIRST school finished while the second was
+    // still fetching it.
+    it('merges a duplicated task across schools with running winning', async () => {
+      const { controller } = makeController(
+        (connectionId) => ({
+          ok: true,
+          envelope: makeEnvelope({
+            connectionId,
+            tasks:
+              connectionId === 'conn-a'
+                ? [
+                    { task: 'messageBoard', status: 'success' },
+                    { task: 'grades', status: 'success' },
+                  ]
+                : [
+                    { task: 'messageBoard', status: 'running' },
+                    { task: 'grades', status: 'failed' },
+                  ],
+          }),
+        }),
+        { connections: TWO },
+      );
+
+      const status = await controller.getStatus(REQUEST);
+
+      expect(status.tasks).toHaveLength(2);
+      expect(status.tasks).toEqual(
+        expect.arrayContaining([
+          { task: 'messageBoard', status: 'running', source: 'message_board' },
+          // A failure beats a success too: one school's error is the
+          // household's error.
+          { task: 'grades', status: 'failed', source: 'grades' },
+        ]),
+      );
+    });
+
     it('sums the task counts across schools', async () => {
       const { controller } = makeController(
         (connectionId) => ({
