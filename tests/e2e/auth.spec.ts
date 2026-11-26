@@ -744,8 +744,12 @@ test.describe('Auth — session protection', () => {
     await page.goto('/auth/sign-in?next=https%3A%2F%2Fexample.com');
 
     await expect(page.getByTestId('sign-in-submit')).toBeVisible({ timeout: 15_000 });
+    // Still our origin, still this page. Asserting the URL does not CONTAIN
+    // the off-site host would be unfalsifiable here: the host is in the `next`
+    // query string we arrived with, and staying put is the pass condition.
     expect(page.url()).toContain(BASE_URL);
-    expect(page.url()).not.toContain('example.com');
+    expect(page.url()).toContain('/auth/sign-in');
+    expect(new URL(page.url()).origin).toBe(new URL(BASE_URL).origin);
   });
 
   test('a stale cookie shows the form once, without a reload loop', async ({ page }) => {
