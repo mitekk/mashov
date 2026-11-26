@@ -749,11 +749,20 @@ describe('InboxNotifyService media', () => {
           itemId: 'msg-1',
           fileId: 'file-1',
           fileName: 'אישור הורים.pdf',
-          caption: 'אישור הורים.pdf — יום ספורט ביום חמישי',
+          caption: '📎 אישור הורים.pdf · יום ספורט ביום חמישי',
+          captionParseMode: 'HTML',
         },
       ],
       expect.any(Number),
     );
+  });
+
+  it('sends the notification text as HTML, so the layout renders', async () => {
+    const harness = makeHarness({ messages: [withFile()] });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][2]).toEqual({ parseMode: 'HTML' });
   });
 
   it('names a file it could not send in the text, before sending the text', async () => {

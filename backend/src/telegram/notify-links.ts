@@ -65,19 +65,39 @@ export function childUrl(
   return `${base}/children/${guid}`;
 }
 
+/** The sections the child page routes, mirroring `CHILD_SECTIONS`. */
+export type ChildSection = 'homework' | 'behavior' | 'subjects' | 'grades' | 'notices' | 'timetable';
+
+/** The behaviour list's filter, mirroring `CHILD_BEHAVIOR_FILTERS`. */
+export type ChildBehaviorFilter = 'all' | 'attention' | 'positive' | 'neutral';
+
 /**
- * The notices section of the child's page.
+ * One section of the child's page -- what a section HEADER links to.
  *
- * Board notices have no detail route, so this is as close as the message can
- * get. Both query params are set, in this order, because that is what
- * `buildChildSectionHref` produces and what the page reads back.
+ * Both query params are always set, in this order, because that is what
+ * `buildChildSectionHref` produces and what the page reads back. The behaviour
+ * filter matters for more than tidiness: a praise heading that opened the
+ * attention list would contradict the heading the parent just read.
+ */
+export function childSectionUrl(
+  baseUrl: string | null | undefined,
+  studentGuid: string | null | undefined,
+  section: ChildSection,
+  behavior: ChildBehaviorFilter = 'all',
+): string | null {
+  const child = childUrl(baseUrl, studentGuid);
+  return child === null ? null : `${child}?section=${section}&behavior=${behavior}`;
+}
+
+/**
+ * The notices section. Board notices have no detail route, so a notice's own
+ * line links here too -- as close as the message can get.
  */
 export function boardNoticesUrl(
   baseUrl: string | null | undefined,
   studentGuid: string | null | undefined,
 ): string | null {
-  const child = childUrl(baseUrl, studentGuid);
-  return child === null ? null : `${child}?section=notices&behavior=all`;
+  return childSectionUrl(baseUrl, studentGuid, 'notices');
 }
 
 /** The behaviour note itself. The route and `getBehaviorDetail` both key the DB id. */

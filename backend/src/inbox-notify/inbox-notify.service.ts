@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
+import { escapeTelegramHtml } from '../telegram/telegram-html';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -437,8 +438,10 @@ export class InboxNotifyService {
               fileName: file.fileName,
               // One line, and the subject rather than the body: a caption
               // cannot be chunked, and "which mail is this file from" is the
-              // only thing it has to answer.
-              caption: `${file.fileName} — ${message.subject}`,
+              // only thing it has to answer. Telegram HTML, escaped here --
+              // both the filename and the subject are the school's text.
+              caption: `📎 ${escapeTelegramHtml(file.fileName)} · ${escapeTelegramHtml(message.subject)}`,
+              captionParseMode: 'HTML' as const,
             }))
           : [],
       }));
@@ -510,7 +513,7 @@ export class InboxNotifyService {
         // No media under a summary: it stands in for N messages, and uploading
         // every one of their files would defeat the point of summarizing.
         const text = renderInboxSummary(sendingMessages.length, { publicBaseUrl });
-        await this.telegram.send(chat.address, text);
+        await this.telegram.send(chat.address, text, { parseMode: 'HTML' });
         sentTexts.push(text);
         sentHashes.push(...ownedHashes);
       } else {
@@ -530,7 +533,9 @@ export class InboxNotifyService {
             { publicBaseUrl, unsentFileNames: unsentNames(fetched.items) },
             bodyChars,
           );
-          await this.telegram.send(chat.address, text);
+          // The text is Telegram HTML; the sender owns whether it goes out as
+          // markup and the strip-and-retry if Telegram will not parse it.
+          await this.telegram.send(chat.address, text, { parseMode: 'HTML' });
 
           // Recorded as sent the moment it is sent, not after the loop. A
           // failure on message 3 of 4 used to release the whole batch, so the

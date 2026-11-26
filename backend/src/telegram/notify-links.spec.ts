@@ -1,6 +1,7 @@
 import {
   behaviorItemUrl,
   boardNoticesUrl,
+  childSectionUrl,
   childUrl,
   homeworkItemUrl,
   inboxConversationUrl,
@@ -34,6 +35,28 @@ describe('notify-links', () => {
     expect(childUrl(BASE, GUID)).toBe(`${BASE}/children/${GUID}`);
   });
 
+  it('links a section header to that section of the child page', () => {
+    // Each section header anchors its own link, so the message carries no bare
+    // URL and the parent taps the heading they are reading.
+    expect(childSectionUrl(BASE, GUID, 'homework')).toBe(
+      `${BASE}/children/${GUID}?section=homework&behavior=all`,
+    );
+  });
+
+  it('carries the behaviour filter so the heading matches what opens', () => {
+    // A praise heading that opened the attention list would contradict itself.
+    expect(childSectionUrl(BASE, GUID, 'behavior', 'positive')).toBe(
+      `${BASE}/children/${GUID}?section=behavior&behavior=positive`,
+    );
+    expect(childSectionUrl(BASE, GUID, 'behavior', 'attention')).toBe(
+      `${BASE}/children/${GUID}?section=behavior&behavior=attention`,
+    );
+  });
+
+  it('falls back to the all filter the frontend defaults to', () => {
+    expect(childSectionUrl(BASE, GUID, 'notices')).toBe(boardNoticesUrl(BASE, GUID));
+  });
+
   it('links mail to its conversation', () => {
     expect(inboxConversationUrl(BASE, 'conv-9')).toBe(`${BASE}/inbox/conv-9`);
   });
@@ -46,6 +69,7 @@ describe('notify-links', () => {
       expect(homeworkItemUrl(base, GUID, 'hw-3')).toBeNull();
       expect(boardNoticesUrl(base, GUID)).toBeNull();
       expect(childUrl(base, GUID)).toBeNull();
+      expect(childSectionUrl(base, GUID, 'homework')).toBeNull();
       expect(inboxConversationUrl(base, 'conv-9')).toBeNull();
     });
 
@@ -57,6 +81,7 @@ describe('notify-links', () => {
       expect(homeworkItemUrl(BASE, guid, 'hw-3')).toBeNull();
       expect(boardNoticesUrl(BASE, guid)).toBeNull();
       expect(childUrl(BASE, guid)).toBeNull();
+      expect(childSectionUrl(BASE, guid, 'homework')).toBeNull();
     });
 
     it.each([null, undefined, '', '   ', 'a/b'])('renders no link for an item id of %p', (id) => {
@@ -86,6 +111,7 @@ describe('notify-links', () => {
       behaviorItemUrl(BASE, GUID, 'beh-7'),
       homeworkItemUrl(BASE, GUID, 'hw-3'),
       boardNoticesUrl(BASE, GUID),
+      childSectionUrl(BASE, GUID, 'behavior', 'attention'),
       childUrl(BASE, GUID),
       inboxConversationUrl(BASE, 'conv-9'),
     ].map((url) => url!.slice(BASE.length));

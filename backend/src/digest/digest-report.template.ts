@@ -3,26 +3,68 @@ import {
   DigestBehaviorFact,
   DigestBoardFact,
   DigestHomeworkFact,
-  DigestLines,
   DigestPayload,
+  DigestProse,
   DigestReleaseFact,
+  DigestSectionId,
 } from './digest.types';
+import { clampLine, escapeTelegramHtml } from '../telegram/telegram-html';
+import {
+  ChildBehaviorFilter,
+  ChildSection,
+  behaviorItemUrl,
+  boardNoticesUrl,
+  childSectionUrl,
+  childUrl,
+  homeworkItemUrl,
+} from '../telegram/notify-links';
 
 /**
- * The fixed Hebrew report.
+ * The fixed Hebrew report, as Telegram HTML.
  *
  * The template owns every structural decision -- which sections exist, which
- * appear, and the estimate label -- and the prose inside them is
- * written per section. Hand it `deterministicLines(payload)` instead and the
- * same message renders with no model involved at all.
+ * appear, their order, their emoji markers, the estimate label, the unexcused
+ * marker and the whole consent section -- and the model writes one short
+ * sentence per item plus an optional section intro. Hand it
+ * `deterministicProse(payload)` instead and the same message renders with no
+ * model involved at all.
  *
- * There are deliberately **no item bullets**. The report used to print the
- * prose and then list the same facts underneath, which is the raw record
- * stapled to a message about it. One consequence is worth stating plainly: the
- * prose is now the only place the facts appear, so a section's line has to
- * actually say what happened. That is why `deterministicLines` describes
- * rather than counts, and why `DigestService.linesFor` refuses a blank line
- * for a section that has items.
+ * ## Why there are bullets again
+ *
+ * ADR-0026 removed item bullets, and it was right to: the report printed a
+ * model-written paragraph per section and then listed the same facts
+ * underneath, which is the raw record stapled to a message about it. The
+ * consequence was that the paragraph became the only place the facts appeared,
+ * so the prompt had to order the model to cram every subject, every exact
+ * assignment text, every time and date into one sentence -- warm
+ * conversational prose AND a complete record, two incompatible jobs. That is
+ * what read as unpolished.
+ *
+ * The bullets here are not that list. They ARE the prose, one model-written
+ * line per thing that happened, which is the grain at which a sentence can be
+ * both short and complete. See ADR-0047.
+ *
+ * ## Why the links carry a studentGuid
+ *
+ * They used not to: the one link was `${publicBaseUrl}/home`, identifier-free
+ * because a Telegram chat is forwardable and a guid in someone else's hands
+ * outlives the message. That reasoning was already only half-held -- the inbox
+ * notifier has always linked to `/inbox/<conversationId>` -- and it cost the
+ * parent something on every message: told about an unexcused absence, they
+ * landed on the home page and had to find the child and the note themselves.
+ * So each section header anchors its section and each item line anchors its
+ * own detail page, and `studentGuid` reaches this function through
+ * `RenderReportOptions` rather than through `DigestPayload`, because that
+ * object feeds `buildPrompt` and the PII boundary there is unchanged.
+ *
+ * ## The one invariant that makes HTML safe
+ *
+ * Every tag opens and closes inside one line, and no rendered line approaches
+ * `TELEGRAM_CHUNK_LIMIT`. `chunkTelegramText` cuts at the last blank line,
+ * then the last newline, then hard -- and only the hard cut can land inside a
+ * tag. `clampLine` on every interpolated value is what keeps that cut
+ * unreachable, and `escapeTelegramHtml` is what keeps a teacher's `<` from
+ * being read as one.
  */
 
 /** Israeli date order, read from UTC fields -- every digest date is UTC midnight. */
@@ -32,6 +74,26 @@ export function formatSchoolDate(date: Date): string {
   return `${day}/${month}/${date.getUTCFullYear()}`;
 }
 
+/**
+ * "יום שלישי", and "שבת" without the prefix -- which is how Hebrew says it.
+ *
+ * UTC getters, like `formatSchoolDate`: every digest date is UTC midnight of a
+ * Jerusalem calendar day.
+ */
+const HEBREW_WEEKDAYS = [
+  'יום ראשון',
+  'יום שני',
+  'יום שלישי',
+  'יום רביעי',
+  'יום חמישי',
+  'יום שישי',
+  'שבת',
+];
+
+export function formatHebrewWeekday(date: Date): string {
+  return HEBREW_WEEKDAYS[date.getUTCDay()];
+}
+
 /** "11:30:00" is a column value; a parent reads "11:30". */
 export function formatTimeOfDay(raw: string): string {
   const match = /^(\d{1,2}):(\d{2})/.exec(raw.trim());
@@ -39,174 +101,385 @@ export function formatTimeOfDay(raw: string): string {
   return `${match[1].padStart(2, '0')}:${match[2]}`;
 }
 
+/**
+ * The key one item's line is stored under.
+ *
+ * Namespaced by section rather than by bare item id, because one homework row
+ * is reported twice on the day it is both newly assigned and estimated-due. A
+ * bare id would make those two sections share one sentence, so a line written
+ * about tomorrow would appear under "new homework". The same applies to the
+ * two behaviour sections, which read from one list.
+ *
+ * `buildPrompt`, `deterministicItemLines` and the renderer all go through this
+ * function, which is the point: the refs the model is shown and the refs the
+ * template looks up have to be the same strings, and there is one place that
+ * decides what they are.
+ */
+export function digestItemRef(section: DigestSectionId, id: string): string {
+  return `${section}:${id}`;
+}
+
 /** What the template needs that is neither a fact nor prose. */
 export interface RenderReportOptions {
   /**
-   * Already validated by `resolvePublicBaseUrl`. Null or absent renders no
-   * link line at all, which is the point: a base of `undefined` would put
-   * "undefined/home" in a parent's chat.
+   * Already validated by `resolvePublicBaseUrl`. Null or absent renders every
+   * title and bullet unanchored, which is the point: a base of `undefined`
+   * would put "undefined/children/..." in a parent's chat.
    */
   publicBaseUrl?: string | null;
   /**
+   * The child the links point at. Deliberately NOT on `DigestPayload`: that
+   * object is the summarizer's input and the PII boundary lives there, so a
+   * guid on it would be one `JSON.stringify` away from the prompt.
+   */
+  studentGuid?: string | null;
+  /**
    * Files named in the text because they are NOT being uploaded -- too large,
    * or past the per-message cap. Silence would make the report quietly less
-   * than the day it describes.
+   * than the day it describes. Each carries the item it hangs off, so the line
+   * can link to the assignment or the note rather than to a page the parent
+   * then has to search.
    */
-  unsentFileNames?: string[];
+  unsentFiles?: UnsentFile[];
+}
+
+export interface UnsentFile {
+  fileName: string;
+  itemType: 'homework' | 'behavior';
+  itemId: string;
+}
+
+/** Emoji first, so the eye finds the section before it reads the words. */
+const SECTION_TITLES: Record<DigestSectionId, string> = {
+  behavior: '⚠️ התנהגות ונוכחות',
+  positive: '🌟 חיזוק חיובי',
+  homeworkNew: '📚 שיעורי בית חדשים',
+  release: '🕑 שחרור מוקדם',
+  activity: '✍️ אישורים שממתינים לך',
+  board: '📢 הודעות מלוח המודעות',
+  dueTomorrow: '📅 צפי הגשה למחר',
+};
+
+const FILES_TITLE = '📎 קבצים';
+
+/** Where a section's header points, and with which filter. */
+const SECTION_TARGETS: Record<DigestSectionId, { section: ChildSection; behavior?: ChildBehaviorFilter } | null> = {
+  behavior: { section: 'behavior', behavior: 'attention' },
+  positive: { section: 'behavior', behavior: 'positive' },
+  homeworkNew: { section: 'homework' },
+  // An early release lives in a dialog with no URL of its own, so the child's
+  // page is as close as the message can get.
+  release: null,
+  // A consent form has no web surface at all: no route, no section, no dialog.
+  // Linking anywhere would take the parent somewhere that cannot answer it.
+  activity: null,
+  board: { section: 'notices' },
+  dueTomorrow: { section: 'homework' },
+};
+
+/** One rendered item: its line, and optionally the teacher's own words. */
+interface ItemBlock {
+  ref: string;
+  href: string | null;
+  remark?: string | null;
 }
 
 export function renderReport(
   payload: DigestPayload,
-  lines: DigestLines,
+  prose: DigestProse,
   options: RenderReportOptions = {},
 ): string {
+  const base = options.publicBaseUrl ?? null;
+  const guid = options.studentGuid ?? null;
+
   // Who and when first: this is what a parent scans for in a list of Telegram
-  // chats, and it is the only place the child's name appears.
+  // chats, and it is the only place the child's name appears. The weekday is
+  // deterministic and the cheapest readability win in the message.
   const blocks: string[] = [
-    `${payload.childFirstName} · ${formatSchoolDate(payload.reportFor)}`,
-    lines.headline.trim(),
+    `${escapeTelegramHtml(payload.childFirstName)} · ${formatHebrewWeekday(payload.reportFor)}, ${formatSchoolDate(payload.reportFor)}`,
   ];
 
-  // Two sections from one list. `classification` is written by the sync tasks
-  // and has always been in the payload; until now nothing rendered it, so a
-  // note of praise and an unexcused absence both read "נרשם ...".
+  const headline = line(prose.headline);
+  if (headline) blocks.push(headline);
+
+  // Two sections from one list. `classification` is written by the sync tasks:
+  // a note of praise and an unexcused absence must not share a heading that
+  // fits neither.
   const attention = payload.behavior.filter((fact) => fact.classification !== 'positive');
   const positive = payload.behavior.filter((fact) => fact.classification === 'positive');
 
+  // The consent section's lines come from here rather than from `prose`, which
+  // is what keeps ADR-0035 true of the rendered text and not only of the
+  // prompt: the model is handed no consent forms at all, so anything it wrote
+  // about them describes nothing.
+  const templateOwned = deterministicItemLines(payload);
+
+  const push = (
+    id: DigestSectionId,
+    items: ItemBlock[],
+    extraLines: string[] = [],
+  ): void => {
+    const lines = id === 'activity' ? templateOwned : prose.itemLines;
+    const intro = id === 'activity' ? '' : prose.intros[id];
+    const rendered = section(id, items, lines, intro, base, guid, extraLines);
+    if (rendered) blocks.push(rendered);
+  };
+
   if (attention.length > 0) {
-    blocks.push(
-      section('התנהגות ונוכחות', [lines.behaviorLine, unexcusedMarker(attention)]
-        .filter((part) => part.trim().length > 0)
-        .join('\n')),
+    push(
+      'behavior',
+      attention.map((fact) => behaviorBlock('behavior', fact, base, guid)),
+      [unexcusedMarker(attention)],
     );
   }
 
   if (positive.length > 0) {
-    blocks.push(section('חיזוק חיובי', lines.positiveLine));
+    push('positive', positive.map((fact) => behaviorBlock('positive', fact, base, guid)));
   }
 
   if (payload.homeworkNew.length > 0) {
-    blocks.push(section('שיעורי בית חדשים', lines.homeworkLine));
+    push('homeworkNew', payload.homeworkNew.map((fact) => homeworkBlock('homeworkNew', fact, base, guid)));
   }
 
-  // Before homework: a child leaving at 11:30 changes the shape of the day in a
-  // way that an exercise on page 42 does not.
   if (payload.releases.length > 0) {
-    blocks.push(section('שחרור מוקדם', lines.releaseLine));
-  }
-
-  if (payload.activities.length > 0) {
-    blocks.push(section('אישורים שממתינים לך', lines.activityLine));
-  }
-
-  if (payload.board.length > 0) {
-    blocks.push(section('הודעות מלוח המודעות', lines.boardLine));
-  }
-
-  if (payload.homeworkDueTomorrow.length > 0) {
-    // The one fact the model is not trusted to carry, and now the *only* thing
-    // marking this date as derived: the explanatory caveat that used to follow
-    // the section was removed as a daily wall of text. ADR-0027 is a promise
-    // that a derived deadline is always labelled as derived, so the label and
-    // the date are appended by the template rather than hoped for in the prose
-    // -- and the date is safe to state once, because narrowing has already
-    // reduced this section to the items whose estimate is tomorrow.
-    const estimate = payload.homeworkDueTomorrow[0].estimatedDueDate;
-    const label = estimate ? `צפי הגשה: ${formatSchoolDate(estimate)}` : 'צפי הגשה: מחר';
-    blocks.push(section('צפי הגשה למחר', `${lines.dueTomorrowLine.trim()} (${label})`.trim()));
-  }
-
-  // Last, and a block of its own.
-  //
-  // Identifier-free on purpose. A Telegram chat is a shared, forwardable
-  // artifact, and a studentGuid in someone else's hands outlives the message
-  // it arrived in -- so the link goes to the home page and the parent picks
-  // the child there, rather than carrying the child in the URL.
-  //
-  // At the end rather than under the header so the facts are what shows in the
-  // chat list preview. `disable_web_page_preview` is already set on every
-  // send, so this cannot grow a card.
-  const link = options.publicBaseUrl ? `${options.publicBaseUrl}/home` : null;
-
-  for (const fileName of options.unsentFileNames ?? []) {
-    blocks.push(
-      link
-        ? `קובץ גדול מדי לשליחה: ${fileName} — ניתן לפתוח באתר: ${link}`
-        : `קובץ גדול מדי לשליחה: ${fileName}`,
+    push(
+      'release',
+      payload.releases.map((fact) => ({
+        ref: digestItemRef('release', fact.id),
+        href: childUrl(base, guid),
+      })),
     );
   }
 
-  if (link) blocks.push(link);
+  if (payload.activities.length > 0) {
+    // Template-owned end to end (ADR-0035): `push` routes this section to
+    // `templateOwned` and gives it no intro.
+    push(
+      'activity',
+      payload.activities.map((fact) => ({ ref: digestItemRef('activity', fact.id), href: null })),
+    );
+  }
+
+  if (payload.board.length > 0) {
+    push(
+      'board',
+      payload.board.map((fact) => ({
+        ref: digestItemRef('board', fact.id),
+        href: boardNoticesUrl(base, guid),
+      })),
+    );
+  }
+
+  if (payload.homeworkDueTomorrow.length > 0) {
+    // The one fact the model is not trusted to carry, and the only thing
+    // marking this date as derived. ADR-0027 is a promise that a derived
+    // deadline is always labelled as derived, so the label and the date are
+    // appended by the template rather than hoped for in the prose -- and the
+    // date is safe to state once, because narrowing has already reduced this
+    // section to the items whose estimate is tomorrow.
+    const estimate = payload.homeworkDueTomorrow[0].estimatedDueDate;
+    const label = estimate ? `צפי הגשה: ${formatSchoolDate(estimate)}` : 'צפי הגשה: מחר';
+    push(
+      'dueTomorrow',
+      payload.homeworkDueTomorrow.map((fact) => homeworkBlock('dueTomorrow', fact, base, guid)),
+      [label],
+    );
+  }
+
+  const files = renderFiles(options.unsentFiles ?? [], base, guid);
+  if (files) blocks.push(files);
 
   return blocks.filter((block) => block.length > 0).join('\n\n');
 }
 
 /**
- * Plain text, no markup. Telegram's Markdown parse modes reject a whole message
- * when the text contains an unbalanced `*` or `_`, or (in MarkdownV2) any of
- * `.-!()`, which free-text teacher remarks and homework text routinely do. A
- * rejected message would fail, retry the next hour, and fail again. Hebrew
- * renders right-to-left in Telegram without any markup, so bold is not worth a
- * delivery failure.
+ * One section: a bold title, the intro if it earned its place, then a bullet
+ * per item with its own anchor.
+ *
+ * `itemLines` and `introText` are passed in rather than read off the prose, so
+ * the caller can route the consent section to the template's own lines --
+ * which is what keeps ADR-0035 true of the rendered text and not only of the
+ * prompt.
  */
-function section(title: string, prose: string): string {
-  const trimmed = prose.trim();
-  return trimmed.length > 0 ? `${title}\n${trimmed}` : '';
+function section(
+  id: DigestSectionId,
+  items: ItemBlock[],
+  itemLines: Record<string, string>,
+  introText: string | null | undefined,
+  base: string | null,
+  guid: string | null,
+  extraLines: string[],
+): string {
+  const target = SECTION_TARGETS[id];
+  const href = target ? childSectionUrl(base, guid, target.section, target.behavior ?? 'all') : null;
+  const title = SECTION_TITLES[id];
+
+  // The emoji stays outside the anchor: a marker is not a link, and Telegram
+  // renders an anchored emoji as part of the tappable text.
+  const [marker, ...words] = title.split(' ');
+  const label = words.join(' ');
+  const heading = href
+    ? `<b>${marker} ${anchor(href, label)}</b>`
+    : `<b>${escapeTelegramHtml(title)}</b>`;
+
+  const lines: string[] = [heading];
+
+  // The caller passes '' for the consent section: nothing the model wrote
+  // about it describes anything it was shown.
+  const intro = line(introText);
+  if (intro) lines.push(intro);
+
+  for (const item of items) {
+    const text = itemLines[item.ref];
+    const clamped = clampLine(typeof text === 'string' ? text : '');
+    // An item that exists and has no line is skipped rather than rendered as a
+    // blank bullet -- but the caller is what guarantees there is a line at
+    // all, by merging the model's over the deterministic ones per ref.
+    if (clamped.length === 0) continue;
+
+    lines.push(`• ${item.href ? anchor(item.href, clamped) : escapeTelegramHtml(clamped)}`);
+
+    // The teacher's own words, visibly theirs, and the template's to render --
+    // so the model never has to carry them and cannot drop them.
+    const remark = clampLine(item.remark ?? '');
+    if (remark.length > 0) {
+      lines.push(`<blockquote>${escapeTelegramHtml(remark)}</blockquote>`);
+    }
+  }
+
+  // A section whose every item lost its line is not a section.
+  if (!lines.some((entry) => entry.startsWith('• '))) return '';
+
+  for (const extra of extraLines) {
+    const clamped = clampLine(extra);
+    if (clamped.length > 0) lines.push(escapeTelegramHtml(clamped));
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * The files the message is naming because it is not sending them.
+ *
+ * The link goes to the item that holds the file, not to a home page: the
+ * parent wants the assignment the attachment hangs off.
+ */
+function renderFiles(files: UnsentFile[], base: string | null, guid: string | null): string {
+  if (files.length === 0) return '';
+
+  const lines = [`<b>${escapeTelegramHtml(FILES_TITLE)}</b>`];
+  for (const file of files) {
+    const name = clampLine(file.fileName);
+    if (name.length === 0) continue;
+    const href =
+      file.itemType === 'homework'
+        ? homeworkItemUrl(base, guid, file.itemId)
+        : behaviorItemUrl(base, guid, file.itemId);
+    lines.push(`• קובץ גדול מדי לשליחה: ${href ? anchor(href, name) : escapeTelegramHtml(name)}`);
+  }
+
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+/**
+ * An anchor whose label is escaped and whose href is too.
+ *
+ * The href needs it for one character: a section link carries `&` between its
+ * two query params, and an unescaped `&` inside an attribute is what Telegram
+ * refuses to parse.
+ */
+function anchor(href: string, label: string): string {
+  return `<a href="${escapeTelegramHtml(href)}">${escapeTelegramHtml(label)}</a>`;
+}
+
+/** One escaped, clamped, single line -- or '' when there was nothing to say. */
+function line(raw: string | null | undefined): string {
+  const clamped = clampLine(raw ?? '');
+  return clamped.length === 0 ? '' : escapeTelegramHtml(clamped);
+}
+
+function behaviorBlock(
+  id: DigestSectionId,
+  fact: DigestBehaviorFact,
+  base: string | null,
+  guid: string | null,
+): ItemBlock {
+  return {
+    ref: digestItemRef(id, fact.id),
+    href: behaviorItemUrl(base, guid, fact.id),
+    remark: fact.remark,
+  };
+}
+
+function homeworkBlock(
+  id: DigestSectionId,
+  fact: DigestHomeworkFact,
+  base: string | null,
+  guid: string | null,
+): ItemBlock {
+  return { ref: digestItemRef(id, fact.id), href: homeworkItemUrl(base, guid, fact.id) };
 }
 
 /**
  * The prose used when the model times out, refuses, or returns unusable output
- * -- and, per section, whenever it returns nothing for a section that has
- * items.
+ * -- and, per ITEM, whenever it returns nothing for an item that exists.
  *
- * It used to count ("one note was recorded today"), which worked only because
- * the bullets underneath said what the note was. With the bullets gone a
- * counting fallback would tell a parent that something happened and never what,
- * so these lines state the facts: subject, the teacher's own words, the text of
- * the assignment, the time, the deadline. Plainer than the model's prose, and
- * complete.
+ * Per item rather than per section is the whole improvement: a missing line
+ * now costs one bullet rather than a whole section's worth of facts.
  */
-export function deterministicLines(payload: DigestPayload): DigestLines {
+export function deterministicProse(payload: DigestPayload): DigestProse {
   return {
     headline: 'עדכון יומי מבית הספר',
-    behaviorLine: payload.behavior
-      .filter((fact) => fact.classification !== 'positive')
-      .map(behaviorSentence)
-      .join(' '),
-    positiveLine: payload.behavior
-      .filter((fact) => fact.classification === 'positive')
-      .map(behaviorSentence)
-      .join(' '),
-    homeworkLine:
-      payload.homeworkNew.length === 0
-        ? ''
-        : `ניתנו המטלות הבאות: ${payload.homeworkNew.map(homeworkSentence).join('; ')}.`,
-    dueTomorrowLine:
-      payload.homeworkDueTomorrow.length === 0
-        ? ''
-        : `מה שצפוי להידרש מחר: ${payload.homeworkDueTomorrow.map(homeworkSentence).join('; ')}.`,
-    releaseLine: payload.releases.map(releaseSentence).join(' '),
-    boardLine: payload.board.map((fact) => boardSentence(fact)).join(' '),
-    activityLine:
-      payload.activities.length === 0
-        ? ''
-        : `ממתינים לתשובתך: ${payload.activities.map(activitySentence).join('; ')}.`,
+    // The model's job, and it has no opinion here. An empty record renders no
+    // intro lines at all, which is the right default: the item lines say it.
+    intros: {},
+    itemLines: deterministicItemLines(payload),
   };
+}
+
+/**
+ * One plain Hebrew sentence per item, keyed by its ref.
+ *
+ * Plainer than the model's lines and complete, which is the right trade when
+ * the alternative is a parent told that something happened and never what.
+ */
+export function deterministicItemLines(payload: DigestPayload): Record<string, string> {
+  const lines: Record<string, string> = {};
+
+  for (const fact of payload.behavior) {
+    const id: DigestSectionId = fact.classification === 'positive' ? 'positive' : 'behavior';
+    lines[digestItemRef(id, fact.id)] = behaviorSentence(fact);
+  }
+  for (const fact of payload.homeworkNew) {
+    lines[digestItemRef('homeworkNew', fact.id)] = homeworkSentence(fact);
+  }
+  for (const fact of payload.homeworkDueTomorrow) {
+    lines[digestItemRef('dueTomorrow', fact.id)] = homeworkSentence(fact);
+  }
+  for (const fact of payload.releases) {
+    lines[digestItemRef('release', fact.id)] = releaseSentence(fact);
+  }
+  for (const fact of payload.activities) {
+    lines[digestItemRef('activity', fact.id)] = activitySentence(fact);
+  }
+  for (const fact of payload.board) {
+    lines[digestItemRef('board', fact.id)] = boardSentence(fact);
+  }
+
+  return lines;
 }
 
 /**
  * Names the events the school does not count as excusing themselves.
  *
- * The template's, not the model's -- the same reasoning as the צפי label in
- * the due-tomorrow section. Whether an absence was excused changes what a
- * parent does next, so it must not depend on whether the prose happened to
- * mention it.
+ * The template's, not the model's -- the same reasoning as the צפי label.
+ * Whether an absence was excused changes what a parent does next, so it must
+ * not depend on whether the prose happened to mention it.
  *
  * `justifiable` is the school's own policy for the event's code, read from
  * BehaviorTypeReference by the sync tasks. It defaults to false when that
  * school's achvas have not synced yet, so the marker can over-report on a
- * fresh deployment -- which is the safe direction: it reports an absence as
- * needing attention rather than silently excusing it.
+ * fresh deployment -- which is the safe direction.
  */
 function unexcusedMarker(attention: DigestBehaviorFact[]): string {
   const unexcused = attention.filter((fact) => fact.justifiable === false);
@@ -221,21 +494,25 @@ function unexcusedMarker(attention: DigestBehaviorFact[]): string {
 /**
  * The notice's own words.
  *
- * Not a count and not a summary: the report has no item bullets, so this line
- * is the only place the notice appears. The expiry date is not printed --
- * `expirationDate` is when the school takes the notice down, which is rarely
- * the date the notice is about, and printing it as a deadline would be a
- * promise nobody made.
+ * The expiry date is not printed -- `expirationDate` is when the school takes
+ * the notice down, which is rarely the date the notice is about, and printing
+ * it as a deadline would be a promise nobody made.
  */
 function boardSentence(fact: DigestBoardFact): string {
   const text = fact.text.trim().replace(/\s*\n\s*/g, ' ');
   return text.endsWith('.') ? text : `${text}.`;
 }
 
+/**
+ * The event, and deliberately NOT its remark.
+ *
+ * The remark is rendered by the template as a `<blockquote>` under this line,
+ * so repeating it here would print the teacher's words twice. It moved out of
+ * the sentence rather than out of the message.
+ */
 function behaviorSentence(fact: DigestBehaviorFact): string {
   const head = [fact.achvaName, fact.subject].filter((part) => part && part.length > 0).join(' ב');
-  const remark = fact.remark?.trim();
-  return remark ? `נרשם ${head}: ${remark}.` : `נרשם ${head}.`;
+  return `נרשם ${head}.`;
 }
 
 function homeworkSentence(fact: DigestHomeworkFact): string {
@@ -247,9 +524,9 @@ function homeworkSentence(fact: DigestHomeworkFact): string {
 /**
  * Day and time, and deliberately not the parent's `remark`.
  *
- * The remark was the one other place the child's name appeared in the message
+ * The remark is the one other place the child's name appeared in the message
  * ("אבקש לשחרר את יונתן"), and it is text the parent wrote themselves, so
- * dropping it with the bullets costs them nothing they did not already know.
+ * leaving it out costs them nothing they did not already know.
  */
 function releaseSentence(fact: DigestReleaseFact): string {
   return `שחרור מוקדם ב-${formatSchoolDate(fact.releaseDate)} בשעה ${formatTimeOfDay(fact.startHour)}.`;

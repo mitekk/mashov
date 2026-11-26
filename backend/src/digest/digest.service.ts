@@ -18,8 +18,16 @@ import { jerusalemClockMinutes, jerusalemDayBounds } from './digest-deadline.ser
 import { DigestDismissalService, DismissalGate } from './digest-dismissal.service';
 import { isPermanentTelegramFailure } from '../telegram/telegram-http';
 import { resolvePublicBaseUrl } from '../telegram/public-base-url';
-import { deterministicLines, renderReport } from './digest-report.template';
-import { DigestCandidate, DigestHomeworkFact, DigestPayload, DigestSummary } from './digest.types';
+import { UnsentFile, deterministicProse, renderReport } from './digest-report.template';
+import { behaviorItemUrl, homeworkItemUrl } from '../telegram/notify-links';
+import { escapeTelegramHtml } from '../telegram/telegram-html';
+import {
+  DigestCandidate,
+  DigestHomeworkFact,
+  DigestPayload,
+  DigestProse,
+  DigestSummary,
+} from './digest.types';
 import { DigestAttachment, DigestAttachmentResolver } from './digest-attachment.resolver';
 import {
   FetchedMedia,
@@ -401,7 +409,8 @@ export class DigestService {
         );
       }
 
-      const lines = linesFor(summary, payload, narrowed);
+      const prose = itemLinesFor(summary, payload, narrowed);
+      const publicBaseUrl = resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL'));
 
       const enabled = await this.prisma.digestRecipient.findMany({
         where: { userId, studentGuid, enabled: true },
@@ -423,11 +432,16 @@ export class DigestService {
       // anywhere until the bytes arrive and the text has to name what it is
       // not sending. Skipped entirely on a dry run and when the media binding
       // is the no-op, so neither pays for the reads.
-      const media = dryRun ? NO_FETCH : await this.fetchMedia(userId, studentGuid, surviving, claimed);
+      const media = dryRun
+        ? NO_FETCH
+        : await this.fetchMedia(userId, studentGuid, surviving, claimed, narrowed, publicBaseUrl);
 
-      const message = renderReport(narrowed, lines, {
-        publicBaseUrl: resolvePublicBaseUrl(this.config.get<string>('PUBLIC_BASE_URL')),
-        unsentFileNames: media.items.filter((item) => item.tooLarge).map((item) => item.ref.fileName),
+      const message = renderReport(narrowed, prose, {
+        publicBaseUrl,
+        // Not on the payload: that object feeds buildPrompt, and the PII
+        // boundary there is unchanged. See digest-report.template's docblock.
+        studentGuid,
+        unsentFiles: media.items.filter((item) => item.tooLarge).map(unsentFileFor),
       });
 
       const { delivered, failures, suppressed, retired, reached } = await this.deliver(
@@ -610,7 +624,7 @@ export class DigestService {
   ): Promise<DigestSummary> {
     const hashes = nonActivityHashes(claimed);
     if (hashes.length === 0) {
-      return { lines: deterministicLines(payload), deadlineResolutions: [], usedLlm: false };
+      return { prose: deterministicProse(payload), deadlineResolutions: [], usedLlm: false };
     }
 
     const key = `${studentGuid}\u0000${hashes.join('|')}`;
@@ -735,7 +749,10 @@ export class DigestService {
 
       try {
         const sender = dryRun ? this.logSender : this.senderFor(recipient.channel);
-        await sender.send(recipient.address, message);
+        // The text is Telegram HTML. The sender decides whether it goes out as
+        // markup (TELEGRAM_HTML_ENABLED) and owns the strip-and-retry, so a
+        // parse complaint costs one extra call rather than the message.
+        await sender.send(recipient.address, message, { parseMode: 'HTML' });
         delivered += 1;
         if (!dryRun) reached.push(recipient.address);
         alreadySent.add(fingerprint);
@@ -770,13 +787,18 @@ export class DigestService {
     studentGuid: string,
     surviving: Set<string>,
     claimed: DigestCandidate[],
+    payload: DigestPayload,
+    publicBaseUrl: string | null,
   ): Promise<{ items: FetchedMedia[]; notes: string[] }> {
     if (!this.media.enabled) return NO_FETCH;
 
     const sent = claimed.filter((candidate) => surviving.has(candidate.contentHash));
     if (sent.length === 0) return NO_FETCH;
 
-    const refs = (await this.attachments.resolve(studentGuid, sent)).map(mediaRefFor);
+    const labels = itemLabels(payload);
+    const refs = (await this.attachments.resolve(studentGuid, sent)).map((attachment) =>
+      mediaRefFor(attachment, labels.get(attachment.itemId) ?? null, publicBaseUrl, studentGuid),
+    );
     if (refs.length === 0) return NO_FETCH;
 
     const fetched = await this.media.fetch(userId, refs, this.media.budgetBytes());
@@ -1096,61 +1118,70 @@ function formatClock(minutes: number): string {
 }
 
 /**
- * Which prose to render.
+ * Which prose to render, merged per ITEM.
  *
- * The model writes its sentences from the un-narrowed payload, because the
- * deadline resolution it returns is what *does* the narrowing. So when
- * narrowing removes a due item, the model's `dueTomorrowLine` describes items
- * the bullets no longer list -- "two assignments due tomorrow, in history and
- * maths" above a single maths bullet -- and can even name a date for an item
- * that was deliberately deferred. In that case only that line is replaced with
- * the deterministic one, which counts what actually survived.
+ * The model writes from the un-narrowed payload, because the deadline
+ * resolution it returns is what *does* the narrowing. So when narrowing
+ * removes a due item, any line the model wrote about it describes something
+ * the message no longer lists -- and the headline, written from the same
+ * un-narrowed set, can state a count or name a subject that did not survive.
+ *
+ * The merge is per ref rather than per section, which is the whole improvement
+ * over `linesFor`: a line the model skipped now costs ONE BULLET rather than a
+ * section's worth of facts, because the deterministic sentence for that one
+ * item fills the gap. The refusal to render a blank line for an item that
+ * exists is kept -- it is just enforced at a finer grain.
  */
-function linesFor(summary: DigestSummary, before: DigestPayload, after: DigestPayload) {
-  const fallback = deterministicLines(after);
+function itemLinesFor(
+  summary: DigestSummary,
+  before: DigestPayload,
+  after: DigestPayload,
+): DigestProse {
+  const fallback = deterministicProse(after);
   if (!summary.usedLlm) return fallback;
 
-  const lines = { ...summary.lines };
+  // Keyed off the DETERMINISTIC map, so an item that did not survive narrowing
+  // gets no line even if the model wrote one for it, and a ref the model
+  // invented is dropped rather than rendered.
+  const itemLines: Record<string, string> = {};
+  for (const [ref, deterministic] of Object.entries(fallback.itemLines)) {
+    const written = summary.prose.itemLines[ref];
+    itemLines[ref] =
+      typeof written === 'string' && written.trim().length > 0 ? written : deterministic;
+  }
 
-  // The headline is written from the un-narrowed payload too, and can state a
-  // count or name a subject that no longer survived -- the same defect the
-  // dueTomorrowLine swap exists to fix. Once the set has changed underneath the
-  // model, every line it wrote about that set is suspect.
+  const intros = { ...summary.prose.intros };
+  // The model is handed no consent forms at all, so anything it wrote about
+  // them describes nothing (ADR-0035). The template drops this too; dropping
+  // it here as well keeps the stored prose honest about what was used.
+  delete intros.activity;
+
+  let headline = summary.prose.headline;
   if (after.homeworkDueTomorrow.length !== before.homeworkDueTomorrow.length) {
-    lines.headline = fallback.headline;
-    lines.dueTomorrowLine = fallback.dueTomorrowLine;
+    // Once the set has changed underneath the model, what it wrote ABOUT that
+    // set is suspect -- the headline and the section's intro both.
+    headline = fallback.headline;
+    delete intros.dueTomorrow;
   }
+  if (headline.trim().length === 0) headline = fallback.headline;
 
-  // The report has no item bullets, so a section's prose is the only place its
-  // facts appear. A blank line for a section that *has* items would drop that
-  // news from the message while the ledger still recorded it as reported --
-  // meaning it would never be mentioned again. The deterministic sentence is
-  // plainer than the model's and complete, which is the right trade here.
-  // The model is handed no consent forms at all, so its line about them -- if
-  // it writes one anyway -- describes nothing. Replaced outright rather than
-  // only when blank, which is all the loop below would do.
-  lines.activityLine = fallback.activityLine;
+  return { headline, intros, itemLines };
+}
 
-  const sections = [
-    // Counted per section, not per list: the behaviour list feeds two sections
-    // now, and a blank positiveLine on a day with praise would drop it.
-    ['behaviorLine', after.behavior.filter((fact) => fact.classification !== 'positive').length],
-    ['positiveLine', after.behavior.filter((fact) => fact.classification === 'positive').length],
-    ['homeworkLine', after.homeworkNew.length],
-    ['dueTomorrowLine', after.homeworkDueTomorrow.length],
-    ['releaseLine', after.releases.length],
-    ['boardLine', after.board.length],
-  ] as const;
-
-  for (const [key, itemCount] of sections) {
-    if (itemCount > 0 && lines[key].trim().length === 0) {
-      lines[key] = fallback[key];
-    }
-  }
-
-  if (lines.headline.trim().length === 0) lines.headline = fallback.headline;
-
-  return lines;
+/**
+ * One attachment the message is naming because it is not sending it.
+ *
+ * The link goes to the item the file hangs off, not to a home page the parent
+ * then has to search. `DigestAttachmentResolver` only ever produces `homework`
+ * and `behavior` -- `mail` is the inbox notifier's kind and cannot reach here
+ * -- so the mapping is total for the refs this path builds.
+ */
+function unsentFileFor(item: FetchedMedia): UnsentFile {
+  return {
+    fileName: item.ref.fileName,
+    itemType: item.ref.kind === 'behavior' ? 'behavior' : 'homework',
+    itemId: item.ref.itemId,
+  };
 }
 
 /**
@@ -1264,20 +1295,61 @@ function deliveryNote(
 const NO_FETCH: { items: FetchedMedia[]; notes: string[] } = { items: [], notes: [] };
 
 /**
+ * What each item is, for a caption to name.
+ *
+ * The subject for homework, the event type for behaviour -- both already in
+ * the payload, which is why this needs no extra read. Keyed by bare item id
+ * because that is what `DigestAttachment` carries; a homework row claimed
+ * twice has one subject either way.
+ */
+function itemLabels(payload: DigestPayload): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const fact of [...payload.homeworkNew, ...payload.homeworkDueTomorrow]) {
+    labels.set(fact.id, fact.subjectName);
+  }
+  for (const fact of payload.behavior) {
+    labels.set(fact.id, fact.achvaName);
+  }
+  return labels;
+}
+
+/**
  * One attachment as the media layer wants it.
  *
- * The caption is the file name alone. It could carry the subject, but the
- * report is already headed by the child and the date, the caption cannot be
- * chunked, and a name is what tells a parent which of three files they are
- * looking at.
+ * The caption used to be the file name alone, which arrived in the chat
+ * detached from the thing it belongs to: three files from one day read as
+ * three filenames. It now says which assignment or which note the file hangs
+ * off, and the name opens that item -- so a parent who wants the context taps
+ * the caption instead of hunting for it. See ADR-0047.
+ *
+ * It is Telegram HTML, escaped here, and the media sender decides whether it
+ * goes out as markup and retries it flat if Telegram will not parse it. A
+ * caption cannot be chunked, so `truncateCaption` cuts it at the sender.
  */
-function mediaRefFor(attachment: DigestAttachment): MediaAttachmentRef {
+function mediaRefFor(
+  attachment: DigestAttachment,
+  label: string | null,
+  publicBaseUrl: string | null,
+  studentGuid: string,
+): MediaAttachmentRef {
+  const href =
+    attachment.itemType === 'behavior'
+      ? behaviorItemUrl(publicBaseUrl, studentGuid, attachment.itemId)
+      : homeworkItemUrl(publicBaseUrl, studentGuid, attachment.itemId);
+
+  const name = escapeTelegramHtml(attachment.fileName);
+  const parts = [`📎 ${href ? `<a href="${escapeTelegramHtml(href)}">${name}</a>` : name}`];
+  // Dropped rather than rendered as an empty clause when the item is not in
+  // this payload -- which a claimed-but-narrowed-out item is.
+  if (label && label.trim().length > 0) parts.push(escapeTelegramHtml(label.trim()));
+
   return {
     kind: attachment.itemType,
     ownerId: attachment.studentGuid,
     itemId: attachment.itemId,
     fileId: attachment.fileId,
     fileName: attachment.fileName,
-    caption: attachment.fileName,
+    caption: parts.join(' · '),
+    captionParseMode: 'HTML',
   };
 }

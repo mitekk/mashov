@@ -12,7 +12,7 @@ jest.mock('@anthropic-ai/sdk', () => ({
 }));
 
 import { DigestSummarizerService, buildPrompt, OUTPUT_SCHEMA } from './digest-summarizer.service';
-import { deterministicLines } from './digest-report.template';
+import { deterministicProse, digestItemRef } from './digest-report.template';
 import type { ConfigService } from '@nestjs/config';
 import type { DigestPayload } from './digest.types';
 
@@ -55,14 +55,11 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
 
 const GOOD_OUTPUT = {
   headline: 'יום עם איחור אחד',
-  behaviorLine: 'נרשם איחור בשיעור מתמטיקה.',
-  positiveLine: '',
-  boardLine: '',
-  homeworkLine: 'ניתנה מטלה בחשבון.',
-  dueTomorrowLine: '',
-  releaseLine: '',
-  activityLine: '',
-  deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: null }],
+  intros: { behavior: 'שתי הערות קטנות, שתיהן באותו בוקר.' },
+  items: [
+    { ref: 'behavior:beh-1', line: 'איחר בעשר דקות לשיעור מתמטיקה.', explicitDueDate: null },
+    { ref: 'homeworkNew:hw-1', line: 'בחשבון נתנו לפתור עמוד 42.', explicitDueDate: null },
+  ],
 };
 
 function makeService(env: Record<string, string> = {}) {
@@ -160,8 +157,61 @@ describe('DigestSummarizerService.summarize', () => {
     const summary = await makeService().summarize(makePayload());
 
     expect(summary.usedLlm).toBe(true);
-    expect(summary.lines.headline).toBe('יום עם איחור אחד');
-    expect(summary.deadlineResolutions).toEqual([{ ref: 'hw-1', explicitDueDate: null }]);
+    expect(summary.prose.headline).toBe('יום עם איחור אחד');
+    expect(summary.prose.intros.behavior).toBe('שתי הערות קטנות, שתיהן באותו בוקר.');
+    expect(summary.prose.itemLines).toEqual({
+      'behavior:beh-1': 'איחר בעשר דקות לשיעור מתמטיקה.',
+      'homeworkNew:hw-1': 'בחשבון נתנו לפתור עמוד 42.',
+    });
+  });
+
+  it('reads the deadlines off the same items as the lines', async () => {
+    // They used to be two top-level arrays keyed by the same refs, which let
+    // the model answer the same question twice and differently.
+    respondWith(
+      JSON.stringify({
+        ...GOOD_OUTPUT,
+        items: [
+          { ref: 'dueTomorrow:hw-1', line: 'להגיש עד ה-25', explicitDueDate: '2026-11-25' },
+          { ref: 'homeworkNew:hw-2', line: 'אין מועד', explicitDueDate: null },
+        ],
+      }),
+    );
+
+    const summary = await makeService().summarize(makePayload());
+
+    // Keyed by the HOMEWORK id, which is what narrowDueTomorrow looks up --
+    // not by the namespaced ref.
+    expect(summary.deadlineResolutions).toEqual([
+      { ref: 'hw-1', explicitDueDate: '2026-11-25' },
+      { ref: 'hw-2', explicitDueDate: null },
+    ]);
+  });
+
+  it('keeps an item line with no text out of the prose rather than rendering a blank bullet', async () => {
+    respondWith(
+      JSON.stringify({
+        ...GOOD_OUTPUT,
+        items: [
+          { ref: 'behavior:beh-1', line: '   ', explicitDueDate: null },
+          { ref: 'homeworkNew:hw-1', line: 'בחשבון נתנו לפתור עמוד 42.', explicitDueDate: null },
+        ],
+      }),
+    );
+
+    const summary = await makeService().summarize(makePayload());
+
+    // The caller fills the gap from the deterministic line for that one ref.
+    expect(summary.prose.itemLines['behavior:beh-1']).toBeUndefined();
+    expect(summary.prose.itemLines['homeworkNew:hw-1']).toBeDefined();
+  });
+
+  it('drops an intro for a section it was given nothing about', async () => {
+    respondWith(JSON.stringify({ ...GOOD_OUTPUT, intros: { behavior: '', board: '  ' } }));
+
+    const summary = await makeService().summarize(makePayload());
+
+    expect(summary.prose.intros).toEqual({});
   });
 
   it('asks for a bounded, structured, low-effort response', async () => {
@@ -176,8 +226,9 @@ describe('DigestSummarizerService.summarize', () => {
     expect(request.model).toBe('claude-sonnet-5-5');
     expect(request.output_config.effort).toBe('low');
     expect(request.output_config.format.type).toBe('json_schema');
-    // A deliberately short output: four Hebrew lines and a small array.
-    expect(request.max_tokens).toBe(2000);
+    // One short line per item plus a headline: still a deliberately short
+    // output, but it grows with the day, so the ceiling went up with it.
+    expect(request.max_tokens).toBe(4000);
     // Thinking cannot be disabled on this model, so it is never sent.
     expect(request).not.toHaveProperty('thinking');
   });
@@ -225,7 +276,7 @@ describe('DigestSummarizerService.summarize', () => {
     const summary = await makeService().summarize(payload);
 
     expect(summary.usedLlm).toBe(false);
-    expect(summary.lines).toEqual(deterministicLines(payload));
+    expect(summary.prose).toEqual(deterministicProse(payload));
     expect(summary.deadlineResolutions).toEqual([]);
   });
 
@@ -237,12 +288,39 @@ describe('DigestSummarizerService.summarize', () => {
     expect(summary.usedLlm).toBe(false);
   });
 
-  it('falls back when the JSON is missing the lines the template needs', async () => {
-    respondWith(JSON.stringify({ headline: 'כן', deadlineResolutions: [] }));
+  it('falls back when the JSON is missing the shape the template needs', async () => {
+    respondWith(JSON.stringify({ headline: 'כן' }));
 
     const summary = await makeService().summarize(makePayload());
 
     expect(summary.usedLlm).toBe(false);
+  });
+
+  it('falls back when items is not an array of refs and lines', async () => {
+    for (const items of ['nope', [{ ref: 'behavior:beh-1' }], [{ line: 'x' }], [42]]) {
+      respondWith(JSON.stringify({ ...GOOD_OUTPUT, items }));
+
+      expect((await makeService().summarize(makePayload())).usedLlm).toBe(false);
+    }
+  });
+
+  it('falls back when intros is not an object of strings', async () => {
+    for (const intros of ['nope', { behavior: 7 }, [1, 2]]) {
+      respondWith(JSON.stringify({ ...GOOD_OUTPUT, intros }));
+
+      expect((await makeService().summarize(makePayload())).usedLlm).toBe(false);
+    }
+  });
+
+  it('accepts a response that carries no intros at all', async () => {
+    // The intro is optional by design: it only earns its place when it says
+    // something the item lines do not.
+    respondWith(JSON.stringify({ headline: 'יום רגוע', intros: {}, items: [] }));
+
+    const summary = await makeService().summarize(makePayload());
+
+    expect(summary.usedLlm).toBe(true);
+    expect(summary.prose.intros).toEqual({});
   });
 
   it('falls back when the model refuses', async () => {
@@ -406,21 +484,27 @@ describe('buildPrompt with releases and activities', () => {
     expect(prompt).not.toContain('אישורים שממתינים');
   });
 
-  it('asks for a line about the release section', () => {
-    // Without it the schema would reject nothing and the template would
-    // render the section with no prose at all.
-    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
-      expect.arrayContaining(['releaseLine']),
-    );
+  it('asks for a headline, intros and one entry per item', () => {
+    expect(Object.keys(OUTPUT_SCHEMA.properties).sort()).toEqual(['headline', 'intros', 'items']);
+    expect(OUTPUT_SCHEMA.required as readonly string[]).toEqual(['headline', 'intros', 'items']);
   });
 
-  it('asks for a separate line about positive notes', () => {
-    // One behaviour line meant praise and an absence were written as one
-    // sentence, under a heading that fit neither.
-    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
-      expect.arrayContaining(['positiveLine']),
+  it('asks for each item entry to carry its ref, its line and its deadline', () => {
+    // One array instead of two keyed by the same refs: the deadline is a fact
+    // about the item whose line is right next to it.
+    expect(OUTPUT_SCHEMA.properties.items.items.required as readonly string[]).toEqual([
+      'ref',
+      'line',
+      'explicitDueDate',
+    ]);
+  });
+
+  it('offers an intro for every section the model is given facts for', () => {
+    // Including the two behaviour sections separately: one intro for both
+    // would be written under a heading that fits neither.
+    expect(Object.keys(OUTPUT_SCHEMA.properties.intros.properties).sort()).toEqual(
+      ['behavior', 'board', 'dueTomorrow', 'homeworkNew', 'positive', 'release'].sort(),
     );
-    expect(OUTPUT_SCHEMA.required as readonly string[]).toContain('positiveLine');
   });
 
   it('separates the positive events from the ones needing attention in the prompt', () => {
@@ -460,11 +544,10 @@ describe('buildPrompt with releases and activities', () => {
     expect(prompt).toContain('חיזוקים חיוביים');
   });
 
-  it('asks for a line about the message board', () => {
-    expect(Object.keys(OUTPUT_SCHEMA.properties)).toEqual(
-      expect.arrayContaining(['boardLine']),
-    );
-    expect(OUTPUT_SCHEMA.required as readonly string[]).toContain('boardLine');
+  it('asks for no intro about consent forms, having been given none', () => {
+    // A field the model is asked to fill with nothing to fill it from is a
+    // field it hallucinates into.
+    expect(Object.keys(OUTPUT_SCHEMA.properties.intros.properties)).not.toContain('activity');
   });
 
   it('puts the board notices in the prompt as their own block', () => {
@@ -484,10 +567,119 @@ describe('buildPrompt with releases and activities', () => {
     expect(prompt).toContain('ביום חמישי יום ספורט');
   });
 
-  it('asks for no line about consent forms, having been given none', () => {
-    // A field the model is asked to fill with nothing to fill it from is a
-    // field it hallucinates into.
-    expect(Object.keys(OUTPUT_SCHEMA.properties)).not.toContain('activityLine');
-    expect(OUTPUT_SCHEMA.required as readonly string[]).not.toContain('activityLine');
+  it('never asks the model to write a consent-form line either', () => {
+    expect(JSON.stringify(OUTPUT_SCHEMA)).not.toContain('activity');
+  });
+});
+
+describe('buildPrompt refs', () => {
+  const REFFED = makePayload({
+    behavior: [
+      {
+        id: 'beh-1',
+        achvaName: 'חיסור',
+        classification: 'attention',
+        justifiable: false,
+        subject: 'מתמטיקה',
+        remark: null,
+        lessonDate: REPORT_FOR,
+        eventAt: REPORT_FOR,
+      },
+      {
+        id: 'beh-2',
+        achvaName: 'חיזוק חיובי',
+        classification: 'positive',
+        justifiable: true,
+        subject: 'ספרות',
+        remark: null,
+        lessonDate: REPORT_FOR,
+        eventAt: REPORT_FOR,
+      },
+    ],
+    releases: [
+      { id: '64', releaseDate: new Date('2026-11-18T00:00:00Z'), startHour: '11:30:00', remark: null },
+    ],
+    board: [
+      { id: '4211', text: 'ביום חמישי יום ספורט', expirationDate: new Date('2026-11-30T00:00:00Z') },
+    ],
+  });
+
+  it('emits a ref for every fact, not only for homework', () => {
+    // The model keys its lines by these, so a fact with no ref is a fact that
+    // gets no line. They are local DB ids and upstream event ids -- the same
+    // class already sent for homework, so no new identifier leaves the host.
+    const prompt = buildPrompt(REFFED);
+
+    for (const ref of [
+      digestItemRef('behavior', 'beh-1'),
+      digestItemRef('positive', 'beh-2'),
+      digestItemRef('homeworkNew', 'hw-1'),
+      digestItemRef('release', '64'),
+      digestItemRef('board', '4211'),
+    ]) {
+      expect(prompt).toContain(`ref: ${ref}`);
+    }
+  });
+
+  it('gives one homework row two refs when it is both new and due tomorrow', () => {
+    const payload = makePayload({
+      homeworkDueTomorrow: [
+        {
+          id: 'hw-1',
+          subjectName: 'חשבון',
+          homeworkText: 'לפתור עמוד 42',
+          remark: null,
+          lessonDate: REPORT_FOR,
+          groupId: 55,
+          estimatedDueDate: new Date('2026-11-18T00:00:00Z'),
+        },
+      ],
+    });
+
+    const prompt = buildPrompt(payload);
+
+    expect(prompt).toContain(`ref: ${digestItemRef('homeworkNew', 'hw-1')}`);
+    expect(prompt).toContain(`ref: ${digestItemRef('dueTomorrow', 'hw-1')}`);
+  });
+
+  it('emits no ref for a consent form, which is not in the prompt at all', () => {
+    const prompt = buildPrompt({
+      ...makePayload(),
+      activities: [
+        {
+          id: '7',
+          title: 'טיול שנתי לגליל',
+          activityStartDate: new Date('2026-11-25T00:00:00Z'),
+          endAnswerDate: new Date('2026-11-20T00:00:00Z'),
+        },
+      ],
+    });
+
+    expect(prompt).not.toContain('activity:');
+    expect(prompt).not.toContain('טיול שנתי לגליל');
+  });
+
+  it('still forwards no guid, reporter or username alongside the new refs', () => {
+    // The refs are the one identifier class that crosses; this is the guard
+    // that adding them did not open the door to the rest.
+    const contaminated = {
+      ...REFFED,
+      studentGuid: 'd4f1c2a0-1111-2222-3333-444455556666',
+      behavior: REFFED.behavior.map((fact) => ({
+        ...fact,
+        reporter: 'מורה רחל לוי',
+        username: 'rachel.levi',
+        studentGuid: 'd4f1c2a0-1111-2222-3333-444455556666',
+      })),
+      releases: REFFED.releases.map((fact) => ({ ...fact, remark: 'אבקש לשחרר את אבי' })),
+    } as unknown as DigestPayload;
+
+    const prompt = buildPrompt(contaminated);
+
+    expect(prompt).not.toContain('d4f1c2a0');
+    expect(prompt).not.toContain('רחל לוי');
+    expect(prompt).not.toContain('rachel.levi');
+    expect(prompt).not.toContain('אבי');
+    expect(prompt).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/);
   });
 });

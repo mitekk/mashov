@@ -1,15 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { deterministicLines, formatSchoolDate } from './digest-report.template';
+import { deterministicProse, digestItemRef, formatSchoolDate } from './digest-report.template';
 import {
   DigestBehaviorFact,
   DigestBoardFact,
   DigestDeadlineResolution,
   DigestHomeworkFact,
-  DigestLines,
   DigestPayload,
+  DigestProse,
   DigestReleaseFact,
+  DigestSectionId,
   DigestSummary,
 } from './digest.types';
 
@@ -25,60 +26,84 @@ const DEFAULT_MODEL = 'claude-sonnet-5-5';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
- * How hard the model thinks before answering. `low` is deliberate, not
- * timid: the task is four short Hebrew lines plus one small array, and
- * thinking counts against `max_tokens` on these models -- so a higher level
- * raises the chance of a truncated response, which lands on the deterministic
- * fallback and costs the parent the prose entirely.
+ * How hard the model thinks before answering. `low` is deliberate, not timid:
+ * the task is one short Hebrew sentence per item, and thinking counts against
+ * `max_tokens` on these models -- so a higher level raises the chance of a
+ * truncated response, which lands on the deterministic fallback and costs the
+ * parent the prose entirely.
  */
 const DEFAULT_EFFORT = 'low';
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type DigestEffort = (typeof EFFORT_LEVELS)[number];
 
 /**
- * Deliberately small. The output is four short Hebrew lines plus one small
- * array, so this is a "deliberately short output" rather than a lowballed
- * ceiling -- and a truncated response lands on the deterministic fallback
- * anyway, which still sends.
+ * Still a deliberately short output rather than a lowballed ceiling -- one
+ * short sentence per item plus a headline -- but it grows with the day now
+ * instead of being four fixed lines, so the ceiling grew with it. A truncated
+ * response lands on the deterministic fallback anyway, which still sends.
  */
-const MAX_TOKENS = 2000;
+const MAX_TOKENS = 4000;
 
-/** The structured output the model must return. */
+/**
+ * The structured output the model must return.
+ *
+ * One entry per item rather than one paragraph per section: the per-section
+ * grain is what forced the prompt to demand warm prose AND a complete record
+ * in a single sentence, and the model answered by cramming. See ADR-0047.
+ *
+ * `explicitDueDate` rides on the item whose line is next to it. It used to be
+ * a second top-level array keyed by the same refs, which let the model answer
+ * the same question in two places and answer it differently in each.
+ *
+ * There is no `activity` anywhere in here. The model is handed no consent
+ * forms at all (ADR-0035), and a field it is asked to fill with nothing to
+ * fill it from is a field it hallucinates into.
+ */
+const INTRO_SECTIONS = [
+  'behavior',
+  'positive',
+  'homeworkNew',
+  'release',
+  'board',
+  'dueTomorrow',
+] as const satisfies readonly DigestSectionId[];
+
 export const OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: [
-    'headline',
-    'behaviorLine',
-    'positiveLine',
-    'homeworkLine',
-    'dueTomorrowLine',
-    'releaseLine',
-    'boardLine',
-    'deadlineResolutions',
-  ],
+  required: ['headline', 'intros', 'items'],
   properties: {
-    headline: { type: 'string', description: 'שורה אחת קצרה בעברית' },
-    behaviorLine: {
-      type: 'string',
-      description: 'משפט או שניים בעברית על אירועי התנהגות ונוכחות שדורשים תשומת לב',
-    },
-    positiveLine: { type: 'string', description: 'משפט בעברית על חיזוקים חיוביים' },
-    homeworkLine: { type: 'string', description: 'משפט או שניים בעברית על המטלות החדשות' },
-    dueTomorrowLine: { type: 'string', description: 'משפט או שניים בעברית על מה שצפוי מחר' },
-    releaseLine: { type: 'string', description: 'משפט בעברית על שחרור מוקדם שכבר אושר' },
-    boardLine: { type: 'string', description: 'משפט או שניים בעברית על הודעות מלוח המודעות' },
-    deadlineResolutions: {
-      type: 'array',
+    headline: { type: 'string', description: 'שורה אחת קצרה בעברית שמסכמת את היום' },
+    intros: {
+      type: 'object',
+      additionalProperties: false,
       description:
-        'לכל מטלה: המועד המפורש שנכתב בטקסט, אם נכתב. null כשלא נכתב מועד.',
+        'משפט פתיחה אופציונלי לכל סעיף. מחרוזת ריקה כשאין מה להוסיף מעל שורות הפריטים.',
+      required: [...INTRO_SECTIONS],
+      properties: {
+        behavior: { type: 'string', description: 'פתיחה לסעיף התנהגות ונוכחות' },
+        positive: { type: 'string', description: 'פתיחה לסעיף חיזוקים חיוביים' },
+        homeworkNew: { type: 'string', description: 'פתיחה לסעיף מטלות חדשות' },
+        release: { type: 'string', description: 'פתיחה לסעיף שחרור מוקדם' },
+        board: { type: 'string', description: 'פתיחה לסעיף הודעות מלוח המודעות' },
+        dueTomorrow: { type: 'string', description: 'פתיחה לסעיף מה שצפוי מחר' },
+      },
+    },
+    items: {
+      type: 'array',
+      description: 'שורה אחת לכל פריט שנמסר לך, לפי ה-ref שלו.',
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['ref', 'explicitDueDate'],
+        required: ['ref', 'line', 'explicitDueDate'],
         properties: {
-          ref: { type: 'string' },
-          explicitDueDate: { type: ['string', 'null'] },
+          ref: { type: 'string', description: 'ה-ref המדויק כפי שנמסר' },
+          line: { type: 'string', description: 'משפט אחד קצר בעברית על הפריט הזה' },
+          explicitDueDate: {
+            type: ['string', 'null'],
+            description:
+              'המועד המפורש שנכתב בטקסט המטלה בפורמט YYYY-MM-DD, או null כשלא נכתב מועד.',
+          },
         },
       },
     },
@@ -92,24 +117,33 @@ const SYSTEM_PROMPT = [
   // reads like a form letter rather than someone telling you about your day.
   'שם הילד/ה אינו נמסר לך ואינו נחוץ: הוא מופיע כבר בראש ההודעה. אל תכתוב שם כלשהו ואל תמציא שם.',
   'הקפד על התאמת לשון זכר/נקבה לפי המין שנמסר.',
-  'כתוב פרוזה בלבד. אל תמציא עובדות, אל תוסיף פרטים שלא נמסרו לך, ואל תכתוב כותרות או תבליטים.',
-  // The message has no item list under the prose any more, so a detail the
-  // model leaves out is a detail the parent never sees.
-  'הטקסט שלך הוא המקום היחיד שבו ההורה יראה את הפרטים: אין רשימת פריטים מתחתיו.',
-  'לכן כלול בכל שורה את הפרטים הקונקרטיים — מקצוע, מה נכתב במטלה במדויק, שעה, תאריך — ואל תסתפק בספירה.',
-  'אם בסעיף יש כמה פריטים, הזכר את כולם.',
-  'אל תבטיח מועד הגשה: המערכת אינה יודעת מועדי הגשה, רק מתי ניתנה המטלה.',
-  'אם בטקסט של מטלה נכתב מועד מפורש, החזר אותו ב-deadlineResolutions בפורמט YYYY-MM-DD; אחרת null.',
-  'אם אין מה לומר בסעיף מסוים, החזר מחרוזת ריקה לאותו שדה.',
+  'אל תמציא עובדות ואל תוסיף פרטים שלא נמסרו לך. אל תכתוב כותרות, סמלים או תבליטים — הם נוספים אוטומטית.',
+  // The job changed. The old prompt ordered the model to cram every subject,
+  // every exact assignment text, every time and date into one sentence per
+  // section, because that sentence was the only place the facts appeared. Warm
+  // prose and a complete record are two different jobs, and that is what read
+  // as unpolished. Now the grain matches the work: one item, one sentence.
+  'לכל פריט שנמסר לך יש ref. החזר ב-items שורה אחת קצרה לכל ref — משפט אחד, לא יותר.',
+  'השורה של פריט מסוימת לו בלבד: כתוב את הפרטים הקונקרטיים של אותו פריט ואל תזכיר פריטים אחרים.',
+  'השתמש ב-ref בדיוק כפי שנמסר לך, מילה במילה. אל תמציא ref ואל תדלג על פריט שנמסר לך.',
+  // The remark is rendered by the template as a quote under the line, so the
+  // model repeating it would print the teacher's words twice.
+  'הערת המורה מוצגת להורה בנפרד, מתחת לשורה שלך. אל תצטט אותה ואל תחזור עליה.',
+  // An intro that restates the lines is the blob again, one level up.
+  'ב-intros כתוב משפט פתיחה לסעיף רק אם יש לך מה לומר שהשורות עצמן לא אומרות — למשל קשר בין הפריטים.',
+  'אם אין לך מה להוסיף בסעיף, החזר מחרוזת ריקה לאותו שדה. מוטב ריק מאשר חזרה על השורות.',
   'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
+  'אל תבטיח מועד הגשה: המערכת אינה יודעת מועדי הגשה, רק מתי ניתנה המטלה.',
+  'אם בטקסט של מטלה נכתב מועד מפורש, החזר אותו ב-explicitDueDate של אותו פריט בפורמט YYYY-MM-DD; אחרת null.',
+  'לפריט שאינו מטלה החזר explicitDueDate שווה ל-null.',
   'שחרור מוקדם הוא בקשה שההורה עצמו הגיש ואושרה: כתוב עליו כתזכורת, לא כחדשות.',
   // The board's own words are the content; a notice summarized into "there is
   // a notice" tells a parent nothing they can act on.
   'הודעות מלוח המודעות הן הודעות של בית הספר: מסור את תוכן ההודעה עצמה, לא רק שקיימת הודעה.',
   // The two behaviour sections are rendered separately, so a sentence that
   // blends praise into an absence lands under a heading that contradicts it.
-  'הפרד בין אירועים שדורשים תשומת לב ובין חיזוקים חיוביים: behaviorLine לראשונים, positiveLine לשניים.',
-  'אל תכתוב על חיזוק חיובי ב-behaviorLine ואל תכתוב על חיסור או איחור ב-positiveLine.',
+  'אירועים שדורשים תשומת לב ואירועי חיזוק חיובי מוצגים בשני סעיפים נפרדים, לפי ה-ref של כל פריט.',
+  'אל תכתוב על חיזוק חיובי בשורה של פריט שדורש תשומת לב, ולהפך.',
   // Nothing about consent forms: the model is handed none. That section is
   // the one input that belongs to the parent rather than to the child, and the
   // prose is shared between the parents of one child (ADR-0035), so it is
@@ -128,7 +162,12 @@ const SYSTEM_PROMPT = [
  * name, a guid, a reporter and a username and asserts none of them appear.
  *
  * What does cross the boundary: the child's grammatical gender, subject names,
- * achvaName, classification, free remark and homework text, and dates.
+ * achvaName, classification, free remark and homework text, dates, and a
+ * `ref` per fact. The refs are local DB ids and upstream event ids -- the same
+ * class already sent for homework before ADR-0047, now sent for every fact
+ * because the model keys its per-item lines by them. No new identifier leaves
+ * the host, and a consent form still gets none, because it is not in the
+ * prompt at all.
  * What never does: **any part of the child's name**, studentGuid, reporter and
  * teacher names, usernames. The first name used to be sent so the prose could
  * address the child; it is withheld now because the rendered message already
@@ -149,16 +188,28 @@ export function buildPrompt(payload: DigestPayload): string {
   const positive = payload.behavior.filter((fact) => fact.classification === 'positive');
 
   if (attention.length > 0) {
-    sections.push(['אירועי התנהגות ונוכחות:', ...attention.map(behaviorForPrompt)].join('\n'));
+    sections.push(
+      [
+        'אירועי התנהגות ונוכחות:',
+        ...attention.map((fact) => behaviorForPrompt('behavior', fact)),
+      ].join('\n'),
+    );
   }
 
   if (positive.length > 0) {
-    sections.push(['חיזוקים חיוביים:', ...positive.map(behaviorForPrompt)].join('\n'));
+    sections.push(
+      ['חיזוקים חיוביים:', ...positive.map((fact) => behaviorForPrompt('positive', fact))].join(
+        '\n',
+      ),
+    );
   }
 
   if (payload.homeworkNew.length > 0) {
     sections.push(
-      ['מטלות שניתנו היום:', ...payload.homeworkNew.map(homeworkForPrompt)].join('\n'),
+      [
+        'מטלות שניתנו היום:',
+        ...payload.homeworkNew.map((fact) => homeworkForPrompt('homeworkNew', fact)),
+      ].join('\n'),
     );
   }
 
@@ -166,7 +217,7 @@ export function buildPrompt(payload: DigestPayload): string {
     sections.push(
       [
         'מטלות שאולי נדרשות מחר (הצפי מחושב, אינו מועד הגשה רשמי):',
-        ...payload.homeworkDueTomorrow.map(homeworkForPrompt),
+        ...payload.homeworkDueTomorrow.map((fact) => homeworkForPrompt('dueTomorrow', fact)),
       ].join('\n'),
     );
   }
@@ -197,11 +248,12 @@ export function buildPrompt(payload: DigestPayload): string {
  * deadline.
  */
 function boardForPrompt(fact: DigestBoardFact): string {
-  return `- ${fact.text.trim().replace(/\s*\n\s*/g, ' ')}`;
+  return `- ${refField('board', fact.id)} | ${fact.text.trim().replace(/\s*\n\s*/g, ' ')}`;
 }
 
-function behaviorForPrompt(fact: DigestBehaviorFact): string {
+function behaviorForPrompt(section: DigestSectionId, fact: DigestBehaviorFact): string {
   const fields = [
+    refField(section, fact.id),
     `סוג: ${fact.achvaName}`,
     `מקצוע: ${fact.subject}`,
     `סיווג: ${fact.classification}`,
@@ -222,12 +274,22 @@ function behaviorForPrompt(fact: DigestBehaviorFact): string {
  * costs nothing and never leaves the host.
  */
 function releaseForPrompt(fact: DigestReleaseFact): string {
-  return `- תאריך: ${formatSchoolDate(fact.releaseDate)} | שעה: ${fact.startHour.slice(0, 5)}`;
+  return `- ${refField('release', fact.id)} | תאריך: ${formatSchoolDate(fact.releaseDate)} | שעה: ${fact.startHour.slice(0, 5)}`;
 }
 
+/**
+ * The key the model will send its line back under.
+ *
+ * Section-namespaced, through the same `digestItemRef` the template looks the
+ * line up with -- one function decides what these strings are, because the
+ * refs the model is shown and the refs the renderer reads have to be equal.
+ */
+function refField(section: DigestSectionId, id: string): string {
+  return `ref: ${digestItemRef(section, id)}`;
+}
 
-function homeworkForPrompt(fact: DigestHomeworkFact): string {
-  const fields = [`ref: ${fact.id}`, `מקצוע: ${fact.subjectName}`, `מטלה: ${fact.homeworkText.trim()}`];
+function homeworkForPrompt(section: DigestSectionId, fact: DigestHomeworkFact): string {
+  const fields = [refField(section, fact.id), `מקצוע: ${fact.subjectName}`, `מטלה: ${fact.homeworkText.trim()}`];
   const remark = fact.remark?.trim();
   if (remark) fields.push(`הערה: ${remark}`);
   if (fact.estimatedDueDate) fields.push(`צפי לפי מערכת השעות: ${formatSchoolDate(fact.estimatedDueDate)}`);
@@ -317,7 +379,7 @@ export class DigestSummarizerService {
   }
 
   private fallback(payload: DigestPayload): DigestSummary {
-    return { lines: deterministicLines(payload), deadlineResolutions: [], usedLlm: false };
+    return { prose: deterministicProse(payload), deadlineResolutions: [], usedLlm: false };
   }
 
   private readTimeoutMs(): number {
@@ -350,13 +412,21 @@ export class DigestSummarizerService {
 }
 
 interface ParsedOutput {
-  lines: DigestLines;
+  prose: DigestProse;
   deadlineResolutions: DigestDeadlineResolution[];
+}
+
+/** One entry of the model's `items` array, once validated. */
+interface ParsedItem {
+  ref: string;
+  line: string;
+  explicitDueDate: string | null;
 }
 
 /**
  * Structured outputs make the shape very likely, not certain -- a truncated
  * response is still truncated -- so the result is validated rather than cast.
+ * Any failure returns null and the caller renders deterministically.
  */
 function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
   const text = content
@@ -377,44 +447,76 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const candidate = raw as Record<string, unknown>;
 
-  const lineKeys = [
-    'headline',
-    'behaviorLine',
-    'positiveLine',
-    'homeworkLine',
-    'dueTomorrowLine',
-    'releaseLine',
-    'boardLine',
-  ] as const;
-  if (!lineKeys.every((key) => typeof candidate[key] === 'string')) return null;
+  if (typeof candidate.headline !== 'string') return null;
 
-  const resolutions = Array.isArray(candidate.deadlineResolutions)
-    ? candidate.deadlineResolutions.filter(isResolution)
-    : [];
+  const intros = parseIntros(candidate.intros);
+  if (intros === null) return null;
+
+  if (!Array.isArray(candidate.items)) return null;
+  if (!candidate.items.every(isParsedItem)) return null;
+  const items = candidate.items as ParsedItem[];
+
+  const itemLines: Record<string, string> = {};
+  for (const item of items) {
+    // A blank line is left OUT rather than stored as ''. The caller fills the
+    // gap from the deterministic line for that one ref, so a line the model
+    // skipped costs one bullet instead of a blank one.
+    const line = item.line.trim();
+    if (line.length > 0) itemLines[item.ref] = line;
+  }
 
   return {
-    lines: {
-      headline: candidate.headline as string,
-      behaviorLine: candidate.behaviorLine as string,
-      positiveLine: candidate.positiveLine as string,
-      homeworkLine: candidate.homeworkLine as string,
-      dueTomorrowLine: candidate.dueTomorrowLine as string,
-      releaseLine: candidate.releaseLine as string,
-      boardLine: candidate.boardLine as string,
-      // Not asked for and not accepted: `linesFor` replaces it with the
-      // deterministic line whatever arrives here.
-      activityLine: '',
-    },
-    deadlineResolutions: resolutions,
+    prose: { headline: candidate.headline, intros, itemLines },
+    // The deadline is keyed back to the HOMEWORK id, because that is what
+    // `narrowDueTomorrow` looks up and what the ledger stores. The namespaced
+    // ref is a prompt-and-template concern and stops here.
+    deadlineResolutions: items
+      .filter((item) => item.ref.startsWith('homeworkNew:') || item.ref.startsWith('dueTomorrow:'))
+      .map((item) => ({
+        ref: item.ref.slice(item.ref.indexOf(':') + 1),
+        explicitDueDate: item.explicitDueDate,
+      })),
   };
 }
 
-function isResolution(value: unknown): value is DigestDeadlineResolution {
+/**
+ * The intros object, with the empty ones dropped.
+ *
+ * An intro only earns its place when it says something the item lines do not,
+ * so a blank one is absent rather than present-and-empty -- which is what lets
+ * the template render no line at all instead of a blank one.
+ *
+ * Returns null for a value that is not an object of strings; `undefined`
+ * becomes `{}`, because the field is optional by design.
+ */
+function parseIntros(value: unknown): Partial<Record<DigestSectionId, string>> | null {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const intros: Partial<Record<DigestSectionId, string>> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    // An unknown key is dropped rather than rejected: the template reads the
+    // sections it knows, and a hallucinated section name costs nothing.
+    if ((INTRO_SECTIONS as readonly string[]).includes(key)) {
+      intros[key as DigestSectionId] = trimmed;
+    }
+  }
+  return intros;
+}
+
+function isParsedItem(value: unknown): value is ParsedItem {
   if (typeof value !== 'object' || value === null) return false;
   const entry = value as Record<string, unknown>;
   return (
     typeof entry.ref === 'string' &&
-    (entry.explicitDueDate === null || typeof entry.explicitDueDate === 'string')
+    entry.ref.length > 0 &&
+    typeof entry.line === 'string' &&
+    (entry.explicitDueDate === null ||
+      entry.explicitDueDate === undefined ||
+      typeof entry.explicitDueDate === 'string')
   );
 }
 
