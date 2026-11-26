@@ -1,5 +1,14 @@
-import React from 'react';
-import { CheckCircle, XCircle, AlertCircle, Clock, Loader2 } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  CheckCircle,
+  XCircle,
+  AlertCircle,
+  Clock,
+  Loader2,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+} from 'lucide-react';
 import type { SourceHealth, SourceStatus } from '@/types/api';
 import { formatRelativeHe } from '@/lib/dates';
 import { cn } from '@/lib/utils';
@@ -12,6 +21,10 @@ interface SourceHealthListProps {
    * before the one in flight.
    */
   syncingSources?: Set<string>;
+  /** A refresh is in flight for some source, from `useSyncRefresh`/`/sync/status`. */
+  isSyncing?: boolean;
+  /** Provided by the page: triggers a refresh from the collapsed header. */
+  onSync?: () => void;
 }
 
 /**
@@ -195,62 +208,153 @@ function normalizeSources(sources: SourceHealth[]): SourceHealth[] {
     });
 }
 
-export function SourceHealthList({ sources, syncingSources }: SourceHealthListProps) {
+export function SourceHealthList({
+  sources,
+  syncingSources,
+  isSyncing,
+  onSync,
+}: SourceHealthListProps) {
+  // Always starts folded, `failed` included: the per-source detail is only
+  // worth the column once someone goes looking for it, and the header already
+  // names the worst status. Same fold convention as `RichTextContent`.
+  const [isExpanded, setIsExpanded] = useState(false);
   const safeSources = normalizeSources(sources ?? []);
 
-  return (
-    <div data-testid="source-health-list" className="card-base divide-y divide-border">
-      {safeSources.map((source) => {
-        const isSyncing = syncingSources?.has(source.source) ?? false;
+  const total = safeSources.length;
+  const worstStatus = safeSources.reduce<SourceStatus>(
+    (worst, source) => selectWorseStatus(worst, source.status),
+    'fresh',
+  );
+  const problemCount = safeSources.filter((source) => source.status !== 'fresh').length;
 
-        return (
-          <div key={source.source} className="flex items-center gap-3 px-4 py-3">
+  return (
+    <div data-testid="source-health-list" data-status={worstStatus} className="card-base">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <button
+          type="button"
+          data-testid="source-health-toggle"
+          onClick={() => setIsExpanded((value) => !value)}
+          aria-expanded={isExpanded}
+          className="tap-target flex min-w-0 flex-1 items-center gap-3 text-start"
+        >
+          {isExpanded ? (
+            <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+          <span
+            data-testid="source-health-summary"
+            className="flex min-w-0 flex-1 items-center gap-2"
+          >
+            {/* A run in flight REPLACES the summary: the statuses on screen
+                describe the run before this one, so reporting them next to a
+                spinner would just contradict it. */}
             {isSyncing ? (
-              <Loader2
-                data-testid={`source-syncing-${source.source}`}
-                aria-hidden
-                className="h-4 w-4 shrink-0 animate-spin text-muted-foreground"
-              />
+              <>
+                <Loader2
+                  aria-hidden
+                  className="h-4 w-4 shrink-0 animate-spin text-muted-foreground"
+                />
+                <span className="text-sm font-medium text-muted-foreground">מסנכרן…</span>
+              </>
             ) : (
-              <StatusIcon status={source.status} />
-            )}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground">
-                {SOURCE_LABELS[source.source] ?? source.source}
-              </p>
-              {/* Suppressed while the row is syncing: the error describes the
-                  run BEFORE the one in flight. */}
-              {source.lastErrorMessage && !isSyncing && (
-                <p
-                  className="text-xs text-destructive truncate mt-0.5"
-                  // The raw technical string stays reachable for debugging
-                  // without ever being rendered as text.
-                  title={source.lastErrorMessage}
+              <>
+                <StatusIcon status={worstStatus} />
+                <span
+                  className={cn(
+                    'text-sm font-medium',
+                    worstStatus === 'fresh' && 'text-positive',
+                    worstStatus === 'stale' && 'text-attention',
+                    worstStatus === 'failed' && 'text-destructive',
+                    worstStatus === 'never_synced' && 'text-muted-foreground',
+                  )}
                 >
-                  {errorSummary(source.lastErrorMessage)}
-                </p>
-              )}
-            </div>
-            <div className="text-end flex-shrink-0">
-              <p className={cn(
-                'text-xs font-medium',
-                source.status === 'fresh' && 'text-positive',
-                source.status === 'stale' && 'text-attention',
-                source.status === 'failed' && 'text-destructive',
-                source.status === 'never_synced' && 'text-muted-foreground',
-                isSyncing && 'text-muted-foreground',
-              )}>
-                {isSyncing ? 'מסנכרן…' : statusLabel(source.status)}
-              </p>
-              {source.lastSuccessAt && (
-                <p className="text-xs text-muted-foreground">
-                  {formatRelativeHe(source.lastSuccessAt)}
-                </p>
-              )}
-            </div>
-          </div>
-        );
-      })}
+                  {statusLabel(worstStatus)}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {worstStatus === 'fresh'
+                    ? `${total} מקורות`
+                    : `${problemCount} מתוך ${total}`}
+                </span>
+              </>
+            )}
+          </span>
+        </button>
+
+        {/* A sibling of the toggle, not a child of it: nesting one button
+            inside another is invalid markup and breaks keyboard nav. */}
+        {onSync && (
+          <button
+            type="button"
+            data-testid="source-health-sync-btn"
+            aria-label="רענן נתונים"
+            disabled={isSyncing}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSync();
+            }}
+            className="tap-target inline-flex shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
+          >
+            <RefreshCw className={cn('h-4 w-4', isSyncing && 'animate-spin')} />
+          </button>
+        )}
+      </div>
+
+      {isExpanded && (
+        <div className="divide-y divide-border border-t border-border">
+          {safeSources.map((source) => {
+            const isRowSyncing = syncingSources?.has(source.source) ?? false;
+
+            return (
+              <div key={source.source} className="flex items-center gap-3 px-4 py-3">
+                {isRowSyncing ? (
+                  <Loader2
+                    data-testid={`source-syncing-${source.source}`}
+                    aria-hidden
+                    className="h-4 w-4 shrink-0 animate-spin text-muted-foreground"
+                  />
+                ) : (
+                  <StatusIcon status={source.status} />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground">
+                    {SOURCE_LABELS[source.source] ?? source.source}
+                  </p>
+                  {/* Suppressed while the row is syncing: the error describes the
+                      run BEFORE the one in flight. */}
+                  {source.lastErrorMessage && !isRowSyncing && (
+                    <p
+                      className="text-xs text-destructive truncate mt-0.5"
+                      // The raw technical string stays reachable for debugging
+                      // without ever being rendered as text.
+                      title={source.lastErrorMessage}
+                    >
+                      {errorSummary(source.lastErrorMessage)}
+                    </p>
+                  )}
+                </div>
+                <div className="text-end flex-shrink-0">
+                  <p className={cn(
+                    'text-xs font-medium',
+                    source.status === 'fresh' && 'text-positive',
+                    source.status === 'stale' && 'text-attention',
+                    source.status === 'failed' && 'text-destructive',
+                    source.status === 'never_synced' && 'text-muted-foreground',
+                    isRowSyncing && 'text-muted-foreground',
+                  )}>
+                    {isRowSyncing ? 'מסנכרן…' : statusLabel(source.status)}
+                  </p>
+                  {source.lastSuccessAt && (
+                    <p className="text-xs text-muted-foreground">
+                      {formatRelativeHe(source.lastSuccessAt)}
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

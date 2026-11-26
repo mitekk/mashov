@@ -335,7 +335,12 @@ export default function MorePage() {
               {health && (
                 <div className="space-y-3">
                   <ContentFreshnessCard contentFreshness={health.contentFreshness} />
-                  <SourceHealthList sources={health.sources} syncingSources={syncingSources} />
+                  <SourceHealthList
+                    sources={health.sources}
+                    syncingSources={syncingSources}
+                    isSyncing={sync.isPending || syncRunning}
+                    onSync={() => sync.mutate()}
+                  />
                 </div>
               )}
             </section>
