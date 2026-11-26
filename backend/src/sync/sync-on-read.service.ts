@@ -131,6 +131,39 @@ export class SyncOnReadService {
     // another route.
     const key = `${options.connectionId}::${options.variantKey ?? source}`;
 
+    // ## Why the emptiness probe is part of the decision, not its consequence
+    //
+    // The probe used to be consulted only once the decision had already
+    // committed to fetching, which meant that on a copy that was *fresh but
+    // empty* it was never consulted at all -- and "fresh but empty" is a
+    // contradiction in which the marker, not the emptiness, is the half that
+    // is wrong. It now feeds the TTL: an empty copy is held off only by the
+    // retry window.
+    //
+    // Production, 2026-11-26: unlinking a connection deletes a child's
+    // `subject_enrollment` and `timetable_entry` rows
+    // (`connection.service.ts:440-441`) and the `sync_run` rows *for that
+    // connection id* (:490). Per-student runs written by the scheduled path
+    // carry a NULL `householdConnectionId`, so that predicate never matched
+    // them and they survived -- and a connectionless run is deliberately
+    // admitted into every connection's snapshot (see `recordAttempt`). The
+    // child's re-linked account therefore read a seven-day-old success marker
+    // for rows that no longer existed, and מקצועות and לוח שיעורים rendered
+    // empty for a week with source-health green throughout.
+    //
+    // The cost is one indexed count per source per view, including views that
+    // turn out to be fresh. That is the price of the invariant, and it is the
+    // cheaper half of the trade: the alternative is a section that cannot
+    // self-heal for as long as its TTL.
+    //
+    // It runs inside `beginOperation` rather than here, and that placement is
+    // not cosmetic: awaiting a count before the `inFlight` lookup below broke
+    // the page-load storm collapsing, because three concurrent views each
+    // awaited their own count and the first operation finished and
+    // deregistered itself before the second resumed, so all three fetched.
+    // Pinned by 'still collapses a page-load storm when the emptiness probe
+    // is slow'.
+
     // The in-flight marker covers the freshness READ as well as the fetch.
     // Registering it after the read is a race: three concurrent page loads all
     // clear the TTL check before any of them registers, and all three fetch --
@@ -138,26 +171,20 @@ export class SyncOnReadService {
     const existing = this.inFlight.get(key);
     const operation =
       existing ??
-      this.beginOperation(key, source, fetch, options.connectionId, options.variantKey);
+      this.beginOperation(
+        key,
+        source,
+        fetch,
+        options.connectionId,
+        options.localIsEmpty,
+        options.variantKey,
+      );
 
     // Nothing is being fetched -- the copy was fresh, or the cap is spent, or
-    // freshness could not be read. There is nothing to wait for, and no reason
-    // to pay for the emptiness probe.
+    // freshness could not be read. There is nothing to wait for.
     if (!(await operation.committed)) return;
 
-    let localIsEmpty: boolean;
-    try {
-      localIsEmpty = await options.localIsEmpty();
-    } catch (error) {
-      // Documented as never throwing, and the caller has no try/catch: a
-      // transient error counting local rows must not turn a servable page
-      // into a 500.
-      this.logger.warn(
-        `${source}: could not tell whether the local copy is empty, not waiting: ${describe(error)}`,
-      );
-      return;
-    }
-    if (!localIsEmpty) {
+    if (!(await operation.localEmpty)) {
       // Nothing to wait for: the page has something to show, and the next view
       // gets the fresh copy.
       return;
@@ -171,18 +198,45 @@ export class SyncOnReadService {
   }
 
   /**
+   * Counts the local copy, never throwing.
+   *
+   * An unreadable count returns `false` — "assume we hold something". Fetching
+   * blind on every view because a count failed is the amplifier this class
+   * exists to prevent, and it must not be able to turn a servable page into a
+   * 500 either.
+   */
+  private async probeLocalEmpty(
+    source: string,
+    localIsEmpty: () => Promise<boolean>,
+  ): Promise<boolean> {
+    try {
+      return await localIsEmpty();
+    } catch (error) {
+      this.logger.warn(
+        `${source}: could not tell whether the local copy is empty, serving it: ${describe(error)}`,
+      );
+      return false;
+    }
+  }
+
+  /**
    * Decides and, if due, fetches — as a single promise under one key, so
    * concurrent callers join the whole decision rather than racing it.
    *
    * `committed` resolves at the moment the decision is made, before the fetch
-   * is awaited, which is what lets `ensureFresh` skip the emptiness probe
-   * entirely when nothing is going to be fetched.
+   * is awaited, so a caller learns whether to wait without waiting.
+   *
+   * `localIsEmpty` is an input to the decision rather than a consequence of
+   * it: an empty copy collapses the TTL to the retry window, so a stale
+   * success marker cannot hold an empty section shut for days. See the block
+   * comment in `ensureFresh`.
    */
   private beginOperation(
     key: string,
     source: string,
     fetch: FetchFn,
     connectionId: string,
+    localIsEmpty: () => Promise<boolean>,
     variantKey?: string,
   ): ReadPathOperation {
     let settle!: (committed: boolean) => void;
@@ -190,14 +244,25 @@ export class SyncOnReadService {
       settle = resolve;
     });
 
+    // Started here, awaited below. One probe per operation, shared by every
+    // caller that joins it.
+    const localEmpty = this.probeLocalEmpty(source, localIsEmpty);
+
     const done = (async () => {
       try {
         const policy = policyForSource(source);
         if (!policy) return;
 
+        // An empty copy is held off only by the retry window, never by the
+        // full TTL. Still bounded: upstream legitimately answers nothing for
+        // some children, and that must not become a fetch per page view.
+        const ttlMinutes = (await localEmpty)
+          ? Math.min(policy.syncTtlMinutes, this.retryMinutes(policy.syncTtlMinutes))
+          : policy.syncTtlMinutes;
+
         let fresh: boolean;
         try {
-          fresh = await this.isFresh(source, policy.syncTtlMinutes, connectionId, variantKey);
+          fresh = await this.isFresh(source, ttlMinutes, connectionId, variantKey);
         } catch (error) {
           // Cannot tell: do nothing rather than fetch blind on every request.
           this.logger.warn(
@@ -226,7 +291,7 @@ export class SyncOnReadService {
       }
     })();
 
-    const operation: ReadPathOperation = { done, committed };
+    const operation: ReadPathOperation = { done, committed, localEmpty };
     this.inFlight.set(key, operation);
     return operation;
   }
@@ -302,10 +367,18 @@ export class SyncOnReadService {
 
     if (newestRunAt(successRuns, source, variantKey) >= now - ttlMinutes * 60_000) return true;
 
-    // Clamped to the TTL so a source whose TTL is shorter than the retry
-    // window cannot be held back longer than its own schedule.
-    const retryMinutes = Math.min(ttlMinutes, this.envInt('SYNC_ON_READ_RETRY_MINUTES', 15));
-    return newestRunAt(allRuns, source, variantKey) >= now - retryMinutes * 60_000;
+    return newestRunAt(allRuns, source, variantKey) >= now - this.retryMinutes(ttlMinutes) * 60_000;
+  }
+
+  /**
+   * How long a *failed* attempt, or an empty local copy, holds off the next
+   * fetch.
+   *
+   * Clamped to the TTL so a source whose TTL is shorter than the retry window
+   * cannot be held back longer than its own schedule.
+   */
+  private retryMinutes(ttlMinutes: number): number {
+    return Math.min(ttlMinutes, this.envInt('SYNC_ON_READ_RETRY_MINUTES', 15));
   }
 
   /**
@@ -361,6 +434,15 @@ interface ReadPathOperation {
   done: Promise<void>;
   /** Resolves the moment the decision is made: is anything being fetched? */
   committed: Promise<boolean>;
+  /**
+   * Whether the local copy was empty when this operation started.
+   *
+   * Part of the operation rather than re-probed per caller, so a caller that
+   * joins an in-flight operation inherits the decision instead of racing it —
+   * and so `ensureFresh` has nothing to await before consulting `inFlight`,
+   * which is what keeps a page-load storm collapsing into one fetch.
+   */
+  localEmpty: Promise<boolean>;
 }
 
 /**

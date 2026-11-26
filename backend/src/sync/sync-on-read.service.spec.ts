@@ -284,15 +284,25 @@ describe('SyncOnReadService', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('does not probe the local copy when nothing is going to be fetched', async () => {
-    // The probe is a `count` per source per connection. On the common path --
-    // the copy is fresh -- paying for it on every request is pure waste.
+  it('probes the local copy even when the marker says fresh, and still does not fetch', async () => {
+    // This test used to assert the OPPOSITE -- that a fresh marker skipped the
+    // probe, because the probe is a `count` per source per view and paying for
+    // it on the common path read as pure waste.
+    //
+    // It was a false economy, and it cost a week of two empty sections in
+    // production (2026-11-26). Skipping the probe when the marker reads fresh
+    // means the one case where the marker is WRONG -- rows deleted beneath a
+    // surviving success run -- is precisely the case nothing can detect. The
+    // count is now paid unconditionally; the fetch is still correctly skipped,
+    // which is what this asserts.
     withRun('timetable', 60);
     const localIsEmpty = jest.fn().mockResolvedValue(false);
+    const fetch = jest.fn();
 
-    await service.ensureFresh('timetable', jest.fn(), { connectionId: 'conn-1', localIsEmpty });
+    await service.ensureFresh('timetable', fetch, { connectionId: 'conn-1', localIsEmpty });
 
-    expect(localIsEmpty).not.toHaveBeenCalled();
+    expect(localIsEmpty).toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('serves the page when the emptiness probe itself throws', async () => {
@@ -350,6 +360,26 @@ describe('SyncOnReadService', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('still collapses a page-load storm when the emptiness probe is slow', async () => {
+    // The probe now runs BEFORE the in-flight check, which widens the window
+    // between a caller arriving and registering its operation. Collapsing
+    // survives because nothing awaits between the `inFlight.get` and the
+    // `inFlight.set` — but that is a property of the code's shape, not an
+    // obvious one, so it gets a test rather than a comment.
+    const probe = jest
+      .fn()
+      .mockImplementation(async () => new Promise<boolean>((r) => setTimeout(() => r(true), 5)));
+    const fetch = jest.fn().mockResolvedValue(okResult());
+
+    await Promise.all([
+      service.ensureFresh('timetable', fetch, { connectionId: 'conn-1', localIsEmpty: probe }),
+      service.ensureFresh('timetable', fetch, { connectionId: 'conn-1', localIsEmpty: probe }),
+      service.ensureFresh('timetable', fetch, { connectionId: 'conn-1', localIsEmpty: probe }),
+    ]);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('does not block when the page already has something to render', async () => {
     let settled = false;
     const fetch = jest.fn().mockImplementation(async () => {
@@ -363,6 +393,27 @@ describe('SyncOnReadService', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     // Returned before the fetch finished: a stale grid beats a slow one.
     expect(settled).toBe(false);
+  });
+
+  it('waits for the fetch when the probe reports the read-scoped copy empty', async () => {
+    // The mirror of the test above, and the reason the probe exists at all:
+    // with nothing to render there is no "stale grid beats a slow one" to
+    // trade on, so the request waits (inside its budget) rather than serving
+    // a blank section that a fetch already in progress is about to fill.
+    let settled = false;
+    const fetch = jest.fn().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      settled = true;
+      return okResult();
+    });
+
+    await service.ensureFresh('timetable', fetch, {
+      connectionId: 'conn-1',
+      localIsEmpty: empty,
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(true);
   });
 
   it('gives up waiting at the budget rather than inheriting the upstream timeout', async () => {
@@ -421,6 +472,92 @@ describe('SyncOnReadService', () => {
     await service.ensureFresh('timetable', fetch, { connectionId: 'conn-1', localIsEmpty: empty });
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An empty local copy and a fresh success marker are a contradiction, and
+   * the marker is the one that lies.
+   *
+   * Observed in production (2026-11-26): unlinking a connection deletes a
+   * child's `subject_enrollment` and `timetable_entry` rows
+   * (`connection.service.ts:440`) but not the per-student `sync_run` rows that
+   * declared them fresh -- those carry a NULL `householdConnectionId`, so the
+   * unlink's own `syncRun.deleteMany` never matched them, and a connectionless
+   * run is admitted into every connection's snapshot. The child's מקצועות and
+   * לוח שיעורים then rendered empty for SEVEN DAYS, because at a 7-day TTL the
+   * marker outlived the rows and nothing re-fetched.
+   */
+  describe('an empty local copy outranks a fresh marker', () => {
+    it('re-fetches an empty local copy although a success marker is inside its TTL', async () => {
+      withRun('timetable', 60); // TTL is 7 days, so this marker reads fresh
+      const fetch = jest.fn().mockResolvedValue(okResult());
+
+      await service.ensureFresh('timetable', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: empty,
+      });
+
+      expect(fetch).toHaveBeenCalledWith({ connectionId: 'conn-1' });
+    });
+
+    it('does not re-fetch an empty local copy more often than the retry window', async () => {
+      // The bound. Upstream legitimately answers nothing for some children, and
+      // that must not become a fetch on every page view.
+      withRun('timetable', 5);
+      const fetch = jest.fn();
+
+      await service.ensureFresh('timetable', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: empty,
+      });
+
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('consults the emptiness probe before deciding whether the TTL has lapsed', async () => {
+      // The ordering IS the fix: the probe used to be consulted only after the
+      // freshness decision had already committed to not fetching, so on a
+      // fresh-but-empty copy it was never called at all.
+      withRun('timetable', 60);
+      const localIsEmpty = jest.fn().mockResolvedValue(true);
+
+      await service.ensureFresh('timetable', jest.fn().mockResolvedValue(okResult()), {
+        connectionId: 'conn-1',
+        localIsEmpty,
+      });
+
+      expect(localIsEmpty).toHaveBeenCalled();
+    });
+
+    it('keeps serving a non-empty local copy without re-fetching inside the TTL', async () => {
+      // The behaviour-preserving half: a healthy child still pays no upstream
+      // call per view, which is the whole reason the TTL exists.
+      withRun('timetable', 60);
+      const fetch = jest.fn();
+
+      await service.ensureFresh('timetable', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: notEmpty,
+      });
+
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('serves the local copy when the emptiness probe itself fails', async () => {
+      // A transient count error must not fetch blind on every view, and must
+      // not turn a servable page into a 500.
+      withRun('timetable', 60);
+      const fetch = jest.fn();
+
+      await service.ensureFresh('timetable', fetch, {
+        connectionId: 'conn-1',
+        localIsEmpty: async () => {
+          throw new Error('db down');
+        },
+      });
+
+      expect(fetch).not.toHaveBeenCalled();
+    });
   });
 
   it('scopes the freshness probe to the connection', async () => {

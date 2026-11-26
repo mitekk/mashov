@@ -686,6 +686,73 @@ describe('ConnectionService', () => {
       });
     });
 
+    it('deletes the per-student freshness markers, not only the ones stamped to this connection', async () => {
+      // THE REGRESSION (production, 2026-11-26). This transaction deletes a
+      // child's `timetable_entry` and `subject_enrollment` rows, and deletes
+      // `sync_run WHERE householdConnectionId = <this connection>`. But the
+      // per-student runs written by the scheduled path carry a NULL
+      // `householdConnectionId`, so that predicate never matched them: the
+      // rows went and the success markers that declared them fresh stayed.
+      //
+      // A connectionless run is admitted into EVERY connection's snapshot (see
+      // `SyncOnReadService.recordAttempt`), so after the parent re-linked, a
+      // seven-day-old `groups:<guid>` success suppressed the re-fetch and the
+      // child's מקצועות and לוח שיעורים rendered empty for a week with
+      // source-health green the whole time.
+      //
+      // Keyed on the guid suffix because that is how the run key is built
+      // (`${source}:${studentGuid}`), and the guid is the only thing that
+      // survives the connection it was fetched through.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany
+        .mockResolvedValueOnce([{ studentGuid: 'guid-a' }, { studentGuid: 'guid-b' }])
+        .mockResolvedValueOnce([]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      expect(mockPrisma.syncRun.deleteMany).toHaveBeenCalledWith({
+        where: {
+          OR: [
+            { source: { endsWith: ':guid-a' } },
+            { source: { endsWith: ':guid-b' } },
+          ],
+        },
+      });
+    });
+
+    it('still deletes the markers stamped to the connection being unlinked', async () => {
+      // The guid-keyed delete above is an ADDITION, not a replacement: runs
+      // for connection-scoped sources (`students`, `bells`, the mail walk)
+      // carry no guid in their key and are only reachable by the stamp.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      expect(mockPrisma.syncRun.deleteMany).toHaveBeenCalledWith({
+        where: { householdConnectionId: 'conn-a' },
+      });
+    });
+
+    it('does not delete freshness markers for a child no school of this household listed', async () => {
+      // The suffix match must stay bounded to this unlink's own children. A
+      // bare `endsWith` over an empty guid list would match every run there is.
+      mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);
+      mockPrisma.householdConnection.count.mockResolvedValue(1);
+      mockPrisma.studentConnection.findMany.mockResolvedValue([]);
+      mockPrisma.$transaction.mockResolvedValue([]);
+
+      await service.deleteConnection('user-1', 'conn-a');
+
+      const guidKeyed = mockPrisma.syncRun.deleteMany.mock.calls.filter(
+        (call) => call[0]?.where?.OR !== undefined,
+      );
+      expect(guidKeyed).toHaveLength(0);
+    });
+
     it('keeps the behaviour taxonomy when another account shares the school', async () => {
       // Two parents at one school share it, and it is keyed by schoolCode.
       mockPrisma.householdConnection.findMany.mockResolvedValue([CONN_A]);

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchChildTimetable, normalizeTimetableSchedule } from './children';
+import {
+  fetchChildSubjects,
+  fetchChildTimetable,
+  normalizeTimetableSchedule,
+} from './children';
 
 const ENTRY = {
   id: 'tt-1',
@@ -66,6 +70,58 @@ describe('fetchChildTimetable', () => {
 
     expect(response.data).toHaveLength(1);
     expect(response.schedule).toBeUndefined();
+  });
+
+  it('carries the year metadata so an empty grid can explain itself', async () => {
+    mockFetch({ data: [], meta: { schoolYear: 2027, yearsAvailable: [2026] } });
+
+    const response = await fetchChildTimetable('stu-1');
+
+    expect(response.data).toEqual([]);
+    expect(response.meta).toEqual({ schoolYear: 2027, yearsAvailable: [2026] });
+  });
+
+  it('tolerates a backend that sends no year metadata', async () => {
+    // The field is additive; a deploy skew must not blank the grid.
+    mockFetch({ data: [ENTRY] });
+
+    const response = await fetchChildTimetable('stu-1');
+
+    expect(response.data).toHaveLength(1);
+    expect(response.meta).toBeUndefined();
+  });
+});
+
+describe('fetchChildSubjects', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('encodes the student guid in the subjects request', async () => {
+    // Every neighbouring fetcher encodes; this one did not. A no-op for
+    // UUID-shaped guids, but it meant anyone bisecting an empty מקצועות
+    // section had to rule it out first.
+    const fetchMock = mockFetch({ data: [] });
+
+    await fetchChildSubjects('a b/c');
+
+    expect(fetchMock.mock.calls[0][0]).toContain('a%20b%2Fc');
+  });
+
+  it('carries the year metadata so an empty list can explain itself', async () => {
+    mockFetch({ data: [], meta: { schoolYear: 2027, yearsAvailable: [2025, 2026] } });
+
+    const response = await fetchChildSubjects('stu-1');
+
+    expect(response.meta).toEqual({ schoolYear: 2027, yearsAvailable: [2025, 2026] });
+  });
+
+  it('tolerates a backend that sends no year metadata', async () => {
+    mockFetch({ data: [] });
+
+    const response = await fetchChildSubjects('stu-1');
+
+    expect(response.meta).toBeUndefined();
   });
 });
 

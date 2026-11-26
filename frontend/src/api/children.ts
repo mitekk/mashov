@@ -9,6 +9,7 @@ import type {
   BehaviorResponse,
   BehaviorDetailResponse,
   BehaviorItem,
+  SectionYearMeta,
   SubjectsResponse,
   GradesResponse,
   NoticesResponse,
@@ -130,7 +131,7 @@ export async function fetchChildBehaviorDetail(
 
 export async function fetchChildSubjects(studentGuid: string): Promise<SubjectsResponse> {
   const response = await apiFetch<SubjectsResponse | { data: unknown[] } | unknown[]>(
-    `/children/${studentGuid}/subjects`,
+    `/children/${encodeURIComponent(studentGuid)}/subjects`,
   );
   if (Array.isArray(response)) {
     return {
@@ -142,6 +143,7 @@ export async function fetchChildSubjects(studentGuid: string): Promise<SubjectsR
   const items = Array.isArray(response.data) ? response.data : [];
   return {
     data: items.map((item) => normalizeSubject(item as unknown as UnknownRecord)),
+    meta: normalizeSectionYearMeta((response as UnknownRecord).meta),
   };
 }
 
@@ -190,6 +192,26 @@ export async function fetchChildTimetable(studentGuid: string): Promise<Timetabl
   return {
     data: items.map((item) => normalizeTimetableEntry(item as unknown as UnknownRecord)),
     schedule: normalizeTimetableSchedule((response as UnknownRecord).schedule),
+    meta: normalizeSectionYearMeta((response as UnknownRecord).meta),
+  };
+}
+
+/**
+ * The year metadata an empty section explains itself with, or `undefined`.
+ *
+ * Validated rather than cast: it drives which message a parent reads, and a
+ * malformed field should fall back to the plain empty state rather than render
+ * a claim about school years that the data does not support.
+ */
+function normalizeSectionYearMeta(value: unknown): SectionYearMeta | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as UnknownRecord;
+  const schoolYear = record.schoolYear;
+  const yearsAvailable = record.yearsAvailable;
+  if (typeof schoolYear !== 'number' || !Array.isArray(yearsAvailable)) return undefined;
+  return {
+    schoolYear,
+    yearsAvailable: yearsAvailable.filter((year): year is number => typeof year === 'number'),
   };
 }
 

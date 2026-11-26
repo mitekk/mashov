@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MashovSessionService } from '../session/mashov-session.service';
 import { MashovHttpClient } from '../session/mashov-http.client';
@@ -22,6 +22,7 @@ import {
   isPastSchoolYear,
   schoolYearWindowForStudent,
   yearScopeForStudents,
+  UNSCOPED_SCHOOL_YEAR,
 } from '../common/school-year/school-year.scope';
 import { canSeeStudent, visibleStudentWhere } from '../common/student-links';
 import { unreadChildActivityCounts } from '../common/child-activity-counts';
@@ -34,6 +35,19 @@ import {
 } from './attachment-parser';
 import { DownloadOptions, downloadTimeoutConfig } from './download-options';
 import { bellScheduleForConnection } from '../common/bells/bells.service';
+
+/**
+ * Caches the first call's promise.
+ *
+ * Lets the emptiness probe and the `meta.yearsAvailable` sibling share a
+ * single `groupBy` without the caller having to decide which of them runs
+ * first — the probe may not run at all (it is skipped under `NODE_ENV=test`,
+ * and inside an in-flight operation), and `meta` always does.
+ */
+function once<T>(fn: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | undefined;
+  return () => (cached ??= fn());
+}
 
 const BEHAVIOR_PRIORITY_MAP: Record<number, 'high' | 'medium' | 'low'> = {
   1: 'medium',
@@ -56,6 +70,8 @@ type ItemStatusFilter = 'new' | 'archived' | 'all';
 
 @Injectable()
 export class ChildrenService {
+  private readonly logger = new Logger(ChildrenService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessionService: MashovSessionService,
@@ -769,23 +785,103 @@ export class ChildrenService {
     return rows.map((row) => row.id);
   }
 
-  private async timetableIsEmpty(studentGuid: string): Promise<boolean> {
-    return (await this.prisma.timetableEntry.count({ where: { studentGuid }, take: 1 })) === 0;
-  }
+  /**
+   * ## The probe must agree with the read it guards
+   *
+   * The invariant: `localIsEmpty` is true **exactly when** the read it guards
+   * would return no rows.
+   *
+   * All four of these used to count `{ where: { studentGuid } }` with no year
+   * filter while every read was scoped to the current year. A child with rows
+   * only at a year the reader will not serve therefore got the worst of both:
+   * the read returned `[]` so the section rendered empty, and the probe saw
+   * rows so `ensureFresh` never waited for a fetch that would have filled it.
+   * At the 7-day TTL the grid and the class list carry, that froze for a week
+   * behind a clean `200 {"data":[]}` and a green source-health.
+   *
+   * Fixed on all four rather than the two that were visibly broken: grades and
+   * notices carry the identical defect at a 6h/12h TTL, which is the same bug
+   * waiting for a quieter month.
+   */
 
-  /** Whether this child has no grade rows yet, so a first view should wait. */
-  private async gradesAreEmpty(studentGuid: string): Promise<boolean> {
-    return (
-      (await this.prisma.gradeItem.count({ where: { studentGuid }, take: 1 })) === 0
+  /** Whether the read would serve nothing, given the years rows exist at. */
+  private servesNothing(yearsAvailable: number[], schoolYear: number): boolean {
+    // `UNSCOPED_SCHOOL_YEAR` is admitted by `currentYearScope`, so a
+    // pre-migration row IS servable. Treating it as a past year would report a
+    // half-migrated database empty and re-fetch the world.
+    return !yearsAvailable.some(
+      (year) => year === schoolYear || year === UNSCOPED_SCHOOL_YEAR,
     );
   }
 
-  private async subjectsAreEmpty(studentGuid: string): Promise<boolean> {
-    return (await this.prisma.subjectEnrollment.count({ where: { studentGuid }, take: 1 })) === 0;
+  /**
+   * Every year this child holds subject rows at, ascending.
+   *
+   * A `groupBy` rather than a `count`: it answers the probe's question and
+   * supplies `meta.yearsAvailable` for the honest empty state from the same
+   * query, so saying *why* a section is empty costs nothing.
+   */
+  private async subjectYears(studentGuid: string): Promise<number[]> {
+    const rows = await this.prisma.subjectEnrollment.groupBy({
+      by: ['schoolYear'],
+      where: { studentGuid },
+    });
+    return rows.map((row) => row.schoolYear).sort((a, b) => a - b);
   }
 
-  private async noticesAreEmpty(studentGuid: string): Promise<boolean> {
-    return (await this.prisma.messageBoardItem.count({ where: { studentGuid }, take: 1 })) === 0;
+  /** Every year this child holds timetable rows at, ascending. */
+  private async timetableYears(studentGuid: string): Promise<number[]> {
+    const rows = await this.prisma.timetableEntry.groupBy({
+      by: ['schoolYear'],
+      where: { studentGuid },
+    });
+    return rows.map((row) => row.schoolYear).sort((a, b) => a - b);
+  }
+
+  /** Whether this child has no grade rows the read would serve. */
+  private async gradesAreEmpty(studentGuid: string, schoolYear: number): Promise<boolean> {
+    return (
+      (await this.prisma.gradeItem.count({
+        where: { studentGuid, ...currentYearScope(schoolYear) },
+        take: 1,
+      })) === 0
+    );
+  }
+
+  private async noticesAreEmpty(studentGuid: string, schoolYear: number): Promise<boolean> {
+    return (
+      (await this.prisma.messageBoardItem.count({
+        where: { studentGuid, ...currentYearScope(schoolYear) },
+        take: 1,
+      })) === 0
+    );
+  }
+
+  /**
+   * Warns when a section is served empty although the child HAS rows — at a
+   * year the read will not serve.
+   *
+   * Self-limiting: in a healthy database it never fires. It stays quiet for a
+   * child with no rows anywhere too, because "nothing yet" is a new child or a
+   * school that publishes nothing, not a diagnosis.
+   *
+   * This is the one line that would have answered the ticket this came from in
+   * a minute instead of a day.
+   */
+  private warnIfEmptyButPresent(
+    section: string,
+    studentGuid: string,
+    served: number,
+    schoolYear: number,
+    yearsAvailable: number[],
+  ): void {
+    if (served > 0 || yearsAvailable.length === 0) return;
+    this.logger.warn(
+      `${section}: serving an empty section for ${studentGuid} at schoolYear=${schoolYear}, ` +
+        `but rows exist at [${yearsAvailable.join(', ')}]. The read is year-scoped, so these ` +
+        `rows are not servable; the child's school has most likely not published ${section} ` +
+        `for the current year.`,
+    );
   }
 
   async getTimetable(studentGuid: string, userId?: string) {
@@ -796,23 +892,34 @@ export class ChildrenService {
     // student per week, and only for a student somebody actually looks at.
     // `timetable` is per-student and `bells` is not, which is why the run key
     // is computed per source inside `freshenOnRead` rather than per call.
+    // Resolved ONCE and shared by the probe and the read, which is the
+    // invariant the probe exists to hold. Resolving it twice is how they
+    // drifted apart in the first place.
+    const schoolYear = await schoolYearForConnection(
+      this.prisma,
+      student.householdConnectionId,
+    );
+    const where = { studentGuid, ...currentYearScope(schoolYear) };
+
+    // Memoised, so the probe and `meta` below share ONE query. The probe runs
+    // before any fetch and `meta` after it, so on a first view that actually
+    // fetched these years are the pre-fetch ones -- harmless, because `meta`
+    // is only consulted when the served set came back empty, and in that case
+    // nothing was written.
+    const yearsAvailable = once(() => this.timetableYears(studentGuid));
+
     await this.freshenOnRead(
       student.householdConnectionId,
       [
         [TimetableTask.SOURCE, (ctx) => this.timetableTask.execute(ctx)],
         [BellsTask.SOURCE, (ctx) => this.bellsTask.execute(ctx)],
       ],
-      () => this.timetableIsEmpty(studentGuid),
+      async () => this.servesNothing(await yearsAvailable(), schoolYear),
       studentGuid,
     );
 
     const entries = await this.prisma.timetableEntry.findMany({
-      where: {
-        studentGuid,
-        ...currentYearScope(
-          await schoolYearForConnection(this.prisma, student.householdConnectionId),
-        ),
-      },
+      where,
       orderBy: [{ day: 'asc' }, { lesson: 'asc' }],
     });
 
@@ -825,8 +932,16 @@ export class ChildrenService {
       student.householdConnectionId,
     );
 
+    const years = await yearsAvailable();
+    this.warnIfEmptyButPresent('timetable', studentGuid, entries.length, schoolYear, years);
+
     return {
       schedule,
+      // A `meta` sibling beside the existing `schedule` one, so the client can
+      // tell "your school has not published this year's grid yet" apart from
+      // "you have no grid". Non-breaking: the fetchers map `response.data` and
+      // ignore unknown keys.
+      meta: { schoolYear, yearsAvailable: years },
       data: entries.map((e) => ({
         id: e.id,
         studentGuid: e.studentGuid,
@@ -846,6 +961,14 @@ export class ChildrenService {
   async getSubjects(studentGuid: string, userId?: string) {
     const student = await this.requireStudent(studentGuid, userId);
 
+    // Resolved once and shared by the probe and the read; see `getTimetable`.
+    const schoolYear = await schoolYearForConnection(
+      this.prisma,
+      student.householdConnectionId,
+    );
+    const where = { studentGuid, ...currentYearScope(schoolYear) };
+    const yearsAvailable = once(() => this.subjectYears(studentGuid));
+
     // `lessonsCount` updates the rows `groups` creates, so they travel together.
     await this.freshenOnRead(
       student.householdConnectionId,
@@ -853,21 +976,20 @@ export class ChildrenService {
         [GroupsTask.SOURCE, (ctx) => this.groupsTask.execute(ctx)],
         [LessonsCountTask.SOURCE, (ctx) => this.lessonsCountTask.execute(ctx)],
       ],
-      () => this.subjectsAreEmpty(studentGuid),
+      async () => this.servesNothing(await yearsAvailable(), schoolYear),
       studentGuid,
     );
 
     const items = await this.prisma.subjectEnrollment.findMany({
-      where: {
-        studentGuid,
-        ...currentYearScope(
-          await schoolYearForConnection(this.prisma, student.householdConnectionId),
-        ),
-      },
+      where,
       orderBy: { subjectName: 'asc' },
     });
 
+    const years = await yearsAvailable();
+    this.warnIfEmptyButPresent('subjects', studentGuid, items.length, schoolYear, years);
+
     return {
+      meta: { schoolYear, yearsAvailable: years },
       data: items.map((item) => ({
         id: item.id,
         studentGuid: item.studentGuid,
@@ -898,20 +1020,20 @@ export class ChildrenService {
     // Freshened on view, like `getSubjects`: the `*/12` cron this source
     // arrived with fetched for every child of every household whether or not
     // anyone had the section open.
+    const schoolYear = await schoolYearForConnection(
+      this.prisma,
+      student.householdConnectionId,
+    );
+
     await this.freshenOnRead(
       student.householdConnectionId,
       [[GradesTask.SOURCE, (ctx) => this.gradesTask.execute(ctx)]],
-      () => this.gradesAreEmpty(studentGuid),
+      () => this.gradesAreEmpty(studentGuid, schoolYear),
       studentGuid,
     );
 
     const items = await this.prisma.gradeItem.findMany({
-      where: {
-        studentGuid,
-        ...currentYearScope(
-          await schoolYearForConnection(this.prisma, student.householdConnectionId),
-        ),
-      },
+      where: { studentGuid, ...currentYearScope(schoolYear) },
       // A test and a quiz on one day are common, and `eventDate` alone lets
       // Postgres return those rows in either order, so a refetch can swap
       // them on screen. `enteredAt` then `gradingEventId` make it total.
@@ -1041,10 +1163,15 @@ export class ChildrenService {
     // Shorter TTL than the timetable: notices expire, so a stale copy shows a
     // board that is quietly out of date. The digest set usually has it fresh
     // already for a notification-enabled household.
+    const schoolYear = await schoolYearForConnection(
+      this.prisma,
+      student.householdConnectionId,
+    );
+
     await this.freshenOnRead(
       student.householdConnectionId,
       [[MessageBoardTask.SOURCE, (ctx) => this.messageBoardTask.execute(ctx)]],
-      () => this.noticesAreEmpty(studentGuid),
+      () => this.noticesAreEmpty(studentGuid, schoolYear),
       studentGuid,
     );
 
@@ -1053,9 +1180,7 @@ export class ChildrenService {
       where: {
         studentGuid,
         expirationDate: { gt: now },
-        ...currentYearScope(
-          await schoolYearForConnection(this.prisma, student.householdConnectionId),
-        ),
+        ...currentYearScope(schoolYear),
       },
       orderBy: { expirationDate: 'asc' },
     });
