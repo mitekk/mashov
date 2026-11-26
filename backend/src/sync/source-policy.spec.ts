@@ -12,6 +12,7 @@ import { AchvasTask } from './tasks/achvas.task';
 import { BehaviorTask } from './tasks/behavior.task';
 import { BellsTask } from './tasks/bells.task';
 import { DailyBehaveTask } from './tasks/daily-behave.task';
+import { GradesTask } from './tasks/grades.task';
 import { GroupsTask } from './tasks/groups.task';
 import { HomeworkTask } from './tasks/homework.task';
 import { LessonsCountTask } from './tasks/lessons-count.task';
@@ -36,6 +37,7 @@ const ALL_TASK_SOURCES = [
   BehaviorTask.SOURCE,
   BellsTask.SOURCE,
   DailyBehaveTask.SOURCE,
+  GradesTask.SOURCE,
   GroupsTask.SOURCE,
   HomeworkTask.SOURCE,
   LessonsCountTask.SOURCE,
@@ -111,7 +113,7 @@ describe('SOURCE_POLICY', () => {
 
   it('derives PER_STUDENT_SOURCES from the same table', () => {
     expect([...PER_STUDENT_SOURCES].sort()).toEqual(
-      ['behavior', 'groups', 'homework', 'lessons_count', 'message_board', 'timetable'].sort(),
+      ['behavior', 'grades', 'groups', 'homework', 'lessons_count', 'message_board', 'timetable'].sort(),
     );
   });
 

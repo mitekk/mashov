@@ -3,6 +3,7 @@ import { MailCountsTask } from './tasks/mail-counts.task';
 import { MailInboxTask } from './tasks/mail-inbox.task';
 import { HomeworkTask } from './tasks/homework.task';
 import { BehaviorTask } from './tasks/behavior.task';
+import { GradesTask } from './tasks/grades.task';
 import { AchvasTask } from './tasks/achvas.task';
 import { GroupsTask } from './tasks/groups.task';
 import { LessonsCountTask } from './tasks/lessons-count.task';
@@ -85,6 +86,7 @@ export class SyncService {
     private readonly mailInboxTask: MailInboxTask,
     private readonly homeworkTask: HomeworkTask,
     private readonly behaviorTask: BehaviorTask,
+    private readonly gradesTask: GradesTask,
     private readonly achvasTask: AchvasTask,
     private readonly groupsTask: GroupsTask,
     private readonly lessonsCountTask: LessonsCountTask,
@@ -322,6 +324,7 @@ export class SyncService {
       { name: 'mailInbox', fn: () => this.mailInboxTask.execute(context) },
       { name: 'homework', fn: () => this.homeworkTask.execute(context) },
       { name: 'behavior', fn: () => this.behaviorTask.execute(context) },
+      { name: 'grades', fn: () => this.gradesTask.execute(context) },
       { name: 'achvas', fn: () => this.achvasTask.execute(context) },
       { name: 'groups', fn: () => this.groupsTask.execute(context) },
       { name: 'lessonsCount', fn: () => this.lessonsCountTask.execute(context) },

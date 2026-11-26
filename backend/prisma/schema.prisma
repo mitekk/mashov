@@ -431,6 +431,47 @@ model SubjectEnrollment {
   @@map("subject_enrollment")
 }
 
+/// One graded assessment event for one child, from `GET /api/students/{guid}/grades`.
+///
+/// Upstream sends both `id` and `gradingEventId` and they are identical in every
+/// observed row, so only one is stored and it is what the row is keyed on.
+///
+/// `rate` and `gradeRate` are deliberately NOT stored: both are `0.0` in every
+/// observed row, i.e. the school weights nothing, so a weighted average would be
+/// a division by zero dressed up as arithmetic. The subject average computed on
+/// the client is therefore a plain mean. If a school ever sends real weights,
+/// that is the moment to add the columns -- not before.
+///
+/// Two dates, as on `BehaviorItem`: `eventDate` is when the test was sat,
+/// `enteredAt` (upstream `timestamp`) when the teacher keyed the grade in, and
+/// the latter can be weeks after the former. Named `enteredAt` rather than
+/// `timestamp` so the two can never be confused at a call site.
+model GradeItem {
+  id             String   @id @default(cuid())
+  studentGuid    String
+  gradingEventId Int
+  grade          Int
+  gradingPeriod  Int
+  gradeTypeId    Int
+  gradeType      String
+  gradingEvent   String
+  groupId        Int
+  groupName      String
+  subjectName    String
+  teacherName    String
+  eventDate      DateTime
+  enteredAt      DateTime
+  rawPayload     Json?
+  schoolYear     Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  @@unique([studentGuid, schoolYear, gradingEventId])
+  // The only reader is the per-child year-scoped list, newest assessment first.
+  // No year-wide index: grades feed no digest and no feed (yet).
+  @@index([studentGuid, schoolYear, eventDate])
+  @@map("grade_item")
+}
+
 /// A school's own behaviour taxonomy, NOT global reference data.
 ///
 /// `apis/get-api-achvas.md` carries `teacherId` and `commonBehaveId`: the codes

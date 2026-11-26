@@ -336,7 +336,7 @@ child data reaches the model (first names only) and what does not.
 
 ### Background syncing
 
-The app used to run 18 sync tasks on their own crons, each fanning out across
+The app used to run 19 sync tasks on their own crons, each fanning out across
 *every* active household and *every* active child whether or not anyone was
 looking — on the order of **1,300–1,400 upstream requests and ~48 full logins
 per household per day**, a good share of it for data no page renders. For a
@@ -348,7 +348,7 @@ here. [ADR-0046](docs/adr/0046-no-shared-mashov-account.md) replaced it.
 | Trigger | What it fetches | Who gets it |
 |---|---|---|
 | Sign-in, and adding a school | the `login` set: roster, homework, behaviour, mail, behaviour codes — what `/home` and `/children` render | everyone |
-| Page view with a lapsed local copy | that page's own sources (timetable, bells, subjects, notices, profile) | everyone |
+| Page view with a lapsed local copy | that page's own sources (timetable, bells, subjects, notices, grades, profile) | everyone |
 | The refresh button | the `login` set again, ignoring TTLs | everyone |
 | `NotificationWindowTask` at **:50 of 10:00–18:00** Jerusalem | the `digest` set, just before each 11:00–19:00 digest tick | households with notifications on |
 | `NotificationWindowTask` every **30 min, 07:00–20:59** Jerusalem | mail, inside the inbox notifier's non-quiet window | households with notifications on |
@@ -381,6 +381,7 @@ own schedule could refresh it. Per-source overrides:
 | `SYNC_STALE_<SOURCE>_MINUTES` | what `/more` reports as stale | 2× the TTL, floor 60 min |
 | `SYNC_ON_READ_BUDGET_MS` | how long a page view waits for a fetch when it has nothing to render. Past this it serves the stale copy | `4000` |
 | `SYNC_ON_READ_MAX_INFLIGHT` | concurrent read-path fetches per process; past this, pages serve stale. The circuit breaker that stops a traffic spike here becoming one upstream | `4` |
+| `SYNC_ON_READ_RETRY_MINUTES` | after a failed read-path fetch, how long before another is attempted. Without a backoff a broken upstream means a fresh login on every request | `15` |
 | `NOTIFY_SYNC_JITTER_MS` | random delay per household, so N households do not hit Mashov on the same second. `0` disables it | `15000` |
 | `NOTIFY_SYNC_TICK_BUDGET_MS` | abandon a scheduler tick that overruns, so it cannot collide with the next | `600000` |
 

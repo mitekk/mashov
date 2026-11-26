@@ -46,6 +46,7 @@ import type { BellsTask } from '../../backend/src/sync/tasks/bells.task';
 import type { GroupsTask } from '../../backend/src/sync/tasks/groups.task';
 import type { LessonsCountTask } from '../../backend/src/sync/tasks/lessons-count.task';
 import type { MessageBoardTask } from '../../backend/src/sync/tasks/message-board.task';
+import type { GradesTask } from '../../backend/src/sync/tasks/grades.task';
 import { ChildrenService } from '../../backend/src/children/children.service';
 import { UserItemStateService } from '../../backend/src/common/user-item-state.service';
 import { FreshnessService } from '../../backend/src/sync/freshness.service';
@@ -602,6 +603,7 @@ describe('Two parents, one school, shared children', () => {
         { execute: async () => undefined } as unknown as GroupsTask,
         { execute: async () => undefined } as unknown as LessonsCountTask,
         { execute: async () => undefined } as unknown as MessageBoardTask,
+        { execute: async () => undefined } as unknown as GradesTask,
       );
     }
 
@@ -818,6 +820,7 @@ describe('Two parents, one school, shared children', () => {
           { execute: async () => undefined } as unknown as GroupsTask,
           { execute: async () => undefined } as unknown as LessonsCountTask,
           { execute: async () => undefined } as unknown as MessageBoardTask,
+          { execute: async () => undefined } as unknown as GradesTask,
         );
       }
 
@@ -1582,6 +1585,7 @@ describe('Two schools whose short labels collide', () => {
       { execute: async () => undefined } as unknown as GroupsTask,
       { execute: async () => undefined } as unknown as LessonsCountTask,
       { execute: async () => undefined } as unknown as MessageBoardTask,
+      { execute: async () => undefined } as unknown as GradesTask,
     );
   }
 

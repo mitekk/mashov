@@ -550,6 +550,7 @@ so a card cannot disagree with the school row beneath it, nor the header with `/
 | PUT | `/api/v1/children/:studentGuid/behavior/is-new` | **Yes** (Phase 2) | `{ behaviorIds: string[], isNew: boolean }` | `{ updated: number }` | 200, 400, 401, 404 | changed |
 | PUT | `/api/v1/children/:studentGuid/behavior/archive` | **Yes** (Phase 2) | `{ behaviorIds: string[], isArchived: boolean }` | `{ updated: number }` | 200, 400, 401, 404 | changed |
 | GET | `/api/v1/children/:studentGuid/subjects` | **Yes** (Phase 2) | — | See [Subjects Response](#get-apiv1childrenstudentguidsubjects) | 200, 401, 404 | changed |
+| GET | `/api/v1/children/:studentGuid/grades` | **Yes** (Phase 2) | — | See [Grades Response](#get-apiv1childrenstudentguidgrades) | 200, 401, 404 | new |
 | GET | `/api/v1/children/:studentGuid/notices` | **Yes** (Phase 2) | — | See [Notices Response](#get-apiv1childrenstudentguidnotices) | 200, 401, 404 | changed |
 | GET | `/api/v1/children/:studentGuid/timetable` | **Yes** (Phase 2) | — | See [Timetable Response](#get-apiv1childrenstudentguidtimetable) | 200, 401, 404 | changed |
 | GET | `/api/v1/mail/summary` | **Yes** (Phase 2) | — | See [Mail Summary Response](#get-apiv1mailsummary) | 200, 401 | changed |
@@ -946,6 +947,43 @@ Used in both list and mutation responses:
     }>;
     weeklyHours: number;
     lessonsCount: number;                // lessons held so far
+    updatedAt: string;                   // ISO 8601
+  }>;
+}
+```
+
+### GET /api/v1/children/:studentGuid/grades
+
+Every graded assessment of the current school year, newest `eventDate` first. Read from
+our own Postgres (`grade_item`), freshened on view behind a 6h TTL — not an upstream passthrough, so
+it answers through a Mashov outage. Full list, no pagination: one child's year is tens of
+rows.
+
+The response is **flat and ungrouped on purpose**. Grouping by subject and the per-subject
+average are computed client-side in `frontend/src/components/child/grades-model.ts`, where
+the arithmetic is unit-tested on its own. The average is a plain mean: upstream's `rate`
+and `gradeRate` are `0.0` on every observed row, so there is nothing to weight.
+
+Empty array when nothing has synced yet, which is also what a school with
+`denyStudentsRegularGrades` or a class on textual grades produces.
+
+```typescript
+{
+  data: Array<{
+    id: string;
+    studentGuid: string;
+    gradingEventId: number;              // upstream grading event; unique within a year
+    grade: number;                       // 0-100
+    gradingPeriod: number;               // term within the school year
+    gradeTypeId: number;                 // 1=מבחן 2=בוחן 3,4=הערכה חלופית 7=מטלה עם ציון
+    gradeType: string;                   // Hebrew label matching gradeTypeId
+    gradingEvent: string;                // free-text assessment title, Hebrew
+    groupId: number;
+    groupName: string;                   // e.g. "מתמטיקה ז8"
+    subjectName: string;                 // Hebrew
+    teacherName: string;                 // Hebrew
+    eventDate: string;                   // ISO 8601 — when the assessment was sat
+    enteredAt: string;                   // ISO 8601 — when the teacher keyed the grade in
     updatedAt: string;                   // ISO 8601
   }>;
 }
@@ -1394,7 +1432,7 @@ return 403 otherwise.
 3. **Notices** — only non-expired items are returned. `expirationDate` comparison is done server-side.
 4. **Behavior `remark` and `justification` fields** — the backend suppresses the upstream default value `"ללא הערות"` and returns `null` instead. Frontend should treat `null` as "no comment".
 5. **`POST /api/v1/sync/refresh`** — returns `202 Accepted` immediately. Sync runs asynchronously. Frontend should poll `GET /api/v1/settings/source-health` to observe progress.
-6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects`, `/children/notices`, and `/children/timetable` return full lists (no pagination needed at current data scale).
+6. **All list endpoints** — default limit 20, max limit 100. Exception: `/children/subjects`, `/children/notices`, `/children/grades`, and `/children/timetable` return full lists (no pagination needed at current data scale).
 7. **Read/handled state** — implemented directly on items (`isNew`, `isArchived` fields on `homework_item` and `behavior_item`; `isNew` on `mail_conversation`). There is no separate `read_state` table in Phase 1. State is household-global.
 8. **Digest deadlines** — the `צפי הגשה` date in a digest message is an *estimate*, never a due date. Mashov exposes no homework due-date field; the estimate comes from an explicit deadline written in the Hebrew text when there is one, else the group's next lesson from the timetable. ADR-0027 records this departure from the requirement not to promise due-soon logic.
 9. **Digest ownership** — `digest_recipient` rows are the de-facto child → parent mapping, because `student` has no `userId` FK. Every route that creates one validates that `studentGuid` is on the **active** roster and that the caller's own connections list the child (`ownsStudentForDelivery`, the ADR-0031 link set), answering `400` and `403 FORBIDDEN` respectively; the creating `userId` is recorded and scopes every mutation and the delivery history. That check is deliberately **stricter than the read side**: `canSeeStudent` admits a child no connection lists, because on a read "ownership unknown" must not empty the app, but a write that starts pushing a child's conduct record to a messaging app refuses it — otherwise any authenticated parent could claim an unattributed child. The cost is that on a roster that has never been attributed, a parent must wait for a successful roster sync before subscribing. ADR-0033 closed the cross-household hole ADR-0026 had accepted.

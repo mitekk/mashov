@@ -71,6 +71,9 @@ export function AppHeaderMenu({
         className={cn(
           'flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors',
           'tap-target hover:text-foreground data-[state=open]:text-foreground',
+          // The global `:focus-visible` ring reads as a stray outline on this
+          // pill, and the open menu already shows where focus is.
+          'focus-visible:ring-0 focus-visible:ring-offset-0',
         )}
       >
         {/* `lg`, not `sm`: below that the page title owns the row. */}

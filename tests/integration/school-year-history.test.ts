@@ -25,6 +25,7 @@ import type { BellsTask } from '../../backend/src/sync/tasks/bells.task';
 import type { GroupsTask } from '../../backend/src/sync/tasks/groups.task';
 import type { LessonsCountTask } from '../../backend/src/sync/tasks/lessons-count.task';
 import type { MessageBoardTask } from '../../backend/src/sync/tasks/message-board.task';
+import type { GradesTask } from '../../backend/src/sync/tasks/grades.task';
 import { ChildrenService } from '../../backend/src/children/children.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { MashovSessionService } from '../../backend/src/session/mashov-session.service';
@@ -157,6 +158,7 @@ describe('School-year history window', () => {
       { execute: async () => undefined } as unknown as GroupsTask,
       { execute: async () => undefined } as unknown as LessonsCountTask,
       { execute: async () => undefined } as unknown as MessageBoardTask,
+      { execute: async () => undefined } as unknown as GradesTask,
     );
   }
 
@@ -252,6 +254,7 @@ describe('School-year history window', () => {
       { execute: async () => undefined } as unknown as GroupsTask,
       { execute: async () => undefined } as unknown as LessonsCountTask,
       { execute: async () => undefined } as unknown as MessageBoardTask,
+      { execute: async () => undefined } as unknown as GradesTask,
     );
 
     const result = await children.getTimetable(STUDENT_GUID);

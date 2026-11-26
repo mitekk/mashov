@@ -434,6 +434,11 @@ export class ChildrenController {
     return this.childrenService.getSubjects(studentGuid, req.user?.userId);
   }
 
+  @Get(':studentGuid/grades')
+  async getGrades(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
+    return this.childrenService.getGrades(studentGuid, req.user?.userId);
+  }
+
   @Get(':studentGuid/notices')
   async getNotices(@Param('studentGuid') studentGuid: string, @Req() req: Request) {
     return this.childrenService.getNotices(studentGuid, req.user?.userId);

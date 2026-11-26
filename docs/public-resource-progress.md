@@ -193,6 +193,32 @@ on the fresh path, a throwing probe, a spent deadline, the roster TTL skip and
 its two overrides, the lowered-TTL threshold, and the per-connection profile
 freshening.
 
+## Merging master: a nineteenth source arrived
+
+`GradesTask` landed on master while this branch was open (PR #58), with a
+`*/12` cron, a `useSharedSession` branch and a `SOURCE_THRESHOLDS` entry -- all
+three of which this branch removes. It was not a textual conflict so much as a
+new instance of the same shape, so it got the same treatment as the other eight
+Pattern A tasks:
+
+- shared-session branch collapsed onto the per-connection fan-out, with the
+  refusing-year guard gone and failure causes aggregated into the thrown error;
+- `@Cron('*/12 * * * *')` deleted -- 120 requests per child per day for
+  assessments a teacher posts a few times a term;
+- added to `SOURCE_POLICY` with a 6h TTL, the 24h reported threshold it shipped
+  with, `perStudent: true`, and `sets: ['full']` only;
+- freshened on view in `children.service.ts:getGrades`, like `getSubjects`;
+- three shared-session specs replaced by the zero-connection pair every other
+  task has, plus one asserting the failure causes are carried.
+
+`history-backfill.task.ts` was a modify/delete conflict -- master added grades
+to the backfill, this branch deletes the task. Deletion wins: nothing else
+references it.
+
+Worth noting that `typecheck:tests` (added below) caught five integration-suite
+constructor sites in about a second. Before it, those were the failures that
+only appeared minutes later as "suites failed to run" inside Docker.
+
 ## A verification gap this work exposed
 
 `npm run lint` typechecked `backend/src` and `backend/test`, and ran **eslint

@@ -161,6 +161,13 @@ export const SOURCE_POLICY: SourcePolicy[] = [
   policy({ source: 'releases', task: 'releases', syncTtlMinutes: 45, staleThresholdMinutes: DAY, sets: ['digest', 'full'] }),
   policy({ source: 'schoolActivities', task: 'schoolActivities', syncTtlMinutes: 12 * HOUR, staleThresholdMinutes: DAY, sets: ['digest', 'full'] }),
 
+  // Grades. A read of our own Postgres (`children.service.ts:getGrades`), so
+  // it is freshened when the ציונים section is opened rather than on a cron:
+  // it arrived with a `*/12` cron of its own, which is 120 requests per child
+  // per day for assessments a teacher posts a few times a term. The reported
+  // threshold stays at the 24h it shipped with.
+  policy({ source: 'grades', task: 'grades', syncTtlMinutes: 6 * HOUR, staleThresholdMinutes: DAY, sets: ['full'], perStudent: true }),
+
   // Notices: a page tab AND a digest input.
   policy({ source: 'message_board', task: 'messageBoard', syncTtlMinutes: 12 * HOUR, staleThresholdMinutes: DAY, sets: ['digest', 'full'], perStudent: true }),
 

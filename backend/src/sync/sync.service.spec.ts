@@ -4,6 +4,7 @@ import { MailCountsTask } from './tasks/mail-counts.task';
 import { MailInboxTask } from './tasks/mail-inbox.task';
 import { HomeworkTask } from './tasks/homework.task';
 import { BehaviorTask } from './tasks/behavior.task';
+import { GradesTask } from './tasks/grades.task';
 import { AchvasTask } from './tasks/achvas.task';
 import { GroupsTask } from './tasks/groups.task';
 import { LessonsCountTask } from './tasks/lessons-count.task';
@@ -87,7 +88,7 @@ describe('SyncService', () => {
   // Derived, not hardcoded: this asserts that every task the harness wires up
   // actually ran, so adding a sync task cannot quietly go unexercised here --
   // nor break this test for no reason, as a literal count did.
-  const EXPECTED_TASK_COUNT = 16;
+  const EXPECTED_TASK_COUNT = 17;
 
   /**
    * A non-empty roster, so the roster rule does not force `students` into a
@@ -114,6 +115,7 @@ describe('SyncService', () => {
     const mailInbox = overrides.mailInbox ?? makeMockTask(makeResult());
     const homework = overrides.homework ?? makeMockTask(makeResult());
     const behavior = overrides.behavior ?? makeMockTask(makeResult());
+    const grades = overrides.grades ?? makeMockTask(makeResult());
     const achvas = overrides.achvas ?? makeMockTask(makeResult());
     const groups = overrides.groups ?? makeMockTask(makeResult());
     const lessonsCount = overrides.lessonsCount ?? makeMockTask(makeResult());
@@ -132,6 +134,7 @@ describe('SyncService', () => {
       mailInbox as unknown as MailInboxTask,
       homework as unknown as HomeworkTask,
       behavior as unknown as BehaviorTask,
+      grades as unknown as GradesTask,
       achvas as unknown as AchvasTask,
       groups as unknown as GroupsTask,
       lessonsCount as unknown as LessonsCountTask,
@@ -157,6 +160,7 @@ describe('SyncService', () => {
         mailInbox,
         homework,
         behavior,
+        grades,
         achvas,
         groups,
         lessonsCount,

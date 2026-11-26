@@ -12,6 +12,7 @@ import { BellsTask } from '../sync/tasks/bells.task';
 import { GroupsTask } from '../sync/tasks/groups.task';
 import { LessonsCountTask } from '../sync/tasks/lessons-count.task';
 import { MessageBoardTask } from '../sync/tasks/message-board.task';
+import { GradesTask } from '../sync/tasks/grades.task';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync/sync.types';
 import {
   schoolYearForConnection,
@@ -68,6 +69,7 @@ export class ChildrenService {
     private readonly groupsTask: GroupsTask,
     private readonly lessonsCountTask: LessonsCountTask,
     private readonly messageBoardTask: MessageBoardTask,
+    private readonly gradesTask: GradesTask,
   ) {}
 
   async getChildren(userId?: string) {
@@ -738,6 +740,13 @@ export class ChildrenService {
     return (await this.prisma.timetableEntry.count({ where: { studentGuid }, take: 1 })) === 0;
   }
 
+  /** Whether this child has no grade rows yet, so a first view should wait. */
+  private async gradesAreEmpty(studentGuid: string): Promise<boolean> {
+    return (
+      (await this.prisma.gradeItem.count({ where: { studentGuid }, take: 1 })) === 0
+    );
+  }
+
   private async subjectsAreEmpty(studentGuid: string): Promise<boolean> {
     return (await this.prisma.subjectEnrollment.count({ where: { studentGuid }, take: 1 })) === 0;
   }
@@ -824,6 +833,61 @@ export class ChildrenService {
         inactiveTeachers: this.asArray(item.inactiveTeachers),
         weeklyHours: item.weeklyHours,
         lessonsCount: item.lessonsCount,
+        updatedAt: item.updatedAt.toISOString(),
+      })),
+    };
+  }
+
+  /**
+   * Every graded assessment of the current school year, newest first.
+   *
+   * A read of our own Postgres, like `getSubjects` and unlike the lesson-plan
+   * passthroughs: no upstream call, so it survives a Mashov outage and costs
+   * no login per tab open. Flat rows on purpose -- the grouping by subject and
+   * the subject average live in `frontend/src/components/child/grades-model.ts`,
+   * where the arithmetic is unit-tested on its own.
+   */
+  async getGrades(studentGuid: string, userId?: string) {
+    const student = await this.requireStudent(studentGuid, userId);
+
+    // Freshened on view, like `getSubjects`: the `*/12` cron this source
+    // arrived with fetched for every child of every household whether or not
+    // anyone had the section open.
+    await this.freshenOnRead(
+      student.householdConnectionId,
+      [[GradesTask.SOURCE, (ctx) => this.gradesTask.execute(ctx)]],
+      () => this.gradesAreEmpty(studentGuid),
+    );
+
+    const items = await this.prisma.gradeItem.findMany({
+      where: {
+        studentGuid,
+        ...currentYearScope(
+          await schoolYearForConnection(this.prisma, student.householdConnectionId),
+        ),
+      },
+      // A test and a quiz on one day are common, and `eventDate` alone lets
+      // Postgres return those rows in either order, so a refetch can swap
+      // them on screen. `enteredAt` then `gradingEventId` make it total.
+      orderBy: [{ eventDate: 'desc' }, { enteredAt: 'desc' }, { gradingEventId: 'desc' }],
+    });
+
+    return {
+      data: items.map((item) => ({
+        id: item.id,
+        studentGuid: item.studentGuid,
+        gradingEventId: item.gradingEventId,
+        grade: item.grade,
+        gradingPeriod: item.gradingPeriod,
+        gradeTypeId: item.gradeTypeId,
+        gradeType: item.gradeType,
+        gradingEvent: item.gradingEvent,
+        groupId: item.groupId,
+        groupName: item.groupName,
+        subjectName: item.subjectName,
+        teacherName: item.teacherName,
+        eventDate: item.eventDate.toISOString(),
+        enteredAt: item.enteredAt.toISOString(),
         updatedAt: item.updatedAt.toISOString(),
       })),
     };

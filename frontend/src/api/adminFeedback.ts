@@ -17,6 +17,14 @@ import type {
  * or invalid. That is deliberate: `apiFetch` turns a 401 into a hard redirect
  * to the PARENT sign-in page, which would look like a broken admin screen.
  * A 403 surfaces as an ordinary `ApiError` the page renders.
+ *
+ * Every call here opts into `reauthenticateOnRedirect`. When the 24h Access
+ * session expires, Access answers these requests with a 302 to its own login
+ * host rather than reaching the backend at all; a plain `fetch` follows that
+ * cross-origin hop and the browser reports an unreadable CORS error. The
+ * option makes the redirect readable and hands the browser to Access as a
+ * document navigation, which is the only kind of request that can complete
+ * the login.
  */
 export function fetchAdminFeedback(
   filter: AdminFeedbackFilter = 'all',
@@ -28,12 +36,18 @@ export function fetchAdminFeedback(
     page: String(page),
     limit: String(limit),
   });
-  return apiFetch<AdminFeedbackListResponse>(`/admin/feedback?${params.toString()}`);
+  return apiFetch<AdminFeedbackListResponse>(
+    `/admin/feedback?${params.toString()}`,
+    { reauthenticateOnRedirect: true },
+  );
 }
 
 /** Opening the detail is what stamps `readAt` server-side. */
 export function fetchAdminFeedbackDetail(id: string): Promise<AdminFeedbackDetailResponse> {
-  return apiFetch<AdminFeedbackDetailResponse>(`/admin/feedback/${encodeURIComponent(id)}`);
+  return apiFetch<AdminFeedbackDetailResponse>(
+    `/admin/feedback/${encodeURIComponent(id)}`,
+    { reauthenticateOnRedirect: true },
+  );
 }
 
 export function markAdminFeedbackResponded(
@@ -41,6 +55,6 @@ export function markAdminFeedbackResponded(
 ): Promise<AdminFeedbackDetailResponse> {
   return apiFetch<AdminFeedbackDetailResponse>(
     `/admin/feedback/${encodeURIComponent(id)}/response`,
-    { method: 'POST' },
+    { method: 'POST', reauthenticateOnRedirect: true },
   );
 }

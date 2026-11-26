@@ -655,6 +655,7 @@ describe('Two schools in one household, synced one after the other', () => {
         refreshResult.tasks.filter((task) => task.status === 'failed').map((task) => task.task).sort(),
       ).toEqual([
         'behavior',
+        'grades',
         'groups',
         'homework',
         'lessonsCount',
@@ -875,19 +876,19 @@ describe('Two schools in one household, synced one after the other', () => {
 
     it('asks each school only about its own child, once per task', async () => {
       // Owner-first ordering. Without it each run pays a guaranteed 403 for
-      // the other school's child before reaching the right account, across ten
-      // per-student tasks.
+      // the other school's child before reaching the right account, across
+      // eleven per-student tasks.
       const ownChildRequests = studentRequests.filter(
         (entry) => entry === `${CHILD_A}@${CONN_A}` || entry === `${CHILD_B}@${CONN_B}`,
       );
       const foreignChildRequests = studentRequests.filter(
         (entry) => entry === `${CHILD_A}@${CONN_B}` || entry === `${CHILD_B}@${CONN_A}`,
       );
-      // Seven per-student endpoints are reached here -- homework, behave,
-      // groups, lessonsCount, messageBoard, timetable and studentReleases;
-      // dailyBehave and outBehave sit behind feature flags that are off -- one
-      // own child per run, two runs per pass, two passes.
-      expect(ownChildRequests.length).toBe(7 * 1 * 2 * 2);
+      // Eight per-student endpoints are reached here -- homework, behave,
+      // grades, groups, lessonsCount, messageBoard, timetable and
+      // studentReleases; dailyBehave and outBehave sit behind feature flags
+      // that are off -- one own child per run, two runs per pass, two passes.
+      expect(ownChildRequests.length).toBe(8 * 1 * 2 * 2);
       // There are none. The owner-first ordering made each foreign call cost
       // one 403 instead of two; scoping the student list to the refreshing
       // connection's children removes them entirely.
