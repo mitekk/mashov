@@ -203,12 +203,16 @@ const SCOPE_TARGET = {
  * which is what keeps these assertions identical to the pre-ownership ones.
  */
 /**
- * The read-path freshening dependencies, which every construction needs and no
- * assertion in this file cares about. `SyncOnReadService.ensureFresh` returns
- * early under NODE_ENV=test anyway, so these are never called -- they exist to
- * satisfy the constructor.
+ * The read-path freshening dependencies, which every construction needs and
+ * almost no assertion in this file cares about. The real
+ * `SyncOnReadService.ensureFresh` returns early under NODE_ENV=test anyway, so
+ * for most specs these exist only to satisfy the constructor.
+ *
+ * `ensureFresh` is injectable because the *options* this service passes are
+ * load-bearing: `variantKey` is what keeps one child's freshness from being
+ * decided by a sibling's run, and only these specs can see the call.
  */
-function readPathDeps(): [
+function readPathDeps(ensureFresh: jest.Mock = jest.fn()): [
   SyncOnReadService,
   TimetableTask,
   BellsTask,
@@ -217,7 +221,7 @@ function readPathDeps(): [
   MessageBoardTask,
   GradesTask,
 ] {
-  const noop = { ensureFresh: jest.fn(), deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService;
+  const noop = { ensureFresh, deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService;
   const task = { execute: jest.fn() };
   return [
     noop,
@@ -372,6 +376,32 @@ describe('ChildrenService', () => {
         positiveBehaviorCount: 0,
         neutralBehaviorCount: 1,
       });
+    });
+
+    it('freshens the dashboard per connection, naming no student', async () => {
+      // Deliberately base-keyed. This freshens `groups` + `lessons_count` once
+      // per connection behind an emptiness probe that spans every child, so
+      // any student's run is the freshness it asked about. Keying it per
+      // student would multiply dashboard fetches by the child count -- and
+      // `FreshnessBar` polls this endpoint app-wide, which is the amplifier
+      // shape `ensureStudentsAvailable` warns about.
+      const ensureFresh = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(ensureFresh),
+      );
+
+      await service.getChildren('user-1');
+
+      expect(ensureFresh).toHaveBeenCalled();
+      for (const [, , options] of ensureFresh.mock.calls) {
+        expect(options.variantKey).toBeUndefined();
+      }
     });
 
     it('counts an unread item whose lessonDate is a month old', async () => {
@@ -1438,6 +1468,34 @@ describe('ChildrenService', () => {
 
       expect(targetForStudent).not.toHaveBeenCalled();
       expect(client.getForTarget).not.toHaveBeenCalled();
+    });
+
+    it("freshens grades under this student's own run key", async () => {
+      // `grades` is `perStudent`, and its runs are written as
+      // `grades:<studentGuid>`. Without naming the key, a sibling's successful
+      // run inside the 6h TTL reads as this child's freshness and the section
+      // stays empty for the whole window.
+      const ensureFresh = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(ensureFresh),
+      );
+
+      await service.getGrades(TEST_GUID);
+
+      expect(ensureFresh).toHaveBeenCalledWith(
+        'grades',
+        expect.any(Function),
+        expect.objectContaining({
+          connectionId: 'conn-1',
+          variantKey: `grades:${TEST_GUID}`,
+        }),
+      );
     });
   });
 

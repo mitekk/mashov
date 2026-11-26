@@ -7,6 +7,7 @@ import { ConnectionScopeService } from '../common/connection-scope/connection-sc
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
 import { SyncOnReadService } from '../sync/sync-on-read.service';
+import { policyForSource } from '../sync/source-policy';
 import { TimetableTask } from '../sync/tasks/timetable.task';
 import { BellsTask } from '../sync/tasks/bells.task';
 import { GroupsTask } from '../sync/tasks/groups.task';
@@ -101,6 +102,13 @@ export class ChildrenService {
     // that is the amplifier shape `ensureStudentsAvailable` warns about.
     // One budget for the whole request, not one per connection -- see
     // `freshenOnRead`.
+    //
+    // Base-keyed on purpose: no student guid is passed, so freshness matches
+    // any variant of the source. The emptiness probe below spans every child
+    // at once, so any child's run is the freshness this asks about -- and
+    // `FreshnessBar` polls this endpoint app-wide, so keying it per student
+    // would multiply these fetches by the child count. The per-student views
+    // (`getGrades`, `getNotices`, `getTimetable`, `getSubjects`) do pass one.
     const freshenDeadline = this.syncOnRead.deadlineFromNow();
     for (const connectionId of await this.activeConnectionIds(userId)) {
       await this.freshenOnRead(
@@ -114,6 +122,7 @@ export class ChildrenService {
             where: { studentGuid: { in: students.map((student) => student.studentGuid) } },
             take: 1,
           })) === 0,
+        undefined, // no student: this read spans all of them, see above
         freshenDeadline,
       );
     }
@@ -712,16 +721,40 @@ export class ChildrenService {
    * that broke `source-health`. The fetches still run to completion in the
    * background once the budget is spent; they just stop being waited on, and
    * the next view serves what they wrote.
+   *
+   * ## Why `studentGuid` is per-source, not per-call
+   *
+   * A `perStudent` source writes its runs as `${SOURCE}:${studentGuid}`, and
+   * freshness has to be read under that same key: without it one child's
+   * successful run declares a *sibling's* copy fresh, and the sibling's
+   * section stays empty for the whole TTL — 6h for grades, 7 days for the
+   * grid. `policyForSource(...).perStudent` decides, so the policy table stays
+   * the single source of truth, and the decision is per source because one
+   * call mixes granularities: `getTimetable` passes `timetable`
+   * (`perStudent: true`) and `bells` (`false`) together.
+   *
+   * Callers whose read genuinely spans students — the dashboard — pass no
+   * guid and keep base-source matching.
    */
   private async freshenOnRead(
     connectionId: string | null,
     sources: Array<[string, (context: SyncExecutionContext) => Promise<SyncTaskRunResult>]>,
     localIsEmpty: () => Promise<boolean>,
+    studentGuid?: string,
     deadline: number = this.syncOnRead.deadlineFromNow(),
   ): Promise<void> {
     if (!connectionId) return;
     for (const [source, fetch] of sources) {
-      await this.syncOnRead.ensureFresh(source, fetch, { connectionId, localIsEmpty, deadline });
+      const variantKey =
+        studentGuid && policyForSource(source)?.perStudent
+          ? `${source}:${studentGuid}`
+          : undefined;
+      await this.syncOnRead.ensureFresh(source, fetch, {
+        connectionId,
+        localIsEmpty,
+        deadline,
+        variantKey,
+      });
     }
   }
 
@@ -761,10 +794,17 @@ export class ChildrenService {
     // Fetched on view instead of on a weekly cron for every household. Both
     // sources are near-static, so at a 7-day TTL this is ~2 upstream calls per
     // student per week, and only for a student somebody actually looks at.
-    await this.freshenOnRead(student.householdConnectionId, [
-      [TimetableTask.SOURCE, (ctx) => this.timetableTask.execute(ctx)],
-      [BellsTask.SOURCE, (ctx) => this.bellsTask.execute(ctx)],
-    ], () => this.timetableIsEmpty(studentGuid));
+    // `timetable` is per-student and `bells` is not, which is why the run key
+    // is computed per source inside `freshenOnRead` rather than per call.
+    await this.freshenOnRead(
+      student.householdConnectionId,
+      [
+        [TimetableTask.SOURCE, (ctx) => this.timetableTask.execute(ctx)],
+        [BellsTask.SOURCE, (ctx) => this.bellsTask.execute(ctx)],
+      ],
+      () => this.timetableIsEmpty(studentGuid),
+      studentGuid,
+    );
 
     const entries = await this.prisma.timetableEntry.findMany({
       where: {
@@ -807,10 +847,15 @@ export class ChildrenService {
     const student = await this.requireStudent(studentGuid, userId);
 
     // `lessonsCount` updates the rows `groups` creates, so they travel together.
-    await this.freshenOnRead(student.householdConnectionId, [
-      [GroupsTask.SOURCE, (ctx) => this.groupsTask.execute(ctx)],
-      [LessonsCountTask.SOURCE, (ctx) => this.lessonsCountTask.execute(ctx)],
-    ], () => this.subjectsAreEmpty(studentGuid));
+    await this.freshenOnRead(
+      student.householdConnectionId,
+      [
+        [GroupsTask.SOURCE, (ctx) => this.groupsTask.execute(ctx)],
+        [LessonsCountTask.SOURCE, (ctx) => this.lessonsCountTask.execute(ctx)],
+      ],
+      () => this.subjectsAreEmpty(studentGuid),
+      studentGuid,
+    );
 
     const items = await this.prisma.subjectEnrollment.findMany({
       where: {
@@ -857,6 +902,7 @@ export class ChildrenService {
       student.householdConnectionId,
       [[GradesTask.SOURCE, (ctx) => this.gradesTask.execute(ctx)]],
       () => this.gradesAreEmpty(studentGuid),
+      studentGuid,
     );
 
     const items = await this.prisma.gradeItem.findMany({
@@ -999,6 +1045,7 @@ export class ChildrenService {
       student.householdConnectionId,
       [[MessageBoardTask.SOURCE, (ctx) => this.messageBoardTask.execute(ctx)]],
       () => this.noticesAreEmpty(studentGuid),
+      studentGuid,
     );
 
     const now = new Date();
