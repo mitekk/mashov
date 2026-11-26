@@ -1735,6 +1735,38 @@ describe('DigestService media', () => {
     expect(caption).toContain('&lt;b&gt;x&lt;/b&gt; &amp; y.pdf');
   });
 
+  it('keeps a caption built from a huge filename parseable and inside the ceiling', async () => {
+    // truncateCaption slices at 1000 characters, which on an HTML caption can
+    // land inside href="..." or between <a> and </a> -- a guaranteed parse
+    // failure whose retry re-uploads the whole buffer, up to 20 MB.
+    const harness = makeHarness({
+      attachments: [{ ...FILE, fileName: `${'א'.repeat(5000)}.pdf` }],
+      publicBaseUrl: 'https://mashov.mitya.dev',
+      payload: makePayload({
+        homeworkNew: [
+          {
+            id: 'hw-1',
+            subjectName: 'ב'.repeat(3000),
+            homeworkText: 'לפתור עמוד 42',
+            remark: null,
+            lessonDate: TODAY,
+            groupId: 55,
+          },
+        ],
+      }),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const caption = harness.mediaFetch.mock.calls[0][1][0].caption as string;
+    expect(caption.length).toBeLessThanOrEqual(1024);
+    // Balanced, and not cut mid-tag or mid-entity.
+    expect((caption.match(/<a /g) ?? []).length).toBe((caption.match(/<\/a>/g) ?? []).length);
+    expect(caption).toContain('</a>');
+    expect(caption).not.toMatch(/&[a-z]{0,4}$/);
+    expect(caption).not.toMatch(/<[^>]*$/);
+  });
+
   it('captions a file with no link when PUBLIC_BASE_URL is unset', async () => {
     const harness = makeHarness({ attachments: [FILE] });
 

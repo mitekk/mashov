@@ -103,10 +103,13 @@ describe('notify-links', () => {
     );
   });
 
-  it('produces paths the sign-in bounce will restore', () => {
-    // PHASE1_ROUTE_PATTERNS admits /children/** and /inbox/<id>, so a parent
-    // who follows a link while signed out lands on the item after signing in
-    // rather than on the home page.
+  it('produces paths shaped like the ones the sign-in bounce restores', () => {
+    // These regexes are a COPY of PHASE1_ROUTE_PATTERNS, not the real thing:
+    // the unit container is built from ./backend alone and has no frontend/ in
+    // the image, so this spec cannot import them. The real drift guard, which
+    // imports the frontend's own patterns, is
+    // tests/integration/notify-links-routes.test.ts -- it runs where the whole
+    // repo is mounted. This is a shape check, and a cheap one to keep.
     const paths = [
       behaviorItemUrl(BASE, GUID, 'beh-7'),
       homeworkItemUrl(BASE, GUID, 'hw-3'),

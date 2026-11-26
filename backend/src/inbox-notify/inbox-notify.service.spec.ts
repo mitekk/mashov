@@ -718,8 +718,10 @@ describe('InboxNotifyService.notifyAll', () => {
 });
 
 describe('InboxNotifyService media', () => {
-  const withFile = () =>
-    messageRow({ files: [{ fileId: 'file-1', fileName: 'אישור הורים.pdf' }] });
+  const withFile = (
+    overrides: Record<string, unknown> = {},
+    fileName = 'אישור הורים.pdf',
+  ) => messageRow({ files: [{ fileId: 'file-1', fileName }], ...overrides });
 
   it('sends the text first and the file after it', async () => {
     // The text message is the only thing gating ledger confirmation, so it
@@ -755,6 +757,19 @@ describe('InboxNotifyService media', () => {
       ],
       expect.any(Number),
     );
+  });
+
+  it('keeps a caption built from a huge filename and subject inside the ceiling', async () => {
+    const harness = makeHarness({
+      messages: [withFile({ subject: 'ב'.repeat(4000) }, `${'א'.repeat(4000)}.pdf`)],
+    });
+
+    await harness.service.notifyAll({ now: NOW });
+
+    const caption = harness.mediaFetch.mock.calls[0][1][0].caption as string;
+    expect(caption.length).toBeLessThanOrEqual(1024);
+    expect(caption).not.toMatch(/&[a-z]{0,4}$/);
+    expect(caption).not.toMatch(/<[^>]*$/);
   });
 
   it('sends the notification text as HTML, so the layout renders', async () => {

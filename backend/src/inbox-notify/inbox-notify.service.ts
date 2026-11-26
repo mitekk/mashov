@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
-import { escapeTelegramHtml } from '../telegram/telegram-html';
+import {
+  TELEGRAM_CAPTION_LABEL_BUDGET,
+  TELEGRAM_CAPTION_NAME_BUDGET,
+  clampLine,
+  escapeTelegramHtml,
+} from '../telegram/telegram-html';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -440,7 +445,11 @@ export class InboxNotifyService {
               // cannot be chunked, and "which mail is this file from" is the
               // only thing it has to answer. Telegram HTML, escaped here --
               // both the filename and the subject are the school's text.
-              caption: `📎 ${escapeTelegramHtml(file.fileName)} · ${escapeTelegramHtml(message.subject)}`,
+              // Clamped before composing: a caption cannot be chunked, and
+              // truncating the composed HTML would cut an entity in half.
+              caption:
+                `📎 ${escapeTelegramHtml(clampLine(file.fileName, TELEGRAM_CAPTION_NAME_BUDGET))}` +
+                ` · ${escapeTelegramHtml(clampLine(message.subject, TELEGRAM_CAPTION_LABEL_BUDGET))}`,
               captionParseMode: 'HTML' as const,
             }))
           : [],

@@ -95,9 +95,13 @@ Mail bodies were already budgeted by `DEFAULT_BODY_CHARS`.
 
 `backend/src/telegram/notify-links.ts` mirrors `frontend/src/lib/child-routes.ts`
 — same shapes, same guid/id normalisation — because the backend cannot import
-from `frontend/`. The spec asserts the produced paths against
-`PHASE1_ROUTE_PATTERNS`, so the two copies cannot drift silently and a parent
-who follows a link while signed out lands on the item after the sign-in bounce.
+from `frontend/`. `tests/integration/notify-links-routes.test.ts` asserts the
+produced paths against the frontend's own exported `PHASE1_ROUTE_PATTERNS`, so
+the two copies cannot drift silently and a parent who follows a link while
+signed out lands on the item after the sign-in bounce. That guard has to live
+in the integration suite: the unit container is built from `./backend` alone
+and has no `frontend/` in its image, while the integration container mounts the
+whole repo.
 
 | What | Target |
 |---|---|

@@ -95,12 +95,29 @@ export function renderInboxMessage(
     `<b>${escaped(message.subject)}</b>`,
   ];
 
-  // The school's own words, visibly theirs. Omitted rather than rendered as an
-  // empty quote when upstream gave us no body -- which is most of the time,
-  // because the inbox list payload carries none until a parent opens the
+  // The school's own words, visibly theirs -- one quote per paragraph.
+  //
+  // Not one quote around the whole body, and for two reasons.
+  //
+  // `clampLine` would collapse the paragraph breaks that
+  // `stripMailHtmlToText` goes to deliberate trouble to preserve (it separates
+  // paragraphs with a single `\n`), and a school letter would read as one
+  // run-on block -- in the one feature whose point is that a message scans in
+  // two seconds.
+  //
+  // And a single blockquote holding those newlines would put its opening tag
+  // on one line and its closing tag on another, which is exactly what
+  // `chunkTelegramText` may cut between: the part before the cut would reach
+  // Telegram with an unclosed tag and arrive stripped flat. One quote per
+  // paragraph keeps the breaks AND the invariant.
+  //
+  // Omitted entirely when upstream gave us no body -- which is most of the
+  // time, because the inbox list payload carries none until a parent opens the
   // thread.
-  const quoted = escaped(body);
-  if (quoted.length > 0) lines.push(`<blockquote>${quoted}</blockquote>`);
+  for (const paragraph of body.split(/\n+/)) {
+    const quoted = escaped(paragraph);
+    if (quoted.length > 0) lines.push(`<blockquote>${quoted}</blockquote>`);
+  }
 
   const href = inboxConversationUrl(options.publicBaseUrl, message.conversationId);
 

@@ -38,7 +38,8 @@ describe('renderInboxMessage', () => {
 
     // Both paragraphs on one line: a blockquote spanning two lines is exactly
     // what the chunker's hard cut could split.
-    expect(text).toContain('<blockquote>שלום, נבקש להביא בגדי ספורט.</blockquote>');
+    expect(text).toContain('<blockquote>שלום,</blockquote>');
+    expect(text).toContain('<blockquote>נבקש להביא בגדי ספורט.</blockquote>');
     expect(text).not.toContain('<p>');
   });
 
@@ -153,12 +154,21 @@ describe('renderInboxMessage', () => {
     }
   });
 
-  it('keeps a multi-paragraph body on one line, so no tag spans two', () => {
+  it('keeps the paragraphs of a multi-paragraph letter apart, one quote each', () => {
+    // `html-to-text` goes to documented trouble to preserve paragraph breaks
+    // (the "שלוםנבקש להביא" comment). Collapsing them into one line to satisfy
+    // the one-line-per-tag invariant threw that away and made a school letter
+    // read as a run-on block -- in the one feature whose point is that a
+    // message scans in two seconds. One blockquote per paragraph keeps both.
     const text = renderInboxMessage(
       makeMessage({ bodyHtmlSanitized: '<p>שורה א</p><p>שורה ב</p><p>שורה ג</p>' }),
       {},
     );
 
+    expect(text).toContain('<blockquote>שורה א</blockquote>');
+    expect(text).toContain('<blockquote>שורה ב</blockquote>');
+    expect(text).toContain('<blockquote>שורה ג</blockquote>');
+    // And the invariant still holds: every tag opens and closes in one line.
     for (const line of text.split('\n')) {
       expect((line.match(/<[a-z]/g) ?? []).length).toBe((line.match(/<\//g) ?? []).length);
     }

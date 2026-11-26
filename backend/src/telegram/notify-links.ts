@@ -23,8 +23,14 @@
  * `PHASE1_ROUTE_PATTERNS` (`frontend/src/lib/phase1-routes.ts`) already admits
  * `/children/**` and `/inbox/<id>`, so a parent who follows one of these while
  * signed out lands on the item after the sign-in bounce rather than on the
- * home page. Changing a route over there means changing it here; the spec
- * asserts the paths against those patterns so the two cannot drift silently.
+ * home page.
+ *
+ * Changing a route over there means changing it here, and the guard against
+ * forgetting lives in `tests/integration/notify-links-routes.test.ts`, which
+ * imports the frontend's own patterns and asserts these paths against them.
+ * It cannot live in this module's own spec: the unit container is built from
+ * `./backend` alone and has no `frontend/` in the image, while the integration
+ * container mounts the whole repo.
  *
  * Every builder returns `null` rather than a broken URL. An unset
  * `PUBLIC_BASE_URL` resolves to null, and a base of `undefined` would put the

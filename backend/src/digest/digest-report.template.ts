@@ -417,7 +417,16 @@ function homeworkBlock(
   base: string | null,
   guid: string | null,
 ): ItemBlock {
-  return { ref: digestItemRef(id, fact.id), href: homeworkItemUrl(base, guid, fact.id) };
+  return {
+    ref: digestItemRef(id, fact.id),
+    href: homeworkItemUrl(base, guid, fact.id),
+    // Quoted like a behaviour remark, and for a stronger reason: the prompt
+    // tells the model the teacher's note is rendered separately and not to
+    // repeat it, so if nothing rendered a homework remark it would be
+    // instructed away and lost. "להביא מחברת" is routinely the actionable half
+    // of the assignment.
+    remark: fact.remark,
+  };
 }
 
 /**
@@ -515,10 +524,15 @@ function behaviorSentence(fact: DigestBehaviorFact): string {
   return `נרשם ${head}.`;
 }
 
+/**
+ * The assignment, and deliberately NOT its remark.
+ *
+ * Same reasoning as `behaviorSentence`: the template quotes the remark as a
+ * `<blockquote>` under this line, so repeating it here would print the
+ * teacher's words twice.
+ */
 function homeworkSentence(fact: DigestHomeworkFact): string {
-  const text = fact.homeworkText.trim();
-  const remark = fact.remark?.trim();
-  return `${fact.subjectName} — ${remark ? `${text} (${remark})` : text}`;
+  return `${fact.subjectName} — ${fact.homeworkText.trim()}`;
 }
 
 /**
@@ -532,9 +546,20 @@ function releaseSentence(fact: DigestReleaseFact): string {
   return `שחרור מוקדם ב-${formatSchoolDate(fact.releaseDate)} בשעה ${formatTimeOfDay(fact.startHour)}.`;
 }
 
+/**
+ * The form's title and its answer deadline.
+ *
+ * The title falls back to a generic Hebrew noun when it is blank. This is the
+ * only per-fact sentence that could come back empty -- every other one emits
+ * fixed scaffolding -- and `section()` skips an item with no line, so a blank
+ * title would drop the form from the message while the ledger still recorded
+ * it as reported. Nothing ever re-reports an item already in the ledger, so
+ * that form would never be mentioned again.
+ */
 function activitySentence(fact: DigestActivityFact): string {
+  const title = fact.title.trim() || 'אישור שממתין לתשובתך';
   // The deadline clause is dropped when there is no deadline, rather than
   // printed as a formatted null.
-  if (!fact.endAnswerDate) return fact.title;
-  return `${fact.title} (יש להשיב עד ${formatSchoolDate(fact.endAnswerDate)})`;
+  if (!fact.endAnswerDate) return title;
+  return `${title} (יש להשיב עד ${formatSchoolDate(fact.endAnswerDate)})`;
 }

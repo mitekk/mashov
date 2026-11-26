@@ -181,10 +181,34 @@ describe('DigestSummarizerService.summarize', () => {
     const summary = await makeService().summarize(makePayload());
 
     // Keyed by the HOMEWORK id, which is what narrowDueTomorrow looks up --
-    // not by the namespaced ref.
+    // not by the namespaced ref. Only the due-tomorrow refs contribute: see
+    // the test below for why.
     expect(summary.deadlineResolutions).toEqual([
       { ref: 'hw-1', explicitDueDate: '2026-11-25' },
-      { ref: 'hw-2', explicitDueDate: null },
+    ]);
+  });
+
+  it('reads a deadline only off the due-tomorrow refs, so one id cannot answer twice', async () => {
+    // One homework row is reported twice on the day it is both newly assigned
+    // and estimated-due, so both refs strip to the same bare id. Emitting a
+    // resolution for each let `new Map(...)` keep whichever came last in the
+    // model's array, making a deferral decision depend on array order --
+    // something the old top-level array could not do. Only the due-tomorrow
+    // section consumes a resolution, so only it supplies one.
+    respondWith(
+      JSON.stringify({
+        ...GOOD_OUTPUT,
+        items: [
+          { ref: 'dueTomorrow:hw-1', line: 'להגיש עד ה-25', explicitDueDate: '2026-11-25' },
+          { ref: 'homeworkNew:hw-1', line: 'ניתנה היום', explicitDueDate: '2026-11-30' },
+        ],
+      }),
+    );
+
+    const summary = await makeService().summarize(makePayload());
+
+    expect(summary.deadlineResolutions).toEqual([
+      { ref: 'hw-1', explicitDueDate: '2026-11-25' },
     ]);
   });
 

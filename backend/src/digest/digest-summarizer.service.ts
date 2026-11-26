@@ -467,11 +467,18 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
 
   return {
     prose: { headline: candidate.headline, intros, itemLines },
-    // The deadline is keyed back to the HOMEWORK id, because that is what
-    // `narrowDueTomorrow` looks up and what the ledger stores. The namespaced
-    // ref is a prompt-and-template concern and stops here.
+    // Only the due-tomorrow refs, and keyed back to the HOMEWORK id -- which
+    // is what `narrowDueTomorrow` looks up and what the ledger stores. The
+    // namespaced ref is a prompt-and-template concern and stops here.
+    //
+    // `homeworkNew` is excluded deliberately. One homework row is reported
+    // twice on the day it is both newly assigned and estimated-due, so both
+    // refs strip to the same bare id; accepting both would let `new Map(...)`
+    // in `narrowDueTomorrow` keep whichever came last in the model's array,
+    // making a deferral decision depend on array order. Only the due-tomorrow
+    // section consumes a resolution, so only it supplies one.
     deadlineResolutions: items
-      .filter((item) => item.ref.startsWith('homeworkNew:') || item.ref.startsWith('dueTomorrow:'))
+      .filter((item) => item.ref.startsWith('dueTomorrow:'))
       .map((item) => ({
         ref: item.ref.slice(item.ref.indexOf(':') + 1),
         explicitDueDate: item.explicitDueDate,

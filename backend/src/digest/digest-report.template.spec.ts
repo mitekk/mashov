@@ -220,6 +220,32 @@ describe('renderReport structure', () => {
     expect(text).toContain('<blockquote>הגיע באיחור של 10 דקות</blockquote>');
   });
 
+  it("quotes a homework remark too, so the teacher's instruction cannot be dropped", () => {
+    // The prompt tells the model the teacher's note is rendered separately and
+    // not to repeat it. That has to be true of HOMEWORK as well as behaviour,
+    // or "להביא מחברת" is instructed away and nothing renders it -- the
+    // actionable half of the assignment, lost on the happy path.
+    const payload = makePayload({ homeworkNew: [{ ...HOMEWORK, remark: 'להביא מחברת' }] });
+
+    for (const prose of [modelProse(payload), deterministicProse(payload)]) {
+      const text = renderReport(payload, prose);
+
+      expect(text).toContain('<blockquote>להביא מחברת</blockquote>');
+      // Once, not twice: the sentence must not carry it as well.
+      expect(text.split('להביא מחברת').length - 1).toBe(1);
+    }
+  });
+
+  it('quotes a due-tomorrow item remark as well', () => {
+    const payload = makePayload({
+      homeworkDueTomorrow: [{ ...HOMEWORK, remark: 'לחתום על הדף' }],
+    });
+
+    expect(renderReport(payload, deterministicProse(payload))).toContain(
+      '<blockquote>לחתום על הדף</blockquote>',
+    );
+  });
+
   it('renders no blockquote for an event the teacher left no remark on', () => {
     const payload = makePayload({ behavior: [ABSENCE] });
 
@@ -381,6 +407,29 @@ describe('renderReport structure', () => {
 
     expect(text).toContain('טיול שנתי לגליל');
     expect(text).not.toContain('המצאתי');
+  });
+
+  it('still renders a consent form whose title is empty', () => {
+    // `activitySentence` is the only deterministic sentence that can come back
+    // empty, and `section()` skips an item with no line -- so an empty title
+    // would drop the form from the message while the ledger still recorded it
+    // as reported, meaning it is never mentioned again.
+    const payload = makePayload({ activities: [{ ...ACTIVITY, title: '   ' }] });
+
+    const text = renderReport(payload, deterministicProse(payload));
+
+    expect(text).toContain('✍️ אישורים שממתינים לך');
+    expect(text.split('\n').some((line) => line.startsWith('• '))).toBe(true);
+  });
+
+  it('still renders a consent form with neither a title nor a deadline', () => {
+    const payload = makePayload({ activities: [{ ...ACTIVITY, title: '', endAnswerDate: null }] });
+
+    expect(
+      renderReport(payload, deterministicProse(payload))
+        .split('\n')
+        .some((line) => line.startsWith('• ')),
+    ).toBe(true);
   });
 
   it('never leaks a guid or a teacher name into the message body', () => {

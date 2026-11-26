@@ -38,6 +38,22 @@
 export const TELEGRAM_LINE_BUDGET = 900;
 
 /**
+ * Per-value budgets for a CAPTION, which is a different problem from a line.
+ *
+ * A caption cannot be chunked, so `truncateCaption` cuts it at Telegram's 1024
+ * ceiling -- and on an HTML caption that cut can land inside `href="..."`,
+ * between `<a>` and `</a>`, or inside an `&amp;`. Each is a guaranteed
+ * `can't parse entities`, and the retry's price here is re-uploading the whole
+ * file buffer, up to `TELEGRAM_MEDIA_MAX_BYTES`.
+ *
+ * So the values are clamped BEFORE the caption is composed, small enough that
+ * the composed result -- name, label, an anchor with a deep link in it -- stays
+ * inside the ceiling and the truncation never fires on a real caption.
+ */
+export const TELEGRAM_CAPTION_NAME_BUDGET = 260;
+export const TELEGRAM_CAPTION_LABEL_BUDGET = 180;
+
+/**
  * The only three characters HTML parse mode reserves.
  *
  * `&` is replaced first and unconditionally, including inside something that

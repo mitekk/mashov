@@ -20,7 +20,12 @@ import { isPermanentTelegramFailure } from '../telegram/telegram-http';
 import { resolvePublicBaseUrl } from '../telegram/public-base-url';
 import { UnsentFile, deterministicProse, renderReport } from './digest-report.template';
 import { behaviorItemUrl, homeworkItemUrl } from '../telegram/notify-links';
-import { escapeTelegramHtml } from '../telegram/telegram-html';
+import {
+  TELEGRAM_CAPTION_LABEL_BUDGET,
+  TELEGRAM_CAPTION_NAME_BUDGET,
+  clampLine,
+  escapeTelegramHtml,
+} from '../telegram/telegram-html';
 import {
   DigestCandidate,
   DigestHomeworkFact,
@@ -1337,11 +1342,14 @@ function mediaRefFor(
       ? behaviorItemUrl(publicBaseUrl, studentGuid, attachment.itemId)
       : homeworkItemUrl(publicBaseUrl, studentGuid, attachment.itemId);
 
-  const name = escapeTelegramHtml(attachment.fileName);
+  // Clamped BEFORE composing, not truncated after: `truncateCaption` cuts at
+  // Telegram's ceiling and would land inside the href or the anchor.
+  const name = escapeTelegramHtml(clampLine(attachment.fileName, TELEGRAM_CAPTION_NAME_BUDGET));
   const parts = [`📎 ${href ? `<a href="${escapeTelegramHtml(href)}">${name}</a>` : name}`];
   // Dropped rather than rendered as an empty clause when the item is not in
   // this payload -- which a claimed-but-narrowed-out item is.
-  if (label && label.trim().length > 0) parts.push(escapeTelegramHtml(label.trim()));
+  const clampedLabel = clampLine(label ?? '', TELEGRAM_CAPTION_LABEL_BUDGET);
+  if (clampedLabel.length > 0) parts.push(escapeTelegramHtml(clampedLabel));
 
   return {
     kind: attachment.itemType,
