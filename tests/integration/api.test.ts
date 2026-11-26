@@ -16,7 +16,7 @@ import { MailModule } from "../../backend/src/mail/mail.module";
 import { SyncModule } from "../../backend/src/sync/sync.module";
 import { SettingsModule } from "../../backend/src/settings/settings.module";
 import { PrismaModule } from "../../backend/src/prisma/prisma.module";
-import { SessionModule } from "../../backend/src/session/session.module";
+import { MashovSessionModule } from "../../backend/src/session/mashov-session.module";
 import { DashboardModule } from "../../backend/src/dashboard/dashboard.module";
 import { FeedModule } from "../../backend/src/feed/feed.module";
 import { MashovHttpClient } from "../../backend/src/session/mashov-http.client";
@@ -84,7 +84,7 @@ describe("API Integration Tests (isNew refactor contract)", () => {
       imports: [
         ConfigModule.forRoot({ isGlobal: true }),
         PrismaModule,
-        SessionModule,
+        MashovSessionModule,
         HealthModule,
         ChildrenModule,
         MailModule,
@@ -96,8 +96,6 @@ describe("API Integration Tests (isNew refactor contract)", () => {
     })
       .overrideProvider(MashovHttpClient)
       .useValue({
-        get: mashovGetMock,
-        put: mashovPutMock,
         // The per-connection methods, which is what every user-facing read
         // uses since the household work: `getForTarget(url, target, config)`
         // and `putForTarget(url, data, target, config)`. They delegate to the

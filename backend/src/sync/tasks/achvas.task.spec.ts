@@ -167,20 +167,18 @@ describe('AchvasTask', () => {
     );
   });
 
-  it('writes under the sentinel school code on the shared env session', async () => {
-    // The shared session genuinely does not know its school here. 0 is the
-    // same sentinel the column defaults to, and BehaviorClassifierService
-    // falls back to it when a school has no row of its own yet.
+  it('no longer writes the sentinel school code when no connection exists', async () => {
+    // The retired shared session genuinely did not know its school and wrote
+    // under 0, the sentinel the column defaults to. Every target is now a
+    // connection with a real school, so nothing is written at all here.
+    // BehaviorClassifierService still FALLS BACK to 0 for a school with no row
+    // of its own, and rows already carrying it are still read.
     prisma.householdConnection.findMany.mockResolvedValue([]);
 
-    await task.execute();
+    const result = await task.execute();
 
-    expect(mashovClient.get).toHaveBeenCalled();
-    expect(prisma.behaviorTypeReference.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { schoolCode_code: { schoolCode: 0, code: 11 } },
-      }),
-    );
+    expect(result.status).toBe('success');
+    expect(prisma.behaviorTypeReference.upsert).not.toHaveBeenCalled();
   });
 
   it('narrows to the named connection on a targeted run', async () => {

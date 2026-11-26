@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 
 // Prisma's InputJsonValue is not re-exported from the @prisma/client default entrypoint in v5.
@@ -8,7 +7,7 @@ type InputJsonValue = string | number | boolean | InputJsonValue[] | { [key: str
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import { reportNoConnectionTarget } from '../connection-fanout';
+import { reportNoConnectionTarget, skipNoConnections } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 import { deriveIsUnread } from '../../mail/unread';
 
@@ -55,10 +54,6 @@ export class MailInboxTask {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  @Cron('*/7 * * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   /**
    * Why each gate: a sweep that fires on an incomplete walk clears unread on rows the
@@ -141,30 +136,28 @@ export class MailInboxTask {
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
 
-    // R11: a named connection with no usable target. `useSharedSession` is
-    // false here, so the loop below would not run at all -- no run, nothing
-    // fetched, `success` with every count zero.
-    if (context.connectionId && connections.length === 0) {
-      return reportNoConnectionTarget(
-        this.syncRunService,
-        this.logger,
-        MailInboxTask.SOURCE,
-        context.connectionId,
-      );
+    // No usable target: the loop below would not run at all -- no run,
+    // nothing fetched, `success` with every count zero. A named connection
+    // that resolves to nothing is a reportable failure; no connections at all
+    // is the empty deployment.
+    if (connections.length === 0) {
+      return context.connectionId
+        ? reportNoConnectionTarget(
+            this.syncRunService,
+            this.logger,
+            MailInboxTask.SOURCE,
+            context.connectionId,
+          )
+        : skipNoConnections(this.logger, MailInboxTask.SOURCE);
     }
-
-    const useSharedSession = !context.connectionId && connections.length === 0;
-
-    // Determine which connections to sync: all user-owned ones, or fall back to shared session
-    const connectionList = useSharedSession ? [null] : connections;
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
     let totalFailedCount = 0;
     const allErrorMessages: string[] = [];
 
-    for (const conn of connectionList) {
-      const source = conn ? `${MailInboxTask.SOURCE}:${conn.id}` : MailInboxTask.SOURCE;
-      const syncRun = await this.syncRunService.openRun(source, conn?.id ?? context.connectionId);
+    for (const conn of connections) {
+      const source = `${MailInboxTask.SOURCE}:${conn.id}`;
+      const syncRun = await this.syncRunService.openRun(source, conn.id);
       let fetchedCount = 0;
       let upsertCount = 0;
       let failedCount = 0;
@@ -177,38 +170,29 @@ export class MailInboxTask {
       const pageSize = 50;
       const maxPages = 200;
 
-      let password: string | undefined;
-      if (conn) {
-        try {
-          password = this.encryptionService.decrypt(conn.encryptedPassword);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.logger.error(`Mail inbox: failed to decrypt password for connection ${conn.id}: ${msg}`);
-          await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
-          totalFailedCount++;
-          continue;
-        }
+      let password: string;
+      try {
+        password = this.encryptionService.decrypt(conn.encryptedPassword);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.error(`Mail inbox: failed to decrypt password for connection ${conn.id}: ${msg}`);
+        await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
+        totalFailedCount++;
+        continue;
       }
 
     try {
       for (let page = 0; page < maxPages; page++) {
         const skip = page * pageSize;
-        const conversations = conn && password
-          ? await this.mashovClient.getForConnection<MashovConversation[]>(
-              `/api/mail/inbox/conversations?skip=${skip}&take=${pageSize}`,
-              conn.id,
-              conn.schoolCode,
-              conn.schoolYear,
-              conn.username,
-              password,
-              { headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' } },
-            )
-          : await this.mashovClient.get<MashovConversation[]>(
-              `/api/mail/inbox/conversations?skip=${skip}&take=${pageSize}`,
-              {
-                headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' },
-              },
-            );
+        const conversations = await this.mashovClient.getForConnection<MashovConversation[]>(
+          `/api/mail/inbox/conversations?skip=${skip}&take=${pageSize}`,
+          conn.id,
+          conn.schoolCode,
+          conn.schoolYear,
+          conn.username,
+          password,
+          { headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/inbox' } },
+        );
 
         if (conversations.length === 0) break;
         pageCount++;
@@ -250,7 +234,7 @@ export class MailInboxTask {
                 labels: (conv.labels ?? []) as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
-                householdConnectionId: conn ? conn.id : null,
+                householdConnectionId: conn.id,
               },
               update: {
                 subject: conv.subject,
@@ -265,7 +249,7 @@ export class MailInboxTask {
                 lastFetchedAt: new Date(),
                 // Only when there IS a connection: a shared-session walk must not
                 // blank a stamp a per-connection walk already set.
-                ...(conn ? { householdConnectionId: conn.id } : {}),
+                householdConnectionId: conn.id,
               },
             });
 
@@ -285,7 +269,7 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
-                  householdConnectionId: conn ? conn.id : null,
+                  householdConnectionId: conn.id,
                 },
                 update: {
                   senderName: msg.senderName,
@@ -298,7 +282,7 @@ export class MailInboxTask {
                   rawPayload: msg as unknown as InputJsonValue,
                   // Only when there IS a connection: a shared-session walk must not
                   // blank a stamp a per-connection walk already set.
-                  ...(conn ? { householdConnectionId: conn.id } : {}),
+                  householdConnectionId: conn.id,
                 },
               });
             }
@@ -319,22 +303,15 @@ export class MailInboxTask {
       // so we force labels: ['archived'] and isUnread: false (archived = always read).
       for (let page = 0; page < maxPages; page++) {
         const skip = page * pageSize;
-        const archivedConversations = conn && password
-          ? await this.mashovClient.getForConnection<MashovConversation[]>(
-              `/api/mail/archive/conversations?skip=${skip}&take=${pageSize}`,
-              conn.id,
-              conn.schoolCode,
-              conn.schoolYear,
-              conn.username,
-              password,
-              { headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/archive' } },
-            )
-          : await this.mashovClient.get<MashovConversation[]>(
-              `/api/mail/archive/conversations?skip=${skip}&take=${pageSize}`,
-              {
-                headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/archive' },
-              },
-            );
+        const archivedConversations = await this.mashovClient.getForConnection<MashovConversation[]>(
+          `/api/mail/archive/conversations?skip=${skip}&take=${pageSize}`,
+          conn.id,
+          conn.schoolCode,
+          conn.schoolYear,
+          conn.username,
+          password,
+          { headers: { 'Referer': 'https://web.mashov.info/students/main/mailbox/folder/archive' } },
+        );
 
         if (archivedConversations.length === 0) break;
         archivePageCount++;
@@ -359,7 +336,7 @@ export class MailInboxTask {
                 labels: ['archived'] as InputJsonValue,
                 rawPayload: conv as unknown as InputJsonValue,
                 lastFetchedAt: new Date(),
-                householdConnectionId: conn ? conn.id : null,
+                householdConnectionId: conn.id,
               },
               update: {
                 subject: conv.subject,
@@ -374,7 +351,7 @@ export class MailInboxTask {
                 lastFetchedAt: new Date(),
                 // Only when there IS a connection: a shared-session walk must not
                 // blank a stamp a per-connection walk already set.
-                ...(conn ? { householdConnectionId: conn.id } : {}),
+                householdConnectionId: conn.id,
               },
             });
 
@@ -393,7 +370,7 @@ export class MailInboxTask {
                   sentViaEmail: msg.sentViaEmail,
                   sentViaSms: msg.sentViaSms,
                   rawPayload: msg as unknown as InputJsonValue,
-                  householdConnectionId: conn ? conn.id : null,
+                  householdConnectionId: conn.id,
                 },
                 update: {
                   senderName: msg.senderName,
@@ -406,7 +383,7 @@ export class MailInboxTask {
                   rawPayload: msg as unknown as InputJsonValue,
                   // Only when there IS a connection: a shared-session walk must not
                   // blank a stamp a per-connection walk already set.
-                  ...(conn ? { householdConnectionId: conn.id } : {}),
+                  householdConnectionId: conn.id,
                 },
               });
             }
@@ -455,7 +432,24 @@ export class MailInboxTask {
             // is only a sound orphan test when every row it can match was
             // refreshable by THIS walk -- which is true exactly because the
             // row sets are now disjoint per connection.
-            householdConnectionId: conn ? conn.id : null,
+            //
+            // Unowned rows are adopted ONLY when this household has a single
+            // connection. They are the retired shared session's, and a
+            // conversation upstream still returns gets stamped by the upsert
+            // above on this very walk -- so what is left here is a row that is
+            // both unowned AND gone from upstream. On a one-connection
+            // deployment it can only have been this mailbox's, so this walk
+            // could have refreshed it and the orphan test stays sound. With
+            // two connections it is genuinely ambiguous and both walks would
+            // race to claim it, so it is left alone (`unreadBadge` still
+            // counts it) and a data migration owns the cleanup.
+            // `!context.connectionId` matters: `connections` is the NARROWED
+            // list, so on a targeted refresh its length is 1 even for a
+            // two-school household, and adopting on that would hand one
+            // school the other's unowned rows.
+            ...(!context.connectionId && connections.length === 1
+              ? { OR: [{ householdConnectionId: conn.id }, { householdConnectionId: null }] }
+              : { householdConnectionId: conn.id }),
             isUnread: true,
             lastFetchedAt: { lt: runStartedAt },
             // An orphan the user explicitly marked unread is their decision, not drift.
@@ -472,26 +466,24 @@ export class MailInboxTask {
       //
       // The count is this connection's own mailbox, written to its own row:
       // the badge sums these rows, so an unscoped count written into each one
-      // reported the union once per school. A shared-session run writes
-      // nothing. It owns the NULL-stamped rows but has no row of its own, and
-      // the old `findFirst({ active: true })` fallback put its count into an
-      // arbitrary household -- a cross-household write, and under R15's rule
-      // a double count, since the reader now adds the unattributed rows once
-      // itself (`unreadBadge`).
-      if (conn) {
-        await this.prisma.householdConnection.update({
-          where: { id: conn.id },
-          data: {
-            cachedNewCount: await this.prisma.mailConversation.count({
-              where: {
-                householdConnectionId: conn.id,
-                isUnread: true,
-                NOT: { labels: { array_contains: ['archived'] } },
-              },
-            }),
-          },
-        });
-      }
+      // reported the union once per school. The retired shared session wrote
+      // nothing here: it owned the NULL-stamped rows but had no row of its
+      // own, and the old `findFirst({ active: true })` fallback put its count
+      // into an arbitrary household -- a cross-household write, and under
+      // R15's rule a double count, since the reader adds the unattributed rows
+      // once itself (`unreadBadge`).
+      await this.prisma.householdConnection.update({
+        where: { id: conn.id },
+        data: {
+          cachedNewCount: await this.prisma.mailConversation.count({
+            where: {
+              householdConnectionId: conn.id,
+              isUnread: true,
+              NOT: { labels: { array_contains: ['archived'] } },
+            },
+          }),
+        },
+      });
 
       await this.syncRunService.closeRun(syncRun.id, 'success', {
         fetchedCount,
@@ -503,7 +495,7 @@ export class MailInboxTask {
         );
       }
       this.logger.debug(
-        `Mail inbox sync (conn=${conn?.id ?? 'shared'}): pages=${pageCount} fetched=${fetchedCount} ` +
+        `Mail inbox sync (conn=${conn.id}): pages=${pageCount} fetched=${fetchedCount} ` +
           `upserted=${upsertCount} ` +
           (sweepSkipReason === null
             ? `swept=${sweptCount}`
@@ -515,7 +507,7 @@ export class MailInboxTask {
       allErrorMessages.push(...errorMessages);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Mail inbox sync failed (conn=${conn?.id ?? 'shared'}): ${msg}`);
+      this.logger.error(`Mail inbox sync failed (conn=${conn.id}): ${msg}`);
       await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
       totalFailedCount += failedCount + 1;
       allErrorMessages.push(...errorMessages, msg);

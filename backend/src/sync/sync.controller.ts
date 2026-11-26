@@ -127,7 +127,18 @@ export class SyncController {
     let firstError: unknown;
     for (const connection of connections) {
       try {
-        results.push(await this.syncService.refreshAll({ connectionId: connection.id }));
+        results.push(
+          await this.syncService.refreshAll({
+            connectionId: connection.id,
+            // What `/home` and `/children` render, not all 16 tasks. Everything
+            // else arrives on first view via `SyncOnReadService`.
+            taskSet: 'login',
+            // A person asked for this. A TTL-respecting refresh would do
+            // nothing when the data is already fresh, and they would watch a
+            // spinner and see no change. `@Throttle` bounds the cost.
+            respectTtl: false,
+          }),
+        );
       } catch (error) {
         firstError ??= error;
         results.push(null);

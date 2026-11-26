@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   orderConnectionsForStudent,
+  reportNoConnectionTarget,
+  skipNoConnections,
   stampOwnershipIfChanged,
   studentScopeForContext,
 } from '../connection-fanout';
@@ -37,10 +38,6 @@ export class HomeworkTask {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  @Cron('*/12 * * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({
@@ -52,6 +49,20 @@ export class HomeworkTask {
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
 
+    // Before the student query, which has nothing to iterate without a
+    // connection to ask. A named connection that resolves to nothing is a
+    // reportable failure; no connections at all is the empty deployment.
+    if (connections.length === 0) {
+      return context.connectionId
+        ? reportNoConnectionTarget(
+            this.syncRunService,
+            this.logger,
+            HomeworkTask.SOURCE,
+            context.connectionId,
+          )
+        : skipNoConnections(this.logger, HomeworkTask.SOURCE);
+    }
+
     const students = await this.prisma.student.findMany({
       where: studentScopeForContext(context),
     });
@@ -60,32 +71,16 @@ export class HomeworkTask {
     let failedCount = 0;
     const errorMessages: string[] = [];
 
-    // Fall back to single shared session when no user-owned connections exist
     // One value feeds both the login year and the row stamp.
     const requestedYear = context.schoolYear;
     const sourcePrefix = context.sourcePrefix ?? '';
 
-    const useSharedSession = !context.connectionId && connections.length === 0;
-
-    // The shared session is process-global and carries no per-year identity,
-    // so it would answer with the current year while this run stamps another.
-    // The backfill always passes a connectionId and never reaches here; this
-    // refuses the combination rather than writing mislabelled rows.
-    if (useSharedSession && requestedYear !== undefined) {
-      const message = `${HomeworkTask.SOURCE}: refusing year ${requestedYear} on the shared-session path; a historical year needs an explicit connectionId`;
-      this.logger.warn(message);
-      return {
-        status: 'failed',
-        summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
-        errorMessages: [message],
-      };
-    }
-
     // The year the row belongs to. Scoped per student because the connection
-    // that answers is picked per student below; a stored year is the fallback
-    // for the shared-session path, which has no user-owned connection: it
-    // resolves the SAME stored year the year-scoped reads use, so writes and
-    // reads cannot drift apart when the schools API runs ahead of the calendar.
+    // that answers is picked per student below. The stored year is the last
+    // fallback, for a child no connection lists (the deliberate unlinked-child
+    // edge in `connection-fanout.ts`): it resolves the SAME stored year the
+    // year-scoped reads use, so writes and reads cannot drift apart when the
+    // schools API runs ahead of the calendar.
     const fallbackSchoolYear = await currentSchoolYearFor(this.prisma);
 
     for (const student of students) {
@@ -102,65 +97,58 @@ export class HomeworkTask {
       let upsertCount = 0;
 
       try {
-        let items: MashovHomework[];
-
-        if (useSharedSession) {
-          items = await this.mashovClient.get<MashovHomework[]>(
-            `/api/students/${student.studentGuid}/homework`,
-            {
-              headers: {
-                'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/homework`,
-              },
-            },
-          );
-        } else {
-          // Try each connection; use the first successful response
-          items = [];
-          let answered = false;
-          for (const conn of ordered) {
-            try {
-              const password = this.encryptionService.decrypt(conn.encryptedPassword);
-              const connYear = requestedYear ?? conn.schoolYear;
-              items = await this.mashovClient.getForConnection<MashovHomework[]>(
-                `/api/students/${student.studentGuid}/homework`,
-                conn.id,
-                conn.schoolCode,
-                connYear,
-                conn.username,
-                password,
-                {
-                  headers: {
-                    'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/homework`,
-                  },
+        // Try each connection; use the first successful response
+        let items: MashovHomework[] = [];
+        let answered = false;
+        // Collected so the thrown error carries WHY. This is the only fetch
+        // path now, so a bare "every connection failed" would strand the real
+        // cause in a per-connection warn line and hand /more an error with no
+        // diagnosis in it.
+        const connFailures: string[] = [];
+        for (const conn of ordered) {
+          try {
+            const password = this.encryptionService.decrypt(conn.encryptedPassword);
+            const connYear = requestedYear ?? conn.schoolYear;
+            items = await this.mashovClient.getForConnection<MashovHomework[]>(
+              `/api/students/${student.studentGuid}/homework`,
+              conn.id,
+              conn.schoolCode,
+              connYear,
+              conn.username,
+              password,
+              {
+                headers: {
+                  'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/homework`,
                 },
-              );
-              schoolYear = connYear;
-              answered = true;
-              // A success on a non-owner re-stamps, so a child who moved
-              // school stops costing a failed call on every later run.
-              await stampOwnershipIfChanged(
-                this.prisma,
-                student,
-                conn,
-                this.logger,
-                // An empty 200 is not proof the child is in this account.
-                Array.isArray(items) && items.length > 0,
-              );
-              break;
-            } catch (connErr) {
-              const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
-              this.logger.warn(`Homework: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
-            }
-          }
-          // Every connection failed. Reporting success here would let the
-          // history backfill record a year permanently complete having
-          // fetched nothing, and would hide a broken live sync behind a
-          // green run. The per-student catch below records the failure.
-          if (!answered) {
-            throw new Error(
-              `every connection failed for ${student.studentGuid} (tried ${connections.length})`,
+              },
             );
+            schoolYear = connYear;
+            answered = true;
+            // A success on a non-owner re-stamps, so a child who moved
+            // school stops costing a failed call on every later run.
+            await stampOwnershipIfChanged(
+              this.prisma,
+              student,
+              conn,
+              this.logger,
+              // An empty 200 is not proof the child is in this account.
+              Array.isArray(items) && items.length > 0,
+            );
+            break;
+          } catch (connErr) {
+            const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
+            connFailures.push(connMsg);
+            this.logger.warn(`Homework: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
           }
+        }
+        // Every connection failed, or the child is listed by none. Reporting
+        // success here would let the history backfill record a year
+        // permanently complete having fetched nothing, and would hide a broken
+        // live sync behind a green run. The per-student catch below records it.
+        if (!answered) {
+          throw new Error(
+            `every connection failed for ${student.studentGuid} (tried ${connections.length}): ${connFailures.join('; ')}`,
+          );
         }
 
         fetchedCount = items.length;

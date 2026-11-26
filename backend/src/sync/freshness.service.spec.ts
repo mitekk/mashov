@@ -97,9 +97,9 @@ describe('FreshnessService', () => {
 
   describe('computeFreshness', () => {
     describe('threshold logic', () => {
-      it('returns fresh when notifications were synced within 15 minutes', async () => {
+      it('returns fresh when mail counts were synced within 15 minutes', async () => {
         const successRuns = new Map<string, SyncRun>([
-          ['notifications', makeSyncRun('notifications', 'success', 5)],
+          ['mail_counts', makeSyncRun('mail_counts', 'success', 5)],
           ['mail_counts', makeSyncRun('mail_counts', 'success', 5)],
           ['mail_inbox', makeSyncRun('mail_inbox', 'success', 5)],
         ]);
@@ -108,20 +108,33 @@ describe('FreshnessService', () => {
 
         const result = await service.computeFreshness();
         expect(result.state).toBe('fresh');
-        expect(result.staleSources).not.toContain('notifications');
+        expect(result.staleSources).not.toContain('mail_counts');
       });
 
-      it('marks notifications as stale when last sync was more than 15 minutes ago', async () => {
+      it('marks mail counts as stale past the 60-minute floor', async () => {
+        // The floor is why the threshold is not 15 any more: mail syncs on a
+        // 30-minute tick, so a 15-minute threshold would be stale on half of
+        // all reads and the app-wide FreshnessBar would sit amber forever.
         const successRuns = new Map<string, SyncRun>([
-          ['notifications', makeSyncRun('notifications', 'success', 20)],
-          ['mail_counts', makeSyncRun('mail_counts', 'success', 20)],
-          ['mail_inbox', makeSyncRun('mail_inbox', 'success', 20)],
+          ['mail_counts', makeSyncRun('mail_counts', 'success', 70)],
+          ['mail_inbox', makeSyncRun('mail_inbox', 'success', 70)],
         ]);
         mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
         mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
 
         const result = await service.computeFreshness();
-        expect(result.staleSources).toContain('notifications');
+        expect(result.staleSources).toContain('mail_counts');
+      });
+
+      it('treats mail counts as fresh inside the floor', async () => {
+        const successRuns = new Map<string, SyncRun>([
+          ['mail_counts', makeSyncRun('mail_counts', 'success', 45)],
+        ]);
+        mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
+        mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
+
+        const result = await service.computeFreshness();
+        expect(result.staleSources).not.toContain('mail_counts');
       });
 
       it('treats homework as stale when last sync was more than 24 hours ago', async () => {
@@ -160,10 +173,12 @@ describe('FreshnessService', () => {
         expect(result.staleSources).toContain('behavior');
       });
 
-      it('treats groups as stale when last sync was more than 7 days ago', async () => {
-        const minutesIn8Days = 8 * 24 * 60;
+      it('treats groups as stale when last sync was more than 14 days ago', async () => {
+        // 2x its 7-day sync TTL: a page view refreshes it when the local copy
+        // lapses, so only a fortnight untouched is worth reporting.
+        const minutesIn15Days = 15 * 24 * 60;
         const successRuns = new Map<string, SyncRun>([
-          ['groups:student-1', makeSyncRun('groups:student-1', 'success', minutesIn8Days)],
+          ['groups:student-1', makeSyncRun('groups:student-1', 'success', minutesIn15Days)],
         ]);
         mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
         mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
@@ -197,7 +212,7 @@ describe('FreshnessService', () => {
 
       it('returns fresh when all sources are within thresholds', async () => {
         const successRuns = new Map<string, SyncRun>([
-          ['notifications', makeSyncRun('notifications', 'success', 5)],
+          ['mail_counts', makeSyncRun('mail_counts', 'success', 5)],
           ['mail_counts', makeSyncRun('mail_counts', 'success', 5)],
           ['mail_inbox', makeSyncRun('mail_inbox', 'success', 5)],
           ['homework:guid', makeSyncRun('homework:guid', 'success', 60)],
@@ -218,7 +233,7 @@ describe('FreshnessService', () => {
 
       it('returns stale when one or two sources are stale', async () => {
         const successRuns = new Map<string, SyncRun>([
-          ['notifications', makeSyncRun('notifications', 'success', 20)], // stale (>15min)
+          ['mail_counts', makeSyncRun('mail_counts', 'success', 70)], // stale (>60min floor)
         ]);
         mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
         mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
@@ -234,14 +249,16 @@ describe('FreshnessService', () => {
           makeSyncRun(source, 'success', 25 * 60); // 25h ago = stale for mail
 
         const successRuns = new Map<string, SyncRun>([
-          ['notifications', staleRun('notifications')],
           ['mail_counts', staleRun('mail_counts')],
+          // 25h is past homework's 24h threshold too, so this is a third
+          // DISTINCT stale source -- the ‘more than 2’ the rule needs.
+          ['homework', staleRun('homework')],
           ['mail_inbox', staleRun('mail_inbox')],
         ]);
 
         const failedRun: SyncRun = {
           id: 'run-failed',
-          source: 'notifications',
+          source: 'mail_counts',
           status: 'failed',
           startedAt: new Date(now.getTime() - 1000),
           endedAt: new Date(now.getTime() - 500),
@@ -255,7 +272,7 @@ describe('FreshnessService', () => {
 
         const allRuns = new Map<string, SyncRun>([
           ...successRuns,
-          ['notifications', failedRun],
+          ['mail_counts', failedRun],
         ]);
 
         mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
@@ -273,7 +290,6 @@ describe('FreshnessService', () => {
           ['mail_counts:conn-abc', makeSyncRun('mail_counts:conn-abc', 'success', 1)], // fresh connection key
           ['mail_inbox', makeSyncRun('mail_inbox', 'success', 3 * 60)],            // stale bare key
           ['mail_inbox:conn-abc', makeSyncRun('mail_inbox:conn-abc', 'success', 1)],   // fresh connection key
-          ['notifications', makeSyncRun('notifications', 'success', 1)],
         ]);
         mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
         mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
@@ -297,10 +313,10 @@ describe('FreshnessService', () => {
       });
 
       it('includes lastSyncAt from the most recent successful run', async () => {
-        const recentRun = makeSyncRun('notifications', 'success', 5);
+        const recentRun = makeSyncRun('mail_counts', 'success', 5);
         const olderRun = makeSyncRun('mail_inbox', 'success', 10);
         const successRuns = new Map<string, SyncRun>([
-          ['notifications', recentRun],
+          ['mail_counts', recentRun],
           ['mail_inbox', olderRun],
         ]);
         mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
@@ -330,31 +346,31 @@ describe('FreshnessService', () => {
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
 
       const results = await service.getAllSourceHealth([]);
-      const notificationsHealth = results.find((r) => r.source === 'notifications');
-      expect(notificationsHealth).toBeDefined();
-      expect(notificationsHealth?.status).toBe('never_synced');
+      const mailCountsHealth = results.find((r) => r.source === 'mail_counts');
+      expect(mailCountsHealth).toBeDefined();
+      expect(mailCountsHealth?.status).toBe('never_synced');
     });
 
     it('returns fresh status when last success was within threshold', async () => {
-      const successRun = makeSyncRun('notifications', 'success', 5);
-      const successRuns = new Map([['notifications', successRun]]);
+      const successRun = makeSyncRun('mail_counts', 'success', 5);
+      const successRuns = new Map([['mail_counts', successRun]]);
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
 
       const results = await service.getAllSourceHealth([]);
-      const health = results.find((r) => r.source === 'notifications');
+      const health = results.find((r) => r.source === 'mail_counts');
       expect(health?.status).toBe('fresh');
-      expect(health?.staleThresholdMinutes).toBe(15);
+      expect(health?.staleThresholdMinutes).toBe(60);
     });
 
     it('returns stale status when last success exceeded the threshold', async () => {
-      const staleRun = makeSyncRun('notifications', 'success', 30);
-      const successRuns = new Map([['notifications', staleRun]]);
+      const staleRun = makeSyncRun('mail_counts', 'success', 70);
+      const successRuns = new Map([['mail_counts', staleRun]]);
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
 
       const results = await service.getAllSourceHealth([]);
-      const health = results.find((r) => r.source === 'notifications');
+      const health = results.find((r) => r.source === 'mail_counts');
       expect(health?.status).toBe('stale');
     });
 
@@ -379,14 +395,14 @@ describe('FreshnessService', () => {
     });
 
     it('returns failed status when latest run failed and no successful run exists', async () => {
-      const failedRun = makeSyncRun('notifications', 'failed', 5);
+      const failedRun = makeSyncRun('mail_counts', 'failed', 5);
       failedRun.errorMessage = 'network error';
-      const allRuns = new Map([['notifications', failedRun]]);
+      const allRuns = new Map([['mail_counts', failedRun]]);
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(allRuns);
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(new Map());
 
       const results = await service.getAllSourceHealth([]);
-      const health = results.find((r) => r.source === 'notifications');
+      const health = results.find((r) => r.source === 'mail_counts');
       expect(health?.status).toBe('failed');
       expect(health?.lastErrorMessage).toBe('network error');
     });
@@ -421,7 +437,7 @@ describe('FreshnessService', () => {
 
     it('reports students stale when the last roster sync is older than 24 hours', async () => {
       const successRuns = new Map<string, SyncRun>([
-        ['students', makeSyncRun('students', 'success', 25 * 60)],
+        ['students', makeSyncRun('students', 'success', 49 * 60)],
       ]);
       mockSyncRunService.getLatestSuccessfulRuns.mockResolvedValue(successRuns);
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(new Map(successRuns));
@@ -429,7 +445,7 @@ describe('FreshnessService', () => {
       const results = await service.getAllSourceHealth([]);
       const health = results.find((r) => r.source === 'students');
       expect(health?.status).toBe('stale');
-      expect(health?.staleThresholdMinutes).toBe(24 * 60);
+      expect(health?.staleThresholdMinutes).toBe(2 * 24 * 60);
     });
 
     it('reports students fresh inside 24 hours', async () => {
@@ -489,7 +505,8 @@ describe('FreshnessService', () => {
       // still has to explain itself.
       const recentFailure = makeSyncRun('mail_inbox', 'failed', 5);
       recentFailure.errorMessage = 'upstream 502';
-      const oldSuccess = makeSyncRun('mail_inbox:conn-abc', 'success', 60);
+      // Comfortably past the 60-minute floor, so the row is genuinely stale.
+      const oldSuccess = makeSyncRun('mail_inbox:conn-abc', 'success', 90);
 
       mockSyncRunService.getAllSourceHealth.mockResolvedValue(
         new Map<string, SyncRun>([
@@ -711,7 +728,7 @@ describe('FreshnessService.computeContentFreshness', () => {
   it('degrades the overall state when the content year is stale even though every sync succeeded', async () => {
     const successRuns = new Map<string, SyncRun>(
       [
-        'notifications',
+        'mail_counts',
         'mail_counts',
         'mail_inbox',
         'homework',
@@ -738,7 +755,7 @@ describe('FreshnessService.computeContentFreshness', () => {
   it('leaves the overall state alone when the content year is current', async () => {
     const successRuns = new Map<string, SyncRun>(
       [
-        'notifications',
+        'mail_counts',
         'mail_counts',
         'mail_inbox',
         'homework',

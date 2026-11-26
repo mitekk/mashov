@@ -481,7 +481,7 @@ describe('SyncController across two schools', () => {
       await controller.refresh(request);
 
       expect(refreshAll).toHaveBeenCalledTimes(1);
-      expect(refreshAll).toHaveBeenCalledWith({ connectionId: 'conn-b' });
+      expect(refreshAll).toHaveBeenCalledWith({ connectionId: 'conn-b', taskSet: 'login', respectTtl: false });
     });
 
     it('404s on a foreign schoolId', async () => {

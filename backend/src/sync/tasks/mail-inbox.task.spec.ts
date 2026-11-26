@@ -70,21 +70,35 @@ function makeConversation(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Every fetch is per-connection, so the suite always has one. There is no
+ * shared-session path left to fall back to.
+ */
+/** The credential positional args `getForConnection` takes after the URL. */
+const CONN_ARGS = ['conn-default', 540175, 2026, 'parent', 'decrypted-password'] as const;
+
+const DEFAULT_CONN = {
+  id: 'conn-default',
+  schoolCode: 540175,
+  schoolYear: 2026,
+  username: 'parent',
+  encryptedPassword: 'enc',
+};
+
 describe('MailInboxTask', () => {
   let task: MailInboxTask;
-  let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'get' | 'getForConnection'>>;
+  let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'getForConnection'>>;
   let mockPrisma: jest.Mocked<Pick<PrismaService, 'householdConnection' | 'mailConversation' | 'mailMessage'>>;
   let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun'>>;
   let mockEncryptionService: jest.Mocked<Pick<EncryptionService, 'decrypt'>>;
 
   beforeEach(() => {
     mockMashovClient = {
-      get: jest.fn(),
       getForConnection: jest.fn(),
     };
     mockPrisma = {
       householdConnection: {
-        findMany: jest.fn().mockResolvedValue([]),
+        findMany: jest.fn().mockResolvedValue([DEFAULT_CONN]),
         findFirst: jest.fn().mockResolvedValue(null),
         count: jest.fn().mockResolvedValue(1),
         update: jest.fn().mockResolvedValue({ id: 'household-1' }),
@@ -128,24 +142,34 @@ describe('MailInboxTask', () => {
       labels: [],
       messages: [{ messageId: 'msg-archived-1', isNew: true }],
     });
-    (mockMashovClient.get as jest.Mock)
+    (mockMashovClient.getForConnection as jest.Mock)
       .mockResolvedValueOnce([inboxConversation])
       .mockResolvedValueOnce([archivedConversation]);
 
     const result = await task.execute();
 
-    expect(mockMashovClient.get).toHaveBeenNthCalledWith(
+    expect(mockMashovClient.getForConnection).toHaveBeenNthCalledWith(
       1,
       '/api/mail/inbox/conversations?skip=0&take=50',
+      DEFAULT_CONN.id,
+      DEFAULT_CONN.schoolCode,
+      DEFAULT_CONN.schoolYear,
+      DEFAULT_CONN.username,
+      'decrypted-password',
       {
         headers: {
           Referer: 'https://web.mashov.info/students/main/mailbox/folder/inbox',
         },
       },
     );
-    expect(mockMashovClient.get).toHaveBeenNthCalledWith(
+    expect(mockMashovClient.getForConnection).toHaveBeenNthCalledWith(
       2,
       '/api/mail/archive/conversations?skip=0&take=50',
+      DEFAULT_CONN.id,
+      DEFAULT_CONN.schoolCode,
+      DEFAULT_CONN.schoolYear,
+      DEFAULT_CONN.username,
+      'decrypted-password',
       {
         headers: {
           Referer: 'https://web.mashov.info/students/main/mailbox/folder/archive',
@@ -195,26 +219,29 @@ describe('MailInboxTask', () => {
       conversationId: `conv-archived-${index}`,
       messages: [{ messageId: `msg-archived-${index}` }],
     }));
-    (mockMashovClient.get as jest.Mock)
+    (mockMashovClient.getForConnection as jest.Mock)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce(firstArchivePage)
       .mockResolvedValueOnce([]);
 
     const result = await task.execute();
 
-    expect(mockMashovClient.get).toHaveBeenNthCalledWith(
+    expect(mockMashovClient.getForConnection).toHaveBeenNthCalledWith(
       1,
       '/api/mail/inbox/conversations?skip=0&take=50',
+      ...CONN_ARGS,
       expect.any(Object),
     );
-    expect(mockMashovClient.get).toHaveBeenNthCalledWith(
+    expect(mockMashovClient.getForConnection).toHaveBeenNthCalledWith(
       2,
       '/api/mail/archive/conversations?skip=0&take=50',
+      ...CONN_ARGS,
       expect.any(Object),
     );
-    expect(mockMashovClient.get).toHaveBeenNthCalledWith(
+    expect(mockMashovClient.getForConnection).toHaveBeenNthCalledWith(
       3,
       '/api/mail/archive/conversations?skip=50&take=50',
+      ...CONN_ARGS,
       expect.any(Object),
     );
     expect(mockPrisma.mailConversation.upsert).toHaveBeenCalledTimes(50);
@@ -242,7 +269,7 @@ describe('MailInboxTask', () => {
       // Measured against production: all 39 locally-unread conversations came back with
       // every message isNew=false, including the 16 Mashov counts as unread. Deriving
       // from messages[].isNew here would set the badge to 0.
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([makeConversation({ isNew: true, messages: [{ isNew: false }] })])
         .mockResolvedValueOnce([]);
 
@@ -252,7 +279,7 @@ describe('MailInboxTask', () => {
     });
 
     it('stores read when the conversation flag is clear, whatever the messages say', async () => {
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([
           makeConversation({ isNew: false, messages: [{ isNew: true }] }),
         ])
@@ -264,7 +291,7 @@ describe('MailInboxTask', () => {
     });
 
     it('trusts the conversation flag when messages is empty', async () => {
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([makeConversation({ isNew: true, messages: [] })])
         .mockResolvedValueOnce([]);
 
@@ -277,7 +304,7 @@ describe('MailInboxTask', () => {
       (mockPrisma.mailConversation.findMany as jest.Mock).mockResolvedValueOnce([
         { conversationId: 'conv-1', locallyReadThroughAt: new Date('2026-03-18T08:00:00Z') },
       ]);
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([
           makeConversation({ isNew: true, messages: [{ isNew: true, sendTime: '2026-03-18T08:00:00Z' }] }),
         ])
@@ -298,7 +325,7 @@ describe('MailInboxTask', () => {
       (mockPrisma.mailConversation.findMany as jest.Mock).mockResolvedValueOnce([
         { conversationId: 'conv-1', locallyReadThroughAt: new Date('2026-03-18T08:00:00Z') },
       ]);
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([
           makeConversation({ isNew: true, messages: [{ isNew: true, sendTime: '2026-03-18T09:00:00Z' }] }),
         ])
@@ -313,7 +340,7 @@ describe('MailInboxTask', () => {
     const RUN_STARTED_AT = new Date('2026-03-18T00:00:00Z');
 
     it('clears unread on conversations upstream no longer returns', async () => {
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([makeConversation()])
         .mockResolvedValueOnce([]);
 
@@ -321,9 +348,15 @@ describe('MailInboxTask', () => {
 
       expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith({
         where: {
-          // The shared env session owns the unowned rows, and NULL selects
-          // exactly those -- not "everything".
-          householdConnectionId: null,
+          // Scoped to exactly the rows THIS walk could have refreshed -- not
+          // "everything". This household has one connection, so that set also
+          // includes the retired shared session's unowned rows: on a
+          // one-connection deployment they can only have been this mailbox's,
+          // and no other walk will ever sweep them.
+          OR: [
+            { householdConnectionId: DEFAULT_CONN.id },
+            { householdConnectionId: null },
+          ],
           isUnread: true,
           lastFetchedAt: { lt: RUN_STARTED_AT },
           // An orphan the user explicitly marked unread is their decision, not drift.
@@ -337,7 +370,7 @@ describe('MailInboxTask', () => {
       // A 2xx with an empty array is not evidence that the mailbox is empty -- it is
       // also what a soft-failing referer-gated endpoint or a school year with no mail
       // looks like. Sweeping on it would clear isUnread across the whole table.
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([makeConversation({ conversationId: 'conv-archived-1' })])
         .mockResolvedValueOnce([]);
@@ -351,7 +384,7 @@ describe('MailInboxTask', () => {
       (mockPrisma.mailConversation.upsert as jest.Mock).mockRejectedValueOnce(
         new Error('upsert boom'),
       );
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([makeConversation()])
         .mockResolvedValueOnce([]);
 
@@ -434,9 +467,10 @@ describe('MailInboxTask', () => {
         // re-stamp. One such orphan would have disabled reconciliation for
         // every connection permanently, bringing back the inflated badge.
         //
-        // Refusing was never necessary: the sweep's `where` is
-        // `householdConnectionId: conn.id`, which an unattributed row cannot
-        // match. The scoping is the protection.
+        // Refusing was never necessary: the sweep's `where` is scoped to this
+        // connection, which is the protection. With CONN_A the household's ONLY
+        // connection, the scope also adopts unowned rows -- they can only have
+        // been this mailbox's, and nothing else will ever sweep them.
         (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([CONN_A]);
         (mockPrisma.mailConversation.count as jest.Mock).mockImplementation(({ where }) =>
           Promise.resolve(where?.householdConnectionId === null ? 5 : 0),
@@ -449,9 +483,32 @@ describe('MailInboxTask', () => {
 
         expect(mockPrisma.mailConversation.updateMany).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: expect.objectContaining({ householdConnectionId: 'conn-a' }),
+            where: expect.objectContaining({
+              OR: [{ householdConnectionId: 'conn-a' }, { householdConnectionId: null }],
+            }),
           }),
         );
+      });
+
+      it('does not adopt unowned rows when the household has two connections', async () => {
+        // Which connection owned them is genuinely unknowable, and both walks
+        // would race to claim them. Left alone; `unreadBadge` still counts
+        // them and a data migration owns the cleanup.
+        (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([
+          CONN_A,
+          CONN_B,
+        ]);
+        (mockMashovClient.getForConnection as jest.Mock)
+          .mockResolvedValue([])
+          .mockResolvedValueOnce([makeConversation()])
+          .mockResolvedValueOnce([]);
+
+        await task.execute();
+
+        for (const call of (mockPrisma.mailConversation.updateMany as jest.Mock).mock.calls) {
+          expect(call[0].where).not.toHaveProperty('OR');
+          expect(call[0].where.householdConnectionId).not.toBeNull();
+        }
       });
 
       it('never blanks an existing stamp on a shared-session walk', async () => {
@@ -461,7 +518,7 @@ describe('MailInboxTask', () => {
         // manufacture unattributed orphans in the first place.
         (mockPrisma.householdConnection.findMany as jest.Mock).mockResolvedValue([]);
         (mockPrisma.mailConversation.count as jest.Mock).mockResolvedValue(0);
-        (mockMashovClient.get as jest.Mock)
+        (mockMashovClient.getForConnection as jest.Mock)
           .mockResolvedValueOnce([makeConversation()])
           .mockResolvedValueOnce([]);
 
@@ -483,7 +540,7 @@ describe('MailInboxTask', () => {
         (mockPrisma.mailConversation.count as jest.Mock).mockImplementation(({ where }) =>
           Promise.resolve(where?.householdConnectionId?.not === null ? 3 : 0),
         );
-        (mockMashovClient.get as jest.Mock)
+        (mockMashovClient.getForConnection as jest.Mock)
           .mockResolvedValueOnce([makeConversation()])
           .mockResolvedValueOnce([]);
 
@@ -582,24 +639,24 @@ describe('MailInboxTask', () => {
       });
     });
 
-    it('writes no cachedNewCount for the shared session, whose rows no row owns', async () => {
+    it('writes cachedNewCount only to the connection the walk belongs to', async () => {
       // R15. The walk's own `cachedNewCount` refresh exists so the badge does
-      // not lag the rows it just corrected, which is a per-connection
-      // statement. A shared-session run has no connection row, and writing
-      // its NULL-stamped count into `findFirst({ active: true })` put one
-      // household's number on another's row -- and would now be counted twice,
-      // because `unreadBadge` adds the unattributed rows itself.
-      (mockPrisma.householdConnection.findFirst as jest.Mock).mockResolvedValue({
-        id: 'household-1',
-      });
+      // not lag the rows it just corrected -- a per-connection statement. The
+      // retired shared session had no connection row, so its NULL-stamped
+      // count went to `findFirst({ active: true })`: one household's number on
+      // another's row. Every walk now owns a connection, so the write is
+      // always to that one, and never to a household it did not sync.
       (mockPrisma.mailConversation.count as jest.Mock).mockResolvedValue(16);
-      (mockMashovClient.get as jest.Mock)
+      (mockMashovClient.getForConnection as jest.Mock)
         .mockResolvedValueOnce([makeConversation()])
         .mockResolvedValueOnce([]);
 
       await task.execute();
 
-      expect(mockPrisma.householdConnection.update).not.toHaveBeenCalled();
+      expect(mockPrisma.householdConnection.update).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: DEFAULT_CONN.id } }),
+      );
     });
   });
   describe('a targeted refresh of a connection that is not usable', () => {
@@ -638,7 +695,7 @@ describe('MailInboxTask', () => {
     it('never reaches upstream', async () => {
       await task.execute({ connectionId: 'conn-gone' });
 
-      expect(mockMashovClient.get).not.toHaveBeenCalled();
+      expect(mockMashovClient.getForConnection).not.toHaveBeenCalled();
       expect(mockMashovClient.getForConnection).not.toHaveBeenCalled();
     });
   });

@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { MashovSessionService } from '../../session/mashov-session.service';
@@ -30,10 +29,6 @@ export class StudentsTask {
     private readonly rosterPresence: RosterPresenceService,
   ) {}
 
-  @Cron('*/30 * * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({

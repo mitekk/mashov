@@ -324,6 +324,11 @@ step. Fence it with a unit test that injects a mock whose `get` throws and asser
 `mashov-http.client.ts:20`. Full removal is a separate ticket gated on dropping
 `MASHOV_SEMEL`/`USERNAME`/`PASSWORD` from `ops/`.
 
+> **Done (2026-11-25).** That separate ticket landed: see
+> [ADR-0046](../adr/0046-no-shared-mashov-account.md). The fence test described
+> above has been retired along with the methods it fenced — the invariant is now
+> enforced by the type system.
+
 ### 5. Sync tasks
 
 **(a) Per-student fan-out → owner-first.** New `backend/src/sync/connection-fanout.ts`

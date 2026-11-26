@@ -137,14 +137,13 @@ describe('HomeworkTask', () => {
     );
   });
 
-  it('stamps shared-session rows with the stored connection year, not the calendar year', async () => {
-    // The shared-session path has no user-owned connection, but reads are still
-    // scoped to the stored year. Stamping writes from the calendar instead lets
-    // the two diverge whenever the schools API publishes ahead of the calendar,
-    // and the synced rows are then written but never displayed.
-    prisma.householdConnection.findMany.mockResolvedValue([]);
-    prisma.householdConnection.findFirst.mockResolvedValue({ schoolYear: 2028 });
-    mashovClient.get.mockResolvedValue([makeHomework()]);
+  it('stamps rows with the answering connection\'s year, not the calendar year', async () => {
+    // Reads are scoped to the stored year. Stamping writes from the calendar
+    // instead lets the two diverge whenever the schools API publishes ahead of
+    // the calendar, and the synced rows are then written but never displayed.
+    prisma.householdConnection.findMany.mockResolvedValue([
+      { ...CONNECTION, schoolYear: 2028 },
+    ]);
 
     await task.execute();
 
@@ -350,25 +349,49 @@ describe('HomeworkTask', () => {
       );
     });
 
-    it('refuses a historical year on the shared-session path', async () => {
-      // The shared session is process-global and has no per-year identity, so
-      // it would silently answer with the current year's data.
-      prisma.householdConnection.findMany.mockResolvedValue([]);
-
+    it('honours an explicit year now that every path is per-connection', async () => {
+      // The old shared-session path had no per-year identity and so had to
+      // refuse this outright. With every fetch carrying a connection, a
+      // historical year is always answerable.
       const result = await task.execute({ schoolYear: 2026 });
 
-      expect(result.status).toBe('failed');
-      expect(mashovClient.get).not.toHaveBeenCalled();
-      expect(prisma.homeworkItem.upsert).not.toHaveBeenCalled();
+      expect(result.status).toBe('success');
+      expect(mashovClient.getForConnection).toHaveBeenCalledWith(
+        expect.any(String),
+        CONNECTION.id,
+        CONNECTION.schoolCode,
+        2026,
+        CONNECTION.username,
+        expect.any(String),
+        expect.anything(),
+      );
     });
+  });
 
-    it('still runs the shared-session path when no year is asked for', async () => {
+  describe('no usable connection', () => {
+    it('reports success without touching upstream when none exist at all', async () => {
+      // The empty deployment. Nothing was skipped -- there is nothing. A
+      // `failed` run here could only be keyed on the bare source name, which
+      // the NULL-owner rule shows to every household.
       prisma.householdConnection.findMany.mockResolvedValue([]);
 
       const result = await task.execute();
 
       expect(result.status).toBe('success');
-      expect(mashovClient.get).toHaveBeenCalled();
+      expect(result.summary.failedCount).toBe(0);
+      expect(syncRunService.openRun).not.toHaveBeenCalled();
+      expect(mashovClient.getForConnection).not.toHaveBeenCalled();
+    });
+
+    it('reports a failure when a named connection resolves to nothing', async () => {
+      // A targeted refresh has a requester, so silence would be a lie.
+      prisma.householdConnection.findMany.mockResolvedValue([]);
+
+      const result = await task.execute({ connectionId: 'conn-gone' });
+
+      expect(result.status).toBe('failed');
+      expect(syncRunService.openRun).toHaveBeenCalledWith('homework:conn-gone', 'conn-gone');
+      expect(mashovClient.getForConnection).not.toHaveBeenCalled();
     });
   });
 });

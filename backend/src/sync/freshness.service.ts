@@ -10,49 +10,19 @@ import {
   calendarSchoolYear,
   SchoolYearService,
 } from '../common/school-year/school-year.service';
+import { PER_STUDENT_SOURCES, SOURCE_POLICY } from './source-policy';
 
 export type FreshnessState = 'fresh' | 'syncing' | 'stale' | 'degraded';
 
-interface SourceThreshold {
-  sources: string[];
-  staleThresholdMinutes: number;
-}
-
-// Freshness thresholds from PRD FR-13
-const SOURCE_THRESHOLDS: SourceThreshold[] = [
-  {
-    sources: ['notifications', 'mail_counts', 'mail_inbox'],
-    staleThresholdMinutes: 15,
-  },
-  {
-    sources: ['homework', 'behavior'],
-    staleThresholdMinutes: 24 * 60, // 24 hours
-  },
-  {
-    sources: ['achvas', 'groups', 'lessons_count', 'user_details', 'message_board'],
-    staleThresholdMinutes: 7 * 24 * 60, // 7 days
-  },
-  {
-    // Global, not per-student: the roster is what tells us which students exist.
-    sources: ['students'],
-    staleThresholdMinutes: 24 * 60,
-  },
-];
-
 /**
- * The sources whose run keys carry a `:<studentGuid>` suffix.
- *
- * Exported because `SettingsService` has to recognise the same keys in order
- * to work out which students a caller's snapshot actually mentions — two
- * copies of this list would drift and silently stop reporting a source.
+ * Freshness thresholds now come from `source-policy.ts`, which also drives the
+ * scheduler and the read path. Two tables disagreed before: a cron could run a
+ * source 7x more often than the threshold expected, and six sources were
+ * missing from the threshold table entirely, so `/more` reported no health for
+ * them.
  */
-export const PER_STUDENT_SOURCES = [
-  'homework',
-  'behavior',
-  'groups',
-  'lessons_count',
-  'message_board',
-] as const;
+
+export { PER_STUDENT_SOURCES };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -316,55 +286,55 @@ export class FreshnessService {
     let hasFailure = false;
     let latestSyncAt: Date | null = null;
 
-    for (const threshold of SOURCE_THRESHOLDS) {
-      for (const baseSource of threshold.sources) {
-        // Check both per-source and per-child sources
-        const matchingKeys = Array.from(successRuns.keys()).filter(
+    for (const policy of SOURCE_POLICY) {
+      const baseSource = policy.source;
+      const threshold = { staleThresholdMinutes: policy.staleThresholdMinutes };
+      // Check both per-source and per-child sources
+      const matchingKeys = Array.from(successRuns.keys()).filter(
+        (key) => key === baseSource || key.startsWith(`${baseSource}:`),
+      );
+
+      if (matchingKeys.length === 0) {
+        // Check if there was any failed attempt
+        const failedKey = Array.from(allRuns.keys()).find(
           (key) => key === baseSource || key.startsWith(`${baseSource}:`),
         );
+        if (failedKey) {
+          hasFailure = true;
+          staleSources.push(baseSource);
+        }
+        continue;
+      }
 
-        if (matchingKeys.length === 0) {
-          // Check if there was any failed attempt
-          const failedKey = Array.from(allRuns.keys()).find(
-            (key) => key === baseSource || key.startsWith(`${baseSource}:`),
-          );
-          if (failedKey) {
-            hasFailure = true;
-            staleSources.push(baseSource);
-          }
-          continue;
+      hasAnyRun = true;
+
+      // Use the most recent successful run across all matching keys (best-wins).
+      // A source is only stale if even its freshest run exceeded the threshold.
+      // This prevents old shared-session or superseded-connection entries from
+      // keeping a source permanently stale after a successful per-connection sync.
+      let mostRecentEndedAt: Date | null = null;
+      for (const key of matchingKeys) {
+        const run = successRuns.get(key);
+        if (!run?.endedAt) continue;
+
+        const endedAt = new Date(run.endedAt);
+        if (latestSyncAt === null || endedAt > latestSyncAt) {
+          latestSyncAt = endedAt;
+        }
+        if (mostRecentEndedAt === null || endedAt > mostRecentEndedAt) {
+          mostRecentEndedAt = endedAt;
         }
 
-        hasAnyRun = true;
-
-        // Use the most recent successful run across all matching keys (best-wins).
-        // A source is only stale if even its freshest run exceeded the threshold.
-        // This prevents old shared-session or superseded-connection entries from
-        // keeping a source permanently stale after a successful per-connection sync.
-        let mostRecentEndedAt: Date | null = null;
-        for (const key of matchingKeys) {
-          const run = successRuns.get(key);
-          if (!run?.endedAt) continue;
-
-          const endedAt = new Date(run.endedAt);
-          if (latestSyncAt === null || endedAt > latestSyncAt) {
-            latestSyncAt = endedAt;
-          }
-          if (mostRecentEndedAt === null || endedAt > mostRecentEndedAt) {
-            mostRecentEndedAt = endedAt;
-          }
-
-          const failedRun = allRuns.get(key);
-          if (failedRun?.status === 'failed') {
-            hasFailure = true;
-          }
+        const failedRun = allRuns.get(key);
+        if (failedRun?.status === 'failed') {
+          hasFailure = true;
         }
+      }
 
-        if (mostRecentEndedAt !== null) {
-          const ageMinutes = (now.getTime() - mostRecentEndedAt.getTime()) / 60000;
-          if (ageMinutes > threshold.staleThresholdMinutes) {
-            staleSources.push(baseSource);
-          }
+      if (mostRecentEndedAt !== null) {
+        const ageMinutes = (now.getTime() - mostRecentEndedAt.getTime()) / 60000;
+        if (ageMinutes > threshold.staleThresholdMinutes) {
+          staleSources.push(baseSource);
         }
       }
     }
@@ -402,96 +372,96 @@ export class FreshnessService {
     const now = new Date();
     const results: SourceHealth[] = [];
 
-    for (const threshold of SOURCE_THRESHOLDS) {
-      for (const baseSource of threshold.sources) {
-        // Add global sources + per-student sources
-        const sources = [baseSource];
+    for (const policy of SOURCE_POLICY) {
+      const baseSource = policy.source;
+      const threshold = { staleThresholdMinutes: policy.staleThresholdMinutes };
+      // Add global sources + per-student sources
+      const sources = [baseSource];
 
-        // Add per-student variants if applicable
-        if ((PER_STUDENT_SOURCES as readonly string[]).includes(baseSource)) {
-          for (const guid of studentGuids) {
-            sources.push(`${baseSource}:${guid}`);
+      // Add per-student variants if applicable
+      if ((PER_STUDENT_SOURCES as readonly string[]).includes(baseSource)) {
+        for (const guid of studentGuids) {
+          sources.push(`${baseSource}:${guid}`);
+        }
+      }
+
+      for (const source of sources) {
+        // Look for the most recent success across the exact key AND any variant keys
+        // (e.g. mail_counts:{conn.id}) so per-connection entries are not missed.
+        const variantSuccessKeys = Array.from(successRuns.keys()).filter(
+          (k) => k === source || k.startsWith(`${source}:`),
+        );
+        let latestSuccess: SyncRun | undefined;
+        for (const k of variantSuccessKeys) {
+          const r = successRuns.get(k);
+          if (r?.endedAt && (!latestSuccess?.endedAt || r.endedAt > latestSuccess.endedAt)) {
+            latestSuccess = r;
           }
         }
 
-        for (const source of sources) {
-          // Look for the most recent success across the exact key AND any variant keys
-          // (e.g. mail_counts:{conn.id}) so per-connection entries are not missed.
-          const variantSuccessKeys = Array.from(successRuns.keys()).filter(
-            (k) => k === source || k.startsWith(`${source}:`),
-          );
-          let latestSuccess: SyncRun | undefined;
-          for (const k of variantSuccessKeys) {
-            const r = successRuns.get(k);
-            if (r?.endedAt && (!latestSuccess?.endedAt || r.endedAt > latestSuccess.endedAt)) {
-              latestSuccess = r;
-            }
+        // The attempt comes from the SAME variant key set as the status, not
+        // from `allRuns.get(source)` — the bare key.
+        //
+        // T13 finding 3: the branch-wide NULL rule admits a cron run with no
+        // connection into every connection's snapshot, deliberately. When
+        // such a run sits under the bare source name and has `failed`, the
+        // bare key carried its error onto a row whose status the scoped
+        // success variant had already made `fresh` — a green row with
+        // "Missing required Mashov credentials…" beneath it, shown on a
+        // shared deployment to every household. Reading both from one set is
+        // what keeps the two halves of the row talking about the same runs.
+        // Two picks, because they answer different questions. `lastAttemptAt`
+        // is the newest attempt of ANY status — if something is running, the
+        // row should say when it started. `status` and `lastErrorMessage`
+        // come from the newest *failed* attempt, because a newer `running`
+        // row is not evidence the failure went away: an in-flight refresh,
+        // or a run whose process died before `closeRun`, would otherwise sit
+        // in front of a `failed` row and take the status down to
+        // `never_synced` with a null error — silencing the one page that
+        // answers "is syncing working", permanently if the row is orphaned.
+        let latestAttempt: SyncRun | undefined;
+        let latestFailure: SyncRun | undefined;
+        for (const k of allRuns.keys()) {
+          if (k !== source && !k.startsWith(`${source}:`)) continue;
+          const r = allRuns.get(k);
+          if (!r) continue;
+          if (!latestAttempt || r.startedAt > latestAttempt.startedAt) latestAttempt = r;
+          if (
+            r.status === 'failed' &&
+            (!latestFailure || r.startedAt > latestFailure.startedAt)
+          ) {
+            latestFailure = r;
           }
-
-          // The attempt comes from the SAME variant key set as the status, not
-          // from `allRuns.get(source)` — the bare key.
-          //
-          // T13 finding 3: the branch-wide NULL rule admits a cron run with no
-          // connection into every connection's snapshot, deliberately. When
-          // such a run sits under the bare source name and has `failed`, the
-          // bare key carried its error onto a row whose status the scoped
-          // success variant had already made `fresh` — a green row with
-          // "Missing required Mashov credentials…" beneath it, shown on a
-          // shared deployment to every household. Reading both from one set is
-          // what keeps the two halves of the row talking about the same runs.
-          // Two picks, because they answer different questions. `lastAttemptAt`
-          // is the newest attempt of ANY status — if something is running, the
-          // row should say when it started. `status` and `lastErrorMessage`
-          // come from the newest *failed* attempt, because a newer `running`
-          // row is not evidence the failure went away: an in-flight refresh,
-          // or a run whose process died before `closeRun`, would otherwise sit
-          // in front of a `failed` row and take the status down to
-          // `never_synced` with a null error — silencing the one page that
-          // answers "is syncing working", permanently if the row is orphaned.
-          let latestAttempt: SyncRun | undefined;
-          let latestFailure: SyncRun | undefined;
-          for (const k of allRuns.keys()) {
-            if (k !== source && !k.startsWith(`${source}:`)) continue;
-            const r = allRuns.get(k);
-            if (!r) continue;
-            if (!latestAttempt || r.startedAt > latestAttempt.startedAt) latestAttempt = r;
-            if (
-              r.status === 'failed' &&
-              (!latestFailure || r.startedAt > latestFailure.startedAt)
-            ) {
-              latestFailure = r;
-            }
-          }
-
-          let status: SourceHealth['status'] = 'never_synced';
-
-          if (latestSuccess?.endedAt) {
-            const ageMinutes =
-              (now.getTime() - new Date(latestSuccess.endedAt).getTime()) / 60000;
-            status = ageMinutes <= threshold.staleThresholdMinutes ? 'fresh' : 'stale';
-          } else if (latestFailure) {
-            status = 'failed';
-          }
-
-          // An error a later success has superseded is spent, and does not
-          // travel. One that nothing has answered yet still explains itself —
-          // suppressing on `status !== 'failed'` instead would silence a
-          // stale-but-failing source, which is the row most worth reading.
-          const errorIsSpent =
-            !!latestSuccess?.endedAt &&
-            !!latestFailure &&
-            latestSuccess.endedAt > latestFailure.startedAt;
-
-          results.push({
-            source,
-            status,
-            lastSuccessAt: latestSuccess?.endedAt?.toISOString() ?? null,
-            lastAttemptAt: latestAttempt?.startedAt?.toISOString() ?? null,
-            lastErrorMessage: errorIsSpent ? null : latestFailure?.errorMessage ?? null,
-            fetchedCount: latestSuccess?.fetchedCount ?? null,
-            staleThresholdMinutes: threshold.staleThresholdMinutes,
-          });
         }
+
+        let status: SourceHealth['status'] = 'never_synced';
+
+        if (latestSuccess?.endedAt) {
+          const ageMinutes =
+            (now.getTime() - new Date(latestSuccess.endedAt).getTime()) / 60000;
+          status = ageMinutes <= threshold.staleThresholdMinutes ? 'fresh' : 'stale';
+        } else if (latestFailure) {
+          status = 'failed';
+        }
+
+        // An error a later success has superseded is spent, and does not
+        // travel. One that nothing has answered yet still explains itself —
+        // suppressing on `status !== 'failed'` instead would silence a
+        // stale-but-failing source, which is the row most worth reading.
+        const errorIsSpent =
+          !!latestSuccess?.endedAt &&
+          !!latestFailure &&
+          latestSuccess.endedAt > latestFailure.startedAt;
+
+        results.push({
+          source,
+          status,
+          lastSuccessAt: latestSuccess?.endedAt?.toISOString() ?? null,
+          lastAttemptAt: latestAttempt?.startedAt?.toISOString() ?? null,
+          lastErrorMessage: errorIsSpent ? null : latestFailure?.errorMessage ?? null,
+          fetchedCount: latestSuccess?.fetchedCount ?? null,
+          staleThresholdMinutes: threshold.staleThresholdMinutes,
+        });
       }
     }
 

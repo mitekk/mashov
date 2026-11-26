@@ -894,19 +894,12 @@ describe('Two schools in one household, synced one after the other', () => {
       expect(foreignChildRequests.length).toBe(0);
     });
 
-    it('keeps both schools\' notifications, which share an upstream id', async () => {
-      // `upstreamNotificationId` is a per-school counter. Before the composite
-      // key one school's notification silently replaced the other's.
-      const events = await prisma.notificationEvent.findMany({
-        where: { upstreamNotificationId: SHARED_NOTIFICATION_ID },
-        select: { householdConnectionId: true, eventText: true },
-        orderBy: { householdConnectionId: 'asc' },
-      });
-      expect(events).toEqual([
-        { householdConnectionId: CONN_A, eventText: `התראה מבית ספר ${SEMEL_A}` },
-        { householdConnectionId: CONN_B, eventText: `התראה מבית ספר ${SEMEL_B}` },
-      ]);
-    });
+    // REMOVED: 'keeps both schools' notifications, which share an upstream id'.
+    // `NotificationsTask` is gone -- nothing read the `NotificationEvent` rows
+    // it wrote (no page, no digest, no Telegram) and it held the tightest cron
+    // in the app. The table and its composite key survive for the rows already
+    // in Postgres and for `ConnectionService`'s delete-on-unlink, but with no
+    // writer there is nothing left for this test to assert. See ADR-0046.
 
     it('keeps both schools\' behaviour taxonomies, which share a code', async () => {
       // The one that answers "is this absence justifiable?". Keyed by school,

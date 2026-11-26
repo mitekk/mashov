@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   orderConnectionsForStudent,
+  reportNoConnectionTarget,
+  skipNoConnections,
   stampOwnershipIfChanged,
   studentScopeForContext,
 } from '../connection-fanout';
@@ -48,10 +49,6 @@ export class BehaviorTask {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  @Cron('*/12 * * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   async execute(context: SyncExecutionContext = {}): Promise<SyncTaskRunResult> {
     const connections = await this.prisma.householdConnection.findMany({
@@ -62,25 +59,24 @@ export class BehaviorTask {
       },
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
+
+    // Before the student query, which has nothing to iterate without a
+    // connection to ask. A named connection that resolves to nothing is a
+    // reportable failure; no connections at all is the empty deployment.
+    if (connections.length === 0) {
+      return context.connectionId
+        ? reportNoConnectionTarget(
+            this.syncRunService,
+            this.logger,
+            BehaviorTask.SOURCE,
+            context.connectionId,
+          )
+        : skipNoConnections(this.logger, BehaviorTask.SOURCE);
+    }
     // One value feeds both the login year and the row stamp.
     const requestedYear = context.schoolYear;
     const sourcePrefix = context.sourcePrefix ?? '';
 
-    const useSharedSession = !context.connectionId && connections.length === 0;
-
-    // The shared session is process-global and carries no per-year identity,
-    // so it would answer with the current year while this run stamps another.
-    // The backfill always passes a connectionId and never reaches here; this
-    // refuses the combination rather than writing mislabelled rows.
-    if (useSharedSession && requestedYear !== undefined) {
-      const message = `${BehaviorTask.SOURCE}: refusing year ${requestedYear} on the shared-session path; a historical year needs an explicit connectionId`;
-      this.logger.warn(message);
-      return {
-        status: 'failed',
-        summary: { fetchedCount: 0, createdCount: 0, updatedCount: 0, failedCount: 1 },
-        errorMessages: [message],
-      };
-    }
 
     const students = await this.prisma.student.findMany({
       where: studentScopeForContext(context),
@@ -115,65 +111,58 @@ export class BehaviorTask {
       let upsertCount = 0;
 
       try {
-        let items: MashovBehaviorItem[];
-
-        if (useSharedSession) {
-          items = await this.mashovClient.get<MashovBehaviorItem[]>(
-            `/api/students/${student.studentGuid}/behave`,
-            {
-              headers: {
-                'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behave`,
-              },
-            },
-          );
-        } else {
-          items = [];
-          let answered = false;
-          for (const conn of ordered) {
-            try {
-              const password = this.encryptionService.decrypt(conn.encryptedPassword);
-              const connYear = requestedYear ?? conn.schoolYear;
-              items = await this.mashovClient.getForConnection<MashovBehaviorItem[]>(
-                `/api/students/${student.studentGuid}/behave`,
-                conn.id,
-                conn.schoolCode,
-                connYear,
-                conn.username,
-                password,
-                {
-                  headers: {
-                    'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behave`,
-                  },
+        let items: MashovBehaviorItem[] = [];
+        let answered = false;
+        // Collected so the thrown error carries WHY. This is the only fetch
+        // path now, so a bare "every connection failed" would strand the real
+        // cause in a per-connection warn line and hand /more an error with no
+        // diagnosis in it.
+        const connFailures: string[] = [];
+        for (const conn of ordered) {
+          try {
+            const password = this.encryptionService.decrypt(conn.encryptedPassword);
+            const connYear = requestedYear ?? conn.schoolYear;
+            items = await this.mashovClient.getForConnection<MashovBehaviorItem[]>(
+              `/api/students/${student.studentGuid}/behave`,
+              conn.id,
+              conn.schoolCode,
+              connYear,
+              conn.username,
+              password,
+              {
+                headers: {
+                  'Referer': `https://web.mashov.info/students/main/students/${student.studentGuid}/behave`,
                 },
-              );
-              schoolYear = connYear;
-              answeredSchoolCode = conn.schoolCode;
-              answered = true;
-              // A success on a non-owner re-stamps, so a child who moved
-              // school stops costing a failed call on every later run.
-              await stampOwnershipIfChanged(
-                this.prisma,
-                student,
-                conn,
-                this.logger,
-                // An empty 200 is not proof the child is in this account.
-                Array.isArray(items) && items.length > 0,
-              );
-              break;
-            } catch (connErr) {
-              const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
-              this.logger.warn(`Behavior: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
-            }
-          }
-          // Every connection failed. Reporting success here would let the
-          // history backfill record a year permanently complete having
-          // fetched nothing, and would hide a broken live sync behind a
-          // green run. The per-student catch below records the failure.
-          if (!answered) {
-            throw new Error(
-              `every connection failed for ${student.studentGuid} (tried ${connections.length})`,
+              },
             );
+            schoolYear = connYear;
+            answeredSchoolCode = conn.schoolCode;
+            answered = true;
+            // A success on a non-owner re-stamps, so a child who moved
+            // school stops costing a failed call on every later run.
+            await stampOwnershipIfChanged(
+              this.prisma,
+              student,
+              conn,
+              this.logger,
+              // An empty 200 is not proof the child is in this account.
+              Array.isArray(items) && items.length > 0,
+            );
+            break;
+          } catch (connErr) {
+            const connMsg = connErr instanceof Error ? connErr.message : String(connErr);
+            connFailures.push(connMsg);
+            this.logger.warn(`Behavior: connection ${conn.id} failed for ${student.studentGuid}: ${connMsg}`);
           }
+        }
+        // Every connection failed. Reporting success here would let the
+        // history backfill record a year permanently complete having
+        // fetched nothing, and would hide a broken live sync behind a
+        // green run. The per-student catch below records the failure.
+        if (!answered) {
+          throw new Error(
+            `every connection failed for ${student.studentGuid} (tried ${connections.length}): ${connFailures.join('; ')}`,
+          );
         }
 
         fetchedCount = items.length;

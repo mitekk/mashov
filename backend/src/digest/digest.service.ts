@@ -55,10 +55,21 @@ const DEFAULT_TIMEZONE = 'Asia/Jerusalem';
 
 /**
  * How stale the school data may be before a quiet day stops being reported as
- * quiet. The sync tasks run every 12 minutes, so six hours means several dozen
- * consecutive failures -- comfortably past a transient blip.
+ * quiet.
+ *
+ * The original reasoning -- "the sync tasks run every 12 minutes, so six hours
+ * means several dozen consecutive failures" -- no longer holds: those crons are
+ * gone. The guarantee now comes from `NotificationWindowTask`'s digest-lead
+ * tick, which fetches at :50 before each 11:00-19:00 digest tick, so a
+ * successful `homework`/`behavior` run is minutes old at every tick rather than
+ * hours. Six hours is now slack, not a tight bound.
+ *
+ * **Exported so the regression test reads the real value.** A copy in the test
+ * would drift, and the test would stay green while the trip-wire broke. Push
+ * the lead tick out past this and every quiet child flips from
+ * `skipped_empty` to `skipped_stale`, permanently and silently.
  */
-const SYNC_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+export const SYNC_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
 /** Mirrors DigestCheckerService's default; both read the same env var. */
 const DEFAULT_DUE_LOOKBACK_DAYS = 14;

@@ -4,6 +4,7 @@ import { ChildrenService } from './children.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { MashovSessionModule } from '../session/mashov-session.module';
 import { ConnectionScopeModule } from '../common/connection-scope/connection-scope.module';
+import { SyncModule } from '../sync/sync.module';
 import { UserItemStateService } from '../common/user-item-state.service';
 
 /**
@@ -14,7 +15,10 @@ import { UserItemStateService } from '../common/user-item-state.service';
  * Mashov client itself. See ADR-0039.
  */
 @Module({
-  imports: [PrismaModule, MashovSessionModule, ConnectionScopeModule],
+  // SyncModule for read-path freshening (SyncOnReadService + the slow-source
+  // tasks). Safe: SyncModule imports neither ChildrenModule nor DigestModule,
+  // so this closes no cycle.
+  imports: [PrismaModule, MashovSessionModule, ConnectionScopeModule, SyncModule],
   controllers: [ChildrenController],
   providers: [ChildrenService, UserItemStateService],
   exports: [ChildrenService],

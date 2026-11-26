@@ -60,8 +60,18 @@ export interface RosterRefreshResult extends RosterResult {
  * How long a successful `students` sync keeps the self-heal path quiet. The
  * signal is the `syncRun` table — the same one freshness already reads — so no
  * new column is needed.
+ *
+ * 24 hours, not the hour it used to be. This runs on the REQUEST path, off
+ * `/children` and `/dashboard`, and with the `students` cron deleted it would
+ * otherwise be the de-facto roster scheduler: a full upstream login per
+ * household per hour of browsing, which is the opposite of the point. The
+ * roster changes about once a year, it is refreshed by the `login` set on every
+ * sign-in, and `NotificationWindowTask` refreshes it daily for households that
+ * opted into notifications. This is the backstop behind all three — it exists
+ * because a stale roster once left children on last year's class for five
+ * months, and matches the `students` policy TTL in `source-policy.ts`.
  */
-export const ROSTER_TTL_MINUTES = 60;
+export const ROSTER_TTL_MINUTES = 24 * 60;
 
 const STUDENTS_SOURCE = 'students';
 
@@ -88,10 +98,6 @@ interface ConnectionSession {
 export class MashovSessionService {
   private readonly logger = new Logger(MashovSessionService.name);
   private readonly baseUrl: string;
-  private csrfToken: string | null = null;
-  private sessionCookies: SessionCookies | null = null;
-  private isAuthenticating = false;
-  private authPromise: Promise<void> | null = null;
   private readonly httpClient: AxiosInstance;
   /**
    * Per-connection session cache keyed by `connectionId:year`.
@@ -147,203 +153,6 @@ export class MashovSessionService {
   //   return csrfToken;
   // }
 
-  async login(): Promise<void> {
-    const csrfToken = MASHOV_CSRF_TOKEN;
-
-    const semel = this.configService.get<number>("MASHOV_SEMEL");
-    const username = this.configService.get<string>("MASHOV_USERNAME");
-    const password = this.configService.get<string>("MASHOV_PASSWORD");
-
-    // `year` is deliberately absent from this guard. MASHOV_YEAR no longer
-    // names the year in scope at all - it is the earliest year to *fetch* -
-    // and the current year comes from `resolveForSchool` below. Requiring it
-    // here would mean the app cannot boot without the very constant that froze
-    // the school year.
-    if (!semel || !username || !password) {
-      throw new Error(
-        "Missing required Mashov credentials in environment variables",
-      );
-    }
-
-    const candidate = (await this.schoolYearService.resolveForSchool(Number(semel))).year;
-
-    const stored = await this.prisma.householdConnection.findFirst({
-      where: { schoolCode: Number(semel), username },
-      orderBy: [{ lastLoginAt: "desc" }, { updatedAt: "desc" }],
-      select: { mashovUniqueId: true },
-    });
-    const storedUniqueId = stored?.mashovUniqueId ?? null;
-
-    let year = candidate;
-    let response = await this.postSharedLogin(
-      Number(semel),
-      year,
-      username,
-      password,
-      storedUniqueId,
-      csrfToken,
-    );
-
-    // Phase 2 applies on this path too. Without it the shared session persists
-    // the *candidate* year, so on 1 September it stamps the connection with a
-    // year Mashov is not serving yet: every year-scoped read then filters on
-    // that year and finds nothing, and it silently overwrites a year that
-    // `refreshRosterForConnection` had already corrected. Capped at one retry,
-    // because the session cookies are year-scoped.
-    const reconciled = this.schoolYearService.reconcileFromLogin(year, response.data);
-    if (reconciled.changed) {
-      this.logger.warn(
-        `Mashov reports active year=${reconciled.year} for semel=${semel} (sent ${year}); re-logging in`,
-      );
-      this.schoolYearService.invalidate(Number(semel));
-      year = reconciled.year;
-      response = await this.postSharedLogin(
-        Number(semel),
-        year,
-        username,
-        password,
-        storedUniqueId,
-        csrfToken,
-      );
-    }
-
-    this.extractAndStoreCookies(
-      response.headers as Record<string, string | string[]>,
-    );
-
-    // null: the shared env-credential session has no connection, so it
-    // reads the roster but must not claim ownership of it.
-    await this.persistRoster(response.data, Number(semel), year, null);
-    await this.parseAndPersistHousehold(
-      response.data,
-      Number(semel),
-      Number(year),
-      username,
-      password,
-    );
-
-    if (this.sessionCookies?.uniquId) {
-      await this.prisma.householdConnection.updateMany({
-        where: { schoolCode: Number(semel), username },
-        data: { mashovUniqueId: this.sessionCookies.uniquId },
-      });
-    }
-
-    this.logger.log("Mashov session established successfully");
-  }
-
-  /**
-   * One shared-session `POST /api/login`. Extracted so the year Mashov vetoes
-   * can be retried exactly once without duplicating the body.
-   */
-  private async postSharedLogin(
-    semel: number,
-    year: number,
-    username: string,
-    password: string,
-    storedUniqueId: string | null,
-    csrfToken: string,
-  ): Promise<AxiosResponse<LoginResponse>> {
-    const loginBody = {
-      semel,
-      year: Number(year),
-      username,
-      password,
-      IsBiometric: false,
-      appName: "info.mashov.students",
-      apiVersion: "3.20210425",
-      appVersion: 3.20210425,
-      appBuild: 3.20210425,
-      deviceUuid: "chrome",
-      devicePlatform: "chrome",
-      deviceManufacturer: "mac",
-      deviceModel: "desktop",
-      deviceVersion: "145.0.0.0",
-    };
-
-    const extraHeaders: Record<string, string> = {};
-    if (storedUniqueId) {
-      extraHeaders["Cookie"] = `uniquId=${storedUniqueId}`;
-    }
-
-    return this.httpClient.post("/api/login", loginBody, {
-      headers: {
-        "X-Csrf-Token": csrfToken,
-        "Content-Type": "application/json",
-        Referer: `${this.baseUrl}/students/login`,
-        "sec-ch-ua-platform": '"macOS"',
-        "sec-ch-ua":
-          '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-        "sec-ch-ua-mobile": "?0",
-        ...extraHeaders,
-      },
-    });
-  }
-
-  private extractAndStoreCookies(
-    headers: Record<string, string | string[]>,
-  ): void {
-    const setCookieHeader = headers["set-cookie"];
-    if (!setCookieHeader) {
-      throw new Error("No Set-Cookie header in login response");
-    }
-
-    const cookies = Array.isArray(setCookieHeader)
-      ? setCookieHeader
-      : [setCookieHeader];
-    const parsed: Partial<SessionCookies> = {};
-
-    for (const cookie of cookies) {
-      const nameValue = cookie.split(";")[0];
-      if (!nameValue) continue;
-      const eqIdx = nameValue.indexOf("=");
-      if (eqIdx === -1) continue;
-      const name = nameValue.substring(0, eqIdx).trim();
-      const value = nameValue.substring(eqIdx + 1).trim();
-
-      if (name === "Csrf-Token") parsed.csrfToken = value;
-      else if (name === "MashovAuthToken") parsed.mashovAuthToken = value;
-      else if (name === "uniquId") parsed.uniquId = value;
-    }
-
-    if (!parsed.csrfToken || !parsed.mashovAuthToken || !parsed.uniquId) {
-      throw new Error(
-        `Missing required session cookies. Got: ${Object.keys(parsed).join(", ")}`,
-      );
-    }
-
-    this.sessionCookies = parsed as SessionCookies;
-    this.csrfToken = parsed.csrfToken;
-  }
-
-  async getAuthHeaders(): Promise<Record<string, string>> {
-    if (!this.sessionCookies || !this.csrfToken) {
-      await this.ensureAuthenticated();
-    }
-
-    if (!this.sessionCookies || !this.csrfToken) {
-      throw new Error("Failed to establish Mashov session");
-    }
-
-    const cookieString = [
-      `Csrf-Token=${this.sessionCookies.csrfToken}`,
-      `MashovAuthToken=${this.sessionCookies.mashovAuthToken}`,
-      `uniquId=${this.sessionCookies.uniquId}`,
-    ].join("; ");
-
-    return {
-      "X-Csrf-Token": this.csrfToken,
-      Cookie: cookieString,
-    };
-  }
-
-  async refreshIfExpired(): Promise<void> {
-    this.logger.debug("Session expired or invalid, re-authenticating");
-    this.csrfToken = null;
-    this.sessionCookies = null;
-    await this.ensureAuthenticated();
-  }
-
   /**
    * Keeps the roster from going stale. The old version short-circuited on
    * `activeStudents > 0`, so it only ever fired when the `student` table was
@@ -364,11 +173,32 @@ export class MashovSessionService {
       orderBy: { lastLoginAt: "desc" },
     });
 
+    // No connection, nothing to refresh as. This used to fall back to the
+    // shared env account, which is gone.
+    //
+    // A no-op rather than a throw: both callers are page reads
+    // (`ChildrenService.getChildren`, `DashboardService.getDashboard`) and a
+    // user mid-setup, or one whose only connection was just deactivated, would
+    // get a 500 dashboard instead of an empty one.
+    //
+    // Returns BEFORE the TTL probe, and deliberately records no `syncRun`. The
+    // run below exists to stop a *failing upstream refresh* from re-firing on
+    // every request; here there is no upstream call to amplify. Recording one
+    // would also write an owner-less `students` row, which the branch-wide
+    // NULL rule then admits into every connection's snapshot -- satisfying the
+    // gate on behalf of connections that do not exist.
+    if (!connection) {
+      this.logger.debug(
+        `No active household connection for ${userId ?? "this request"}; skipping roster refresh`,
+      );
+      return;
+    }
+
     const lastRun = await this.prisma.syncRun.findFirst({
       where: {
         source: STUDENTS_SOURCE,
         status: "success",
-        ...(connection ? { householdConnectionId: connection.id } : {}),
+        householdConnectionId: connection.id,
       },
       orderBy: { endedAt: "desc" },
       select: { endedAt: true },
@@ -382,7 +212,7 @@ export class MashovSessionService {
       return;
     }
 
-    const dedupeKey = connection?.id ?? "__env__";
+    const dedupeKey = connection.id;
     const existing = this.inFlightRosterRefresh.get(dedupeKey);
     if (existing) {
       return existing;
@@ -394,16 +224,12 @@ export class MashovSessionService {
     // every request that reaches here performs a full upstream login — an
     // unbounded login amplifier on the request path.
     const startedAt = new Date();
-    const refresh = (
-      connection
-        ? this.refreshRosterForConnection(connection.id).then(() => undefined)
-        : this.ensureAuthenticated(true)
-    )
-      .then(() => this.recordRosterRun(connection?.id ?? null, startedAt, null))
-      .catch(async (error) => {
+    const refresh = this.refreshRosterForConnection(connection.id)
+      .then(() => this.recordRosterRun(connection.id, startedAt, null))
+      .catch(async (error: unknown) => {
         const msg = error instanceof Error ? error.message : String(error);
         this.logger.error(`Failed to refresh student roster: ${msg}`);
-        await this.recordRosterRun(connection?.id ?? null, startedAt, msg);
+        await this.recordRosterRun(connection.id, startedAt, msg);
       })
       .finally(() => {
         this.inFlightRosterRefresh.delete(dedupeKey);
@@ -420,7 +246,7 @@ export class MashovSessionService {
    * would close an import cycle.
    */
   private async recordRosterRun(
-    connectionId: string | null,
+    connectionId: string,
     startedAt: Date,
     errorMessage: string | null,
   ): Promise<void> {
@@ -520,34 +346,6 @@ export class MashovSessionService {
     }
 
     return { ...roster, year };
-  }
-
-  private async ensureAuthenticated(force = false): Promise<void> {
-    if (this.isAuthenticating && this.authPromise) {
-      return this.authPromise;
-    }
-
-    if (force) {
-      this.csrfToken = null;
-      this.sessionCookies = null;
-    }
-
-    this.isAuthenticating = true;
-    this.authPromise = this.login().finally(() => {
-      this.isAuthenticating = false;
-      this.authPromise = null;
-    });
-
-    return this.authPromise;
-  }
-
-  async initialize(): Promise<void> {
-    try {
-      await this.ensureAuthenticated();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to initialize session: ${msg}`);
-    }
   }
 
   /**
@@ -722,59 +520,6 @@ export class MashovSessionService {
       .map((entry) => Number(entry))
       .filter((year) => Number.isInteger(year) && year > 0);
     return years.length > 0 ? years : null;
-  }
-
-  private async parseAndPersistHousehold(
-    data: LoginResponse,
-    semel: number,
-    year: number,
-    username: string,
-    password: string,
-  ): Promise<void> {
-    const schoolSettings = data.accessToken?.schoolSettings;
-    const credential = data.credential;
-    const encryptedPassword = this.encryptionService.encrypt(password);
-    const enrolledYears = this.enrolledSchoolYears(data);
-
-    const existing = await this.prisma.householdConnection.findFirst({
-      where: { schoolCode: semel, username },
-    });
-
-    if (existing) {
-      await this.prisma.householdConnection.update({
-        where: { id: existing.id },
-        data: {
-          username,
-          encryptedPassword,
-          schoolYear: year,
-          schoolName: schoolSettings?.schoolName,
-          upstreamUserId: credential?.userId,
-          lastLoginAt: new Date(),
-          active: true,
-          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
-        },
-      });
-    } else {
-      await this.prisma.householdConnection.create({
-        data: {
-          schoolCode: semel,
-          schoolYear: year,
-          username,
-          encryptedPassword,
-          schoolName: schoolSettings?.schoolName,
-          upstreamUserId: credential?.userId,
-          lastLoginAt: new Date(),
-          active: true,
-          ...(enrolledYears ? { schoolYears: enrolledYears } : {}),
-        },
-      });
-    }
-
-    this.logger.debug("Household connection persisted");
-  }
-
-  isSessionValid(): boolean {
-    return this.sessionCookies !== null && this.csrfToken !== null;
   }
 
   /**

@@ -6,9 +6,17 @@ import { EncryptionService } from '../../session/encryption.service';
 import { TimetableTask } from './timetable.task';
 import { calendarSchoolYear } from '../../common/school-year/school-year.service';
 
-// This suite exercises the legacy shared-session path (no household
-// connection), where the year falls back to the calendar.
-const FALLBACK_YEAR = calendarSchoolYear(new Date());
+// Every fetch is per-connection, so the suite seeds one and the year comes
+// from it. `calendarSchoolYear` keeps the stamp realistic without pinning the
+// suite to a hardcoded year.
+const CONN_YEAR = calendarSchoolYear(new Date());
+const CONNECTION = {
+  id: 'conn-1',
+  schoolCode: 540175,
+  schoolYear: CONN_YEAR,
+  username: 'parent',
+  encryptedPassword: 'enc',
+};
 
 function makeTimetableItem(overrides: Record<string, unknown> = {}) {
   return {
@@ -50,14 +58,14 @@ function makeSyncRun(id: string): SyncRun {
 
 describe('TimetableTask', () => {
   let task: TimetableTask;
-  let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'get'>>;
+  let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'getForConnection'>>;
   let mockPrisma: jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry' | 'householdConnection'>>;
   let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun'>>;
   let mockEncryptionService: jest.Mocked<Pick<EncryptionService, 'decrypt'>>;
 
   beforeEach(() => {
     mockMashovClient = {
-      get: jest.fn(),
+      getForConnection: jest.fn(),
     };
     mockPrisma = {
       student: {
@@ -67,10 +75,8 @@ describe('TimetableTask', () => {
         upsert: jest.fn(),
       } as unknown as PrismaService['timetableEntry'],
       householdConnection: {
-        findMany: jest.fn().mockResolvedValue([]),
-        // The shared-session path takes its year from the stored connection,
-        // which is the same year the year-scoped reads use.
-        findFirst: jest.fn().mockResolvedValue({ schoolYear: FALLBACK_YEAR }),
+        findMany: jest.fn().mockResolvedValue([CONNECTION]),
+        findFirst: jest.fn().mockResolvedValue({ schoolYear: CONN_YEAR }),
       } as unknown as PrismaService['householdConnection'],
     } as unknown as jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry' | 'householdConnection'>>;
     mockSyncRunService = {
@@ -96,7 +102,7 @@ describe('TimetableTask', () => {
     mockSyncRunService.openRun
       .mockResolvedValueOnce(makeSyncRun('run-1'))
       .mockResolvedValueOnce(makeSyncRun('run-2'));
-    mockMashovClient.get
+    mockMashovClient.getForConnection
       .mockResolvedValueOnce([
         makeTimetableItem({
           timeTable: { day: 1, lesson: 1, roomNum: undefined, weeks: undefined },
@@ -125,9 +131,14 @@ describe('TimetableTask', () => {
     });
     expect(mockSyncRunService.openRun).toHaveBeenNthCalledWith(1, 'timetable:stu-1', undefined);
     expect(mockSyncRunService.openRun).toHaveBeenNthCalledWith(2, 'timetable:stu-2', undefined);
-    expect(mockMashovClient.get).toHaveBeenNthCalledWith(
+    expect(mockMashovClient.getForConnection).toHaveBeenNthCalledWith(
       1,
       '/api/students/stu-1/timetable',
+      CONNECTION.id,
+      CONNECTION.schoolCode,
+      CONN_YEAR,
+      CONNECTION.username,
+      'decrypted-password',
       {
         headers: {
           Referer: 'https://web.mashov.info/students/main/students/stu-1/timetable',
@@ -140,7 +151,7 @@ describe('TimetableTask', () => {
         where: {
           studentGuid_schoolYear_day_lesson: {
             studentGuid: 'stu-1',
-            schoolYear: FALLBACK_YEAR,
+            schoolYear: CONN_YEAR,
             day: 1,
             lesson: 1,
           },
@@ -148,7 +159,7 @@ describe('TimetableTask', () => {
         create: expect.objectContaining({
           roomNum: '',
           weeks: -1,
-          schoolYear: FALLBACK_YEAR,
+          schoolYear: CONN_YEAR,
         }),
         update: expect.objectContaining({
           roomNum: '',
@@ -170,7 +181,7 @@ describe('TimetableTask', () => {
     const student = { studentGuid: 'stu-1', fullName: 'Alice Cohen' };
     (mockPrisma.student.findMany as jest.Mock).mockResolvedValue([student]);
     mockSyncRunService.openRun.mockResolvedValue(makeSyncRun('run-1'));
-    mockMashovClient.get.mockResolvedValue([
+    mockMashovClient.getForConnection.mockResolvedValue([
       makeTimetableItem({ timeTable: { day: 1, lesson: 1 } }),
       makeTimetableItem({ timeTable: { day: 1, lesson: 2 } }),
     ] as never);
@@ -201,7 +212,7 @@ describe('TimetableTask', () => {
     mockSyncRunService.openRun
       .mockResolvedValueOnce(makeSyncRun('run-1'))
       .mockResolvedValueOnce(makeSyncRun('run-2'));
-    mockMashovClient.get
+    mockMashovClient.getForConnection
       .mockRejectedValueOnce(new Error('network timeout'))
       .mockResolvedValueOnce([makeTimetableItem({ timeTable: { day: 2, lesson: 1 } })] as never);
     (mockPrisma.timetableEntry.upsert as jest.Mock).mockResolvedValue({ id: 'tt-1' });
@@ -215,9 +226,12 @@ describe('TimetableTask', () => {
       updatedCount: 1,
       failedCount: 1,
     });
-    expect(result.errorMessages).toEqual(['network timeout']);
+    // The per-connection fan-out wraps the cause; it must still CARRY it,
+    // or /more shows "every connection failed" with no diagnosis in it.
+    expect(result.errorMessages).toHaveLength(1);
+    expect(result.errorMessages[0]).toContain('network timeout');
     expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-1', 'failed', {
-      errorMessage: 'network timeout',
+      errorMessage: expect.stringContaining('network timeout'),
     });
     expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-2', 'success', {
       fetchedCount: 1,
@@ -225,20 +239,8 @@ describe('TimetableTask', () => {
     });
   });
 
-  it('run() delegates to execute()', async () => {
-    const executeSpy = jest.spyOn(task, 'execute').mockResolvedValue({
-      status: 'success',
-      summary: {
-        fetchedCount: 0,
-        createdCount: 0,
-        updatedCount: 0,
-        failedCount: 0,
-      },
-      errorMessages: [],
-    });
-
-    await task.run();
-
-    expect(executeSpy).toHaveBeenCalledTimes(1);
-  });
+  // REMOVED: 'run() delegates to execute()'. The per-task `@Cron` and its
+  // `run()` shell are gone -- background sync is scheduled by
+  // `NotificationWindowTask`, for notification-enabled households only. See
+  // ADR-0046 and `docs/public-resource-progress.md`.
 });

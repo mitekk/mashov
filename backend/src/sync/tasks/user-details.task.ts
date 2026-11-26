@@ -1,10 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import { reportNoConnectionTarget } from '../connection-fanout';
+import { reportNoConnectionTarget, skipNoConnections } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 interface MashovUserDetails {
@@ -33,10 +32,6 @@ export class UserDetailsTask {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  @Cron('0 6 * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   /**
    * One profile per Mashov account, not one per household.
@@ -57,22 +52,20 @@ export class UserDetailsTask {
       orderBy: [{ lastLoginAt: 'desc' }, { updatedAt: 'desc' }],
     });
 
-    // R11: a named connection with no usable target. `useSharedSession` is
-    // false here, so the loop below would not run at all -- no run, nothing
-    // fetched, `success` with every count zero.
-    if (context.connectionId && connections.length === 0) {
-      return reportNoConnectionTarget(
-        this.syncRunService,
-        this.logger,
-        UserDetailsTask.SOURCE,
-        context.connectionId,
-      );
+    // No usable target: the loop below would not run at all -- no run,
+    // nothing fetched, `success` with every count zero. A named connection
+    // that resolves to nothing is a reportable failure; no connections at all
+    // is the empty deployment.
+    if (connections.length === 0) {
+      return context.connectionId
+        ? reportNoConnectionTarget(
+            this.syncRunService,
+            this.logger,
+            UserDetailsTask.SOURCE,
+            context.connectionId,
+          )
+        : skipNoConnections(this.logger, UserDetailsTask.SOURCE);
     }
-
-    const useSharedSession = !context.connectionId && connections.length === 0;
-    const connectionList: Array<(typeof connections)[number] | null> = useSharedSession
-      ? [null]
-      : connections;
 
     let totalFetchedCount = 0;
     let totalCreatedCount = 0;
@@ -80,32 +73,22 @@ export class UserDetailsTask {
     let totalFailedCount = 0;
     const allErrorMessages: string[] = [];
 
-    for (const conn of connectionList) {
-      const source = conn
-        ? `${UserDetailsTask.SOURCE}:${conn.id}`
-        : UserDetailsTask.SOURCE;
-      const syncRun = await this.syncRunService.openRun(
-        source,
-        conn?.id ?? context.connectionId,
-      );
+    for (const conn of connections) {
+      const source = `${UserDetailsTask.SOURCE}:${conn.id}`;
+      const syncRun = await this.syncRunService.openRun(source, conn.id);
       let createdCount = 0;
       let updatedCount = 0;
 
       try {
-        const details = conn
-          ? await this.mashovClient.getForConnection<MashovUserDetails>(
-              '/api/user/details',
-              conn.id,
-              conn.schoolCode,
-              conn.schoolYear,
-              conn.username,
-              this.encryptionService.decrypt(conn.encryptedPassword),
-              { headers: { Referer: 'https://web.mashov.info/students/main/settings' } },
-            )
-          : await this.mashovClient.get<MashovUserDetails>(
-              '/api/user/details',
-              { headers: { Referer: 'https://web.mashov.info/students/main/settings' } },
-            );
+        const details = await this.mashovClient.getForConnection<MashovUserDetails>(
+          '/api/user/details',
+          conn.id,
+          conn.schoolCode,
+          conn.schoolYear,
+          conn.username,
+          this.encryptionService.decrypt(conn.encryptedPassword),
+          { headers: { Referer: 'https://web.mashov.info/students/main/settings' } },
+        );
 
         const profileFields = {
           email: details.email,
@@ -114,7 +97,7 @@ export class UserDetailsTask {
           rawPayload: details as unknown as import('@prisma/client').Prisma.InputJsonValue,
           // Stamped so SettingsService can return the profile for a given
           // school instead of picking between two rows with findFirst.
-          ...(conn ? { householdConnectionId: conn.id } : {}),
+          householdConnectionId: conn.id,
         };
 
         const existing = await this.prisma.parentProfile.findUnique({
@@ -136,14 +119,14 @@ export class UserDetailsTask {
 
         await this.syncRunService.closeRun(syncRun.id, 'success', { fetchedCount: 1 });
         this.logger.debug(
-          `User details sync (conn=${conn?.id ?? 'shared'}): userId=${details.userId}`,
+          `User details sync (conn=${conn.id}): userId=${details.userId}`,
         );
         totalFetchedCount += 1;
         totalCreatedCount += createdCount;
         totalUpdatedCount += updatedCount;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`User details sync failed (conn=${conn?.id ?? 'shared'}): ${msg}`);
+        this.logger.error(`User details sync failed (conn=${conn.id}): ${msg}`);
         await this.syncRunService.closeRun(syncRun.id, 'failed', { errorMessage: msg });
         totalFailedCount += 1;
         allErrorMessages.push(msg);

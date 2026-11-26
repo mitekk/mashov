@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { SyncService } from '../../src/sync/sync.service';
-import { NotificationsTask } from '../../src/sync/tasks/notifications.task';
 import { MailCountsTask } from '../../src/sync/tasks/mail-counts.task';
 import { MailInboxTask } from '../../src/sync/tasks/mail-inbox.task';
 import { HomeworkTask } from '../../src/sync/tasks/homework.task';
@@ -18,6 +17,8 @@ import { TimetableTask } from '../../src/sync/tasks/timetable.task';
 import { BellsTask } from '../../src/sync/tasks/bells.task';
 import { StudentsTask } from '../../src/sync/tasks/students.task';
 import { RefreshProgressService } from '../../src/sync/refresh-progress.service';
+import { PrismaService } from '../../src/prisma/prisma.service';
+import { FreshnessService } from '../../src/sync/freshness.service';
 
 const createMockTask = () => ({
   execute: jest.fn().mockResolvedValue({
@@ -33,10 +34,9 @@ const createMockTask = () => ({
 });
 
 describe('SyncService', () => {
-  const EXPECTED_TASK_COUNT = 17;
+  const EXPECTED_TASK_COUNT = 16;
 
   let service: SyncService;
-  let notificationsTask: ReturnType<typeof createMockTask>;
   let mailCountsTask: ReturnType<typeof createMockTask>;
   let mailInboxTask: ReturnType<typeof createMockTask>;
   let homeworkTask: ReturnType<typeof createMockTask>;
@@ -55,7 +55,6 @@ describe('SyncService', () => {
   let studentsTask: ReturnType<typeof createMockTask>;
 
   beforeEach(async () => {
-    notificationsTask = createMockTask();
     mailCountsTask = createMockTask();
     mailInboxTask = createMockTask();
     homeworkTask = createMockTask();
@@ -76,7 +75,6 @@ describe('SyncService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SyncService,
-        { provide: NotificationsTask, useValue: notificationsTask },
         { provide: MailCountsTask, useValue: mailCountsTask },
         { provide: MailInboxTask, useValue: mailInboxTask },
         { provide: HomeworkTask, useValue: homeworkTask },
@@ -99,6 +97,21 @@ describe('SyncService', () => {
           provide: RefreshProgressService,
           useValue: { open: jest.fn(), write: jest.fn().mockResolvedValue(undefined) },
         },
+        {
+          // A non-empty roster, so the roster rule does not force `students`
+          // into a set that excludes it.
+          provide: PrismaService,
+          useValue: { student: { count: jest.fn().mockResolvedValue(1) } },
+        },
+        {
+          // No successful runs on record, so nothing is skipped by its TTL.
+          provide: FreshnessService,
+          useValue: {
+            loadSyncRuns: jest
+              .fn()
+              .mockResolvedValue({ successRuns: new Map(), allRuns: new Map() }),
+          },
+        },
       ],
     }).compile();
 
@@ -109,7 +122,6 @@ describe('SyncService', () => {
     it('calls execute() on all tasks', async () => {
       await service.refreshAll();
 
-      expect(notificationsTask.execute).toHaveBeenCalledTimes(1);
       expect(mailCountsTask.execute).toHaveBeenCalledTimes(1);
       expect(mailInboxTask.execute).toHaveBeenCalledTimes(1);
       expect(homeworkTask.execute).toHaveBeenCalledTimes(1);
@@ -127,16 +139,17 @@ describe('SyncService', () => {
     });
 
     it('does not reject when one task throws an error', async () => {
-      notificationsTask.execute.mockRejectedValueOnce(new Error('Upstream unavailable'));
+      mailCountsTask.execute.mockRejectedValueOnce(new Error('Upstream unavailable'));
 
       const result = await service.refreshAll();
       expect(result.status).toBe('partial');
       expect(result.tasks).toHaveLength(EXPECTED_TASK_COUNT);
-      expect(result.tasks.find((task) => task.task === 'notifications')).toMatchObject({
+      expect(result.tasks.find((task) => task.task === 'mailCounts')).toMatchObject({
         status: 'failed',
         errorMessages: ['Upstream unavailable'],
       });
-      expect(result.tasks.find((task) => task.task === 'mailCounts')).toMatchObject({
+      // A sibling of the failing task still reports its own success.
+      expect(result.tasks.find((task) => task.task === 'mailInbox')).toMatchObject({
         status: 'success',
       });
     });
@@ -147,14 +160,14 @@ describe('SyncService', () => {
       await service.refreshAll();
 
       // All other tasks should still have been called
-      expect(notificationsTask.execute).toHaveBeenCalledTimes(1);
+      expect(mailCountsTask.execute).toHaveBeenCalledTimes(1);
       expect(behaviorTask.execute).toHaveBeenCalledTimes(1);
       expect(achvasTask.execute).toHaveBeenCalledTimes(1);
     });
 
     it('handles all tasks failing without rejecting', async () => {
       const error = new Error('Network unavailable');
-      notificationsTask.execute.mockRejectedValue(error);
+      mailCountsTask.execute.mockRejectedValue(error);
       mailCountsTask.execute.mockRejectedValue(error);
       mailInboxTask.execute.mockRejectedValue(error);
       homeworkTask.execute.mockRejectedValue(error);

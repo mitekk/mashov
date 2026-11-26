@@ -1,3 +1,5 @@
+import type { SyncTaskSet } from './source-policy';
+
 export type SyncTaskStatus = 'success' | 'failed';
 /**
  * `failed` is the school that threw: `POST /sync/refresh` aggregates one
@@ -22,6 +24,28 @@ export interface SyncExecutionContext {
    * success, so a historical run must not be named that way.
    */
   sourcePrefix?: string;
+  /**
+   * Which sources to run. Defaults to `full` — every wired task, which is what
+   * every caller got before task sets existed.
+   */
+  taskSet?: SyncTaskSet;
+  /**
+   * Skip a source whose newest successful run is still inside its
+   * `syncTtlMinutes`. The scheduler and the read path set it; a refresh a
+   * person asked for does not — a TTL-respecting manual refresh would do
+   * nothing when the data is fresh, and the user would watch a spinner and see
+   * no change.
+   */
+  respectTtl?: boolean;
+  /**
+   * Suppress the Redis progress envelope.
+   *
+   * Set by the scheduler. Without it a background run would publish progress
+   * under the connection's key, and `/sync/status` would report `running` to a
+   * parent who is merely browsing — while `SyncingPageClient` would read a
+   * background run's progress as its own.
+   */
+  silent?: boolean;
 }
 
 export interface SyncTaskSummary {

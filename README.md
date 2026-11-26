@@ -176,14 +176,20 @@ behind. Point `DATABASE_URL` elsewhere first if that matters to you.
 
 ### Configuration
 
-Copy `.env.example` to `.env`. The values you **must** set:
+Copy `.env.example` to `.env`. The one value you **must** set is `ENCRYPTION_KEY`.
+
+**The app holds no Mashov account of its own.** Every upstream call authenticates
+as the household connection that owns the data, using credentials each parent
+supplies in-app and which are stored encrypted at rest. There is deliberately no
+`MASHOV_USERNAME` / `MASHOV_PASSWORD` / `MASHOV_SEMEL`: a shared operator account
+would read one household's data with another household's login, and a public
+deployment must never hold one person's school credentials. Sign in and add a
+school through the app to get started.
 
 | Variable | What |
 |---|---|
-| `MASHOV_USERNAME` · `MASHOV_PASSWORD` | your Mashov login |
-| `MASHOV_SEMEL` | school ID (semel) |
-| `MASHOV_YEAR` | *optional.* The **earliest** school year to fetch from — not the year in scope. It cannot change which year is current: that is resolved from upstream and persisted on the connection. Unset, only the current year is fetched. Set to an earlier year, a nightly backfill fills that year in once, capped at two years back; a value later than the current year is ignored with a warning. To change the year the app actually uses, see [docs/ops/school-year-hotfix.md](docs/ops/school-year-hotfix.md) and [ADR-0025](docs/adr/0025-school-year-history-window.md). |
 | `ENCRYPTION_KEY` | 64-char hex key; encrypts stored credentials at rest |
+| `MASHOV_YEAR` | *optional.* The **earliest** school year to **read**, not the year in scope. It cannot change which year is current: that is resolved from upstream and persisted on the connection. It no longer *fetches* anything — the nightly history backfill was removed with the rest of the unsolicited background work ([ADR-0046](docs/adr/0046-no-shared-mashov-account.md)), so this now only widens the window over history already in the database. A value later than the current year is ignored with a warning. To change the year the app actually uses, see [docs/ops/school-year-hotfix.md](docs/ops/school-year-hotfix.md) and [ADR-0025](docs/adr/0025-school-year-history-window.md). |
 
 `DATABASE_URL`, `REDIS_URL`, the session/CORS settings, and the `FEATURE_*` flags all ship with
 working defaults in [`.env.example`](.env.example). Never commit `.env`.
@@ -260,6 +266,15 @@ means on, either missing means off — silently, with no query and no log line o
 cron's 720 ticks a day. There is deliberately no `FEEDBACK_NOTIFY_ENABLED`; they are not flags
 but the two halves of one address. See ADR-0045 §3 and §11.
 
+> **These two flags now also gate all background syncing.** Since ADR-0046, the
+> app fetches from Mashov in the background *only* for households that opted
+> into notifications, and only shortly before their delivery window — see
+> [Background syncing](#background-syncing). With both flags at their `false`
+> default, a deployment makes **no** background upstream requests at all. Data
+> moves on sign-in, on a page view whose local copy has lapsed, and when
+> somebody presses refresh. That is intended for a public deployment, not a
+> misconfiguration.
+
 Both defaults are deliberately inert: merging the feature changes nothing until `DIGEST_ENABLED`
 is `true`, and even then `DIGEST_DRY_RUN` keeps it from messaging anyone until you set it to
 `false`. Check what it *would* have sent with `GET /api/v1/digest/deliveries`, which records
@@ -318,6 +333,68 @@ Neither the Telegram client nor the Anthropic client uses `HTTPS_PROXY`: that ho
 residential box provisioned for Mashov only. See
 [ADR-0026](docs/adr/0026-outbound-digest-delivery-and-llm-egress.md), which also records what
 child data reaches the model (first names only) and what does not.
+
+### Background syncing
+
+The app used to run 18 sync tasks on their own crons, each fanning out across
+*every* active household and *every* active child whether or not anyone was
+looking — on the order of **1,300–1,400 upstream requests and ~48 full logins
+per household per day**, a good share of it for data no page renders. For a
+public resource that is both an abuse signal to Mashov and needless write load
+here. [ADR-0046](docs/adr/0046-no-shared-mashov-account.md) replaced it.
+
+**Where fetching happens now**
+
+| Trigger | What it fetches | Who gets it |
+|---|---|---|
+| Sign-in, and adding a school | the `login` set: roster, homework, behaviour, mail, behaviour codes — what `/home` and `/children` render | everyone |
+| Page view with a lapsed local copy | that page's own sources (timetable, bells, subjects, notices, profile) | everyone |
+| The refresh button | the `login` set again, ignoring TTLs | everyone |
+| `NotificationWindowTask` at **:50 of 10:00–18:00** Jerusalem | the `digest` set, just before each 11:00–19:00 digest tick | households with notifications on |
+| `NotificationWindowTask` every **30 min, 07:00–20:59** Jerusalem | mail, inside the inbox notifier's non-quiet window | households with notifications on |
+
+Rough arithmetic for one connection and two children, with notifications on:
+~58 requests a day from the digest-lead ticks (most sources are inside their
+TTL on most ticks) plus ~84 from the mail ticks, and one login — call it **~140
+requests and 1 login**, against ~1,350 and ~48 before. Estimates, not
+measurements: the real figure moves with how many children, schools and
+conversations a household has.
+
+A household that has not enabled notifications gets **zero** background
+requests. Its data is as fresh as its last visit — which is why the `login` set
+runs on every sign-in and why page views freshen what they show.
+
+Only two sync crons remain, both in `NotificationWindowTask` and both gated on
+`DIGEST_ENABLED` / `INBOX_NOTIFY_ENABLED`. The daily school-year rollover and
+the nightly `sync_run` prune stay: the first is one cheap login per connection
+and prevents a whole-year data outage, the second is database-only.
+
+**How often a source is worth fetching** lives in one table,
+[`backend/src/sync/source-policy.ts`](backend/src/sync/source-policy.ts), which
+also drives what `/more` reports as stale. The reported threshold is *derived*
+from the sync interval, so a source can never be called stale faster than its
+own schedule could refresh it. Per-source overrides:
+
+| Variable | What | Default |
+|---|---|---|
+| `SYNC_TTL_<SOURCE>_MINUTES` | how old the local copy must be before anything fetches it. `<SOURCE>` is the upper-snake source name, e.g. `SYNC_TTL_MAIL_INBOX_MINUTES`, `SYNC_TTL_TIMETABLE_MINUTES` | per source: 15 min (mail) to 30 days (behaviour codes) |
+| `SYNC_STALE_<SOURCE>_MINUTES` | what `/more` reports as stale | 2× the TTL, floor 60 min |
+| `SYNC_ON_READ_BUDGET_MS` | how long a page view waits for a fetch when it has nothing to render. Past this it serves the stale copy | `4000` |
+| `SYNC_ON_READ_MAX_INFLIGHT` | concurrent read-path fetches per process; past this, pages serve stale. The circuit breaker that stops a traffic spike here becoming one upstream | `4` |
+| `NOTIFY_SYNC_JITTER_MS` | random delay per household, so N households do not hit Mashov on the same second. `0` disables it | `15000` |
+| `NOTIFY_SYNC_TICK_BUDGET_MS` | abandon a scheduler tick that overruns, so it cannot collide with the next | `600000` |
+
+Raising a TTL lowers upstream traffic and makes data staler; lowering it does
+the reverse. The defaults are the quiet end, so an unset environment is the
+conservative one.
+
+**One coupling worth knowing.** The digest reports a quiet child as
+`skipped_stale` rather than `skipped_empty` if `homework`/`behavior` have no
+successful sync within six hours. That used to be guaranteed by 12-minute
+crons; it is now guaranteed by the `:50` lead tick alone. Push that tick later
+than the digest it feeds and every quiet child is reported stale, permanently
+and silently — so `notification-window.task.spec.ts` pins the relationship
+against the real constant.
 
 ### Reaching Mashov
 

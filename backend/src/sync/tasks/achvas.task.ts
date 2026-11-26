@@ -1,10 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { MashovHttpClient } from '../../session/mashov-http.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncRunService } from '../sync-run.service';
 import { EncryptionService } from '../../session/encryption.service';
-import { reportNoConnectionTarget } from '../connection-fanout';
+import { reportNoConnectionTarget, skipNoConnections } from '../connection-fanout';
 import type { SyncExecutionContext, SyncTaskRunResult } from '../sync.types';
 
 interface MashovAchva {
@@ -36,10 +35,6 @@ export class AchvasTask {
     private readonly encryptionService: EncryptionService,
   ) {}
 
-  @Cron('0 6 * * *')
-  async run(): Promise<void> {
-    await this.execute();
-  }
 
   /**
    * One run per distinct school, not one run for everybody.
@@ -73,22 +68,22 @@ export class AchvasTask {
       if (!bySchool.has(conn.schoolCode)) bySchool.set(conn.schoolCode, conn);
     }
 
-    // R11: a named connection with no usable target. `useSharedSession` is
-    // false here, so the loop below would not run at all -- no run, nothing
-    // fetched, `success` with every count zero.
-    if (context.connectionId && bySchool.size === 0) {
-      return reportNoConnectionTarget(
-        this.syncRunService,
-        this.logger,
-        AchvasTask.SOURCE,
-        context.connectionId,
-      );
+    // No usable target: the loop below would not run at all -- no run,
+    // nothing fetched, `success` with every count zero. A named connection
+    // that resolves to nothing is a reportable failure; no connections at all
+    // is the empty deployment.
+    if (bySchool.size === 0) {
+      return context.connectionId
+        ? reportNoConnectionTarget(
+            this.syncRunService,
+            this.logger,
+            AchvasTask.SOURCE,
+            context.connectionId,
+          )
+        : skipNoConnections(this.logger, AchvasTask.SOURCE);
     }
 
-    const useSharedSession = !context.connectionId && bySchool.size === 0;
-    const targets: Array<(typeof connections)[number] | null> = useSharedSession
-      ? [null]
-      : [...bySchool.values()];
+    const targets = [...bySchool.values()];
 
     let totalFetchedCount = 0;
     let totalUpsertCount = 0;
@@ -98,28 +93,28 @@ export class AchvasTask {
     for (const conn of targets) {
       // Suffixed per school so one school's failure does not read as the
       // other's, the same reason mail_inbox suffixes per connection.
-      const source = conn ? `${AchvasTask.SOURCE}:${conn.schoolCode}` : AchvasTask.SOURCE;
-      const syncRun = await this.syncRunService.openRun(source, conn?.id ?? context.connectionId);
+      const source = `${AchvasTask.SOURCE}:${conn.schoolCode}`;
+      const syncRun = await this.syncRunService.openRun(source, conn.id);
       let fetchedCount = 0;
       let upsertCount = 0;
       let failedCount = 0;
       const errorMessages: string[] = [];
 
-      // 0 is the sentinel the schema defaults to and the ownership backfill
-      // rewrites; the shared session genuinely does not know its school here.
-      const schoolCode = conn?.schoolCode ?? 0;
+      // Always the real school now that every target is a connection. The 0
+      // sentinel the schema defaults to is no longer written by this task;
+      // rows already carrying it are still read, and the ownership backfill
+      // still rewrites them.
+      const schoolCode = conn.schoolCode;
 
       try {
-        const achvas = conn
-          ? await this.mashovClient.getForConnection<MashovAchva[]>(
-              '/api/achvas',
-              conn.id,
-              conn.schoolCode,
-              conn.schoolYear,
-              conn.username,
-              this.encryptionService.decrypt(conn.encryptedPassword),
-            )
-          : await this.mashovClient.get<MashovAchva[]>('/api/achvas');
+        const achvas = await this.mashovClient.getForConnection<MashovAchva[]>(
+          '/api/achvas',
+          conn.id,
+          conn.schoolCode,
+          conn.schoolYear,
+          conn.username,
+          this.encryptionService.decrypt(conn.encryptedPassword),
+        );
 
         fetchedCount = achvas.length;
 

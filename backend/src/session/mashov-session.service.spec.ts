@@ -130,9 +130,6 @@ function makeHarness(
   const config = {
     get: jest.fn((key: string) =>
       ({
-        MASHOV_SEMEL: 1234,
-        MASHOV_USERNAME: 'env-user',
-        MASHOV_PASSWORD: 'env-pass',
       })[key],
     ),
   } as unknown as ConfigService;
@@ -361,8 +358,11 @@ describe('MashovSessionService', () => {
     });
 
     it('refreshes once the TTL has elapsed', async () => {
+      // Past ROSTER_TTL_MINUTES, which is 24h: this runs on the request path,
+      // so with the `students` cron gone an hourly TTL would make it a full
+      // upstream login per household per hour of browsing.
       const { service } = makeHarness({
-        lastStudentsRunEndedAt: new Date(Date.now() - 120 * 60 * 1000),
+        lastStudentsRunEndedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
       });
       mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
 
@@ -412,17 +412,20 @@ describe('MashovSessionService', () => {
       );
     });
 
-    it('falls back to the env account when the user has no connection', async () => {
-      const { service } = makeHarness({ connection: null });
-      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+    it('is a no-op when the user has no connection', async () => {
+      // This used to fall back to the shared env account, which is gone. Both
+      // callers are page reads, so a throw would 500 the dashboard for a user
+      // mid-setup. It must also record no `syncRun`: an owner-less `students`
+      // row is admitted into every connection's snapshot by the branch-wide
+      // NULL rule, satisfying the TTL gate for connections that do not exist.
+      const { service, prisma } = makeHarness({ connection: null });
 
-      await service.ensureStudentsAvailable('user-1');
+      await expect(service.ensureStudentsAvailable('user-1')).resolves.toBeUndefined();
 
-      expect(mockHttp.post).toHaveBeenCalledWith(
-        '/api/login',
-        expect.objectContaining({ username: 'env-user' }),
-        expect.anything(),
-      );
+      expect(mockHttp.post).not.toHaveBeenCalled();
+      expect(prisma.syncRun.create).not.toHaveBeenCalled();
+      // Returns before the TTL probe, so it costs no query either.
+      expect(prisma.syncRun.findFirst).not.toHaveBeenCalled();
     });
 
     it('joins an in-flight refresh instead of logging in twice', async () => {
@@ -452,41 +455,6 @@ describe('MashovSessionService', () => {
   });
 
   describe('ownership stamping', () => {
-    it('does not blank an existing stamp on a shared-session login', async () => {
-      // The env-credential login has no connection to attribute rows to. It
-      // must leave the column alone rather than write null over a stamp a
-      // per-connection login already set -- blanking it would un-own every
-      // child on the next boot, and the mail sweep refuses to run while any
-      // row is unstamped.
-      const { service, prisma } = makeHarness();
-      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
-
-      await service.initialize();
-
-      expect(prisma.student.upsert).toHaveBeenCalled();
-      for (const call of prisma.student.upsert.mock.calls) {
-        const [{ create, update }] = call as [
-          { create: Record<string, unknown>; update: Record<string, unknown> },
-        ];
-        expect(update).not.toHaveProperty('householdConnectionId');
-        expect(create).not.toHaveProperty('householdConnectionId');
-      }
-    });
-
-    it('leaves the inactive sweep unscoped on a shared-session login', async () => {
-      const { service, prisma } = makeHarness();
-      mockHttp.post.mockResolvedValue(
-        loginPayload([CHILD], { inactiveChildren: [{ childGuid: 'child-gone' }] }),
-      );
-
-      await service.initialize();
-
-      expect(prisma.student.updateMany).toHaveBeenCalledWith({
-        where: { studentGuid: { in: ['child-gone'] } },
-        data: { isActive: false },
-      });
-    });
-
     it('grants the connection a view of every child in the roster', async () => {
       // The stamp says who to ASK upstream; the link says who may SEE. Two
       // parents at one school share children, so only the link can be a set --
@@ -507,18 +475,6 @@ describe('MashovSessionService', () => {
           },
         }),
       );
-    });
-
-    it('grants no view on a shared-session login', async () => {
-      // The env-credential session has no connection, so there is nobody to
-      // grant a view to. Writing one would hand the household that happens to
-      // hold MASHOV_USERNAME a view of every child on the box.
-      const { service, prisma } = makeHarness();
-      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
-
-      await service.initialize();
-
-      expect(prisma.studentConnection.upsert).not.toHaveBeenCalled();
     });
 
     it('re-stamps and warns when a child turns up under another connection', async () => {
@@ -560,46 +516,6 @@ describe('MashovSessionService', () => {
 
       expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('moved'));
       warn.mockRestore();
-    });
-  });
-
-  describe('login (shared env session)', () => {
-    it('persists the year Mashov confirms, not the candidate it was asked for', async () => {
-      const reconcile = jest.fn(() => ({ year: 2026, changed: true }));
-      const { service, prisma } = makeHarness({ reconcile });
-      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
-
-      await service.login();
-
-      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ schoolYear: 2026 }),
-        }),
-      );
-    });
-
-    it('re-logs in once at the year Mashov confirms', async () => {
-      const reconcile = jest.fn(() => ({ year: 2026, changed: true }));
-      const { service } = makeHarness({ reconcile });
-      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
-
-      await service.login();
-
-      expect(mockHttp.post).toHaveBeenCalledTimes(2);
-      expect(mockHttp.post).toHaveBeenLastCalledWith(
-        '/api/login',
-        expect.objectContaining({ year: 2026 }),
-        expect.anything(),
-      );
-    });
-
-    it('does not re-login when Mashov agrees with the candidate year', async () => {
-      const { service } = makeHarness();
-      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
-
-      await service.login();
-
-      expect(mockHttp.post).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -11,8 +11,8 @@ import { SyncRunRetentionService } from './sync-run-retention.service';
 import { RosterPresenceService } from './roster-presence.service';
 import { RefreshProgressService } from './refresh-progress.service';
 import { SyncService } from './sync.service';
+import { SyncOnReadService } from './sync-on-read.service';
 import { SyncController } from './sync.controller';
-import { NotificationsTask } from './tasks/notifications.task';
 import { MailCountsTask } from './tasks/mail-counts.task';
 import { MailInboxTask } from './tasks/mail-inbox.task';
 import { HomeworkTask } from './tasks/homework.task';
@@ -30,8 +30,8 @@ import { TimetableTask } from './tasks/timetable.task';
 import { BellsTask } from './tasks/bells.task';
 import { StudentsTask } from './tasks/students.task';
 import { SchoolYearRolloverTask } from './tasks/school-year-rollover.task';
-import { HistoryBackfillTask } from './tasks/history-backfill.task';
 import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
+import { NotificationWindowTask } from './tasks/notification-window.task';
 
 @Module({
   // RedisModule is @Global, but importing it here keeps SyncModule standalone:
@@ -40,6 +40,7 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
   imports: [ConfigModule, PrismaModule, MashovSessionModule, SchoolYearModule, RedisModule],
   controllers: [SyncController],
   providers: [
+    SyncOnReadService,
     SyncRunService,
     SyncRunRetentionService,
     RosterPresenceService,
@@ -47,7 +48,6 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
     FreshnessService,
     RefreshProgressService,
     SyncService,
-    NotificationsTask,
     MailCountsTask,
     MailInboxTask,
     HomeworkTask,
@@ -65,18 +65,28 @@ import { SyncRunRetentionTask } from './tasks/sync-run-retention.task';
     BellsTask,
     StudentsTask,
     SchoolYearRolloverTask,
-    HistoryBackfillTask,
     SyncRunRetentionTask,
+    NotificationWindowTask,
   ],
   exports: [
+    SyncOnReadService,
     SyncRunService,
     SyncRunRetentionService,
-    RosterPresenceService,
     RosterPresenceService,
     BehaviorClassifierService,
     FreshnessService,
     RefreshProgressService,
     SyncService,
+    // The slow-moving sources whose crons are gone: `ChildrenService` and
+    // `SettingsService` inject these to freshen on view. Exported because a
+    // provider that is not exported fails only in the Nest DI graph -- the
+    // unit specs construct these services positionally and never notice.
+    TimetableTask,
+    BellsTask,
+    GroupsTask,
+    LessonsCountTask,
+    MessageBoardTask,
+    UserDetailsTask,
   ],
 })
 export class SyncModule {}

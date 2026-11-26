@@ -6,6 +6,13 @@ import type { ConnectionTarget } from '../session/connection-target';
 import { ConnectionScopeService } from '../common/connection-scope/connection-scope.service';
 import { UserItemStateService } from '../common/user-item-state.service';
 import { ConfigService } from '@nestjs/config';
+import { SyncOnReadService } from '../sync/sync-on-read.service';
+import { TimetableTask } from '../sync/tasks/timetable.task';
+import { BellsTask } from '../sync/tasks/bells.task';
+import { GroupsTask } from '../sync/tasks/groups.task';
+import { LessonsCountTask } from '../sync/tasks/lessons-count.task';
+import { MessageBoardTask } from '../sync/tasks/message-board.task';
+import type { SyncExecutionContext, SyncTaskRunResult } from '../sync/sync.types';
 import {
   schoolYearForConnection,
   currentYearScope,
@@ -54,6 +61,13 @@ export class ChildrenService {
     private readonly userItemStateService: UserItemStateService,
     private readonly configService: ConfigService,
     private readonly scope: ConnectionScopeService,
+    // Read-path freshening for the slow-moving sources whose crons are gone.
+    private readonly syncOnRead: SyncOnReadService,
+    private readonly timetableTask: TimetableTask,
+    private readonly bellsTask: BellsTask,
+    private readonly groupsTask: GroupsTask,
+    private readonly lessonsCountTask: LessonsCountTask,
+    private readonly messageBoardTask: MessageBoardTask,
   ) {}
 
   async getChildren(userId?: string) {
@@ -74,6 +88,33 @@ export class ChildrenService {
       },
       orderBy: { fullName: 'asc' },
     });
+
+    // The subject counts on these cards come from `groups`/`lessons_count`,
+    // which are not in the `login` set -- and this is where adding a school
+    // lands the parent. Freshened per connection, since a two-school household
+    // needs both, and TTL-gated to 7 days so this is normally a no-op.
+    //
+    // Safe to hook HERE and not in `DashboardService`, which keeps its own
+    // private `getChildren`: `FreshnessBar` polls the dashboard app-wide, and
+    // that is the amplifier shape `ensureStudentsAvailable` warns about.
+    // One budget for the whole request, not one per connection -- see
+    // `freshenOnRead`.
+    const freshenDeadline = this.syncOnRead.deadlineFromNow();
+    for (const connectionId of await this.activeConnectionIds(userId)) {
+      await this.freshenOnRead(
+        connectionId,
+        [
+          [GroupsTask.SOURCE, (ctx) => this.groupsTask.execute(ctx)],
+          [LessonsCountTask.SOURCE, (ctx) => this.lessonsCountTask.execute(ctx)],
+        ],
+        async () =>
+          (await this.prisma.subjectEnrollment.count({
+            where: { studentGuid: { in: students.map((student) => student.studentGuid) } },
+            take: 1,
+          })) === 0,
+        freshenDeadline,
+      );
+    }
 
     // Which school each child belongs to. Resolved once for the list rather
     // than per child, and labelled as a set so two schools can never present
@@ -649,8 +690,72 @@ export class ChildrenService {
     return { updated: behaviorIds.length };
   }
 
+  /**
+   * Freshens slow-moving sources before serving them, once their local copy
+   * has lapsed. Never throws, and never blocks for long: see
+   * `SyncOnReadService`.
+   *
+   * A student with no connection has nothing to fetch as -- the child is
+   * visible (ADR-0031 admits a child no connection lists) but unreachable --
+   * so the local copy is all there is.
+   */
+  /**
+   * Freshen a read's sources, bounded by ONE budget for the whole request.
+   *
+   * `deadline` is minted once per request and shared, including across a
+   * two-school household's connections. Without it each `ensureFresh` waited
+   * for its own `SYNC_ON_READ_BUDGET_MS`, and the waits stacked: two
+   * connections x two sources is ~16s on a first load, past the 15s
+   * frontend-proxy ceiling that `sync-run.service.ts` records as the thing
+   * that broke `source-health`. The fetches still run to completion in the
+   * background once the budget is spent; they just stop being waited on, and
+   * the next view serves what they wrote.
+   */
+  private async freshenOnRead(
+    connectionId: string | null,
+    sources: Array<[string, (context: SyncExecutionContext) => Promise<SyncTaskRunResult>]>,
+    localIsEmpty: () => Promise<boolean>,
+    deadline: number = this.syncOnRead.deadlineFromNow(),
+  ): Promise<void> {
+    if (!connectionId) return;
+    for (const [source, fetch] of sources) {
+      await this.syncOnRead.ensureFresh(source, fetch, { connectionId, localIsEmpty, deadline });
+    }
+  }
+
+  /** The caller's own active connections, or none when there is no caller. */
+  private async activeConnectionIds(userId?: string): Promise<string[]> {
+    if (!userId) return [];
+    const rows = await this.prisma.householdConnection.findMany({
+      where: { userId, active: true },
+      select: { id: true },
+      orderBy: { lastLoginAt: 'desc' },
+    });
+    return rows.map((row) => row.id);
+  }
+
+  private async timetableIsEmpty(studentGuid: string): Promise<boolean> {
+    return (await this.prisma.timetableEntry.count({ where: { studentGuid }, take: 1 })) === 0;
+  }
+
+  private async subjectsAreEmpty(studentGuid: string): Promise<boolean> {
+    return (await this.prisma.subjectEnrollment.count({ where: { studentGuid }, take: 1 })) === 0;
+  }
+
+  private async noticesAreEmpty(studentGuid: string): Promise<boolean> {
+    return (await this.prisma.messageBoardItem.count({ where: { studentGuid }, take: 1 })) === 0;
+  }
+
   async getTimetable(studentGuid: string, userId?: string) {
     const student = await this.requireStudent(studentGuid, userId);
+
+    // Fetched on view instead of on a weekly cron for every household. Both
+    // sources are near-static, so at a 7-day TTL this is ~2 upstream calls per
+    // student per week, and only for a student somebody actually looks at.
+    await this.freshenOnRead(student.householdConnectionId, [
+      [TimetableTask.SOURCE, (ctx) => this.timetableTask.execute(ctx)],
+      [BellsTask.SOURCE, (ctx) => this.bellsTask.execute(ctx)],
+    ], () => this.timetableIsEmpty(studentGuid));
 
     const entries = await this.prisma.timetableEntry.findMany({
       where: {
@@ -691,6 +796,12 @@ export class ChildrenService {
 
   async getSubjects(studentGuid: string, userId?: string) {
     const student = await this.requireStudent(studentGuid, userId);
+
+    // `lessonsCount` updates the rows `groups` creates, so they travel together.
+    await this.freshenOnRead(student.householdConnectionId, [
+      [GroupsTask.SOURCE, (ctx) => this.groupsTask.execute(ctx)],
+      [LessonsCountTask.SOURCE, (ctx) => this.lessonsCountTask.execute(ctx)],
+    ], () => this.subjectsAreEmpty(studentGuid));
 
     const items = await this.prisma.subjectEnrollment.findMany({
       where: {
@@ -816,6 +927,15 @@ export class ChildrenService {
 
   async getNotices(studentGuid: string, userId?: string) {
     const student = await this.requireStudent(studentGuid, userId);
+
+    // Shorter TTL than the timetable: notices expire, so a stale copy shows a
+    // board that is quietly out of date. The digest set usually has it fresh
+    // already for a notification-enabled household.
+    await this.freshenOnRead(
+      student.householdConnectionId,
+      [[MessageBoardTask.SOURCE, (ctx) => this.messageBoardTask.execute(ctx)]],
+      () => this.noticesAreEmpty(studentGuid),
+    );
 
     const now = new Date();
     const items = await this.prisma.messageBoardItem.findMany({

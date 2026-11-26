@@ -25,6 +25,8 @@
 import { PrismaClient } from '../../backend/node_modules/@prisma/client';
 import { FreshnessService } from '../../backend/src/sync/freshness.service';
 import { SyncRunService } from '../../backend/src/sync/sync-run.service';
+import type { SyncOnReadService } from '../../backend/src/sync/sync-on-read.service';
+import type { UserDetailsTask } from '../../backend/src/sync/tasks/user-details.task';
 import { SettingsService } from '../../backend/src/settings/settings.service';
 import { SyncRunRetentionService } from '../../backend/src/sync/sync-run-retention.service';
 import { ROSTER_ABSENCE_GRACE_DAYS } from '../../backend/src/sync/roster-presence.service';
@@ -258,7 +260,13 @@ describe('Source health for one connection, with two schools in the table', () =
         resolveForSchool: async () => ({ year: YEAR, source: 'calendar' as const }),
       } as unknown as SchoolYearService,
     );
-    return new SettingsService(prisma as unknown as PrismaService, freshness);
+    return new SettingsService(
+      prisma as unknown as PrismaService,
+      freshness,
+      // Read-path freshening, inert under NODE_ENV=test.
+      { ensureFresh: async () => undefined, deadlineFromNow: () => Date.now() + 4_000 } as unknown as SyncOnReadService,
+      { execute: async () => undefined } as unknown as UserDetailsTask,
+    );
   }
 
   describe('finding 3 — a fresh row must not carry a spent error', () => {

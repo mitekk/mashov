@@ -71,11 +71,22 @@ year, which is how last year's data reads as current the moment one school rolls
 re-stamps. Ordering, never filtering: a stale stamp — a child who moved school — must stay
 recoverable.
 
-**The env session is kept, demoted and fenced.** It is load-bearing for boot, for
+**The env session is kept, demoted and fenced.** ~~It is load-bearing for boot, for
 `ensureStudentsAvailable` and for every task's `useSharedSession` branch, which is the only path
 on a fresh deploy and in the integration tests. But no user-facing read service may touch it, and
 `src/session/env-session-fence.spec.ts` enforces that by injecting a client whose env methods
-throw. Full removal is gated on dropping `MASHOV_SEMEL` / `USERNAME` / `PASSWORD` from `ops/`.
+throw. Full removal is gated on dropping `MASHOV_SEMEL` / `USERNAME` / `PASSWORD` from `ops/`.~~
+
+> **Superseded by ADR-0046 (2026-11-25).** The gate named above has been taken: the trio is gone
+> and so is the env session. Two claims in the struck-through text were already wrong when
+> written — it was **never** load-bearing for boot (`MashovSessionService` has no lifecycle hook
+> and `initialize()` had no production caller), and the integration tests seed
+> `householdConnection` rows directly rather than relying on it. What was true is the
+> `useSharedSession` branch in 14 tasks; all 14 are now collapsed onto the per-connection path.
+> `env-session-fence.spec.ts` is retired with it: the methods it stubbed no longer exist, so the
+> invariant it asserted at runtime is now enforced by the type system, which is strictly
+> stronger. A spec asserting that a nonexistent method was not called is permanently green and
+> permanently uninformative.
 
 ## Consequences
 

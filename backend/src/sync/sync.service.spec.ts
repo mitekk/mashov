@@ -1,6 +1,5 @@
 import { SyncService } from './sync.service';
 import type { SyncTaskRunResult } from './sync.types';
-import { NotificationsTask } from './tasks/notifications.task';
 import { MailCountsTask } from './tasks/mail-counts.task';
 import { MailInboxTask } from './tasks/mail-inbox.task';
 import { HomeworkTask } from './tasks/homework.task';
@@ -18,6 +17,8 @@ import { TimetableTask } from './tasks/timetable.task';
 import { BellsTask } from './tasks/bells.task';
 import { StudentsTask } from './tasks/students.task';
 import type { RefreshEnvelope, RefreshProgressService } from './refresh-progress.service';
+import type { PrismaService } from '../prisma/prisma.service';
+import type { FreshnessService } from './freshness.service';
 import {
   HEARTBEAT_INTERVAL_MS,
   STALE_RUNNING_MS,
@@ -86,13 +87,29 @@ describe('SyncService', () => {
   // Derived, not hardcoded: this asserts that every task the harness wires up
   // actually ran, so adding a sync task cannot quietly go unexercised here --
   // nor break this test for no reason, as a literal count did.
-  const EXPECTED_TASK_COUNT = 17;
+  const EXPECTED_TASK_COUNT = 16;
+
+  /**
+   * A non-empty roster, so the roster rule does not force `students` into a
+   * set that excludes it.
+   */
+  function prismaStub() {
+    return { student: { count: jest.fn().mockResolvedValue(1) } };
+  }
+
+  /** No successful runs on record, so no TTL skipping. */
+  function freshnessStub() {
+    return {
+      loadSyncRuns: jest.fn().mockResolvedValue({ successRuns: new Map(), allRuns: new Map() }),
+    };
+  }
 
   function createService(
     overrides: Partial<Record<string, { execute: jest.Mock }>> = {},
     progress: ReturnType<typeof makeRefreshProgress> = makeRefreshProgress(),
+    freshness: { loadSyncRuns: jest.Mock } = freshnessStub(),
+    prisma: { student: { count: jest.Mock } } = prismaStub(),
   ) {
-    const notifications = overrides.notifications ?? makeMockTask(makeResult());
     const mailCounts = overrides.mailCounts ?? makeMockTask(makeResult());
     const mailInbox = overrides.mailInbox ?? makeMockTask(makeResult());
     const homework = overrides.homework ?? makeMockTask(makeResult());
@@ -111,7 +128,6 @@ describe('SyncService', () => {
     const students = overrides.students ?? makeMockTask(makeResult());
 
     const service = new SyncService(
-      notifications as unknown as NotificationsTask,
       mailCounts as unknown as MailCountsTask,
       mailInbox as unknown as MailInboxTask,
       homework as unknown as HomeworkTask,
@@ -129,13 +145,14 @@ describe('SyncService', () => {
       bells as unknown as BellsTask,
       students as unknown as StudentsTask,
       progress.mock as unknown as RefreshProgressService,
+      prisma as unknown as PrismaService,
+      freshness as unknown as FreshnessService,
     );
 
     return {
       service,
       progress,
       tasks: {
-        notifications,
         mailCounts,
         mailInbox,
         homework,
@@ -180,26 +197,26 @@ describe('SyncService', () => {
   });
 
   it('joins in-flight manual refresh requests for the same connection', async () => {
-    let resolveNotifications!: () => void;
-    const notificationsPromise = new Promise<SyncTaskRunResult>((resolve) => {
-      resolveNotifications = () => resolve(makeResult());
+    let resolveMailCounts!: () => void;
+    const mailCountsPromise = new Promise<SyncTaskRunResult>((resolve) => {
+      resolveMailCounts = () => resolve(makeResult());
     });
 
-    const notifications = { execute: jest.fn().mockReturnValue(notificationsPromise) };
-    const { service, tasks } = createService({ notifications });
+    const mailCounts = { execute: jest.fn().mockReturnValue(mailCountsPromise) };
+    const { service, tasks } = createService({ mailCounts });
 
     const first = service.refreshAll({ connectionId: 'conn-1' });
     const second = service.refreshAll({ connectionId: 'conn-1' });
     // The roster lands before the rest, so the others start a tick later.
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(tasks.notifications.execute).toHaveBeenCalledTimes(1);
+    expect(tasks.mailCounts.execute).toHaveBeenCalledTimes(1);
 
-    resolveNotifications();
+    resolveMailCounts();
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
     expect(firstResult).toEqual(secondResult);
-    expect(tasks.notifications.execute).toHaveBeenCalledTimes(1);
+    expect(tasks.mailCounts.execute).toHaveBeenCalledTimes(1);
   });
 
   it('runs the students task before every other task', async () => {
@@ -235,17 +252,17 @@ describe('SyncService', () => {
   });
 
   it('does not join in-flight manual refresh requests across different connections', async () => {
-    const notifications = { execute: jest.fn().mockResolvedValue(makeResult()) };
-    const { service, tasks } = createService({ notifications });
+    const mailCounts = { execute: jest.fn().mockResolvedValue(makeResult()) };
+    const { service, tasks } = createService({ mailCounts });
 
     await Promise.all([
       service.refreshAll({ connectionId: 'conn-1' }),
       service.refreshAll({ connectionId: 'conn-2' }),
     ]);
 
-    expect(tasks.notifications.execute).toHaveBeenCalledTimes(2);
-    expect(tasks.notifications.execute).toHaveBeenNthCalledWith(1, { connectionId: 'conn-1' });
-    expect(tasks.notifications.execute).toHaveBeenNthCalledWith(2, { connectionId: 'conn-2' });
+    expect(tasks.mailCounts.execute).toHaveBeenCalledTimes(2);
+    expect(tasks.mailCounts.execute).toHaveBeenNthCalledWith(1, { connectionId: 'conn-1' });
+    expect(tasks.mailCounts.execute).toHaveBeenNthCalledWith(2, { connectionId: 'conn-2' });
   });
 
   describe('refresh progress envelope', () => {
@@ -320,7 +337,7 @@ describe('SyncService', () => {
 
       const labels = progress.snapshots.map((snapshot) => snapshot.currentTask);
       expect(labels).toContain('students');
-      expect(labels).toContain('notifications');
+      expect(labels).toContain('mailCounts');
       // Every reported label must be a task that had not settled at the time.
       for (const snapshot of progress.snapshots) {
         if (snapshot.currentTask === null) continue;
@@ -488,20 +505,222 @@ describe('SyncService', () => {
     });
 
     it('opens one envelope when a second caller joins the in-flight refresh', async () => {
-      let resolveNotifications!: () => void;
-      const notificationsPromise = new Promise<SyncTaskRunResult>((resolve) => {
-        resolveNotifications = () => resolve(makeResult());
+      let resolveMailCounts!: () => void;
+      const mailCountsPromise = new Promise<SyncTaskRunResult>((resolve) => {
+        resolveMailCounts = () => resolve(makeResult());
       });
-      const notifications = { execute: jest.fn().mockReturnValue(notificationsPromise) };
+      const mailCounts = { execute: jest.fn().mockReturnValue(mailCountsPromise) };
       const progress = makeRefreshProgress();
-      const { service } = createService({ notifications }, progress);
+      const { service } = createService({ mailCounts }, progress);
 
       const first = service.refreshAll({ connectionId: 'conn-1' });
       const second = service.refreshAll({ connectionId: 'conn-1' });
-      resolveNotifications();
+      resolveMailCounts();
       await Promise.all([first, second]);
 
       expect(progress.open).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('task sets', () => {
+    type TaskMocks = ReturnType<typeof createService>['tasks'];
+    const mockFor = (tasks: TaskMocks, name: string) =>
+      (tasks as unknown as Record<string, { execute: jest.Mock }>)[name];
+
+    it('runs only the digest set, and never the mail tasks', async () => {
+      const { service, tasks } = createService();
+
+      const result = await service.refreshAll({ connectionId: 'conn-1', taskSet: 'digest' });
+
+      for (const name of ['homework', 'behavior', 'releases', 'messageBoard', 'schoolActivities']) {
+        expect(mockFor(tasks, name).execute).toHaveBeenCalledTimes(1);
+      }
+      for (const name of ['mailInbox', 'mailCounts', 'groups', 'lessonsCount', 'userDetails']) {
+        expect(mockFor(tasks, name).execute).not.toHaveBeenCalled();
+      }
+      // timetable and bells are in the digest set on purpose: the dismissal
+      // gate reads their tables (ADR-0040).
+      expect(tasks.timetable.execute).toHaveBeenCalledTimes(1);
+      expect(tasks.bells.execute).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('success');
+    });
+
+    it('runs only the dashboard sources for the login set', async () => {
+      const { service, tasks } = createService();
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'login' });
+
+      for (const name of ['mailInbox', 'mailCounts', 'homework', 'behavior', 'achvas']) {
+        expect(mockFor(tasks, name).execute).toHaveBeenCalledTimes(1);
+      }
+      for (const name of ['timetable', 'bells', 'groups', 'releases']) {
+        expect(mockFor(tasks, name).execute).not.toHaveBeenCalled();
+      }
+      expect(tasks.students.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('defaults to the full set, which is every wired task', async () => {
+      const { service } = createService();
+
+      const result = await service.refreshAll({ connectionId: 'conn-1' });
+
+      expect(result.tasks).toHaveLength(EXPECTED_TASK_COUNT);
+    });
+
+    it('keeps a background run out of the progress envelope', async () => {
+      // Otherwise /sync/status reports `running` to a parent who is only
+      // browsing, and the first-login screen reads a background run's progress
+      // as its own.
+      const progress = makeRefreshProgress();
+      const { service } = createService({}, progress);
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'digest', silent: true });
+
+      expect(progress.open).not.toHaveBeenCalled();
+    });
+
+    it('does not join runs of different sets for the same connection', async () => {
+      // A joined `digest` run would be RETURNED to a user's `login` refresh as
+      // though it covered their sources, and open no envelope for the screen
+      // they are watching.
+      const { service, tasks } = createService();
+
+      await Promise.all([
+        service.refreshAll({ connectionId: 'conn-1', taskSet: 'login' }),
+        service.refreshAll({ connectionId: 'conn-1', taskSet: 'digest' }),
+      ]);
+
+      // homework is in both sets, so it runs once per set.
+      expect(tasks.homework.execute).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('respectTtl', () => {
+    function withFreshRun(source: string, minutesAgo: number) {
+      const endedAt = new Date(Date.now() - minutesAgo * 60_000);
+      return {
+        loadSyncRuns: jest.fn().mockResolvedValue({
+          successRuns: new Map([[source, { source, status: 'success', endedAt }]]),
+          allRuns: new Map(),
+        }),
+      };
+    }
+
+    it('skips a source still inside its TTL, and still reports it', async () => {
+      const { service, tasks } = createService({}, undefined, withFreshRun('mail_inbox', 1));
+
+      const result = await service.refreshAll({
+        connectionId: 'conn-1',
+        taskSet: 'mail',
+        respectTtl: true,
+      });
+
+      expect(tasks.mailInbox.execute).not.toHaveBeenCalled();
+      expect(tasks.mailCounts.execute).toHaveBeenCalledTimes(1);
+      // Reported rather than dropped, so a reader can tell "considered and
+      // fresh" from "never in this set".
+      expect(result.tasks.find((task) => task.task === 'mailInbox')).toMatchObject({
+        status: 'success',
+        summary: { fetchedCount: 0, failedCount: 0 },
+      });
+    });
+
+    it('runs a source whose TTL has lapsed', async () => {
+      // mail_inbox TTL is 15 minutes.
+      const { service, tasks } = createService({}, undefined, withFreshRun('mail_inbox', 120));
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'mail', respectTtl: true });
+
+      expect(tasks.mailInbox.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('never skips a source with no successful run, so a first login fetches everything', async () => {
+      const { service, tasks } = createService();
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'mail', respectTtl: true });
+
+      expect(tasks.mailInbox.execute).toHaveBeenCalledTimes(1);
+      expect(tasks.mailCounts.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores the TTL when the caller did not ask for it', async () => {
+      // A person pressed refresh. Skipping would show them a spinner and no
+      // change.
+      const { service, tasks } = createService({}, undefined, withFreshRun('mail_inbox', 1));
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'mail' });
+
+      expect(tasks.mailInbox.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the roster when its own TTL is satisfied', async () => {
+      // `students` is NOT in `buildTasks` -- the roster runs separately -- so
+      // omitting it from the TTL probe made `skipped.has('students')` false by
+      // construction and `StudentsTask` (a full upstream login, with no TTL
+      // gate of its own) ran on every single digest-lead tick.
+      const { service, tasks } = createService({}, undefined, withFreshRun('students', 60));
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'roster', respectTtl: true });
+
+      expect(tasks.students.execute).not.toHaveBeenCalled();
+    });
+
+    it('runs the roster once its day-long TTL has lapsed', async () => {
+      const { service, tasks } = createService({}, undefined, withFreshRun('students', 36 * 60));
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'roster', respectTtl: true });
+
+      expect(tasks.students.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('still runs the roster inside its TTL when the local roster is empty', async () => {
+      // The emptiness rule outranks the TTL: with no local roster every other
+      // task iterates an empty `student.findMany` and fetches nothing.
+      const emptyRoster = { student: { count: jest.fn().mockResolvedValue(0) } };
+      const { service, tasks } = createService(
+        {},
+        undefined,
+        withFreshRun('students', 60),
+        emptyRoster,
+      );
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'digest', respectTtl: true });
+
+      expect(tasks.students.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not let a prefixed backfill run satisfy the gate', async () => {
+      const { service, tasks } = createService({}, undefined, withFreshRun('mail_inbox', 1));
+
+      await service.refreshAll({
+        connectionId: 'conn-1',
+        taskSet: 'mail',
+        respectTtl: true,
+        sourcePrefix: 'history:2025:',
+      });
+
+      expect(tasks.mailInbox.execute).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('the roster rule', () => {
+    it('runs students ahead of a set that excludes it when the roster is empty', async () => {
+      // Every other task iterates `student.findMany`, so with no local roster
+      // a digest-set run fetches nothing and reports a clean success.
+      const emptyRoster = { student: { count: jest.fn().mockResolvedValue(0) } };
+      const { service, tasks } = createService({}, undefined, undefined, emptyRoster);
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'digest' });
+
+      expect(tasks.students.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves students alone for a digest set when the roster is populated', async () => {
+      const { service, tasks } = createService();
+
+      await service.refreshAll({ connectionId: 'conn-1', taskSet: 'digest' });
+
+      expect(tasks.students.execute).not.toHaveBeenCalled();
     });
   });
 });
