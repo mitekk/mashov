@@ -107,6 +107,11 @@ export class GradesTask {
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
       let upsertCount = 0;
+      // Per-RUN, not the task-scoped `failedCount`: that one is shared
+      // across every student, so reusing it here would close this run
+      // `failed` because some OTHER student's item failed.
+      let itemFailures = 0;
+      const itemErrors: string[] = [];
 
       try {
         let items: MashovGrade[] = [];
@@ -206,13 +211,17 @@ export class GradesTask {
             const msg = itemErr instanceof Error ? itemErr.message : String(itemErr);
             this.logger.warn(`Failed to upsert grade item: ${msg}`);
             failedCount++;
+            itemFailures++;
+            itemErrors.push(msg);
             if (errorMessages.length < 10) errorMessages.push(msg);
           }
         }
 
-        await this.syncRunService.closeRun(syncRun.id, 'success', {
+        await this.syncRunService.closeItemRun(syncRun.id, {
           fetchedCount,
           updatedCount: upsertCount,
+          itemFailures,
+          itemErrors,
         });
         this.logger.debug(`Grades sync ${student.fullName}: fetched=${fetchedCount} upserted=${upsertCount}`);
       } catch (error) {

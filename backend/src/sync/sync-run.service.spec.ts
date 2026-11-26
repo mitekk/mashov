@@ -125,6 +125,122 @@ describe('SyncRunService', () => {
     });
   });
 
+  describe('closeItemRun', () => {
+    function updateDataFor(
+      options: Parameters<SyncRunService['closeItemRun']>[1],
+    ): Promise<Record<string, unknown>> {
+      const mockUpdate = jest.fn().mockResolvedValue(makeSyncRun());
+      const service = new SyncRunService(makeMockPrisma({ syncRunUpdate: mockUpdate }));
+      return service
+        .closeItemRun('run-1', options)
+        .then(() => mockUpdate.mock.calls[0][0].data as Record<string, unknown>);
+    }
+
+    it('closes success when every item persisted', async () => {
+      const data = await updateDataFor({
+        fetchedCount: 10,
+        updatedCount: 10,
+        itemFailures: 0,
+      });
+
+      expect(data.status).toBe('success');
+      expect(data.fetchedCount).toBe(10);
+      // Nothing failed, so nothing to explain.
+      expect(data.errorMessage).toBeUndefined();
+    });
+
+    it('closes failed when every item failed, instead of a green run over an empty table', async () => {
+      // THE REGRESSION. The upsert loop catches per-item errors and continues,
+      // and the run was then closed 'success' unconditionally -- so a student
+      // whose grades all failed to persist got a success run carrying
+      // `fetchedCount: 40, updatedCount: 0`. `getLatestSuccessfulRuns` filters
+      // on `status = 'success'`, so that row satisfied the sync-on-read TTL
+      // gate: the section stayed empty for the full 6h while `source-health`
+      // read `fresh`. Same end state as the #60 bug, different route.
+      const data = await updateDataFor({
+        fetchedCount: 40,
+        updatedCount: 0,
+        itemFailures: 40,
+        itemErrors: ['unique constraint violated'],
+      });
+
+      expect(data.status).toBe('failed');
+    });
+
+    it('closes failed when only some items failed', async () => {
+      // Not `partial`: see the method's own comment. A source that cannot
+      // persist part of what it fetched should retry inside the backoff window
+      // rather than claim freshness for its whole TTL.
+      const data = await updateDataFor({
+        fetchedCount: 40,
+        updatedCount: 39,
+        itemFailures: 1,
+        itemErrors: ['bad date'],
+      });
+
+      expect(data.status).toBe('failed');
+    });
+
+    it('keeps the counts on a failed run, so the partial progress stays visible', async () => {
+      const data = await updateDataFor({
+        fetchedCount: 40,
+        createdCount: 30,
+        updatedCount: 9,
+        itemFailures: 1,
+        itemErrors: ['bad date'],
+      });
+
+      expect(data.fetchedCount).toBe(40);
+      expect(data.createdCount).toBe(30);
+      expect(data.updatedCount).toBe(9);
+    });
+
+    it('explains how many of how many failed, and why', async () => {
+      // `source-health` surfaces `lastErrorMessage`. "1 of 40" is the whole
+      // diagnosis; without it the row says failed and nothing else.
+      const data = await updateDataFor({
+        fetchedCount: 40,
+        updatedCount: 39,
+        itemFailures: 1,
+        itemErrors: ['bad date'],
+      });
+
+      expect(data.errorMessage).toContain('1 of 40');
+      expect(data.errorMessage).toContain('bad date');
+    });
+
+    it('still explains itself when the caller collected no messages', async () => {
+      const data = await updateDataFor({ fetchedCount: 5, updatedCount: 0, itemFailures: 5 });
+
+      expect(data.status).toBe('failed');
+      expect(data.errorMessage).toContain('5 of 5');
+    });
+
+    it('caps the message instead of writing an unbounded row', async () => {
+      // One broken payload shape fails every item, and the column would
+      // otherwise carry one copy of the message per item.
+      const data = await updateDataFor({
+        fetchedCount: 500,
+        updatedCount: 0,
+        itemFailures: 500,
+        itemErrors: Array.from({ length: 500 }, (_, i) => `failure number ${i}`),
+      });
+
+      expect(String(data.errorMessage).length).toBeLessThan(500);
+    });
+
+    it('never writes partial, which the health reader counts as neither', async () => {
+      // `freshness.service.ts` picks `latestFailure` on `status === 'failed'`
+      // only, and `getLatestSuccessfulRuns` filters `status = 'success'`. A
+      // `partial` row is neither, so a source whose only run was partial would
+      // report `never_synced` with a null error -- a new silent failure.
+      for (const itemFailures of [0, 1, 40]) {
+        const data = await updateDataFor({ fetchedCount: 40, updatedCount: 1, itemFailures });
+        expect(data.status).not.toBe('partial');
+      }
+    });
+  });
+
   describe('getLatestSuccessfulRun', () => {
     it('returns null when no successful run exists', async () => {
       const service = new SyncRunService(

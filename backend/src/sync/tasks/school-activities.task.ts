@@ -107,6 +107,11 @@ export class SchoolActivitiesTask {
       const syncRun = await this.syncRunService.openRun(source, context.connectionId);
       let fetchedCount = 0;
       let upsertCount = 0;
+      // Per-RUN, not the task-scoped `failedCount`: that one is shared
+      // across every student, so reusing it here would close this run
+      // `failed` because some OTHER student's item failed.
+      let itemFailures = 0;
+      const itemErrors: string[] = [];
 
       try {
         const password = this.encryptionService.decrypt(conn.encryptedPassword);
@@ -211,13 +216,17 @@ export class SchoolActivitiesTask {
             const msg = itemErr instanceof Error ? itemErr.message : String(itemErr);
             this.logger.warn(`Failed to upsert school activity: ${msg}`);
             failedCount++;
+            itemFailures++;
+            itemErrors.push(msg);
             if (errorMessages.length < 10) errorMessages.push(msg);
           }
         }
 
-        await this.syncRunService.closeRun(syncRun.id, 'success', {
+        await this.syncRunService.closeItemRun(syncRun.id, {
           fetchedCount,
           updatedCount: upsertCount,
+          itemFailures,
+          itemErrors,
         });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);

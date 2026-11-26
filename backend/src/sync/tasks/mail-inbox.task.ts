@@ -485,9 +485,16 @@ export class MailInboxTask {
         },
       });
 
-      await this.syncRunService.closeRun(syncRun.id, 'success', {
+      // `failedCount` and `errorMessages` are already scoped to this
+      // connection's run -- both walks, inbox and archive, count into them --
+      // so they are exactly what the status should be derived from. Closing
+      // this `'success'` regardless meant a connection whose conversations all
+      // failed to upsert still satisfied the TTL gate with an empty mailbox.
+      await this.syncRunService.closeItemRun(syncRun.id, {
         fetchedCount,
         updatedCount: upsertCount,
+        itemFailures: failedCount,
+        itemErrors: errorMessages,
       });
       if (pageCount === maxPages) {
         this.logger.warn(

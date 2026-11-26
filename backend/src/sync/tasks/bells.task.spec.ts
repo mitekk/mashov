@@ -37,7 +37,7 @@ describe('BellsTask', () => {
     householdConnection: { findMany: jest.Mock };
     bellSchedule: { upsert: jest.Mock };
   };
-  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
+  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock; closeItemRun: jest.Mock };
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
@@ -56,6 +56,7 @@ describe('BellsTask', () => {
     syncRunService = {
       openRun: jest.fn().mockResolvedValue({ id: 'run-1' }),
       closeRun: jest.fn().mockResolvedValue({ id: 'run-1' }),
+      closeItemRun: jest.fn().mockResolvedValue({ id: 'run-1' }),
     };
 
     task = new BellsTask(
@@ -88,10 +89,9 @@ describe('BellsTask', () => {
       { headers: { 'Referer': 'https://web.mashov.info/students/main/dashboard' } },
     );
     expect(syncRunService.openRun).toHaveBeenCalledWith('bells:540175', undefined);
-    expect(syncRunService.closeRun).toHaveBeenCalledWith(
+    expect(syncRunService.closeItemRun).toHaveBeenCalledWith(
       'run-1',
-      'success',
-      expect.objectContaining({ fetchedCount: 2, updatedCount: 2 }),
+      expect.objectContaining({ fetchedCount: 2, updatedCount: 2, itemFailures: 0 }),
     );
   });
 
