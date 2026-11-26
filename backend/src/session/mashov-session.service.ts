@@ -14,6 +14,26 @@ import {
 } from '../common/student-links';
 import { MASHOV_CSRF_TOKEN } from '../common/mashov-login/mashov-login-body';
 import { readResponseHeader } from '../common/mashov-login/mashov-login-headers';
+import {
+  classifyLoginReason,
+  isMashovRejection,
+  readReason,
+} from '../common/mashov-login/mashov-reason';
+
+/**
+ * The classified login failures that mean "the stored credentials are the
+ * problem", and so that asking the parent to re-enter them is worth doing.
+ *
+ * Expressed as classification codes rather than raw `Reason` values so this
+ * cannot drift from what the interactive sign-in surface tells the parent --
+ * `classifyLoginReason` owns that mapping. See
+ * `markCredentialsStaleIfRejected` for what is deliberately absent.
+ */
+const CREDENTIAL_STALE_CODES: ReadonlySet<string> = new Set([
+  'INVALID_CREDENTIALS',
+  'PASSWORD_CHANGE_REQUIRED',
+  'CREDENTIALS_SETUP_REQUIRED',
+]);
 
 interface LoginChild {
   childGuid: string;
@@ -562,7 +582,14 @@ export class MashovSessionService {
 
     const connRecord = await this.prisma.householdConnection.findUnique({
       where: { id: connectionId },
-      select: { mashovUniqueId: true, schoolYear: true, devicePass: true },
+      select: {
+        mashovUniqueId: true,
+        schoolYear: true,
+        devicePass: true,
+        // Read here rather than in the catch below: this row is already being
+        // fetched, and the flag is only needed to avoid re-stamping.
+        credentialStaleAt: true,
+      },
     });
     const storedUniqueId = connRecord?.mashovUniqueId ?? undefined;
 
@@ -596,7 +623,85 @@ export class MashovSessionService {
       return this.buildHeaders(cookies, csrfToken);
     } catch (err) {
       this.connectionSessions.delete(sessionKey);
+      // Before rethrowing: if Mashov rejected the stored credentials, say so
+      // on the connection. Nothing else notices -- see the method's comment.
+      if (!connRecord?.credentialStaleAt) {
+        await this.markCredentialsStaleIfRejected(connectionId, err);
+      }
       throw err;
+    }
+  }
+
+  /**
+   * Record that the stored credentials are the reason a login failed.
+   *
+   * `credentialStaleAt` used to be written in exactly one place --
+   * `CredentialRecoveryService`, after a password reset the parent performed
+   * through our own recovery flow. Nothing set it when a password went stale
+   * *upstream*: changed at the school, or expired. So every sync login failed
+   * while `SchoolLinksService` kept reporting `credentialStale: false`, and
+   * `school-links` showed a healthy connection throughout the incident that
+   * #60 fixed the read-path half of. The parent had no way to learn that the
+   * one thing they could fix was the thing that was broken.
+   *
+   * ## Two gates, and both are load-bearing
+   *
+   * **`isMashovRejection`** — true only when Mashov itself answered, evidenced
+   * by a `Reason` header or a JSON content type. Without it a stalled egress
+   * proxy, a captive portal or a Mashov outage would mark every connection's
+   * credentials stale at once and prompt every parent to re-enter a password
+   * that was never wrong. That helper exists for precisely this class of
+   * mistake, and its own comment records the first time it was made.
+   *
+   * **The classified reason** — only failures that re-entering credentials can
+   * actually fix. `classifyLoginReason` is the existing table, so this cannot
+   * drift from what the interactive sign-in tells the parent:
+   *
+   * - `INVALID_CREDENTIALS` — the password was rejected, or Mashov sent a
+   *   `Reason` we do not recognise and the sign-in surface already treats that
+   *   as a credential failure;
+   * - `PASSWORD_CHANGE_REQUIRED` (`ChangePass`) and
+   *   `CREDENTIALS_SETUP_REQUIRED` (`SetUsernameAndPass`, `CreateUsername`) —
+   *   the stored password will not work again until the parent supplies a new
+   *   one, which is exactly what the stale prompt asks for.
+   *
+   * Everything else is excluded deliberately. `MFA_REQUIRED` wants a one-time
+   * code, not a password; `CAPTCHA_REQUIRED` is a transient escalation that
+   * re-entry cannot clear; `SCHOOL_CLOSED`, `USER_INACTIVE`, `NO_CHILDREN` and
+   * `USE_USERNAME` are real failures the parent cannot fix by typing their
+   * password again. Prompting for one would be a lie with a dead end behind it.
+   *
+   * Only ever written when it is currently null -- this method runs on a failed
+   * login, and a login is attempted per request, so re-stamping would be an
+   * UPDATE storm that also walks the timestamp forward forever and makes
+   * "stale since" always read as just now. The same discipline
+   * `stampOwnershipIfChanged` uses.
+   *
+   * Its own failure is swallowed. The caller is already handling a login
+   * failure and logs it; a write error here must not replace that diagnosis
+   * with a different one.
+   */
+  private async markCredentialsStaleIfRejected(
+    connectionId: string,
+    error: unknown,
+  ): Promise<void> {
+    if (!isMashovRejection(error)) return;
+
+    const { code } = classifyLoginReason(readReason(error));
+    if (!CREDENTIAL_STALE_CODES.has(code)) return;
+
+    try {
+      await this.prisma.householdConnection.update({
+        where: { id: connectionId },
+        data: { credentialStaleAt: new Date() },
+      });
+      this.logger.warn(
+        `Connection ${connectionId}: Mashov rejected the stored credentials (${code}); ` +
+          `marked stale so the parent is asked to re-enter them`,
+      );
+    } catch (writeError) {
+      const message = writeError instanceof Error ? writeError.message : String(writeError);
+      this.logger.warn(`Could not mark connection ${connectionId} credential-stale: ${message}`);
     }
   }
 
