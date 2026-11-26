@@ -97,6 +97,13 @@ export class AchvasTask {
       const syncRun = await this.syncRunService.openRun(source, conn.id);
       let fetchedCount = 0;
       let upsertCount = 0;
+      // Declared alongside `failedCount`, which is already per-connection
+      // here, and kept separate anyway so every task reads the same way: in
+      // the per-student tasks `failedCount` is task-scoped and shared across
+      // students, where reusing it would close one student's run `failed`
+      // because another student's item failed.
+      let itemFailures = 0;
+      const itemErrors: string[] = [];
       let failedCount = 0;
       const errorMessages: string[] = [];
 
@@ -150,13 +157,17 @@ export class AchvasTask {
               `Failed to upsert achva code ${achva.code} for semel ${schoolCode}: ${msg}`,
             );
             failedCount++;
+            itemFailures++;
+            itemErrors.push(msg);
             if (errorMessages.length < 10) errorMessages.push(msg);
           }
         }
 
-        await this.syncRunService.closeRun(syncRun.id, 'success', {
+        await this.syncRunService.closeItemRun(syncRun.id, {
           fetchedCount,
           updatedCount: upsertCount,
+          itemFailures,
+          itemErrors,
         });
         this.logger.debug(
           `Achvas sync (semel=${schoolCode}): fetched=${fetchedCount} upserted=${upsertCount}`,

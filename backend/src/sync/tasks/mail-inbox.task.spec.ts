@@ -89,7 +89,7 @@ describe('MailInboxTask', () => {
   let task: MailInboxTask;
   let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'getForConnection'>>;
   let mockPrisma: jest.Mocked<Pick<PrismaService, 'householdConnection' | 'mailConversation' | 'mailMessage'>>;
-  let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun'>>;
+  let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun' | 'closeItemRun'>>;
   let mockEncryptionService: jest.Mocked<Pick<EncryptionService, 'decrypt'>>;
 
   beforeEach(() => {
@@ -116,6 +116,7 @@ describe('MailInboxTask', () => {
     mockSyncRunService = {
       openRun: jest.fn().mockResolvedValue(makeSyncRun('run-1')),
       closeRun: jest.fn().mockResolvedValue(makeSyncRun('run-1')),
+      closeItemRun: jest.fn().mockResolvedValue(makeSyncRun('run-1')),
     };
     mockEncryptionService = {
       decrypt: jest.fn().mockReturnValue('decrypted-password'),
@@ -198,9 +199,11 @@ describe('MailInboxTask', () => {
         update: expect.objectContaining({ isNew: false }),
       }),
     );
-    expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-1', 'success', {
+    expect(mockSyncRunService.closeItemRun).toHaveBeenCalledWith('run-1', {
       fetchedCount: 2,
       updatedCount: 2,
+      itemFailures: 0,
+      itemErrors: [],
     });
     expect(result).toEqual({
       status: 'success',

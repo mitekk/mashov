@@ -2,6 +2,27 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SyncRun } from '@prisma/client';
 
+/**
+ * "1 of 40 items could not be persisted: …", bounded.
+ *
+ * `n of m` is the diagnosis `source-health` shows the parent's row; without it
+ * the page says `failed` and nothing more. The distinct messages are capped
+ * because one broken payload shape fails every item, and the column would
+ * otherwise carry five hundred copies of the same sentence.
+ */
+function describeItemFailures(
+  failures: number,
+  fetched: number,
+  messages: readonly string[] = [],
+): string {
+  const headline = `${failures} of ${fetched} items could not be persisted`;
+  const distinct = [...new Set(messages)].slice(0, 3);
+  if (distinct.length === 0) return headline;
+
+  const detail = distinct.join('; ').slice(0, 300);
+  return `${headline}: ${detail}`;
+}
+
 @Injectable()
 export class SyncRunService {
   constructor(private readonly prisma: PrismaService) {}
@@ -38,6 +59,68 @@ export class SyncRunService {
         endedAt: new Date(),
         ...options,
       },
+    });
+  }
+
+  /**
+   * Close a run whose body persisted items one at a time, deriving the status
+   * from whether any of them failed.
+   *
+   * ## Why this exists
+   *
+   * Every per-item task's upsert loop catches a per-item error, counts it and
+   * carries on -- which is right, since one malformed row must not cost the
+   * other thirty-nine. The run was then closed `'success'` regardless. So a
+   * student whose grades ALL failed to persist got a success run carrying
+   * `fetchedCount: 40, updatedCount: 0`, and because
+   * `getLatestSuccessfulRuns` filters `status = 'success'`, that row satisfied
+   * the sync-on-read TTL gate: the section stayed empty for the whole TTL
+   * while `source-health` reported `fresh`. That is the same end state as the
+   * per-student freshness bug (#60) reached by a different route, and it is
+   * invisible on the one page that answers "is syncing working".
+   *
+   * Only the task's *returned* status was derived correctly; the persisted row
+   * was not. One helper so the thirteen tasks that share the loop cannot drift
+   * apart about it again.
+   *
+   * ## Why `failed` and not `partial`
+   *
+   * `closeRun` accepts `'partial'`, but no task has ever written it to
+   * `sync_run`, and `FreshnessService.getAllSourceHealth` picks its
+   * `latestFailure` on `status === 'failed'` alone. A `partial` row is
+   * therefore neither a success nor a failure to the reader: a source whose
+   * only run was `partial` would report `never_synced` with a null error --
+   * trading one silent failure for another. `failed` needs no reader surgery,
+   * carries `lastErrorMessage` to the settings page, and stays out of
+   * `getLatestSuccessfulRuns` so the TTL gate is correctly left unsatisfied
+   * and the source retries inside the backoff window instead of waiting out
+   * its whole TTL. `connection-fanout.ts` records the same reasoning for
+   * choosing `failed` over inventing a `skipped`.
+   *
+   * The counts are written either way: a run that persisted 39 of 40 should
+   * still say so, and `failed` is about whether the source can be trusted to
+   * be complete, not about whether anything happened.
+   */
+  async closeItemRun(
+    id: string,
+    options: {
+      fetchedCount: number;
+      createdCount?: number;
+      updatedCount?: number;
+      upstreamCount?: number;
+      localCount?: number;
+      /** How many items the loop could not persist. */
+      itemFailures: number;
+      /** Why, as collected by the loop. Capped before it reaches the column. */
+      itemErrors?: readonly string[];
+    },
+  ): Promise<SyncRun> {
+    const { itemFailures, itemErrors, ...counts } = options;
+    if (itemFailures <= 0) return this.closeRun(id, 'success', counts);
+
+    return this.closeRun(id, 'failed', {
+      ...counts,
+      errorMessage: describeItemFailures(itemFailures, counts.fetchedCount, itemErrors),
     });
   }
 

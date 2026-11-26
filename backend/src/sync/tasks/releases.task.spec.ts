@@ -41,7 +41,7 @@ describe('ReleasesTask', () => {
     studentConnection: { upsert: jest.Mock };
     studentRelease: { upsert: jest.Mock };
   };
-  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
+  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock; closeItemRun: jest.Mock };
 
   beforeEach(() => {
     mashovClient = {
@@ -60,6 +60,7 @@ describe('ReleasesTask', () => {
     syncRunService = {
       openRun: jest.fn().mockResolvedValue({ id: 'run-1' }),
       closeRun: jest.fn().mockResolvedValue({ id: 'run-1' }),
+      closeItemRun: jest.fn().mockResolvedValue({ id: 'run-1' }),
     };
 
     task = new ReleasesTask(
@@ -78,10 +79,9 @@ describe('ReleasesTask', () => {
     const result = await task.execute({ connectionId: 'conn-a' });
 
     expect(result.status).toBe('success');
-    expect(syncRunService.closeRun).toHaveBeenCalledWith(
+    expect(syncRunService.closeItemRun).toHaveBeenCalledWith(
       'run-1',
-      'success',
-      expect.objectContaining({ fetchedCount: 0 }),
+      expect.objectContaining({ fetchedCount: 0, itemFailures: 0 }),
     );
   });
 

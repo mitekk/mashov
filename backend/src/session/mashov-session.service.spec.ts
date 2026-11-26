@@ -454,6 +454,164 @@ describe('MashovSessionService', () => {
     });
   });
 
+  describe('marking credentials stale when a login is rejected', () => {
+    /**
+     * An upstream rejection of the login, as axios reports it.
+     *
+     * `isMashovRejection` needs `axios.isAxiosError` to answer truthfully, and
+     * the module is auto-mocked at the top of this file -- so the mock is given
+     * the real predicate's shape for the duration of these tests.
+     */
+    function rejection(headers: Record<string, string> | null): Error {
+      const error = Object.assign(new Error('Request failed with status code 401'), {
+        isAxiosError: true,
+        response: headers === null ? undefined : { status: 401, headers },
+      });
+      return error as Error;
+    }
+
+    beforeEach(() => {
+      (mockedAxios.isAxiosError as unknown as jest.Mock).mockImplementation(
+        (error: unknown) => !!(error as { isAxiosError?: boolean })?.isAxiosError,
+      );
+    });
+
+    it('marks the connection stale when Mashov rejects the stored password', async () => {
+      // THE DEFECT. `credentialStaleAt` was written in exactly one place --
+      // after a reset the parent performed through our own recovery flow -- so
+      // a password that went stale UPSTREAM (changed at the school, expired)
+      // failed every sync login while `school-links` kept reporting a healthy
+      // connection. That is what showed green throughout the #60 incident.
+      const { service, prisma } = makeHarness();
+      // No `Reason`, but a JSON body: Mashov answered, and classifies as
+      // INVALID_CREDENTIALS.
+      mockHttp.post.mockRejectedValue(rejection({ 'content-type': 'application/json' }));
+
+      await expect(
+        service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+      ).rejects.toThrow();
+
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith({
+        where: { id: 'conn-1' },
+        data: { credentialStaleAt: expect.any(Date) },
+      });
+    });
+
+    it('marks it stale when Mashov demands a password change', async () => {
+      // `ChangePass` means the stored password will not work again until the
+      // parent supplies a new one -- which is exactly what `credentialStale`
+      // prompts for.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockRejectedValue(rejection({ reason: 'ChangePass' }));
+
+      await expect(
+        service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+      ).rejects.toThrow();
+
+      expect(prisma.householdConnection.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { credentialStaleAt: expect.any(Date) } }),
+      );
+    });
+
+    it('does NOT mark it stale when the upstream never answered', async () => {
+      // The amplifier of the wrong kind: a stalled proxy or a Mashov outage
+      // would otherwise mark every connection's credentials stale and prompt
+      // every parent to re-enter a password that is perfectly good.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockRejectedValue(new Error('ECONNABORTED'));
+
+      await expect(
+        service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+      ).rejects.toThrow();
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalled();
+    });
+
+    it('does NOT mark it stale for an HTML error page', async () => {
+      // A response, but not from the API: a captive portal or a proxy error
+      // page. `isMashovRejection` accepts a `Reason` header or a JSON content
+      // type as evidence Mashov itself answered, and this is neither.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockRejectedValue(rejection({ 'content-type': 'text/html' }));
+
+      await expect(
+        service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+      ).rejects.toThrow();
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalled();
+    });
+
+    it('does NOT mark it stale when Mashov only wants a one-time code', async () => {
+      // `MfaRequired` is a code, not a password. Re-entering the stored
+      // password changes nothing, so prompting for it would be a dead end.
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockRejectedValue(rejection({ reason: 'MfaRequired' }));
+
+      await expect(
+        service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+      ).rejects.toThrow();
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalled();
+    });
+
+    it('does NOT mark it stale for a failure re-entering credentials cannot fix', async () => {
+      // `SchoolClosed`, `UserInactive` and the rest are real failures, and the
+      // sync will not work -- but the password is not the problem and the
+      // parent can do nothing about it. A stale-credential prompt would be a
+      // lie with a dead end behind it.
+      for (const reason of ['SchoolClosed', 'UserInactive', 'NoChildren', 'UserSuspended']) {
+        const { service, prisma } = makeHarness();
+        mockHttp.post.mockRejectedValue(rejection({ reason }));
+
+        await expect(
+          service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+        ).rejects.toThrow();
+
+        expect(prisma.householdConnection.update).not.toHaveBeenCalled();
+      }
+    });
+
+    it('does not re-stamp a connection already known to be stale', async () => {
+      // `getAuthHeadersForConnection` runs per request. Without this guard a
+      // stale connection writes a row on every single call -- an UPDATE storm
+      // that also walks `credentialStaleAt` forward forever, so "stale since"
+      // would always read as just now.
+      const { service, prisma } = makeHarness({
+        connection: { ...CONNECTION, credentialStaleAt: new Date('2026-11-20T08:00:00Z') },
+      });
+      mockHttp.post.mockRejectedValue(rejection({ 'content-type': 'application/json' }));
+
+      await expect(
+        service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+      ).rejects.toThrow();
+
+      expect(prisma.householdConnection.update).not.toHaveBeenCalled();
+    });
+
+    it('still surfaces the original login failure when the stamp itself fails', async () => {
+      // Bookkeeping must never replace the diagnosis. The caller logs the
+      // login error; a write failure here must not become the error it sees.
+      const { service, prisma } = makeHarness();
+      prisma.householdConnection.update.mockRejectedValue(new Error('db down'));
+      mockHttp.post.mockRejectedValue(rejection({ 'content-type': 'application/json' }));
+
+      await expect(
+        service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw'),
+      ).rejects.toThrow(/401/);
+    });
+
+    it('leaves a successful login alone', async () => {
+      const { service, prisma } = makeHarness();
+      mockHttp.post.mockResolvedValue(loginPayload([CHILD]));
+
+      await service.getAuthHeadersForConnection('conn-1', 1234, 2027, 'parent', 'pw');
+
+      for (const call of prisma.householdConnection.update.mock.calls) {
+        expect(call[0].data).not.toHaveProperty('credentialStaleAt');
+      }
+    });
+  });
+
   describe('ownership stamping', () => {
     it('grants the connection a view of every child in the roster', async () => {
       // The stamp says who to ASK upstream; the link says who may SEE. Two

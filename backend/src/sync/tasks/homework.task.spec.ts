@@ -59,7 +59,7 @@ describe('HomeworkTask', () => {
     householdConnection: { findMany: jest.Mock; findFirst: jest.Mock };
     homeworkItem: { upsert: jest.Mock };
   };
-  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
+  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock; closeItemRun: jest.Mock };
 
   beforeEach(() => {
     mashovClient = {
@@ -80,6 +80,7 @@ describe('HomeworkTask', () => {
     syncRunService = {
       openRun: jest.fn().mockResolvedValue(makeSyncRun('run-1')),
       closeRun: jest.fn().mockResolvedValue(undefined),
+      closeItemRun: jest.fn().mockResolvedValue(undefined),
     };
 
     task = new HomeworkTask(
@@ -130,10 +131,9 @@ describe('HomeworkTask', () => {
     await task.execute();
 
     expect(syncRunService.openRun).toHaveBeenCalledWith('homework:stu-1', undefined);
-    expect(syncRunService.closeRun).toHaveBeenCalledWith(
+    expect(syncRunService.closeItemRun).toHaveBeenCalledWith(
       'run-1',
-      'success',
-      expect.objectContaining({ fetchedCount: 1, updatedCount: 1 }),
+      expect.objectContaining({ fetchedCount: 1, updatedCount: 1, itemFailures: 0 }),
     );
   });
 

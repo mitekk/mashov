@@ -60,7 +60,7 @@ describe('TimetableTask', () => {
   let task: TimetableTask;
   let mockMashovClient: jest.Mocked<Pick<MashovHttpClient, 'getForConnection'>>;
   let mockPrisma: jest.Mocked<Pick<PrismaService, 'student' | 'timetableEntry' | 'householdConnection'>>;
-  let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun'>>;
+  let mockSyncRunService: jest.Mocked<Pick<SyncRunService, 'openRun' | 'closeRun' | 'closeItemRun'>>;
   let mockEncryptionService: jest.Mocked<Pick<EncryptionService, 'decrypt'>>;
 
   beforeEach(() => {
@@ -82,6 +82,7 @@ describe('TimetableTask', () => {
     mockSyncRunService = {
       openRun: jest.fn(),
       closeRun: jest.fn(),
+      closeItemRun: jest.fn(),
     };
     mockEncryptionService = {
       decrypt: jest.fn().mockReturnValue('decrypted-password'),
@@ -167,17 +168,22 @@ describe('TimetableTask', () => {
         }),
       }),
     );
-    expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-1', 'success', {
+    // `closeItemRun` derives the status: nothing failed, so it closes success.
+    expect(mockSyncRunService.closeItemRun).toHaveBeenCalledWith('run-1', {
       fetchedCount: 1,
       updatedCount: 1,
+      itemFailures: 0,
+      itemErrors: [],
     });
-    expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-2', 'success', {
+    expect(mockSyncRunService.closeItemRun).toHaveBeenCalledWith('run-2', {
       fetchedCount: 1,
       updatedCount: 1,
+      itemFailures: 0,
+      itemErrors: [],
     });
   });
 
-  it('continues after a single upsert failure and records failed status in summary', async () => {
+  it('continues after a single upsert failure and records it on the run, not just the summary', async () => {
     const student = { studentGuid: 'stu-1', fullName: 'Alice Cohen' };
     (mockPrisma.student.findMany as jest.Mock).mockResolvedValue([student]);
     mockSyncRunService.openRun.mockResolvedValue(makeSyncRun('run-1'));
@@ -199,9 +205,17 @@ describe('TimetableTask', () => {
       failedCount: 1,
     });
     expect(result.errorMessages).toEqual(['constraint error']);
-    expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-1', 'success', {
+    // The run itself carries the failure now. It used to close `'success'`
+    // with `updatedCount: 1` of `fetchedCount: 2`, and because
+    // `getLatestSuccessfulRuns` filters on `status = 'success'` that row
+    // satisfied the sync-on-read TTL gate -- so a student whose rows all
+    // failed to persist kept an empty section for the whole TTL while
+    // `source-health` reported `fresh`.
+    expect(mockSyncRunService.closeItemRun).toHaveBeenCalledWith('run-1', {
       fetchedCount: 2,
       updatedCount: 1,
+      itemFailures: 1,
+      itemErrors: [expect.stringContaining('constraint error')],
     });
   });
 
@@ -233,9 +247,11 @@ describe('TimetableTask', () => {
     expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-1', 'failed', {
       errorMessage: expect.stringContaining('network timeout'),
     });
-    expect(mockSyncRunService.closeRun).toHaveBeenCalledWith('run-2', 'success', {
+    expect(mockSyncRunService.closeItemRun).toHaveBeenCalledWith('run-2', {
       fetchedCount: 1,
       updatedCount: 1,
+      itemFailures: 0,
+      itemErrors: [],
     });
   });
 

@@ -75,7 +75,7 @@ describe('AchvasTask', () => {
     householdConnection: { findMany: jest.Mock };
     behaviorTypeReference: { upsert: jest.Mock };
   };
-  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
+  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock; closeItemRun: jest.Mock };
 
   beforeEach(() => {
     mashovClient = {
@@ -89,6 +89,7 @@ describe('AchvasTask', () => {
     syncRunService = {
       openRun: jest.fn().mockResolvedValue(makeSyncRun('run-1')),
       closeRun: jest.fn().mockResolvedValue(undefined),
+      closeItemRun: jest.fn().mockResolvedValue(undefined),
     };
 
     task = new AchvasTask(

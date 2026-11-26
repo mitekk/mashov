@@ -54,7 +54,7 @@ describe('SchoolActivitiesTask', () => {
     householdConnection: { findMany: jest.Mock };
     schoolActivity: { upsert: jest.Mock };
   };
-  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
+  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock; closeItemRun: jest.Mock };
 
   beforeEach(() => {
     mashovClient = {
@@ -68,6 +68,7 @@ describe('SchoolActivitiesTask', () => {
     syncRunService = {
       openRun: jest.fn().mockResolvedValue(makeSyncRun('run-1')),
       closeRun: jest.fn().mockResolvedValue(undefined),
+      closeItemRun: jest.fn().mockResolvedValue(undefined),
     };
 
     task = new SchoolActivitiesTask(
@@ -110,10 +111,9 @@ describe('SchoolActivitiesTask', () => {
       expect(upserted(1).endAnswerDate).toBeInstanceOf(Date);
       expect(result.status).toBe('success');
       expect(result.summary.failedCount).toBe(0);
-      expect(syncRunService.closeRun).toHaveBeenCalledWith(
+      expect(syncRunService.closeItemRun).toHaveBeenCalledWith(
         'run-1',
-        'success',
-        expect.objectContaining({ fetchedCount: 3, updatedCount: 3 }),
+        expect.objectContaining({ fetchedCount: 3, updatedCount: 3, itemFailures: 0 }),
       );
     });
 

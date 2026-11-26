@@ -68,7 +68,7 @@ describe('GradesTask', () => {
     householdConnection: { findMany: jest.Mock; findFirst: jest.Mock };
     gradeItem: { upsert: jest.Mock };
   };
-  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock };
+  let syncRunService: { openRun: jest.Mock; closeRun: jest.Mock; closeItemRun: jest.Mock };
 
   beforeEach(() => {
     mashovClient = {
@@ -89,6 +89,7 @@ describe('GradesTask', () => {
     syncRunService = {
       openRun: jest.fn().mockResolvedValue(makeSyncRun('run-1')),
       closeRun: jest.fn().mockResolvedValue(undefined),
+      closeItemRun: jest.fn().mockResolvedValue(undefined),
     };
 
     task = new GradesTask(
@@ -154,11 +155,37 @@ describe('GradesTask', () => {
     await task.execute();
 
     expect(syncRunService.openRun).toHaveBeenCalledWith('grades:stu-1', undefined);
-    expect(syncRunService.closeRun).toHaveBeenCalledWith(
+    expect(syncRunService.closeItemRun).toHaveBeenCalledWith(
       'run-1',
-      'success',
-      expect.objectContaining({ fetchedCount: 1, updatedCount: 1 }),
+      expect.objectContaining({ fetchedCount: 1, updatedCount: 1, itemFailures: 0 }),
     );
+  });
+
+  it('reports the run failed when the grades it fetched could not be persisted', async () => {
+    // THE REGRESSION, end to end through the task. The upsert loop catches a
+    // per-item error and carries on -- right, since one bad row must not cost
+    // the others -- but the run was then closed `'success'` regardless. So a
+    // child whose grades ALL failed to persist got a success run carrying
+    // `fetchedCount: 1, updatedCount: 0`, and `getLatestSuccessfulRuns`
+    // filters on `status = 'success'`, so that row satisfied the
+    // sync-on-read TTL gate: ציונים stayed empty for the full 6h while
+    // `source-health` reported `fresh`. Same end state as the per-student
+    // freshness bug (#60), reached by a different route.
+    prisma.gradeItem.upsert.mockRejectedValue(new Error('unique constraint violated'));
+
+    const result = await task.execute();
+
+    expect(syncRunService.closeItemRun).toHaveBeenCalledWith(
+      'run-1',
+      expect.objectContaining({
+        fetchedCount: 1,
+        updatedCount: 0,
+        itemFailures: 1,
+        itemErrors: [expect.stringContaining('unique constraint violated')],
+      }),
+    );
+    // The aggregate was always right; it is the persisted row that was not.
+    expect(result.status).toBe('failed');
   });
 
   describe('owner-first fan-out', () => {
