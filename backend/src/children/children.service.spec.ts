@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { Logger, NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChildrenService } from './children.service';
@@ -116,6 +116,10 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     subjectEnrollment: {
       count: overrides.subjectCount ?? jest.fn().mockResolvedValue(0),
       findMany: overrides.subjectFindMany ?? jest.fn().mockResolvedValue([]),
+      // `groupBy({ by: ['schoolYear'] })` serves double duty: it is the
+      // emptiness probe AND the source of `meta.yearsAvailable`, so the honest
+      // empty state costs no extra query.
+      groupBy: overrides.subjectGroupBy ?? jest.fn().mockResolvedValue([]),
       aggregate:
         overrides.subjectAggregate ??
         jest.fn().mockResolvedValue({ _sum: { weeklyHours: 0 } }),
@@ -126,9 +130,12 @@ function makeMockPrisma(overrides: Partial<Record<string, jest.Mock>>) {
     },
     messageBoardItem: {
       findMany: overrides.noticeFindMany ?? jest.fn().mockResolvedValue([]),
+      count: overrides.noticeCount ?? jest.fn().mockResolvedValue(0),
     },
     timetableEntry: {
       findMany: overrides.timetableFindMany ?? jest.fn().mockResolvedValue([]),
+      count: overrides.timetableCount ?? jest.fn().mockResolvedValue(0),
+      groupBy: overrides.timetableGroupBy ?? jest.fn().mockResolvedValue([]),
     },
     // Empty by default, which is the default-schedule path: no school has
     // served bell times until the (unverified) upstream endpoint answers.
@@ -1494,6 +1501,288 @@ describe('ChildrenService', () => {
         expect.objectContaining({
           connectionId: 'conn-1',
           variantKey: `grades:${TEST_GUID}`,
+        }),
+      );
+    });
+  });
+
+  /**
+   * An empty section must say WHY it is empty, and the emptiness probe must
+   * agree with the read it guards.
+   *
+   * The invariant: `localIsEmpty` is true exactly when the read it guards
+   * would return no rows. Without it, rows at a year the reader will not serve
+   * made the probe report "not empty" while the page rendered a bare
+   * "אין נתוני מקצועות" — and with a 7-day TTL nothing retried for a week.
+   */
+  describe('empty sections explain themselves', () => {
+    // This suite installs no global mock cleanup, so a `Logger` spy left
+    // behind here would be handed to every later test that spies on it, with
+    // this block's calls already recorded against it.
+    afterEach(() => jest.restoreAllMocks());
+
+    /** The `localIsEmpty` thunk the service handed to `ensureFresh`. */
+    function probeFrom(ensureFresh: jest.Mock, source: string): () => Promise<boolean> {
+      const call = ensureFresh.mock.calls.find(([name]) => name === source);
+      if (!call) throw new Error(`ensureFresh was never called for ${source}`);
+      return call[2].localIsEmpty;
+    }
+
+    it('reports subjects empty for the probe exactly when the read would return no rows', async () => {
+      // Rows exist, but only at 2026; the read serves 2027. The probe must
+      // agree with the read, or `ensureFresh` never waits and the section
+      // stays empty for the whole TTL.
+      const ensureFresh = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({
+          subjectGroupBy: jest.fn().mockResolvedValue([{ schoolYear: 2026 }]),
+          subjectFindMany: jest.fn().mockResolvedValue([]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(ensureFresh),
+      );
+
+      await service.getSubjects(TEST_GUID);
+
+      await expect(probeFrom(ensureFresh, 'groups')()).resolves.toBe(true);
+    });
+
+    it('reports the timetable empty for the freshen probe when rows exist only at a year it will not serve', async () => {
+      const ensureFresh = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({
+          timetableGroupBy: jest.fn().mockResolvedValue([{ schoolYear: 2026 }]),
+          timetableFindMany: jest.fn().mockResolvedValue([]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(ensureFresh),
+      );
+
+      await service.getTimetable(TEST_GUID);
+
+      await expect(probeFrom(ensureFresh, 'timetable')()).resolves.toBe(true);
+    });
+
+    it('reports subjects NOT empty when rows exist at the year the read serves', async () => {
+      const ensureFresh = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({
+          subjectGroupBy: jest.fn().mockResolvedValue([{ schoolYear: 2027 }]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(ensureFresh),
+      );
+
+      await service.getSubjects(TEST_GUID);
+
+      await expect(probeFrom(ensureFresh, 'groups')()).resolves.toBe(false);
+    });
+
+    it('treats a pre-migration row at year 0 as servable, not as a past year', async () => {
+      // `UNSCOPED_SCHOOL_YEAR` means "unknown", and `currentYearScope` admits
+      // it. A probe that called it a past year would report a half-migrated
+      // database empty and re-fetch the world.
+      const ensureFresh = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({
+          subjectGroupBy: jest.fn().mockResolvedValue([{ schoolYear: 0 }]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(ensureFresh),
+      );
+
+      await service.getSubjects(TEST_GUID);
+
+      await expect(probeFrom(ensureFresh, 'groups')()).resolves.toBe(false);
+    });
+
+    it('reports grades and notices empty for the probe under the same year scope as the read', async () => {
+      // Same defect at a 6h/12h TTL — the same bug waiting for a quieter month.
+      const ensureFresh = jest.fn();
+      const service = new ChildrenService(
+        makeMockPrisma({
+          gradeCount: jest.fn().mockResolvedValue(0),
+          noticeCount: jest.fn().mockResolvedValue(0),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(ensureFresh),
+      );
+      const prisma = (service as unknown as { prisma: jest.Mocked<PrismaService> }).prisma;
+
+      await service.getGrades(TEST_GUID);
+      await service.getNotices(TEST_GUID);
+      await probeFrom(ensureFresh, 'grades')();
+      await probeFrom(ensureFresh, 'message_board')();
+
+      expect(prisma.gradeItem.count).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+      expect(prisma.messageBoardItem.count).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ schoolYear: { in: [2027, 0] } }),
+        }),
+      );
+    });
+
+    it('returns the years a child has rows for alongside an empty current-year section', async () => {
+      const service = new ChildrenService(
+        makeMockPrisma({
+          subjectGroupBy: jest
+            .fn()
+            .mockResolvedValue([{ schoolYear: 2026 }, { schoolYear: 2025 }]),
+          subjectFindMany: jest.fn().mockResolvedValue([]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(),
+      );
+
+      const result = await service.getSubjects(TEST_GUID);
+
+      expect(result.data).toEqual([]);
+      expect(result.meta).toEqual({ schoolYear: 2027, yearsAvailable: [2025, 2026] });
+    });
+
+    it('reports no years available for a child with no rows anywhere', async () => {
+      // The genuinely-empty case, which must stay distinguishable from the
+      // not-published-yet one: the frontend picks its copy off this.
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(),
+      );
+
+      const result = await service.getTimetable(TEST_GUID);
+
+      expect(result.meta).toEqual({ schoolYear: 2027, yearsAvailable: [] });
+    });
+
+    it('logs the resolved year and the years present when it serves an empty section while rows exist', async () => {
+      // The one line that would have answered this ticket in a minute.
+      // Self-limiting: in a healthy database it never fires.
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      warn.mockClear(); // the suite has no global restore, so the spy is shared
+      const service = new ChildrenService(
+        makeMockPrisma({
+          subjectGroupBy: jest.fn().mockResolvedValue([{ schoolYear: 2026 }]),
+          subjectFindMany: jest.fn().mockResolvedValue([]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(),
+      );
+
+      await service.getSubjects(TEST_GUID);
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(TEST_GUID));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('2027'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('2026'));
+    });
+
+    it('stays quiet for a healthy child whose section has rows', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      warn.mockClear(); // the suite has no global restore, so the spy is shared
+      const service = new ChildrenService(
+        makeMockPrisma({
+          subjectGroupBy: jest.fn().mockResolvedValue([{ schoolYear: 2027 }]),
+          subjectFindMany: jest.fn().mockResolvedValue([
+            {
+              id: 'sub-1',
+              studentGuid: TEST_GUID,
+              groupId: 10,
+              groupName: 'Math Group',
+              subjectName: 'Math',
+              teachers: [],
+              inactiveTeachers: [],
+              weeklyHours: 4,
+              lessonsCount: 20,
+              updatedAt: new Date('2026-03-12T00:00:00Z'),
+            },
+          ]),
+        }),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(),
+      );
+
+      await service.getSubjects(TEST_GUID);
+
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('stays quiet for a child who has no rows at any year', async () => {
+      // Nothing anywhere is not a diagnosis — it is a new child, or a child
+      // whose school publishes nothing. Warning here would make the line noise.
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      warn.mockClear(); // the suite has no global restore, so the spy is shared
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(),
+      );
+
+      await service.getSubjects(TEST_GUID);
+
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('still scopes the read to the stamped connection year for a single-school child', async () => {
+      // The behaviour-preserving guarantee for healthy households.
+      const service = new ChildrenService(
+        makeMockPrisma({}),
+        makeMockSession(),
+        makeMockMashovClient(),
+        makeMockUserItemStateService(),
+        makeMockConfig(),
+        makeMockScope(),
+        ...readPathDeps(),
+      );
+      const prisma = (service as unknown as { prisma: jest.Mocked<PrismaService> }).prisma;
+
+      await service.getSubjects(TEST_GUID);
+
+      expect(prisma.subjectEnrollment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { studentGuid: TEST_GUID, schoolYear: { in: [2027, 0] } },
         }),
       );
     });

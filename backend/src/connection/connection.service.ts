@@ -488,6 +488,33 @@ export class ConnectionService {
           ]
         : []),
       this.prisma.syncRun.deleteMany({ where: { householdConnectionId: connection.id } }),
+      // The per-student freshness markers, which the stamp predicate above
+      // cannot reach.
+      //
+      // A success marker must never outlive the rows it describes. The deletes
+      // above remove this child's `timetable_entry` and `subject_enrollment`
+      // rows; the runs that recorded fetching them are keyed
+      // `${source}:${studentGuid}` and — on the scheduled path — carry a NULL
+      // `householdConnectionId`, so `WHERE householdConnectionId = <id>` never
+      // matched them. They survived the unlink, and because a connectionless
+      // run is deliberately admitted into every connection's snapshot
+      // (`SyncOnReadService.recordAttempt`), the parent's re-linked account
+      // read a week-old `groups:<guid>` success for rows that no longer
+      // existed. At a 7-day TTL the section stayed empty for seven days with
+      // source-health green throughout (production, 2026-11-26).
+      //
+      // Keyed on the guid suffix because the guid is the only part of the run
+      // key that outlives the connection it was fetched through. Skipped
+      // entirely on an empty guid list: `OR: []` matches NOTHING in Prisma,
+      // but relying on that to protect every other household's runs is far
+      // too subtle to leave implicit.
+      ...(studentGuids.length > 0
+        ? [
+            this.prisma.syncRun.deleteMany({
+              where: { OR: studentGuids.map((guid) => ({ source: { endsWith: `:${guid}` } })) },
+            }),
+          ]
+        : []),
       // This connection's views, including the ones on children that survive
       // because another connection still lists them. The connection row's own
       // delete would cascade these away, but doing it explicitly keeps the

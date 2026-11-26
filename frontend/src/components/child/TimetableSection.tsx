@@ -10,6 +10,7 @@ import {
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { TableSkeleton } from '@/components/ui/LoadingState';
+import { holdsOnlyEarlierYears } from './section-emptiness';
 import { TimetableDayAgenda } from './TimetableDayAgenda';
 import { TimetableWeekGrid } from './TimetableWeekGrid';
 import {
@@ -87,12 +88,25 @@ export function TimetableSection({ studentGuid }: TimetableSectionProps) {
           onRetry={() => void refetch()}
         />
       )}
-      {timetableData && timetableData.data.length === 0 && (
-        <EmptyState
-          icon={<CalendarDays className="w-8 h-8" />}
-          title="לא נמצא לוח שיעורים"
-        />
-      )}
+      {/* See `SubjectsSection`: "no grid" and "this year's grid is not out
+          yet" are different facts, and only one of them is ours to assert. */}
+      {timetableData &&
+        timetableData.data.length === 0 &&
+        !holdsOnlyEarlierYears(timetableData.meta) && (
+          <EmptyState
+            icon={<CalendarDays className="w-8 h-8" />}
+            title="לא נמצא לוח שיעורים"
+          />
+        )}
+      {timetableData &&
+        timetableData.data.length === 0 &&
+        holdsOnlyEarlierYears(timetableData.meta) && (
+          <EmptyState
+            icon={<CalendarDays className="w-8 h-8" />}
+            title="לוח השיעורים לשנה הנוכחית עוד לא פורסם"
+            subtitle="הלוח שיש לנו הוא משנת הלימודים הקודמת, ולכן לא מוצג כאן. הוא יתעדכן כשבית הספר יפרסם את הלוח החדש."
+          />
+        )}
       {gridModel && (
         <>
           <div className="md:hidden">

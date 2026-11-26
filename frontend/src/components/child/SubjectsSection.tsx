@@ -6,6 +6,7 @@ import { useChildSubjects } from '@/hooks/useChild';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { TableSkeleton } from '@/components/ui/LoadingState';
+import { holdsOnlyEarlierYears } from './section-emptiness';
 
 interface SubjectsSectionProps {
   studentGuid: string;
@@ -33,10 +34,23 @@ export function SubjectsSection({ studentGuid }: SubjectsSectionProps) {
           onRetry={() => void refetch()}
         />
       )}
-      {data && data.data.length === 0 && (
+      {/* Two different empty states, because they mean different things. A
+          child whose school has not published this year's class list yet is
+          not a child without classes, and telling them "אין נתוני מקצועות"
+          asserts something we do not know. We keep last year's rows in the
+          database but deliberately do not serve them as if they were current,
+          so saying so is the honest option. */}
+      {data && data.data.length === 0 && !holdsOnlyEarlierYears(data.meta) && (
         <EmptyState
           icon={<GraduationCap className="w-8 h-8" />}
           title="אין נתוני מקצועות"
+        />
+      )}
+      {data && data.data.length === 0 && holdsOnlyEarlierYears(data.meta) && (
+        <EmptyState
+          icon={<GraduationCap className="w-8 h-8" />}
+          title="המקצועות לשנה הנוכחית עוד לא פורסמו"
+          subtitle="הנתונים שיש לנו הם משנת הלימודים הקודמת, ולכן לא מוצגים כאן. הרשימה תתעדכן כשבית הספר יפרסם אותה."
         />
       )}
       {/* The card clips, so the table needs its own scroller: a long teacher

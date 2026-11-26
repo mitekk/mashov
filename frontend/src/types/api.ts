@@ -294,8 +294,23 @@ export interface SubjectEnrollment {
   updatedAt: string;
 }
 
+/**
+ * Which school year a per-child section was read at, and which years that
+ * child actually holds rows for.
+ *
+ * Lets an empty section say WHY it is empty: a child whose school has not
+ * published this year's data yet renders identically to a child who genuinely
+ * has none, and the two want different words. Optional throughout, because a
+ * backend that predates it simply omits it.
+ */
+export interface SectionYearMeta {
+  schoolYear: number;
+  yearsAvailable: number[];
+}
+
 export interface SubjectsResponse {
   data: SubjectEnrollment[];
+  meta?: SectionYearMeta;
 }
 
 // ─── Grades ────────────────────────────────────────────────────────────────
@@ -628,7 +643,11 @@ export interface TimetableSchedule {
  * `schedule` is optional on purpose: a backend older than the bell schedule
  * answers without it, and the grid still has to render.
  */
-export type TimetableResponse = { data: TimetableEntry[]; schedule?: TimetableSchedule };
+export type TimetableResponse = {
+  data: TimetableEntry[];
+  schedule?: TimetableSchedule;
+  meta?: SectionYearMeta;
+};
 
 // ─── Lesson Plans ───────────────────────────────────────────────────────────
 
