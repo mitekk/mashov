@@ -206,6 +206,68 @@ describe('SchoolActivitiesTask', () => {
     });
   });
 
+  /**
+   * Two schools in one household, which is the shape that put a permanent
+   * "הסנכרון נכשל" on `/more` while both schools were in fact answering.
+   *
+   * `userId` is the MERGED household (ADR-0031), so keying the run on it gave
+   * both connections one `sync_run.source`. `getAllSourceHealth` resolves its
+   * rows with `SELECT DISTINCT ON (source)`, so only the last iteration
+   * survived: school A's success was discarded and school B's transient 401
+   * became the household's entire school-activities health -- and because the
+   * discarded success ended two milliseconds BEFORE the failure opened,
+   * `errorIsSpent` could not retire the message either.
+   *
+   * The second half is the same bug in the stamp. `openRun` was handed
+   * `context.connectionId`, which is null on every `@Cron` and every
+   * unscoped `POST /sync/refresh`, so neither row carried the connection that
+   * produced it and the connection-scoped read could not tell them apart.
+   * `user-details.task.ts` and `mail-counts.task.ts` are the precedent: both
+   * iterate connections and both key and stamp on `conn.id`.
+   */
+  describe('two connections in one household', () => {
+    const SECOND = { ...CONNECTION, id: 'conn-2', schoolCode: 5678 };
+
+    beforeEach(() => {
+      prisma.householdConnection.findMany.mockResolvedValue([CONNECTION, SECOND]);
+    });
+
+    it('opens one run per connection, keyed and stamped on the connection', async () => {
+      await task.execute();
+
+      expect(syncRunService.openRun.mock.calls).toEqual([
+        ['schoolActivities:conn-1', 'conn-1'],
+        ['schoolActivities:conn-2', 'conn-2'],
+      ]);
+    });
+
+    it("does not let one school's failure land on the other school's run", async () => {
+      mashovClient.getForConnection
+        .mockResolvedValueOnce([makeActivity()])
+        .mockRejectedValueOnce(new Error('Request failed with status code 401'));
+      syncRunService.openRun
+        .mockResolvedValueOnce(makeSyncRun('run-1'))
+        .mockResolvedValueOnce(makeSyncRun('run-2'));
+
+      await task.execute();
+
+      // The healthy school closes its OWN run successfully...
+      expect(syncRunService.closeItemRun).toHaveBeenCalledWith(
+        'run-1',
+        expect.objectContaining({ fetchedCount: 1, itemFailures: 0 }),
+      );
+      // ...and the 401 is recorded against the other school's run alone.
+      expect(syncRunService.closeRun).toHaveBeenCalledWith('run-2', 'failed', {
+        errorMessage: 'Request failed with status code 401',
+      });
+      expect(syncRunService.closeRun).not.toHaveBeenCalledWith(
+        'run-1',
+        'failed',
+        expect.anything(),
+      );
+    });
+  });
+
   it('upserts a well-formed batch and reports success', async () => {
     const result = await task.execute();
 
