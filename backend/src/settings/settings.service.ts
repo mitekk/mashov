@@ -94,9 +94,10 @@ export class SettingsService {
    * The students a snapshot mentions *and* this connection may see.
    *
    * Only an exact `<perStudentSource>:<guid>` shape counts in the first half.
-   * `mail_counts:<connId>` and `schoolActivities:<userId>` carry a colon too but
-   * no student, and a `history:<year>:…` backfill key is not a live source at
-   * all.
+   * `mail_counts:<connId>` and `schoolActivities:<connId>` carry a colon too but
+   * no student -- nor do the legacy `schoolActivities:<userId>` rows written
+   * before that key was corrected, and a `history:<year>:…` backfill key is
+   * not a live source at all.
    *
    * The second half is T13 finding 4, and it is two-school-only. The snapshot
    * admits runs with no connection — the branch-wide NULL rule, deliberate and

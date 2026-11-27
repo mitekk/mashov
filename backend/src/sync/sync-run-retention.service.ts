@@ -15,11 +15,12 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  * A bare per-student run key, with the optional `history:<year>:` backfill
  * prefix that `context.sourcePrefix` puts in front of one.
  *
- * Deliberately exact. `mail_counts:<connId>` and `schoolActivities:<userId>`
- * carry a colon and no student; a `<source>:<guid>:<connId>` variant key is
- * not a bare per-student key either, which the single `[^:]+` segment is what
- * rejects. Mistaking any of them for a guid would delete live history on a
- * student lookup that was never going to match.
+ * Deliberately exact. `mail_counts:<connId>` and `schoolActivities:<connId>`
+ * carry a colon and no student -- as do the legacy `schoolActivities:<userId>`
+ * rows written before that key was corrected; a `<source>:<guid>:<connId>`
+ * variant key is not a bare per-student key either, which the single
+ * `[^:]+` segment is what rejects. Mistaking any of them for a guid would
+ * delete live history on a student lookup that was never going to match.
  */
 const PER_STUDENT_KEY = new RegExp(
   `^(?:history:\\d{4}:)?(?:${PER_STUDENT_SOURCES.join('|')}):([^:]+)$`,

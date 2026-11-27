@@ -103,8 +103,29 @@ export class SchoolActivitiesTask {
       const userId = conn.userId;
       if (!userId) continue;
 
-      const source = `${SchoolActivitiesTask.SOURCE}:${userId}`;
-      const syncRun = await this.syncRunService.openRun(source, context.connectionId);
+      // Keyed and stamped on the CONNECTION, not on `userId`, even though
+      // `userId` is what the rows this run writes are keyed on.
+      //
+      // `userId` is the merged household (ADR-0031), so a parent with two
+      // schools gave both iterations of this loop one `sync_run.source`.
+      // `getAllSourceHealth` resolves its rows with `SELECT DISTINCT ON
+      // (source)`, so only the last iteration survived: the healthy school's
+      // success was discarded and the other school's transient 401 became the
+      // household's entire school-activities health. `errorIsSpent` could not
+      // retire it either -- the discarded success ended two milliseconds
+      // before the failure opened -- so `/more` showed "הסנכרון נכשל" for a
+      // source that was answering at both schools, until the next full
+      // refresh happened to land. This task is not in the `login` set, so
+      // that is not a refresh any sign-in performs.
+      //
+      // The stamp was the same bug: `context.connectionId` is null on every
+      // `@Cron` and on an unscoped `POST /sync/refresh`, so neither row
+      // carried the connection that produced it and the connection-scoped
+      // read could not separate them even by stamp. `user-details.task.ts`
+      // and `mail-counts.task.ts` are the precedent -- both iterate
+      // connections, and both key and stamp on `conn.id`.
+      const source = `${SchoolActivitiesTask.SOURCE}:${conn.id}`;
+      const syncRun = await this.syncRunService.openRun(source, conn.id);
       let fetchedCount = 0;
       let upsertCount = 0;
       // Per-RUN, not the task-scoped `failedCount`: that one is shared
