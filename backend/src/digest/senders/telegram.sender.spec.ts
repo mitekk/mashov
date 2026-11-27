@@ -38,12 +38,170 @@ describe('TelegramSender', () => {
     expect(body.text).toBe('שלום');
   });
 
-  it('sends no parse_mode, so teacher free text cannot break the message', async () => {
-    // Telegram rejects a whole message whose text has unbalanced markup, and
-    // remarks routinely contain * _ - . and !
+  it('sends no parse_mode for a caller that did not say its text was HTML', async () => {
+    // The default is still flat. Only a caller that rendered HTML asks for it,
+    // which keeps every other send path exactly as safe as it was.
     await makeSender().send('chat-1', 'להגיש עד 5.11 — *חשוב*');
 
     expect(post.mock.calls[0][1].parse_mode).toBeUndefined();
+  });
+
+  it('sends parse_mode HTML when the caller rendered HTML', async () => {
+    // The reversal of the old "no parse_mode ever" rule. HTML reserves three
+    // characters -- & < > -- none of which appears in ordinary Hebrew, so the
+    // escape boundary is one a template can actually hold. See ADR-0047.
+    await makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' });
+
+    expect(post.mock.calls[0][1].parse_mode).toBe('HTML');
+    expect(post.mock.calls[0][1].text).toBe('<b>כותרת</b>');
+  });
+
+  it('sends the markup through untouched, because escaping is the template\'s boundary', async () => {
+    // The sender must not double-escape: the template already ran
+    // escapeTelegramHtml over every interpolated value, and a second pass here
+    // would show the parent &lt;b&gt; where it rendered a tag.
+    await makeSender().send('chat-1', '<b>ציון</b>: 90 &amp; עולה', { parseMode: 'HTML' });
+
+    expect(post.mock.calls[0][1].text).toBe('<b>ציון</b>: 90 &amp; עולה');
+  });
+
+  it('retries the same message as plain text when Telegram cannot parse the markup', async () => {
+    // A parse failure must never cost a parent the whole message. The retry is
+    // the belt the no-parse-mode rule used to be.
+    post.mockResolvedValueOnce({
+      data: { ok: false, description: "Bad Request: can't parse entities: Unclosed start tag" },
+    });
+
+    await makeSender().send('chat-1', '<b>כותרת</b>\nהערה & עוד', { parseMode: 'HTML' });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1][1].parse_mode).toBeUndefined();
+    expect(post.mock.calls[1][1].text).toBe('כותרת\nהערה & עוד');
+  });
+
+  it('retries flat when the parse complaint arrives as a rejected 400, which is how the Bot API answers', async () => {
+    // The shape that matters in production: the Bot API answers a parse error
+    // with HTTP 400, and axios REJECTS it. A retry that only looks at a
+    // resolved ok:false envelope never fires against the real API.
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 400'), {
+        isAxiosError: true,
+        response: {
+          status: 400,
+          data: { ok: false, description: "Bad Request: can't parse entities: Unclosed start tag" },
+        },
+      }),
+    );
+
+    await makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1][1].parse_mode).toBeUndefined();
+    expect(post.mock.calls[1][1].text).toBe('כותרת');
+  });
+
+  it('does not retry a rejection that carries no response, because Telegram never saw it', async () => {
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('socket hang up'), { isAxiosError: true, code: 'ECONNRESET' }),
+    );
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).rejects.toThrow(/ECONNRESET|socket hang up/);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a rejected 403 without retrying it, and keeps Telegram\'s own reason', async () => {
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 403'), {
+        isAxiosError: true,
+        response: { status: 403, data: { ok: false, description: 'Forbidden: bot was blocked by the user' } },
+      }),
+    );
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).rejects.toThrow(/Forbidden: bot was blocked by the user/);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a parse-failure retry that succeeds as a delivered message, not a failure', async () => {
+    // It must not throw: a throw releases the digest's claims, and the parent
+    // already has the text.
+    post.mockResolvedValueOnce({
+      data: { ok: false, description: 'Bad Request: unsupported start tag "3"' },
+    });
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('retries only once, and reports the retry\'s own refusal', async () => {
+    post.mockResolvedValue({
+      data: { ok: false, description: "Bad Request: can't parse entities: Unclosed start tag" },
+    });
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).rejects.toThrow(/parse entities/);
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a refusal that is not about the markup', async () => {
+    // Retrying a 429 or a blocked bot as plain text would report success for a
+    // message that never arrived, and the digest would confirm its claims.
+    post.mockResolvedValue({ data: { ok: false, description: 'Too Many Requests: retry after 30' } });
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).rejects.toThrow(/Too Many Requests/);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a transport failure as plain text', async () => {
+    post.mockRejectedValue(
+      Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+    );
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).rejects.toThrow(/ECONNRESET|socket hang up/);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends the message flat when TELEGRAM_HTML_ENABLED is off', async () => {
+    // The kill switch is a restart rather than a deploy: templates always emit
+    // HTML, and the sender is the one thing that decides whether it goes out
+    // as HTML or stripped.
+    await makeSender({ TELEGRAM_HTML_ENABLED: 'false' }).send(
+      'chat-1',
+      '<b>כותרת</b>\n<blockquote>הערה &amp; עוד</blockquote>',
+      { parseMode: 'HTML' },
+    );
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][1].parse_mode).toBeUndefined();
+    expect(post.mock.calls[0][1].text).toBe('כותרת\nהערה & עוד');
+  });
+
+  it('sends HTML when TELEGRAM_HTML_ENABLED is unset, so the default is on', async () => {
+    await makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' });
+
+    expect(post.mock.calls[0][1].parse_mode).toBe('HTML');
+  });
+
+  it('chunks the stripped text, not the markup, when HTML is off', async () => {
+    // Chunking the markup and stripping afterwards would produce parts cut to
+    // a budget the sent text no longer has.
+    const text = Array.from({ length: 900 }, (_, i) => `<b>שורה ${i}</b>`).join('\n');
+
+    await makeSender({ TELEGRAM_HTML_ENABLED: '0' }).send('chat-1', text, { parseMode: 'HTML' });
+
+    for (const [, body] of post.mock.calls) {
+      expect(String(body.text)).not.toContain('<b>');
+      expect(String(body.text).length).toBeLessThanOrEqual(4000);
+    }
   });
 
   it('bypasses the Mashov residential egress proxy explicitly', async () => {
@@ -104,7 +262,35 @@ describe('TelegramSender', () => {
     }
   });
 
-  it('sends no parse_mode and no link preview on any part of a split message', async () => {
+  it('sends parse_mode HTML and no link preview on every part of a split message', async () => {
+    // Every part has to carry the parse mode: a part sent flat would show the
+    // parent raw tags in the middle of a message whose first half rendered.
+    const text = Array.from({ length: 900 }, (_, i) => `<b>שורה</b> להגיש עד 5.11 ${i}`).join('\n');
+
+    await makeSender().send('chat-1', text, { parseMode: 'HTML' });
+
+    expect(post.mock.calls.length).toBeGreaterThan(1);
+    for (const [, body] of post.mock.calls) {
+      expect(body.parse_mode).toBe('HTML');
+      expect(body.disable_web_page_preview).toBe(true);
+    }
+  });
+
+  it('retries only the part Telegram could not parse, flat', async () => {
+    const text = Array.from({ length: 900 }, (_, i) => `<b>שורה</b> ${i}`).join('\n');
+    post.mockResolvedValueOnce({ data: { ok: true } });
+    post.mockResolvedValueOnce({
+      data: { ok: false, description: "Bad Request: can't parse entities" },
+    });
+
+    await makeSender().send('chat-1', text, { parseMode: 'HTML' });
+
+    const flat = post.mock.calls.filter(([, body]) => body.parse_mode === undefined);
+    expect(flat).toHaveLength(1);
+    expect(String(flat[0][1].text)).not.toContain('<b>');
+  });
+
+  it('sends no parse_mode on any part of a split message a caller did not mark as HTML', async () => {
     const text = Array.from({ length: 900 }, (_, i) => `להגיש עד 5.11 — *חשוב* ${i}`).join('\n');
 
     await makeSender().send('chat-1', text);

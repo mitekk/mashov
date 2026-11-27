@@ -253,6 +253,7 @@ it. A parent creates those rows themselves, in `עוד` → `עדכונים בט
 | `TELEGRAM_MEDIA_MAX_BYTES` | largest attachment forwarded into a chat; above it the parent gets a link instead | `20971520` |
 | `TELEGRAM_PHOTO_MAX_BYTES` | above this a jpeg/png is sent as a document — `sendPhoto` re-encodes and downscales | `5242880` |
 | `MEDIA_DOWNLOAD_TIMEOUT_MS` | per-download override of `MASHOV_TIMEOUT_MS` for attachment bytes | `45000` |
+| `TELEGRAM_HTML_ENABLED` | sends the digest and inbox messages with Telegram's HTML parse mode, so titles are bold and items link to the page they are about. Defaults **on**; `false` sends the same text flat, with the tags stripped and each link flattened to `label: url` so the escape hatch keeps the deep links | `true` |
 | `TELEGRAM_BOT_TOKEN` | **secret.** From BotFather. Also the master switch for the link wizard: without it the mint route answers `503` and the poller never starts | unset |
 | `TELEGRAM_LINK_CODE_TTL_MINUTES` | how long a one-time link code stays valid | `15` |
 | `TELEGRAM_POLL_TIMEOUT_SECONDS` | how long each `getUpdates` long poll waits | `30` |

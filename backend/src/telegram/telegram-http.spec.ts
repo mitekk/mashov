@@ -9,6 +9,7 @@ import {
   describeTelegramError,
   redact,
 } from './telegram-http';
+import { escapeTelegramHtml, stripTelegramHtml } from './telegram-html';
 
 jest.mock('axios');
 
@@ -183,6 +184,66 @@ describe('chunkTelegramText', () => {
     const rejoined = chunkTelegramText(text, 500).join('\n');
 
     expect(rejoined).toBe(text);
+  });
+});
+
+describe('chunkTelegramText and HTML parse mode', () => {
+  it('yields parseable parts when a line-free string has to be hard-cut', () => {
+    // The invariant templates hold -- every tag opens and closes inside one
+    // line, and no rendered line approaches the limit -- is what keeps the
+    // hard cut away from markup, because the blank-line and newline cuts are
+    // tag-safe and are the only ones a real message reaches. This is the case
+    // where that invariant has already failed: one line, over the limit, with
+    // nothing to cut on. The escaped free text still arrives whole.
+    const line = escapeTelegramHtml(`${'מילה & עוד <חשוב> '.repeat(900)}`);
+    expect(line).not.toContain('\n');
+    expect(line.length).toBeGreaterThan(TELEGRAM_CHUNK_LIMIT);
+
+    const parts = chunkTelegramText(line);
+
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      expect(part.length).toBeLessThanOrEqual(TELEGRAM_CHUNK_LIMIT);
+      // No part carries half a tag: there is no markup here to split, which is
+      // the whole reason escaping is a boundary rather than a hope.
+      expect(part).not.toContain('<');
+      expect(part).not.toContain('>');
+    }
+    // And the words still reach the parent.
+    expect(stripTelegramHtml(parts.join('')).replace(/\s+/g, ' ')).toContain('מילה & עוד <חשוב>');
+  });
+
+  it('never cuts inside an HTML entity', () => {
+    // The hard cut is the chunker's one tag-unsafe cut, and the templates'
+    // per-line clamping is what keeps it unreachable. This is the case where
+    // that invariant has already failed, so the cut must still not hand
+    // Telegram "&am" followed by "p;" -- an unparseable half-entity.
+    const limit = 40;
+    const text = `${'a'.repeat(limit - 2)}${'&amp;'.repeat(20)}`;
+
+    const parts = chunkTelegramText(text, limit);
+
+    expect(parts.join('')).toBe(text);
+    for (const part of parts) {
+      expect(part).not.toMatch(/&[a-z#0-9]{0,6}$/i);
+      expect(part).not.toMatch(/^[a-z#0-9]{0,6};/i);
+    }
+  });
+
+  it('keeps a tagged line whole when it stays inside the limit', () => {
+    // What a real rendered message looks like: one tagged line per item, each
+    // clamped, cut on newlines only.
+    const message = Array.from(
+      { length: 40 },
+      (_, i) => `<b>כותרת ${i}</b>\n• <a href="https://example.test/children/g/homework/${i}">דף 42</a>`,
+    ).join('\n\n');
+
+    for (const part of chunkTelegramText(message)) {
+      const opens = (part.match(/</g) ?? []).length;
+      const closes = (part.match(/>/g) ?? []).length;
+      expect(opens).toBe(closes);
+      expect(part.endsWith('<')).toBe(false);
+    }
   });
 });
 

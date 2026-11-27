@@ -117,6 +117,33 @@ export interface DigestHomeworkFact {
   estimatedDueDate?: Date | null;
 }
 
+/**
+ * One graded assessment as the parent will see it.
+ *
+ * `teacherName` is on the row and is deliberately NOT here. It is the only
+ * field of a grade that names a person, the message has no use for it -- a
+ * parent knows who teaches the subject -- and keeping it off this shape is
+ * what keeps it out of the prompt by construction rather than by discipline.
+ *
+ * Two dates on the row, and this is the later-surprising one: `eventDate` is
+ * when the test was sat, `enteredAt` when the teacher keyed the mark in, and
+ * they can be weeks apart. The sentence prints `eventDate`, because a parent
+ * reading "92" today needs to know which test it was; the checker will care
+ * about `enteredAt`, since that is when the grade became news.
+ */
+export interface DigestGradeFact {
+  /** GradeItem.id. */
+  id: string;
+  subjectName: string;
+  /** The assessment's own name, e.g. "מבחן בשברים". May be blank upstream. */
+  gradingEvent: string;
+  /** Its category, e.g. "מבחן" -- the fallback when the event has no name. */
+  gradeType: string;
+  grade: number;
+  /** When the assessment was sat, NOT when the mark was entered. */
+  eventDate: Date;
+}
+
 /** Everything the summarizer and the template are allowed to see for one child. */
 export type DigestGender = 'male' | 'female';
 
@@ -141,31 +168,69 @@ export interface DigestPayload {
   releases: DigestReleaseFact[];
   activities: DigestActivityFact[];
   board: DigestBoardFact[];
+  /**
+   * New grades. Rendered by the template today; nothing fills this list yet --
+   * the checker and the collector do not look at `GradeItem` at all, so it is
+   * always empty until that is wired.
+   */
+  grades: DigestGradeFact[];
 }
 
 /**
- * The prose the summarizer produces. The template owns every structural
- * decision -- section headers, item bullets, the estimate label -- so the LLM
- * writes sentences and never decides what is in the report.
+ * The sections a report can have, in the order it renders them.
+ *
+ * One id per rendered section rather than per payload list, because the
+ * behaviour list feeds two of them: a sentence that blends praise into an
+ * absence lands under a heading that fits neither.
  */
-export interface DigestLines {
+export const DIGEST_SECTION_IDS = [
+  'behavior',
+  'positive',
+  'grades',
+  'homeworkNew',
+  'release',
+  'activity',
+  'board',
+  'dueTomorrow',
+] as const;
+
+export type DigestSectionId = (typeof DIGEST_SECTION_IDS)[number];
+
+/**
+ * The prose the summarizer produces.
+ *
+ * It used to be one paragraph per section, and that is what read as
+ * unpolished. The prompt asked for warm conversational prose AND a complete
+ * record of every subject, every exact assignment text, every time and date,
+ * in one sentence -- two incompatible jobs, which the model did by cramming.
+ *
+ * So the grain changed: the model writes ONE SHORT SENTENCE PER ITEM, naming
+ * that item's own details and nothing else, and the template lays the lines
+ * out as bullets under a heading. The section intro is optional and only earns
+ * its place when it says something the item lines do not. See ADR-0047.
+ *
+ * This is not a return to the item bullets ADR-0026 removed. Those were the
+ * raw record stapled underneath the prose; these ARE the prose, one line per
+ * thing that happened.
+ *
+ * The template still owns every structural decision -- which sections exist,
+ * the emoji markers, the `צפי הגשה` label, the unexcused marker, the whole
+ * consent section -- so the model never decides what is in the report.
+ */
+export interface DigestProse {
+  /** One line summarising the day. No date, no name. */
   headline: string;
-  /** Behaviour events that need the parent's attention -- everything but praise. */
-  behaviorLine: string;
+  /** Optional, and often absent: `''` means "the item lines said it already". */
+  intros: Partial<Record<DigestSectionId, string>>;
   /**
-   * Praise, in its own line and its own section.
+   * One line per item, keyed by `digestItemRef(section, id)`.
    *
-   * One behaviour line meant "נרשם חיזוק חיובי" and "נרשם חיסור" were written
-   * as one sentence, under a heading that fit neither. `classification` has
-   * always been stored; it was simply never rendered.
+   * Keyed per section rather than by bare item id because one homework row is
+   * reported twice on the day it is both newly assigned and estimated-due, and
+   * a bare id would make the two sections share one sentence -- a
+   * "due tomorrow" line showing up under "new homework".
    */
-  positiveLine: string;
-  /** Message-board notices seen for the first time in the last few days. */
-  boardLine: string;
-  homeworkLine: string;
-  dueTomorrowLine: string;
-  releaseLine: string;
-  activityLine: string;
+  itemLines: Record<string, string>;
 }
 
 /** Per-candidate deadline the LLM claims to have found written in the text. */
@@ -178,8 +243,27 @@ export interface DigestDeadlineResolution {
 
 /** What the summarizer returns: prose plus the deadlines it read out of the text. */
 export interface DigestSummary {
-  lines: DigestLines;
+  prose: DigestProse;
+  /**
+   * Derived from the model's `items` rather than asked for separately.
+   *
+   * It used to be its own top-level array keyed by the same refs as the lines,
+   * which meant the model answered the same question in two places and could
+   * answer it differently in each.
+   */
   deadlineResolutions: DigestDeadlineResolution[];
+  /**
+   * Every explicit date the model read out of an assignment text, keyed by the
+   * NAMESPACED ref (`digestItemRef(section, id)`) and valued as `YYYY-MM-DD`.
+   *
+   * Deliberately separate from `deadlineResolutions`, which strips the
+   * namespace to the bare homework id for the deferral ledger and therefore
+   * has to exclude `homeworkNew` entirely -- two refs for one row would
+   * collide there. The template's submission summary needs the opposite: every
+   * homework item, each told apart from the other, so the TL;DR can say when a
+   * newly assigned thing is due. Empty whenever the model was not used.
+   */
+  explicitDueDates: Record<string, string>;
   /** False when the fallback renderer produced the prose. */
   usedLlm: boolean;
 }

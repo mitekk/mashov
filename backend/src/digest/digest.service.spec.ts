@@ -56,6 +56,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     releases: [],
     activities: [],
     board: [],
+    grades: [],
     ...overrides,
   };
 }
@@ -79,6 +80,7 @@ interface HarnessOptions {
   syncRuns?: { source: string; endedAt: Date; startedAt: Date }[];
   recipients?: { channel: string; address: string; enabled: boolean; userId?: string }[];
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
+  explicitDueDates?: Record<string, string>;
   dueTomorrowLine?: string;
   sendImpl?: jest.Mock;
   publicBaseUrl?: string;
@@ -201,13 +203,17 @@ function makeHarness(options: HarnessOptions = {}) {
 
   const summarizer = {
     summarize: jest.fn().mockResolvedValue({
-      lines: {
+      prose: {
         headline: 'כותרת',
-        behaviorLine: 'התנהגות',
-        homeworkLine: '',
-        dueTomorrowLine: options.dueTomorrowLine ?? 'מחר',
+        intros: {},
+        itemLines: {
+          'behavior:beh-1': 'התנהגות',
+          'dueTomorrow:hw-1': options.dueTomorrowLine ?? 'מחר',
+          'dueTomorrow:hw-2': options.dueTomorrowLine ?? 'מחר',
+        },
       },
       deadlineResolutions: options.deadlineResolutions ?? [],
+      explicitDueDates: options.explicitDueDates ?? {},
       usedLlm: true,
     }),
   } as unknown as DigestSummarizerService;
@@ -335,7 +341,69 @@ describe('DigestService.runAll', () => {
 
     await harness.service.runAll({ now: NOW });
 
-    expect(harness.send.mock.calls[0][1]).toContain('https://mashov.mitya.dev/home');
+    // Not /home any more: each ITEM anchors the page it is about, so the
+    // parent taps straight through to the note. The section heading anchors
+    // nothing -- it could only point at a list. See ADR-0047.
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('https://mashov.mitya.dev/children/stu-1/behavior/beh-1');
+    expect(sent).not.toContain('?section=behavior');
+    expect(sent).not.toMatch(/\/home(?!work)/);
+  });
+
+  it("puts the model's reading of a stated deadline into the message's TL;DR", async () => {
+    // The explicit dates have to reach the template, not only the deferral
+    // ledger: the submission summary is the parent's answer to "by when".
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', null)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-11-18' }],
+      explicitDueDates: { 'dueTomorrow:hw-1': '2026-11-18' },
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('📌 להגשה:');
+    expect(sent).toContain('עד 18/11/2026');
+    expect(sent).not.toContain('צפי להגשה 18/11/2026');
+  });
+
+  it('treats a date that is not a real day as no answer, not as the day it rolls over to', async () => {
+    // `2026-02-30` used to be built with `Date.UTC`, which rolls it silently
+    // forward to 02/03 -- so the deferral ledger learned a date the message
+    // never showed, because the template's own parser rejects the same string.
+    // Two parsers disagreeing about one value is how an item gets buried.
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', estimatedDueDate: TOMORROW },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', TOMORROW)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-02-30' }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    // The estimate stands, so the item is still in the message.
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('צפי הגשה');
+  });
+
+  it('labels the same date as an estimate when the model read none from the text', async () => {
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', estimatedDueDate: TOMORROW },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', TOMORROW)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: null }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('צפי להגשה');
+    expect(sent).not.toMatch(/עד \d{2}\//);
   });
 
   it('sends no link when PUBLIC_BASE_URL is unset', async () => {
@@ -837,8 +905,9 @@ describe('DigestService.runAll', () => {
   });
 
   it('does not let the model describe items that narrowing removed', async () => {
-    // The prose is written before narrowing. If narrowing drops an item, the
-    // model's sentence can promise a deadline the bullets do not list.
+    // The prose is written before narrowing, so a line about an item narrowing
+    // drops must not reach the parent -- and neither may the headline or the
+    // section intro, both of which were written about the un-narrowed set.
     const harness = makeHarness({
       candidates: [
         { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-a' },
@@ -853,16 +922,35 @@ describe('DigestService.runAll', () => {
         { ref: 'hw-1', explicitDueDate: '2026-11-18' },
         { ref: 'hw-2', explicitDueDate: '2026-11-19' },
       ],
-      dueTomorrowLine: 'שתי מטלות להגשה מחר, בהיסטוריה ובגאוגרפיה',
+    });
+    (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
+      prose: {
+        headline: 'שתי מטלות להגשה מחר',
+        intros: { dueTomorrow: 'שתיהן באותו יום, בהיסטוריה ובגאוגרפיה' },
+        itemLines: {
+          'dueTomorrow:hw-1': 'בהיסטוריה יש להגיש מחר',
+          'dueTomorrow:hw-2': 'בגאוגרפיה יש להגיש מחר',
+        },
+      },
+      deadlineResolutions: [
+        { ref: 'hw-1', explicitDueDate: '2026-11-18' },
+        { ref: 'hw-2', explicitDueDate: '2026-11-19' },
+      ],
+      usedLlm: true,
     });
 
     await harness.service.runAll({ now: NOW });
 
-    // The model described two items in two subjects; only one survived, so its
-    // sentence must not be the one that reaches the parent.
-    const sent = harness.send.mock.calls[0][1];
-    expect(sent).not.toContain('היסטוריה');
+    const sent = harness.send.mock.calls[0][1] as string;
+    // hw-2 resolved to the day after tomorrow and left the section, so its
+    // line goes with it...
+    expect(sent).not.toContain('בגאוגרפיה');
+    // ...and so do the two things written about the pair.
     expect(sent).not.toContain('שתי מטלות');
+    expect(sent).not.toContain('שתיהן באותו יום');
+    // What survived keeps its own sentence, which is the point of the finer
+    // grain: one removed item no longer costs the section its prose.
+    expect(sent).toContain('בהיסטוריה יש להגיש מחר');
   });
 
   it('flags a quiet day that is really a stalled sync', async () => {
@@ -990,11 +1078,10 @@ describe('DigestService.runAll', () => {
       deadlineResolutions: [{ ref: 'hw-2', explicitDueDate: '2026-11-25' }],
     });
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
-      lines: {
+      prose: {
         headline: 'עדכון יומי: שתי מטלות למחר',
-        behaviorLine: '',
-        homeworkLine: '',
-        dueTomorrowLine: 'שתי מטלות',
+        intros: { dueTomorrow: 'שתי מטלות למחר' },
+        itemLines: { 'dueTomorrow:hw-1': 'מטלה אחת', 'dueTomorrow:hw-2': 'מטלה שנייה' },
       },
       deadlineResolutions: [{ ref: 'hw-2', explicitDueDate: '2026-11-25' }],
       usedLlm: true,
@@ -1003,8 +1090,13 @@ describe('DigestService.runAll', () => {
     await harness.service.runAll({ now: NOW });
 
     const sent = harness.send.mock.calls[0][1] as string;
-    // The model counted two because it was given two; only one survived.
+    // The model counted two because it was given two; only one survived -- so
+    // both the headline and the section's own intro are dropped, and the
+    // surviving item keeps its own line.
     expect(sent).not.toContain('שתי מטלות');
+    expect(sent).not.toContain('שתי מטלות למחר');
+    expect(sent).toContain('מטלה אחת');
+    expect(sent).not.toContain('מטלה שנייה');
   });
 
   it('runs only the children the caller has a recipient row for', async () => {
@@ -1021,13 +1113,52 @@ describe('DigestService.runAll', () => {
     // and the ledger would still mark it reported, so it would never come back.
     const harness = makeHarness();
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
-      lines: {
+      prose: { headline: 'עדכון', intros: {}, itemLines: { 'behavior:beh-1': '   ' } },
+      deadlineResolutions: [],
+      usedLlm: true,
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    // The deterministic sentence for the seeded behavior event. Per ITEM now:
+    // a line the model skipped costs one bullet, not the section.
+    expect(sent).toContain('איחור');
+    expect(sent).toContain('מתמטיקה');
+  });
+
+  it('fills in only the item the model skipped, keeping the lines it did write', async () => {
+    const harness = makeHarness({
+      payload: makePayload({
+        behavior: [
+          {
+            id: 'beh-1',
+            achvaName: 'איחור',
+            classification: 'attention',
+            justifiable: true,
+            subject: 'מתמטיקה',
+            remark: null,
+            lessonDate: TODAY,
+            eventAt: NOW,
+          },
+          {
+            id: 'beh-2',
+            achvaName: 'הפרעה',
+            classification: 'attention',
+            justifiable: true,
+            subject: 'אנגלית',
+            remark: null,
+            lessonDate: TODAY,
+            eventAt: NOW,
+          },
+        ],
+      }),
+    });
+    (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
+      prose: {
         headline: 'עדכון',
-        behaviorLine: '   ',
-        homeworkLine: '',
-        dueTomorrowLine: '',
-        releaseLine: '',
-        activityLine: '',
+        intros: {},
+        itemLines: { 'behavior:beh-1': 'אחר בעשר דקות', 'behavior:beh-2': '' },
       },
       deadlineResolutions: [],
       usedLlm: true,
@@ -1036,9 +1167,29 @@ describe('DigestService.runAll', () => {
     await harness.service.runAll({ now: NOW });
 
     const sent = harness.send.mock.calls[0][1] as string;
-    // The deterministic sentence for the seeded behavior event.
-    expect(sent).toContain('איחור');
-    expect(sent).toContain('מתמטיקה');
+    expect(sent).toContain('אחר בעשר דקות');
+    // The second one falls back to its own deterministic sentence.
+    expect(sent).toContain('הפרעה');
+    expect(sent).toContain('אנגלית');
+  });
+
+  it('drops a line the model wrote for a ref no item has', async () => {
+    // The model writes from the un-narrowed payload, so it can describe an
+    // item narrowing removed -- and it can invent a ref outright.
+    const harness = makeHarness();
+    (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
+      prose: {
+        headline: 'עדכון',
+        intros: {},
+        itemLines: { 'behavior:beh-1': 'איחור קטן', 'behavior:beh-999': 'המצאתי אירוע' },
+      },
+      deadlineResolutions: [],
+      usedLlm: true,
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1] as string).not.toContain('המצאתי');
   });
 
   it('keeps the model prose for the sections it did write', async () => {
@@ -1335,13 +1486,10 @@ describe('DigestService.runAll', () => {
       }),
     });
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
-      lines: {
+      prose: {
         headline: 'כותרת',
-        behaviorLine: '',
-        homeworkLine: '',
-        dueTomorrowLine: '',
-        releaseLine: '',
-        activityLine: 'יש אישור שממתין, אבל אין לי מושג איזה',
+        intros: { activity: 'יש אישור שממתין, אבל אין לי מושג איזה' },
+        itemLines: { 'activity:7': 'אין לי מושג איזה טופס' },
       },
       deadlineResolutions: [],
       usedLlm: true,
@@ -1351,7 +1499,9 @@ describe('DigestService.runAll', () => {
 
     const sent = harness.send.mock.calls[0][1] as string;
     expect(sent).not.toContain('אין לי מושג');
-    expect(sent).toContain('ממתינים לתשובתך');
+    // The template's own line for the form it actually has (ADR-0035).
+    expect(sent).toContain('אישורים שממתינים לך');
+    expect(sent).toContain('טיול שנתי לגליל');
   });
 
   it('spends one model call on a child two parents subscribe to', async () => {
@@ -1527,7 +1677,7 @@ describe('DigestService.runAll', () => {
   it('marks the delivery as not having used the model when it fell back', async () => {
     const harness = makeHarness();
     (harness.summarizer.summarize as jest.Mock).mockResolvedValue({
-      lines: { headline: 'ח', behaviorLine: 'ח', homeworkLine: '', dueTomorrowLine: '' },
+      prose: { headline: 'ח', intros: {}, itemLines: {} },
       deadlineResolutions: [],
       usedLlm: false,
     });
@@ -1581,10 +1731,132 @@ describe('DigestService media', () => {
           itemId: 'hw-1',
           fileId: 'f1',
           fileName: 'דף עבודה.pdf',
-          caption: 'דף עבודה.pdf',
+          caption: '📎 דף עבודה.pdf',
+          captionParseMode: 'HTML',
         },
       ],
       expect.any(Number),
+    );
+  });
+
+  it('captions a file with the item it came from and a link to it', async () => {
+    // A bare filename arrived detached from the thing it belongs to. The
+    // caption now says which assignment it hangs off and opens it.
+    const harness = makeHarness({
+      attachments: [FILE],
+      publicBaseUrl: 'https://mashov.mitya.dev',
+      payload: makePayload({
+        homeworkNew: [
+          {
+            id: 'hw-1',
+            subjectName: 'חשבון',
+            homeworkText: 'לפתור עמוד 42',
+            remark: null,
+            lessonDate: TODAY,
+            groupId: 55,
+          },
+        ],
+      }),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const caption = harness.mediaFetch.mock.calls[0][1][0].caption as string;
+    expect(caption).toContain('📎');
+    expect(caption).toContain(
+      '<a href="https://mashov.mitya.dev/children/stu-1/homework/hw-1">דף עבודה.pdf</a>',
+    );
+    expect(caption).toContain('חשבון');
+  });
+
+  it('captions a behaviour attachment with the event type it came from', async () => {
+    const harness = makeHarness({
+      attachments: [{ itemType: 'behavior' as const, itemId: 'beh-1', fileId: 'f2', fileName: 'סריקה.pdf' }],
+      publicBaseUrl: 'https://mashov.mitya.dev',
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const caption = harness.mediaFetch.mock.calls[0][1][0].caption as string;
+    expect(caption).toContain('https://mashov.mitya.dev/children/stu-1/behavior/beh-1');
+    // The seeded behaviour event's achvaName.
+    expect(caption).toContain('איחור');
+  });
+
+  it('escapes a hostile filename in a caption', async () => {
+    const harness = makeHarness({
+      attachments: [{ ...FILE, fileName: '<b>x</b> & y.pdf' }],
+      publicBaseUrl: 'https://mashov.mitya.dev',
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const caption = harness.mediaFetch.mock.calls[0][1][0].caption as string;
+    expect(caption).toContain('&lt;b&gt;x&lt;/b&gt; &amp; y.pdf');
+  });
+
+  it('keeps a caption built from a huge filename parseable and inside the ceiling', async () => {
+    // truncateCaption slices at 1000 characters, which on an HTML caption can
+    // land inside href="..." or between <a> and </a> -- a guaranteed parse
+    // failure whose retry re-uploads the whole buffer, up to 20 MB.
+    const harness = makeHarness({
+      attachments: [{ ...FILE, fileName: `${'א'.repeat(5000)}.pdf` }],
+      publicBaseUrl: 'https://mashov.mitya.dev',
+      payload: makePayload({
+        homeworkNew: [
+          {
+            id: 'hw-1',
+            subjectName: 'ב'.repeat(3000),
+            homeworkText: 'לפתור עמוד 42',
+            remark: null,
+            lessonDate: TODAY,
+            groupId: 55,
+          },
+        ],
+      }),
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const caption = harness.mediaFetch.mock.calls[0][1][0].caption as string;
+    expect(caption.length).toBeLessThanOrEqual(1024);
+    // Balanced, and not cut mid-tag or mid-entity.
+    expect((caption.match(/<a /g) ?? []).length).toBe((caption.match(/<\/a>/g) ?? []).length);
+    expect(caption).toContain('</a>');
+    expect(caption).not.toMatch(/&[a-z]{0,4}$/);
+    expect(caption).not.toMatch(/<[^>]*$/);
+  });
+
+  it('captions a file with no link when PUBLIC_BASE_URL is unset', async () => {
+    const harness = makeHarness({ attachments: [FILE] });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.mediaFetch.mock.calls[0][1][0].caption).not.toContain('<a href');
+  });
+
+  it('links a file too large to send to the item that holds it', async () => {
+    const harness = makeHarness({
+      attachments: [FILE],
+      publicBaseUrl: 'https://mashov.mitya.dev',
+      media: {
+        fetch: jest.fn().mockResolvedValue({
+          items: [
+            {
+              ref: { kind: 'homework', itemId: 'hw-1', fileName: 'דף עבודה.pdf' },
+              tooLarge: true,
+              note: 'too large',
+            },
+          ],
+          remainingBytes: 0,
+        }),
+      },
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    expect(harness.send.mock.calls[0][1] as string).toContain(
+      '<a href="https://mashov.mitya.dev/children/stu-1/homework/hw-1">דף עבודה.pdf</a>',
     );
   });
 
@@ -1593,7 +1865,13 @@ describe('DigestService media', () => {
       attachments: [FILE],
       media: {
         fetch: jest.fn().mockResolvedValue({
-          items: [{ ref: { fileName: 'דף עבודה.pdf' }, tooLarge: true, note: 'too large' }],
+          items: [
+            {
+              ref: { kind: 'homework', itemId: 'hw-1', fileName: 'דף עבודה.pdf' },
+              tooLarge: true,
+              note: 'too large',
+            },
+          ],
           remainingBytes: 0,
         }),
       },

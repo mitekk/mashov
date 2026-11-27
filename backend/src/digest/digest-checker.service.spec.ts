@@ -255,6 +255,34 @@ describe('DigestCheckerService.check', () => {
     });
   });
 
+  it('dates newly assigned homework by its next lesson, so the report can say when it is expected', async () => {
+    // "By when" is the question the message exists to answer, and for a fresh
+    // assignment the only available answer is the timetable: Mashov has no
+    // due-date field. The report labels it as an estimate (ADR-0027).
+    const result = await check(makeHarness({ homeworkToday: [homeworkRow()], timetableDays: [4] }));
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      itemType: 'homework_new',
+      itemId: 'hw-1',
+      estimatedDueDate: TOMORROW,
+    });
+  });
+
+  it('resolves one group\'s next lesson once, however many of its rows are candidates', async () => {
+    // Both homework passes ask the same question of the same group; a lookback
+    // of two weeks makes that many rows. One query per group per run.
+    const harness = makeHarness({
+      homeworkToday: [homeworkRow({ id: 'hw-a' }), homeworkRow({ id: 'hw-b' })],
+      homeworkLookback: [homeworkRow({ id: 'hw-a' }), homeworkRow({ id: 'hw-b' })],
+      timetableDays: [4],
+    });
+
+    await check(harness);
+
+    expect((harness.prisma.timetableEntry.findMany as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
   it('finds homework whose group next meets tomorrow', async () => {
     const harness = makeHarness({
       homeworkLookback: [homeworkRow({ id: 'hw-old', lessonDate: new Date('2026-11-10T00:00:00Z') })],

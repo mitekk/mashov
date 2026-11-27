@@ -17,7 +17,10 @@ import { PrismaClient } from '../../backend/node_modules/@prisma/client';
 import { InboxNotifyService } from '../../backend/src/inbox-notify/inbox-notify.service';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { ConfigService } from '../../backend/node_modules/@nestjs/config';
-import type { DigestSender } from '../../backend/src/digest/senders/digest-sender.interface';
+import type {
+  DigestSender,
+  TelegramSendOptions,
+} from '../../backend/src/digest/senders/digest-sender.interface';
 
 const USER_ID = 'inbox-notify-user-1';
 const MASHOV_USER_ID = 'inbox-notify-mashov-1';
@@ -38,10 +41,10 @@ const AN_HOUR_AGO = new Date('2026-11-17T12:00:00Z');
 /** Captures what would have been delivered, so assertions can read the text. */
 class CapturingSender implements DigestSender {
   readonly channel = 'telegram';
-  readonly sent: { address: string; text: string }[] = [];
+  readonly sent: { address: string; text: string; options?: TelegramSendOptions }[] = [];
 
-  async send(address: string, text: string): Promise<void> {
-    this.sent.push({ address, text });
+  async send(address: string, text: string, options?: TelegramSendOptions): Promise<void> {
+    this.sent.push({ address, text, options });
   }
 }
 
@@ -183,7 +186,16 @@ describe('Inbox notifications', () => {
     expect(sender.sent).toHaveLength(1);
     expect(sender.sent[0].text).toContain('דואר חדש מבית הספר');
     expect(sender.sent[0].text).toContain('נבקש להביא בגדי ספורט.');
-    expect(sender.sent[0].text).toContain(`https://mashov.example/inbox/${CONVERSATION_ID}`);
+    // The URL is an anchor's href, not a bare line: the link is anchored on
+    // words the parent reads. See ADR-0047.
+    expect(sender.sent[0].text).toContain(
+      `<a href="https://mashov.example/inbox/${CONVERSATION_ID}">לפתוח את ההודעה</a>`,
+    );
+    expect(sender.sent[0].options).toEqual({ parseMode: 'HTML' });
+    // Structure, and still not one word of model prose: the school wrote the
+    // mail, and their words are quoted rather than summarized.
+    expect(sender.sent[0].text).toContain('📬 <b>דואר חדש מבית הספר</b>');
+    expect(sender.sent[0].text).toContain('<blockquote>');
 
     const ledger = await prisma.mailNotifiedMessage.findMany({ where: { userId: USER_ID } });
     expect(ledger).toHaveLength(1);
@@ -213,7 +225,7 @@ describe('Inbox notifications', () => {
     await makeService(sender).notifyAll({ now: NOW });
 
     expect(sender.sent).toHaveLength(1);
-    expect(sender.sent[0].text).toContain('אסיפת הורים');
+    expect(sender.sent[0].text).toContain('<b>אסיפת הורים</b>');
     expect(await prisma.mailNotifiedMessage.count({ where: { userId: USER_ID } })).toBe(2);
   });
 

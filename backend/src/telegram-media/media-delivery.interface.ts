@@ -26,6 +26,8 @@ export interface MediaAttachmentRef {
   fileName: string;
   /** One line, already composed by the caller. Telegram caps it at 1024. */
   caption?: string;
+  /** Set when that caption is Telegram HTML, already escaped by the caller. */
+  captionParseMode?: 'HTML';
 }
 
 /**

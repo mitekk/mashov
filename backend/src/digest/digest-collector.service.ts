@@ -65,11 +65,23 @@ export class DigestCollectorService {
     const homework = homeworkIds.length > 0 ? await this.readHomework(homeworkIds) : [];
     const homeworkById = new Map(homework.map((item) => [item.id, item]));
 
-    const estimateByItemId = new Map(
+    // Keyed by type AND id, because one row can be a candidate in both
+    // sections and each carries its own answer. Both sections need the
+    // estimate now: it is the only available answer to "by when" for a fresh
+    // assignment, and the report's submission summary says so.
+    const estimateByCandidate = new Map(
       candidates
-        .filter((candidate) => candidate.itemType === 'homework_due')
-        .map((candidate) => [candidate.itemId, candidate.estimatedDueDate ?? null]),
+        .filter(
+          (candidate) =>
+            candidate.itemType === 'homework_due' || candidate.itemType === 'homework_new',
+        )
+        .map((candidate) => [
+          `${candidate.itemType}\u0000${candidate.itemId}`,
+          candidate.estimatedDueDate ?? null,
+        ]),
     );
+    const estimateFor = (itemType: string, id: string): Date | null =>
+      estimateByCandidate.get(`${itemType}\u0000${id}`) ?? null;
 
     return {
       childFirstName: student?.privateName ?? '',
@@ -79,13 +91,18 @@ export class DigestCollectorService {
       activities,
       behavior,
       board,
+      // Nothing produces a grade candidate yet: the checker does not look at
+      // `GradeItem`, so there is nothing here to collect. The template already
+      // renders the section, so wiring it is a checker rule plus a read here.
+      grades: [],
       homeworkNew: newIds
         .map((id) => homeworkById.get(id))
-        .filter((item): item is DigestHomeworkFact => item !== undefined),
+        .filter((item): item is DigestHomeworkFact => item !== undefined)
+        .map((item) => ({ ...item, estimatedDueDate: estimateFor('homework_new', item.id) })),
       homeworkDueTomorrow: dueIds
         .map((id) => homeworkById.get(id))
         .filter((item): item is DigestHomeworkFact => item !== undefined)
-        .map((item) => ({ ...item, estimatedDueDate: estimateByItemId.get(item.id) ?? null })),
+        .map((item) => ({ ...item, estimatedDueDate: estimateFor('homework_due', item.id) })),
     };
   }
 
