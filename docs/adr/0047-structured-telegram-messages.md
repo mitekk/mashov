@@ -56,6 +56,9 @@ no longer apply.
 - `escapeTelegramHtml`, applied to **every** interpolated value. Teacher
   remarks, filenames, mail subjects and bodies are untrusted input.
 - `clampLine`, which holds the invariant below.
+- `escapeTelegramAttribute` for an `href`. The three reserved characters are
+  the reserved set of a *text node*; inside `href="…"` a bare `"` ends the
+  attribute mid-URL, and `PUBLIC_BASE_URL`'s validator admits one.
 - `stripTelegramHtml`, the fallback payload.
 
 `TelegramSender.send` takes `{ parseMode: 'HTML' }` from a caller that rendered
@@ -63,6 +66,15 @@ HTML and **retries that part once as plain text** when Telegram answers with a
 parse complaint (`can't parse entities`, `unsupported start tag`, `unclosed`).
 `TelegramMediaSender` does the same for captions. The retry is the belt the old
 rule used to be: a parse failure must never cost a parent the whole message.
+
+The line between "Telegram refused this" and "the transport failed" is drawn
+on whether a **response came back at all**, not on the HTTP status, and that
+distinction is the retry's whole load-bearing part: the Bot API reports a parse
+error as **HTTP 400**, which axios rejects under its default `validateStatus`.
+A sender that treated every rejection as a transport failure had a retry that
+could not fire in production while its unit tests — which mocked a resolved
+`ok:false`, a shape axios cannot produce for a 400 — passed. `telegramRefusal`
+in `telegram-http.ts` owns the distinction for both senders.
 
 Only a parse complaint is retried. A 429, a 502 or a blocked bot stays a
 failure, because sending stripped text after one of those would report success
@@ -72,7 +84,9 @@ already in the ledger.
 
 `TELEGRAM_HTML_ENABLED` defaults to `true` and is read by the **sender**, not
 by the templates. Templates always emit HTML; with the flag off the sender
-sends `stripTelegramHtml(text)` flat. One component owns the decision because
+sends `stripTelegramHtml(text)` flat — which flattens each anchor to
+`label: url` rather than dropping it, so neither the kill switch nor a retry
+deletes the deep links this ADR exists to add. One component owns the decision because
 one component owns the retry, and it makes a parse problem in production a
 restart rather than a deploy.
 

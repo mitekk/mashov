@@ -7,6 +7,7 @@ import {
   botPath,
   createTelegramHttp,
   describeTelegramError,
+  telegramRefusal,
   redact,
 } from './telegram-http';
 import {
@@ -169,8 +170,13 @@ export class TelegramMediaSender implements MediaSender {
       );
       data = response.data;
     } catch (error) {
-      // Thrown rather than returned, so a transport failure never reaches the
-      // caption retry: re-uploading after a 502 would be a second upload, not
+      // A 400 is Telegram answering -- and an unparseable caption is always a
+      // 400, which axios rejects -- so its description is returned and the
+      // caption retry above can actually reach it.
+      const refusal = telegramRefusal(error);
+      if (refusal !== null) return refusal;
+      // No response at all: the transport failed, so this is thrown rather
+      // than returned. Re-uploading after a 502 would be a second upload, not
       // a fix.
       throw new Error(`Telegram ${method} failed: ${redact(describeTelegramError(error), token)}`);
     }

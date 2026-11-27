@@ -67,8 +67,28 @@ export function escapeTelegramHtml(text: string): string {
 }
 
 /**
+ * The same escape, for a value that lands inside an attribute.
+ *
+ * `escapeTelegramHtml` covers the three characters HTML parse mode reserves in
+ * a TEXT node, which is what it is for. An `href="…"` is a different position:
+ * a bare `"` ends the attribute mid-URL, and Telegram answers
+ * `can't parse entities` for the whole message. `PUBLIC_BASE_URL` is
+ * operator-set and its validator admits a quote in the host and the path, so
+ * this is reachable by configuration rather than by a teacher's typing -- and
+ * it would cost every message of the day, not one.
+ *
+ * The apostrophe goes too, so the escape does not depend on which quoting
+ * style the template happens to use.
+ */
+export function escapeTelegramAttribute(value: string): string {
+  if (typeof value !== 'string') return '';
+  return escapeTelegramHtml(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
  * The same text with the markup taken back out: tags dropped, the three
- * entities decoded.
+ * entities decoded, and an anchor flattened to `label: url` so the link
+ * survives.
  *
  * This is the fallback payload. It is deliberately a plain-text producer and
  * not an HTML sanitiser -- it runs on text this project composed, after
@@ -83,6 +103,15 @@ export function escapeTelegramHtml(text: string): string {
 export function stripTelegramHtml(html: string): string {
   if (typeof html !== 'string') return '';
   return html
+    // An anchor keeps its URL. Dropping the tag and keeping only the label
+    // would leave the flat message's one call to action pointing nowhere --
+    // and before HTML, the flat templates printed the raw URL. This path is
+    // both the `TELEGRAM_HTML_ENABLED=false` rendering and the retry after a
+    // parse complaint, so neither may cost the parent the link.
+    .replace(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_match, href, label) => {
+      const text = String(label).replace(/<[^>]*>/g, '').trim();
+      return text.length > 0 ? `${text}: ${href}` : String(href);
+    })
     .replace(/<[^>]*>/g, '')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')

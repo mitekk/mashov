@@ -79,6 +79,52 @@ describe('TelegramSender', () => {
     expect(post.mock.calls[1][1].text).toBe('כותרת\nהערה & עוד');
   });
 
+  it('retries flat when the parse complaint arrives as a rejected 400, which is how the Bot API answers', async () => {
+    // The shape that matters in production: the Bot API answers a parse error
+    // with HTTP 400, and axios REJECTS it. A retry that only looks at a
+    // resolved ok:false envelope never fires against the real API.
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 400'), {
+        isAxiosError: true,
+        response: {
+          status: 400,
+          data: { ok: false, description: "Bad Request: can't parse entities: Unclosed start tag" },
+        },
+      }),
+    );
+
+    await makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1][1].parse_mode).toBeUndefined();
+    expect(post.mock.calls[1][1].text).toBe('כותרת');
+  });
+
+  it('does not retry a rejection that carries no response, because Telegram never saw it', async () => {
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('socket hang up'), { isAxiosError: true, code: 'ECONNRESET' }),
+    );
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).rejects.toThrow(/ECONNRESET|socket hang up/);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a rejected 403 without retrying it, and keeps Telegram\'s own reason', async () => {
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 403'), {
+        isAxiosError: true,
+        response: { status: 403, data: { ok: false, description: 'Forbidden: bot was blocked by the user' } },
+      }),
+    );
+
+    await expect(
+      makeSender().send('chat-1', '<b>כותרת</b>', { parseMode: 'HTML' }),
+    ).rejects.toThrow(/Forbidden: bot was blocked by the user/);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
   it('treats a parse-failure retry that succeeds as a delivered message, not a failure', async () => {
     // It must not throw: a throw releases the digest's claims, and the parent
     // already has the text.

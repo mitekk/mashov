@@ -1,4 +1,5 @@
 import {
+  escapeTelegramAttribute,
   splitLine,
   TELEGRAM_LINE_BUDGET,
   clampLine,
@@ -45,9 +46,12 @@ describe('stripTelegramHtml', () => {
     );
   });
 
-  it('keeps an anchor label and drops the markup around it', () => {
+  it('keeps an anchor label AND its URL, flattened', () => {
+    // Inverted deliberately. This asserted that the label alone survived,
+    // which meant TELEGRAM_HTML_ENABLED=false -- and every parse-failure
+    // retry -- silently deleted the deep links the whole feature is for.
     expect(stripTelegramHtml('• <a href="https://x/children/g/homework/1">חשבון — דף 42</a>')).toBe(
-      '• חשבון — דף 42',
+      '• חשבון — דף 42: https://x/children/g/homework/1',
     );
   });
 
@@ -69,6 +73,31 @@ describe('stripTelegramHtml', () => {
   it('decodes entities that were inside a tag-stripped region without re-opening a tag', () => {
     // &lt;b&gt; must decode to visible <b>, not to markup the next parse reads.
     expect(stripTelegramHtml('<b>&lt;b&gt;</b>')).toBe('<b>');
+  });
+});
+
+describe('stripTelegramHtml and links', () => {
+  it('keeps an anchor\'s URL, because the flat text is all the parent gets', () => {
+    // Dropping the tag and keeping only the label would leave the message's
+    // one call to action with nowhere to go -- and the flat path is both the
+    // TELEGRAM_HTML_ENABLED=false rendering and the parse-failure retry.
+    expect(stripTelegramHtml('<a href="https://x.test/inbox/7">לפתוח את ההודעה</a>')).toBe(
+      'לפתוח את ההודעה: https://x.test/inbox/7',
+    );
+  });
+
+  it('decodes an escaped href as it unwraps it', () => {
+    expect(stripTelegramHtml('<a href="https://x.test/a?b=1&amp;c=2">כאן</a>')).toBe(
+      'כאן: https://x.test/a?b=1&c=2',
+    );
+  });
+
+  it('keeps the URL alone when the anchor has no label', () => {
+    expect(stripTelegramHtml('<a href="https://x.test/home"></a>')).toBe('https://x.test/home');
+  });
+
+  it('leaves text with no markup exactly as it was', () => {
+    expect(stripTelegramHtml('הערה פשוטה')).toBe('הערה פשוטה');
   });
 });
 
@@ -190,5 +219,23 @@ describe('splitLine', () => {
   it('returns nothing for blank or non-string input', () => {
     expect(splitLine('   ', 900)).toEqual([]);
     expect(splitLine(undefined as unknown as string, 900)).toEqual([]);
+  });
+});
+
+describe('escapeTelegramAttribute', () => {
+  it('escapes the quote as well as the three text-node characters', () => {
+    // An href lands inside href="…", where a bare quote closes the attribute
+    // early and Telegram answers "can't parse entities" for the whole message.
+    expect(escapeTelegramAttribute('https://x.test/a"b&c<d')).toBe(
+      'https://x.test/a&quot;b&amp;c&lt;d',
+    );
+  });
+
+  it('escapes the apostrophe too, so either quoting style is safe', () => {
+    expect(escapeTelegramAttribute("a'b")).toBe('a&#39;b');
+  });
+
+  it('returns an empty string for non-string input', () => {
+    expect(escapeTelegramAttribute(undefined as unknown as string)).toBe('');
   });
 });

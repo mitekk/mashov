@@ -81,6 +81,29 @@ describe('TelegramMediaSender', () => {
     expect(body).toContain('HTML');
   });
 
+  it('retries flat when the parse complaint arrives as a rejected 400', async () => {
+    // How the Bot API actually answers an unparseable caption: HTTP 400, which
+    // axios rejects. A retry that only reads a resolved ok:false envelope is
+    // dead code against the real API, and the parent loses the file.
+    post.mockRejectedValueOnce(
+      Object.assign(new Error('Request failed with status code 400'), {
+        isAxiosError: true,
+        response: {
+          status: 400,
+          data: { ok: false, description: "Bad Request: can't parse entities: Unclosed start tag" },
+        },
+      }),
+    );
+
+    await makeSender().sendMedia(
+      'chat-1',
+      pdf({ caption: '📎 <a href="https://x/a">דף 42</a>', captionParseMode: 'HTML' }),
+    );
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(bodyOf(post, 1)).not.toContain('name="parse_mode"');
+  });
+
   it('retries the upload with a flat caption when Telegram cannot parse it', async () => {
     // One unparseable caption must not cost the parent the file.
     post.mockResolvedValueOnce({

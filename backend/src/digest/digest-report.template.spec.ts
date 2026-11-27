@@ -309,6 +309,20 @@ describe('renderReport structure', () => {
     expect(text).not.toContain('הנה מה שקרה');
   });
 
+  it('escapes a quote in the base URL, which would otherwise close the href early', () => {
+    // PUBLIC_BASE_URL is operator-set and its validator admits a quote. One
+    // would end the attribute mid-URL and cost every message of the day.
+    const payload = makePayload({ behavior: [BEHAVIOR] });
+
+    const text = renderReport(payload, deterministicProse(payload), {
+      publicBaseUrl: 'https://x.test/a"b',
+      studentGuid: GUID,
+    });
+
+    expect(text).not.toMatch(/href="[^"]*"[^>]/);
+    expect(text).toContain('&quot;');
+  });
+
   it('renders every section a full day has, each with its marker', () => {
     const payload = makePayload({
       behavior: [ABSENCE],

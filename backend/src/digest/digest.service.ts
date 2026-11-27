@@ -24,6 +24,7 @@ import {
   TELEGRAM_CAPTION_LABEL_BUDGET,
   TELEGRAM_CAPTION_NAME_BUDGET,
   clampLine,
+  escapeTelegramAttribute,
   escapeTelegramHtml,
 } from '../telegram/telegram-html';
 import {
@@ -1345,7 +1346,7 @@ function mediaRefFor(
   // Clamped BEFORE composing, not truncated after: `truncateCaption` cuts at
   // Telegram's ceiling and would land inside the href or the anchor.
   const name = escapeTelegramHtml(clampLine(attachment.fileName, TELEGRAM_CAPTION_NAME_BUDGET));
-  const parts = [`📎 ${href ? `<a href="${escapeTelegramHtml(href)}">${name}</a>` : name}`];
+  const parts = [`📎 ${href ? `<a href="${escapeTelegramAttribute(href)}">${name}</a>` : name}`];
   // Dropped rather than rendered as an empty clause when the item is not in
   // this payload -- which a claimed-but-narrowed-out item is.
   const clampedLabel = clampLine(label ?? '', TELEGRAM_CAPTION_LABEL_BUDGET);

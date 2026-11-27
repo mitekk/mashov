@@ -2,7 +2,12 @@ import {
   DEFAULT_BODY_CHARS,
   stripMailHtmlToText,
 } from '../telegram/html-to-text';
-import { clampLine, escapeTelegramHtml, splitLine } from '../telegram/telegram-html';
+import {
+  clampLine,
+  escapeTelegramAttribute,
+  escapeTelegramHtml,
+  splitLine,
+} from '../telegram/telegram-html';
 import { inboxConversationUrl } from '../telegram/notify-links';
 
 /**
@@ -163,5 +168,5 @@ function escaped(raw: string | null | undefined): string {
 
 /** Anchored on words, so the message carries no bare URL. */
 function anchor(href: string, label: string): string {
-  return `<a href="${escapeTelegramHtml(href)}">${escapeTelegramHtml(label)}</a>`;
+  return `<a href="${escapeTelegramAttribute(href)}">${escapeTelegramHtml(label)}</a>`;
 }

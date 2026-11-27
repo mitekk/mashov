@@ -7,6 +7,7 @@ import {
   chunkTelegramText,
   createTelegramHttp,
   describeTelegramError,
+  telegramRefusal,
   redact,
 } from '../../telegram/telegram-http';
 import { looksLikeParseFailure, stripTelegramHtml } from '../../telegram/telegram-html';
@@ -133,11 +134,15 @@ export class TelegramSender implements DigestSender {
   /**
    * Null when Telegram accepted it, otherwise Telegram's own description.
    *
-   * A transport failure throws straight out rather than being returned as a
-   * description, which is what keeps it out of the retry above. The transport
-   * call and the ok-check are deliberately not in the same try: a `throw` for
-   * ok=false inside it would be caught by its own catch and re-described as a
-   * transport failure, losing Telegram's reason.
+   * A refusal Telegram ANSWERED with is returned, whatever its HTTP status --
+   * the Bot API reports a parse error as a 400, and axios rejects it, so a
+   * catch that threw every rejection left the retry above unreachable in
+   * production. A rejection with no response never reached Telegram and
+   * throws straight out, which is what still keeps a 502 out of the retry.
+   *
+   * The transport call and the ok-check are deliberately not in the same try:
+   * a `throw` for ok=false inside it would be caught by its own catch and
+   * re-described as a transport failure, losing Telegram's reason.
    */
   private async post(
     token: string,
@@ -160,6 +165,11 @@ export class TelegramSender implements DigestSender {
       );
       data = response.data;
     } catch (error) {
+      // A 400 is Telegram answering, not the transport failing -- and a parse
+      // complaint is always a 400. `telegramRefusal` is null only when no
+      // response came back at all.
+      const refusal = telegramRefusal(error);
+      if (refusal !== null) return refusal;
       throw new Error(`Telegram send failed: ${redact(describeTelegramError(error), token)}`);
     }
 

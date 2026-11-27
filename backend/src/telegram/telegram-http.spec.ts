@@ -213,6 +213,23 @@ describe('chunkTelegramText and HTML parse mode', () => {
     expect(stripTelegramHtml(parts.join('')).replace(/\s+/g, ' ')).toContain('מילה & עוד <חשוב>');
   });
 
+  it('never cuts inside an HTML entity', () => {
+    // The hard cut is the chunker's one tag-unsafe cut, and the templates'
+    // per-line clamping is what keeps it unreachable. This is the case where
+    // that invariant has already failed, so the cut must still not hand
+    // Telegram "&am" followed by "p;" -- an unparseable half-entity.
+    const limit = 40;
+    const text = `${'a'.repeat(limit - 2)}${'&amp;'.repeat(20)}`;
+
+    const parts = chunkTelegramText(text, limit);
+
+    expect(parts.join('')).toBe(text);
+    for (const part of parts) {
+      expect(part).not.toMatch(/&[a-z#0-9]{0,6}$/i);
+      expect(part).not.toMatch(/^[a-z#0-9]{0,6};/i);
+    }
+  });
+
   it('keeps a tagged line whole when it stays inside the limit', () => {
     // What a real rendered message looks like: one tagged line per item, each
     // clamped, cut on newlines only.

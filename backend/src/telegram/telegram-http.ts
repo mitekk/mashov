@@ -79,6 +79,28 @@ export function describeTelegramError(error: unknown): string {
 }
 
 /**
+ * Telegram's own refusal, when an axios rejection carries one.
+ *
+ * The distinction the senders' retry depends on, and it is NOT the HTTP
+ * status: the Bot API reports a parse error as **HTTP 400** with an `ok:false`
+ * envelope, which axios rejects under its default `validateStatus`. Treating
+ * every rejection as a transport failure is what made the strip-and-retry
+ * unreachable in production while the unit tests -- which mocked a resolved
+ * `ok:false`, a shape axios cannot produce for a 400 -- passed.
+ *
+ * So the line is drawn where it belongs: a rejection with a `response` means
+ * Telegram ANSWERED and its description is a refusal the caller may act on; a
+ * rejection without one never reached Telegram, returns null, and the caller
+ * rethrows. A 502 still cannot reach a retry.
+ */
+export function telegramRefusal(error: unknown): string | null {
+  if (!axios.isAxiosError(error)) return null;
+  const response = error.response;
+  if (!response) return null;
+  return describeTelegramError(error) || `HTTP ${response.status}`;
+}
+
+/**
  * The Bot API's hard ceiling for `sendMessage.text`, in UTF-16 code units --
  * which is what `String.length` counts, and what Telegram counts too.
  */
@@ -143,7 +165,37 @@ function cutPoint(text: string, limit: number): number {
 
   const code = text.charCodeAt(limit - 1);
   const splitsAPair = code >= 0xd800 && code <= 0xdbff;
-  return splitsAPair && limit > 1 ? limit - 1 : limit;
+  const hard = splitsAPair && limit > 1 ? limit - 1 : limit;
+
+  return beforeEntity(text, hard);
+}
+
+/**
+ * The longest HTML entity this project's escaping produces is `&quot;` (6).
+ * One more than that is all the lookback a cut needs.
+ */
+const ENTITY_LOOKBACK = 7;
+
+/**
+ * Backs a hard cut up out of a half-written entity.
+ *
+ * `&amp;` cut between `&am` and `p;` is `can't parse entities` for the part
+ * that carries the opening half -- the same class of damage as a split tag,
+ * and from the same cut. The templates' per-line clamping is what keeps a hard
+ * cut unreachable in the first place; this is the backstop for the case where
+ * that invariant has already failed, so it should not then fail loudly.
+ *
+ * Never returns 0: the chunking loop needs progress more than it needs a
+ * whole entity.
+ */
+function beforeEntity(text: string, cut: number): number {
+  for (let index = cut - 1; index >= Math.max(1, cut - ENTITY_LOOKBACK); index -= 1) {
+    const char = text[index];
+    if (char === ';') return cut;
+    if (!/[a-z0-9#&]/i.test(char)) return cut;
+    if (char === '&') return index;
+  }
+  return cut;
 }
 
 /**

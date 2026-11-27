@@ -8,7 +8,11 @@ import {
   DigestReleaseFact,
   DigestSectionId,
 } from './digest.types';
-import { clampLine, escapeTelegramHtml } from '../telegram/telegram-html';
+import {
+  clampLine,
+  escapeTelegramAttribute,
+  escapeTelegramHtml,
+} from '../telegram/telegram-html';
 import {
   ChildBehaviorFilter,
   ChildSection,
@@ -419,7 +423,7 @@ function renderFiles(files: UnsentFile[], base: string | null, guid: string | nu
  * refuses to parse.
  */
 function anchor(href: string, label: string): string {
-  return `<a href="${escapeTelegramHtml(href)}">${escapeTelegramHtml(label)}</a>`;
+  return `<a href="${escapeTelegramAttribute(href)}">${escapeTelegramHtml(label)}</a>`;
 }
 
 /** One escaped, clamped, single line -- or '' when there was nothing to say. */
