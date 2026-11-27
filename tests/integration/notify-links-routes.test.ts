@@ -1,12 +1,18 @@
 import {
   behaviorItemUrl,
   boardNoticesUrl,
+  gradesSectionUrl,
   childSectionUrl,
   childUrl,
   homeworkItemUrl,
   inboxConversationUrl,
 } from '../../backend/src/telegram/notify-links';
 import { PHASE1_ROUTE_PATTERNS, isPhase1Route } from '../../frontend/src/lib/phase1-routes';
+import {
+  buildBehaviorDetailHref,
+  buildChildSectionHref,
+  buildHomeworkDetailHref,
+} from '../../frontend/src/lib/child-routes';
 
 /**
  * The drift guard between the two copies of the route builders.
@@ -21,9 +27,14 @@ import { PHASE1_ROUTE_PATTERNS, isPhase1Route } from '../../frontend/src/lib/pha
  * Needs no database: it is a pure assertion about strings, and it lives here
  * for the mount, not for the data.
  *
- * What it buys: change a route in the frontend router and narrow
- * `PHASE1_ROUTE_PATTERNS` to match, and this goes red instead of a parent
- * silently landing on the home page after a sign-in bounce. See ADR-0047.
+ * Two assertions, and the second is the one that does the work. Surviving
+ * `PHASE1_ROUTE_PATTERNS` only proves a path is admitted through the sign-in
+ * bounce, and that pattern takes `/children/<anything>/<anything>` at any
+ * depth -- so renaming the frontend's `/homework/` segment to `/assignments/`
+ * would leave it green while every homework link in every message 404s. The
+ * paths are therefore also compared for EQUALITY against the frontend's own
+ * builders, which is what makes this a drift guard rather than a smoke test.
+ * See ADR-0047.
  */
 const BASE = 'https://mashov.example';
 const GUID = 'stu-abc-123';
@@ -33,6 +44,7 @@ describe('Telegram deep links against the frontend routes', () => {
     'behaviour item': behaviorItemUrl(BASE, GUID, 'beh-7'),
     'homework item': homeworkItemUrl(BASE, GUID, 'hw-3'),
     'board notices': boardNoticesUrl(BASE, GUID),
+    'grades section': gradesSectionUrl(BASE, GUID),
     'behaviour section': childSectionUrl(BASE, GUID, 'behavior', 'attention'),
     'praise section': childSectionUrl(BASE, GUID, 'behavior', 'positive'),
     'homework section': childSectionUrl(BASE, GUID, 'homework'),
@@ -45,6 +57,31 @@ describe('Telegram deep links against the frontend routes', () => {
     const path = url!.slice(BASE.length);
     // The frontend's own patterns, imported -- not a copy of them.
     expect(isPhase1Route(path)).toBe(true);
+  });
+
+  // Built by the frontend's own functions, so a renamed segment, a reordered
+  // query string or a changed default filter shows up here as a diff.
+  const mirrored: [string, string | null, string | null][] = [
+    ['behaviour item', behaviorItemUrl(BASE, GUID, 'beh-7'), buildBehaviorDetailHref(GUID, 'beh-7')],
+    ['homework item', homeworkItemUrl(BASE, GUID, 'hw-3'), buildHomeworkDetailHref(GUID, 'hw-3')],
+    ['board notices', boardNoticesUrl(BASE, GUID), buildChildSectionHref(GUID, 'notices')],
+    ['grades section', gradesSectionUrl(BASE, GUID), buildChildSectionHref(GUID, 'grades')],
+    [
+      'behaviour section',
+      childSectionUrl(BASE, GUID, 'behavior', 'attention'),
+      buildChildSectionHref(GUID, 'behavior', { behavior: 'attention' }),
+    ],
+    [
+      'praise section',
+      childSectionUrl(BASE, GUID, 'behavior', 'positive'),
+      buildChildSectionHref(GUID, 'behavior', { behavior: 'positive' }),
+    ],
+    ['homework section', childSectionUrl(BASE, GUID, 'homework'), buildChildSectionHref(GUID, 'homework')],
+  ];
+
+  it.each(mirrored)('%s is the path the frontend itself builds', (_name, built, expected) => {
+    expect(expected).not.toBeNull();
+    expect(built).toBe(`${BASE}${expected}`);
   });
 
   it('reads the frontend patterns rather than redeclaring them', () => {

@@ -49,6 +49,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     releases: [],
     activities: [],
     board: [],
+    grades: [],
     ...overrides,
   };
 }
@@ -212,6 +213,45 @@ describe('DigestSummarizerService.summarize', () => {
     ]);
   });
 
+  it('keeps every explicit date it read, namespaced, for the submission summary', async () => {
+    // A second map, keyed by the NAMESPACED ref, so the template can tell the
+    // parent by when each thing is due. `deadlineResolutions` cannot serve
+    // this: it strips to the bare homework id, and so has to exclude
+    // `homeworkNew` to keep two refs for one row from colliding.
+    respondWith(
+      JSON.stringify({
+        ...GOOD_OUTPUT,
+        items: [
+          { ref: 'homeworkNew:hw-2', line: 'חיבור באנגלית', explicitDueDate: '2026-11-30' },
+          { ref: 'dueTomorrow:hw-1', line: 'להגיש עד ה-25', explicitDueDate: '2026-11-25' },
+          { ref: 'behavior:beh-1', line: 'איחר', explicitDueDate: null },
+        ],
+      }),
+    );
+
+    const summary = await makeService().summarize(makePayload());
+
+    expect(summary.explicitDueDates).toEqual({
+      'homeworkNew:hw-2': '2026-11-30',
+      'dueTomorrow:hw-1': '2026-11-25',
+    });
+  });
+
+  it('keeps a date that is not an ISO day out of the explicit dates', async () => {
+    // The template drops it too, but a value that is not a date has no
+    // business being carried as one.
+    respondWith(
+      JSON.stringify({
+        ...GOOD_OUTPUT,
+        items: [{ ref: 'homeworkNew:hw-2', line: 'חיבור', explicitDueDate: 'מחר' }],
+      }),
+    );
+
+    const summary = await makeService().summarize(makePayload());
+
+    expect(summary.explicitDueDates).toEqual({});
+  });
+
   it('keeps an item line with no text out of the prose rather than rendering a blank bullet', async () => {
     respondWith(
       JSON.stringify({
@@ -255,6 +295,63 @@ describe('DigestSummarizerService.summarize', () => {
     expect(request.max_tokens).toBe(4000);
     // Thinking cannot be disabled on this model, so it is never sent.
     expect(request).not.toHaveProperty('thinking');
+  });
+
+  it('raises the ceiling with the number of items, because the output is one line per item', async () => {
+    // The old fixed 4000 was sized for the seven fixed lines the model used to
+    // write. With one line per item, a busy day's response truncates --
+    // `parseOutput` is all-or-nothing, so the parent gets deterministic
+    // bullets for EVERY item on exactly the days with the most to say.
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    const busy = makePayload({
+      behavior: Array.from({ length: 20 }, (_, index) => ({
+        id: `beh-${index}`,
+        achvaName: 'איחור',
+        classification: 'attention',
+        justifiable: false,
+        subject: 'מתמטיקה',
+        remark: null,
+        lessonDate: REPORT_FOR,
+        eventAt: REPORT_FOR,
+      })),
+    });
+
+    await makeService().summarize(busy);
+
+    const request = createMock.mock.calls[0][0];
+    expect(request.max_tokens).toBeGreaterThan(4000);
+  });
+
+  it('never asks for less than it used to, however quiet the day', async () => {
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    await makeService().summarize(
+      makePayload({ behavior: [], homeworkNew: [], homeworkDueTomorrow: [], board: [], releases: [] }),
+    );
+
+    expect(createMock.mock.calls[0][0].max_tokens).toBe(4000);
+  });
+
+  it('caps the ceiling, so one absurd day cannot buy an unbounded response', async () => {
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    const absurd = makePayload({
+      behavior: Array.from({ length: 500 }, (_, index) => ({
+        id: `beh-${index}`,
+        achvaName: 'איחור',
+        classification: 'attention',
+        justifiable: false,
+        subject: 'מתמטיקה',
+        remark: null,
+        lessonDate: REPORT_FOR,
+        eventAt: REPORT_FOR,
+      })),
+    });
+
+    await makeService().summarize(absurd);
+
+    expect(createMock.mock.calls[0][0].max_tokens).toBe(16000);
   });
 
   it('uses the model named in the environment over the default', async () => {
@@ -302,6 +399,7 @@ describe('DigestSummarizerService.summarize', () => {
     expect(summary.usedLlm).toBe(false);
     expect(summary.prose).toEqual(deterministicProse(payload));
     expect(summary.deadlineResolutions).toEqual([]);
+    expect(summary.explicitDueDates).toEqual({});
   });
 
   it('falls back when the model returns text that is not JSON', async () => {

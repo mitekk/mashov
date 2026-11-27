@@ -13,6 +13,7 @@ import {
   DigestSectionId,
   DigestSummary,
 } from './digest.types';
+import { isIsoDay } from './iso-day';
 
 /**
  * Sonnet 5.5 rather than Opus: measured against the real prompt, all three of
@@ -37,12 +38,45 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type DigestEffort = (typeof EFFORT_LEVELS)[number];
 
 /**
- * Still a deliberately short output rather than a lowballed ceiling -- one
- * short sentence per item plus a headline -- but it grows with the day now
- * instead of being four fixed lines, so the ceiling grew with it. A truncated
- * response lands on the deterministic fallback anyway, which still sends.
+ * The output ceiling, which has to move with the day.
+ *
+ * It used to be a flat 4000, sized for the seven fixed lines the model wrote
+ * when the prose was one paragraph per section. The output is now one short
+ * sentence per ITEM, so it scales with how much happened -- and `parseOutput`
+ * is all-or-nothing, because a truncated response is not valid JSON. A fixed
+ * ceiling therefore fails in exactly the wrong direction: the busier the day,
+ * the likelier the parent gets deterministic bullets for EVERY item, on the
+ * days with the most to say.
+ *
+ * `MIN` is the old value, so no quiet day asks for less than it used to.
+ * `PER_ITEM` is deliberately generous: a Hebrew sentence tokenizes badly, and
+ * thinking counts against this ceiling on this model and cannot be turned off.
+ * `CEILING` is there because `max_tokens` is a budget, not a target -- one
+ * absurd day (a backfill, a sync that re-reports a term) must not be able to
+ * buy an unbounded response. A day past the cap truncates and falls back,
+ * which is the same thing that happened before, now only at the far end.
  */
-const MAX_TOKENS = 4000;
+const MAX_TOKENS_MIN = 4000;
+const MAX_TOKENS_PER_ITEM = 300;
+const MAX_TOKENS_BASE = 2000;
+const MAX_TOKENS_CEILING = 16000;
+
+/**
+ * The items the model is actually asked to write a line for.
+ *
+ * Consent forms are not counted: the model is handed none of them (ADR-0035).
+ * Neither are grades, which nothing shows it yet.
+ */
+function maxTokensFor(payload: DigestPayload): number {
+  const items =
+    payload.behavior.length +
+    payload.homeworkNew.length +
+    payload.homeworkDueTomorrow.length +
+    payload.releases.length +
+    payload.board.length;
+  const wanted = MAX_TOKENS_BASE + items * MAX_TOKENS_PER_ITEM;
+  return Math.min(MAX_TOKENS_CEILING, Math.max(MAX_TOKENS_MIN, wanted));
+}
 
 /**
  * The structured output the model must return.
@@ -134,6 +168,12 @@ const SYSTEM_PROMPT = [
   'אם אין לך מה להוסיף בסעיף, החזר מחרוזת ריקה לאותו שדה. מוטב ריק מאשר חזרה על השורות.',
   'ה-headline הוא שורה אחת קצרה שמסכמת את היום, בלי תאריך ובלי שם.',
   'אל תבטיח מועד הגשה: המערכת אינה יודעת מועדי הגשה, רק מתי ניתנה המטלה.',
+  // Newly assigned homework carries the timetable estimate now, so the model
+  // sees a date for an item nobody published a deadline for. The rendered
+  // message states that date itself, in a deterministic line that labels it as
+  // an estimate (ADR-0027); a line that calls it a deadline would contradict
+  // the message it sits in.
+  'השדה "צפי לפי מערכת השעות" הוא חישוב לפי השיעור הבא ואינו מועד הגשה רשמי. אל תכתוב אותו כמועד הגשה — ההודעה מציגה אותו בנפרד ומסומן כצפי.',
   'אם בטקסט של מטלה נכתב מועד מפורש, החזר אותו ב-explicitDueDate של אותו פריט בפורמט YYYY-MM-DD; אחרת null.',
   'לפריט שאינו מטלה החזר explicitDueDate שווה ל-null.',
   'שחרור מוקדם הוא בקשה שההורה עצמו הגיש ואושרה: כתוב עליו כתזכורת, לא כחדשות.',
@@ -343,7 +383,7 @@ export class DigestSummarizerService {
 
       const response = await client.messages.create({
         model: this.config.get<string>('DIGEST_LLM_MODEL') ?? DEFAULT_MODEL,
-        max_tokens: MAX_TOKENS,
+        max_tokens: maxTokensFor(payload),
         system: SYSTEM_PROMPT,
         output_config: {
           effort: this.readEffort(),
@@ -379,7 +419,12 @@ export class DigestSummarizerService {
   }
 
   private fallback(payload: DigestPayload): DigestSummary {
-    return { prose: deterministicProse(payload), deadlineResolutions: [], usedLlm: false };
+    return {
+      prose: deterministicProse(payload),
+      deadlineResolutions: [],
+      explicitDueDates: {},
+      usedLlm: false,
+    };
   }
 
   private readTimeoutMs(): number {
@@ -414,6 +459,7 @@ export class DigestSummarizerService {
 interface ParsedOutput {
   prose: DigestProse;
   deadlineResolutions: DigestDeadlineResolution[];
+  explicitDueDates: Record<string, string>;
 }
 
 /** One entry of the model's `items` array, once validated. */
@@ -483,6 +529,19 @@ function parseOutput(content: Anthropic.ContentBlock[]): ParsedOutput | null {
         ref: item.ref.slice(item.ref.indexOf(':') + 1),
         explicitDueDate: item.explicitDueDate,
       })),
+    // The same answers, keyed by the ref the TEMPLATE looks things up by, and
+    // for every homework item rather than only the due-tomorrow ones. A
+    // namespaced key cannot collide, so a row that is both newly assigned and
+    // estimated-due keeps one entry per section instead of losing one.
+    //
+    // Anything that is not an ISO day is dropped here rather than carried and
+    // ignored downstream: `YYYY-MM-DD` is what the schema asks for, and a
+    // model that answered "מחר" has answered nothing this can use.
+    explicitDueDates: Object.fromEntries(
+      items
+        .filter((item) => isIsoDay(item.explicitDueDate))
+        .map((item) => [item.ref, (item.explicitDueDate as string).trim()]),
+    ),
   };
 }
 

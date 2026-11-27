@@ -168,15 +168,27 @@ export class DigestCheckerService {
     const { todayStart, tomorrowStart, reportFor } = jerusalemDayBounds(now, timeZone);
     const yearScope = schoolYearScope(schoolYear);
 
+    // Both homework passes ask the timetable the same question -- when does
+    // this group next meet -- of overlapping sets of groups, and the answer
+    // depends only on (group, day). One estimator, one cache, one query per
+    // group per run.
+    const nextLesson = this.nextLessonEstimator(studentGuid, schoolYear, todayStart);
+
     const candidates: InternalCandidate[] = [
       ...(await this.behaviorToday(studentGuid, yearScope, todayStart, tomorrowStart)),
-      ...(await this.homeworkAssignedRecently(studentGuid, yearScope, todayStart, tomorrowStart)),
-      ...(await this.homeworkDueTomorrow(
+      ...(await this.homeworkAssignedRecently(
         studentGuid,
-        schoolYear,
         yearScope,
         todayStart,
         tomorrowStart,
+        nextLesson,
+      )),
+      ...(await this.homeworkDueTomorrow(
+        studentGuid,
+        yearScope,
+        todayStart,
+        tomorrowStart,
+        nextLesson,
       )),
       ...(await this.releasesSoon(studentGuid, yearScope, todayStart, tomorrowStart)),
       ...(await this.activitiesAwaitingAnswer(userId, yearScope, todayStart)),
@@ -264,11 +276,39 @@ export class DigestCheckerService {
     }));
   }
 
+  /**
+   * When the group next meets, memoized for the run.
+   *
+   * The estimate depends only on (group, day), and a 14-day lookback returns
+   * many rows sharing a group -- so it is resolved once per group rather than
+   * once per homework row, across both homework passes.
+   */
+  private nextLessonEstimator(
+    studentGuid: string,
+    schoolYear: number,
+    todayStart: Date,
+  ): (groupId: number) => Promise<Date | null> {
+    const cache = new Map<number, Date | null>();
+    return async (groupId: number): Promise<Date | null> => {
+      const memoed = cache.get(groupId);
+      if (memoed !== undefined) return memoed;
+      const resolved = await this.deadlines.estimateFromTimetable(
+        studentGuid,
+        schoolYear,
+        groupId,
+        todayStart,
+      );
+      cache.set(groupId, resolved);
+      return resolved;
+    };
+  }
+
   private async homeworkAssignedRecently(
     studentGuid: string,
     yearScope: ReturnType<typeof schoolYearScope>,
     todayStart: Date,
     tomorrowStart: Date,
+    nextLesson: (groupId: number) => Promise<Date | null>,
   ): Promise<InternalCandidate[]> {
     const rows = (await this.prisma.homeworkItem.findMany({
       where: {
@@ -282,12 +322,23 @@ export class DigestCheckerService {
       select: HOMEWORK_SELECT,
     })) as HomeworkCandidateRow[];
 
-    return rows.map((row) => ({
-      itemType: 'homework_new' as DigestItemType,
-      itemId: row.id,
-      contentHash: hashHomework('homework_new', row),
-      itemDate: row.lessonDate,
-    }));
+    const candidates: InternalCandidate[] = [];
+    for (const row of rows) {
+      candidates.push({
+        itemType: 'homework_new' as DigestItemType,
+        itemId: row.id,
+        contentHash: hashHomework('homework_new', row),
+        // When the group next meets, which is the only answer available to
+        // "by when" for a fresh assignment: Mashov has no due-date field. It
+        // reaches the report's submission summary labelled as an estimate
+        // (ADR-0027), and it is deliberately NOT in the content hash -- a
+        // timetable sync that moves the lesson must not re-report the
+        // assignment as new.
+        estimatedDueDate: await nextLesson(row.groupId),
+        itemDate: row.lessonDate,
+      });
+    }
+    return candidates;
   }
 
   /**
@@ -459,10 +510,10 @@ export class DigestCheckerService {
 
   private async homeworkDueTomorrow(
     studentGuid: string,
-    schoolYear: number,
     yearScope: ReturnType<typeof schoolYearScope>,
     todayStart: Date,
     tomorrowStart: Date,
+    nextLesson: (groupId: number) => Promise<Date | null>,
   ): Promise<InternalCandidate[]> {
     const lookbackStart = daysBefore(
       todayStart,
@@ -478,26 +529,9 @@ export class DigestCheckerService {
       select: HOMEWORK_SELECT,
     })) as HomeworkCandidateRow[];
 
-    // A 14-day lookback returns many rows sharing a group, and the estimate
-    // depends only on (group, day) -- so resolve each group once per run rather
-    // than once per homework row.
-    const estimateByGroup = new Map<number, Date | null>();
-    const estimateFor = async (groupId: number): Promise<Date | null> => {
-      const memoed = estimateByGroup.get(groupId);
-      if (memoed !== undefined) return memoed;
-      const resolved = await this.deadlines.estimateFromTimetable(
-        studentGuid,
-        schoolYear,
-        groupId,
-        todayStart,
-      );
-      estimateByGroup.set(groupId, resolved);
-      return resolved;
-    };
-
     const candidates: InternalCandidate[] = [];
     for (const row of rows) {
-      const estimated = await estimateFor(row.groupId);
+      const estimated = await nextLesson(row.groupId);
       const dueTomorrow = estimated !== null && estimated.getTime() === tomorrowStart.getTime();
       const textHint = hasDeadlineHint(row.homeworkText);
       if (!dueTomorrow && !textHint) continue;

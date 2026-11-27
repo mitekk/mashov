@@ -42,6 +42,7 @@ import {
   MediaDelivery,
   NO_MEDIA_DELIVERY,
 } from '../telegram-media/media-delivery.interface';
+import { parseIsoDay } from './iso-day';
 
 /**
  * The claimed hashes a child's prose is written from, sorted.
@@ -448,6 +449,10 @@ export class DigestService {
         // boundary there is unchanged. See digest-report.template's docblock.
         studentGuid,
         unsentFiles: media.items.filter((item) => item.tooLarge).map(unsentFileFor),
+        // What the model read out of the assignment texts, for the TL;DR's
+        // submission line. The template decides how a date is labelled: a
+        // stated one and a timetable estimate are not the same claim.
+        explicitDueDates: summary.explicitDueDates,
       });
 
       const { delivered, failures, suppressed, retired, reached } = await this.deliver(
@@ -630,7 +635,12 @@ export class DigestService {
   ): Promise<DigestSummary> {
     const hashes = nonActivityHashes(claimed);
     if (hashes.length === 0) {
-      return { prose: deterministicProse(payload), deadlineResolutions: [], usedLlm: false };
+      return {
+        prose: deterministicProse(payload),
+        deadlineResolutions: [],
+        explicitDueDates: {},
+        usedLlm: false,
+      };
     }
 
     const key = `${studentGuid}\u0000${hashes.join('|')}`;
@@ -1213,7 +1223,7 @@ function narrowDueTomorrow(
   const resolutionByItemId = new Map<string, Date | null>();
 
   for (const item of payload.homeworkDueTomorrow) {
-    const explicit = parseIsoDate(explicitByRef.get(item.id) ?? null);
+    const explicit = parseIsoDay(explicitByRef.get(item.id) ?? null);
     const resolved = explicit ?? item.estimatedDueDate ?? null;
     resolutionByItemId.set(item.id, resolved);
     if (resolved === null) continue;
@@ -1250,15 +1260,6 @@ function survivingHashes(claimed: DigestCandidate[], narrowed: DigestPayload): S
   );
 }
 
-/** Parses YYYY-MM-DD into UTC midnight, the digest's only date representation. */
-function parseIsoDate(value: string | null): Date | null {
-  if (!value) return null;
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-  if (!match) return null;
-  const [, year, month, day] = match;
-  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
 
 /**
  * Distinct items in the report. A homework row reported both as newly assigned

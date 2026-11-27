@@ -56,6 +56,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     releases: [],
     activities: [],
     board: [],
+    grades: [],
     ...overrides,
   };
 }
@@ -79,6 +80,7 @@ interface HarnessOptions {
   syncRuns?: { source: string; endedAt: Date; startedAt: Date }[];
   recipients?: { channel: string; address: string; enabled: boolean; userId?: string }[];
   deadlineResolutions?: { ref: string; explicitDueDate: string | null }[];
+  explicitDueDates?: Record<string, string>;
   dueTomorrowLine?: string;
   sendImpl?: jest.Mock;
   publicBaseUrl?: string;
@@ -211,6 +213,7 @@ function makeHarness(options: HarnessOptions = {}) {
         },
       },
       deadlineResolutions: options.deadlineResolutions ?? [],
+      explicitDueDates: options.explicitDueDates ?? {},
       usedLlm: true,
     }),
   } as unknown as DigestSummarizerService;
@@ -338,12 +341,69 @@ describe('DigestService.runAll', () => {
 
     await harness.service.runAll({ now: NOW });
 
-    // Not /home any more: the heading and the item each anchor the page they
-    // are about, so the parent taps straight through to the note. See ADR-0047.
+    // Not /home any more: each ITEM anchors the page it is about, so the
+    // parent taps straight through to the note. The section heading anchors
+    // nothing -- it could only point at a list. See ADR-0047.
     const sent = harness.send.mock.calls[0][1] as string;
     expect(sent).toContain('https://mashov.mitya.dev/children/stu-1/behavior/beh-1');
-    expect(sent).toContain('https://mashov.mitya.dev/children/stu-1?section=behavior');
+    expect(sent).not.toContain('?section=behavior');
     expect(sent).not.toMatch(/\/home(?!work)/);
+  });
+
+  it("puts the model's reading of a stated deadline into the message's TL;DR", async () => {
+    // The explicit dates have to reach the template, not only the deferral
+    // ledger: the submission summary is the parent's answer to "by when".
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', hasTextHint: true },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', null)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-11-18' }],
+      explicitDueDates: { 'dueTomorrow:hw-1': '2026-11-18' },
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('📌 להגשה:');
+    expect(sent).toContain('עד 18/11/2026');
+    expect(sent).not.toContain('צפי להגשה 18/11/2026');
+  });
+
+  it('treats a date that is not a real day as no answer, not as the day it rolls over to', async () => {
+    // `2026-02-30` used to be built with `Date.UTC`, which rolls it silently
+    // forward to 02/03 -- so the deferral ledger learned a date the message
+    // never showed, because the template's own parser rejects the same string.
+    // Two parsers disagreeing about one value is how an item gets buried.
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', estimatedDueDate: TOMORROW },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', TOMORROW)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: '2026-02-30' }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    // The estimate stands, so the item is still in the message.
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('צפי הגשה');
+  });
+
+  it('labels the same date as an estimate when the model read none from the text', async () => {
+    const harness = makeHarness({
+      candidates: [
+        { itemType: 'homework_due', itemId: 'hw-1', contentHash: 'hash-due', estimatedDueDate: TOMORROW },
+      ],
+      payload: makePayload({ behavior: [], homeworkDueTomorrow: [duePayloadItem('hw-1', TOMORROW)] }),
+      deadlineResolutions: [{ ref: 'hw-1', explicitDueDate: null }],
+    });
+
+    await harness.service.runAll({ now: NOW });
+
+    const sent = harness.send.mock.calls[0][1] as string;
+    expect(sent).toContain('צפי להגשה');
+    expect(sent).not.toMatch(/עד \d{2}\//);
   });
 
   it('sends no link when PUBLIC_BASE_URL is unset', async () => {

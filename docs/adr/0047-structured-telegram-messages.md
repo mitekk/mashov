@@ -127,9 +127,9 @@ whole repo.
 |---|---|
 | Behaviour item | `/children/<guid>/behavior/<id>` |
 | Homework item | `/children/<guid>/homework/<id>` |
-| Section header | `/children/<guid>?section=<s>&behavior=<f>` |
+| Section header | **no link** — a header can only point at the section list, which leaves the parent to find the item the message was about |
 | Board notice | `/children/<guid>?section=notices&behavior=all` (no detail route exists) |
-| Early release | `/children/<guid>` (the item lives in a dialog with no URL, so the section header and its item both point at the child's page) |
+| Early release | `/children/<guid>` (the item lives in a dialog with no URL, so its bullet points at the child's page) |
 | Consent form | **no link** — no web surface at all |
 | Mail | `/inbox/<conversationId>` (unchanged) |
 
@@ -140,9 +140,12 @@ along. Against that, the old rule charged the parent on every single message:
 told that their child had an unexcused absence, they landed on the home page
 and had to find the child and the note themselves.
 
-Each section header anchors its section and each item line anchors its own
-detail page, so the message carries **no bare URL** and the trailing `/home`
-line is gone. `studentGuid` reaches the template through `RenderReportOptions`
+Each item line anchors its own detail page, so the message carries **no bare
+URL** and the trailing `/home` line is gone. A section header anchors nothing:
+it first did, and a header link turned out to be a worse link than none — it
+lands on a list one tap from the thing the parent wants, which is the cost the
+item anchors exist to remove, and it made every heading as well as every bullet
+blue, trading the wall of grey for a wall of links. `studentGuid` reaches the template through `RenderReportOptions`
 and deliberately **not** through `DigestPayload` — that object feeds
 `buildPrompt`, and a guid on it would be one `JSON.stringify` away from the
 prompt.
@@ -236,3 +239,147 @@ duplication the language cannot remove.
 one paragraph is a judgement about Hebrew prose that only real messages
 settle. `TELEGRAM_HTML_ENABLED=false` is the escape hatch if the structure
 turns out worse than the wall it replaced.
+
+## Addendum, 2026-11-27: observed, then three corrections
+
+Eight variants were sent to a real chat and read in a real client. Two things
+came back, and both are now in the code:
+
+1. **Section headers are no longer links** (above). The reasoning that put
+   them there — "a parent told about an absence should not land on /home" — is
+   satisfied by the item anchor alone.
+2. **The TL;DR answers "by when".** The headline is a summary of the day and
+   nothing in the message said when anything had to be handed in, unless it
+   happened to be due tomorrow. `submissionSummary` in
+   `digest-report.template.ts` now renders one deterministic line under the
+   headline — `📌 להגשה: אנגלית — עד 30/11/2026 · חשבון — צפי להגשה 19/11/2026`
+   — from two sources, in this order:
+   - a date written in the assignment text, which the model extracts into
+     `DigestSummary.explicitDueDates` (keyed by the **namespaced** ref, unlike
+     `deadlineResolutions`, which strips to the bare id for the deferral ledger
+     and therefore has to exclude `homeworkNew` to avoid a collision) — `עד`;
+   - the group's next lesson in the timetable — `צפי להגשה`.
+
+   Newly assigned homework now carries that estimate too: the checker resolves
+   it for both homework passes through one memoized estimator, so the two
+   sections share a single query per group per run, and the collector keys the
+   estimate by item **type and** id because one row can be a candidate in both.
+   A date earlier than the day being reported is dropped — a wrong-year reading
+   of Hebrew text that names no year is the ordinary way one appears, and
+   telling a parent to hand something in last week is worse than silence.
+
+   The line is the template's and not the model's, and that is the point.
+   Mashov has no due-date field, so `עד` and `צפי להגשה` are two different
+   claims about where a date came from, and ADR-0027 is a promise that the
+   derived one is always labelled derived. A model writing this sentence cannot
+   hold that line, because to it both are just dates; the prompt instead tells
+   it that `צפי לפי מערכת השעות` is a calculation and must not be written as a
+   deadline.
+
+3. **Every bullet now opens with a RIGHT-TO-LEFT MARK (U+200F).** `•` is a
+   direction-neutral character, so a line beginning with one leaves the client
+   to resolve which end it belongs to -- and in Telegram's rendering of a
+   Hebrew line it landed hard against the **left** margin: the end the eye
+   finishes on, not the one it starts from, with the bullet separated from the
+   sentence it marks. The section headers did not have the problem, because
+   their emoji is resolved differently, which is what made the message look
+   inconsistent rather than merely wrong.
+
+   The fix is one invisible strong-RTL character in front of the bullet
+   (`BULLET` in `digest-report.template.ts`), not a layout change: it puts the
+   bullet inside an RTL run, so it renders on the right. It applies to item
+   bullets and to the "file too large" line, and it survives
+   `stripTelegramHtml`, so the flat fallback render keeps it too.
+
+## Addendum, 2026-11-27: a grades section the template can already render
+
+`GradeItem` has been synced and stored since the grades task landed, and its
+schema comment says plainly that "grades feed no digest and no feed (yet)".
+The template now renders them, ahead of anything producing them, so that the
+wiring left to do is a checker rule and a collector read rather than a design
+decision taken under time pressure.
+
+What exists now:
+
+- `DigestGradeFact` and `DigestPayload.grades`. The fact deliberately omits
+  `teacherName` -- the only field of a grade that names a person, of no use to
+  the message, and keeping it off the shape is what keeps it out of the prompt
+  by construction rather than by discipline.
+- The section id `grades`, ordered after `positive` and before `homeworkNew`:
+  news about the child, then the work, then the logistics.
+- `📊 ציונים חדשים`, one bullet per grade, reading
+  `חשבון — מבחן בשברים: 92 (10/11/2026)`.
+- The date is `eventDate`, when the assessment was sat, **not** `enteredAt`,
+  when the teacher keyed the mark in. They are weeks apart on real rows, so a
+  bare "92" would attach a mark to the wrong day in a parent's head. The
+  checker will want the opposite field: `enteredAt` is when the grade became
+  news.
+- `gradeType` ("מבחן") stands in when the assessment has no name of its own,
+  which upstream does send.
+- `gradesSectionUrl` -- the `grades` tab on the child's page. There is no
+  per-grade detail route, so this is the board-notice compromise, and
+  `tests/integration/notify-links-routes.test.ts` checks the path against the
+  frontend's own patterns like every other link.
+- The section is **template-owned**, joining `activity` in `TEMPLATE_OWNED`.
+  The reasoning is narrower than ADR-0035's: the model is shown no grades, so
+  a model line for one could only be invention. `push` routing the section to
+  the deterministic lines is what makes that true of the rendered text and not
+  only of the prompt. The day grades enter the prompt, drop `grades` from that
+  set.
+
+What does not exist, and is deliberately left for the session that wires it:
+no `DigestItemType` member, no checker rule, no collector read -- the collector
+returns `grades: []` with a comment saying so. A grade is also the first digest
+item that can be **corrected** upstream after it is reported, so the content
+hash and the re-report rule are a real decision, not a copy of the homework
+one. Until all that lands the section never appears, because an empty list
+renders nothing.
+
+## Addendum, 2026-11-27: three fixes out of review
+
+- **One reading of a `YYYY-MM-DD` day** (`src/digest/iso-day.ts`). Three copies
+  had grown -- the deferral ledger, the submission summary, and the
+  summarizer's validation of the model's answer. Two built the date with
+  `new Date('…T00:00:00Z')` and one with `Date.UTC`, which looks like a
+  difference and is not: **both roll a day that does not exist silently
+  forward**, so `2026-02-30` became 02/03 in all three. The shared parser
+  rejects it instead, by checking the parsed date still carries the month and
+  day it was written with. A model that answered with a day that is not a day
+  has answered nothing, and "March 2nd, because February has 28 days" is not a
+  provenance a parent can be told.
+- **No empty entities in an inbox notification.** A mail with a blank subject
+  rendered a literal `<b></b>`, which Telegram can answer `can't parse
+  entities` to -- a wasted call and a flat retry spent on a line that said
+  nothing -- and a mail with no sender name opened with a dangling `·`. Both
+  lines are now omitted when they are empty rather than rendered hollow.
+- **The route drift guard now guards.**
+  `tests/integration/notify-links-routes.test.ts` only asserted that each built
+  path satisfies `PHASE1_ROUTE_PATTERNS`, which admits `/children/<anything>`
+  at any depth -- renaming the frontend's `/homework/` segment to
+  `/assignments/` left it green while every homework link in every message
+  404s. Verified by making exactly that change and watching the old assertions
+  stay green. The paths are now also compared for equality against the
+  frontend's own builders.
+
+## Addendum, 2026-11-27: `max_tokens` scales with the day
+
+The ceiling was a flat 4000, sized for the seven fixed lines the model wrote
+back when the prose was one paragraph per section. The output is now one short
+sentence per **item**, and `parseOutput` is all-or-nothing -- a truncated
+response is not valid JSON, so it lands on the deterministic renderer for
+*every* item, not just the ones that got cut. A fixed ceiling therefore failed
+in exactly the wrong direction: the busier the day, the likelier the parent
+got plain bullets for all of it.
+
+`maxTokensFor(payload)` is `2000 + 300 per item`, floored at the old 4000 and
+capped at 16000. The floor means no quiet day asks for less than it used to.
+The per-item figure is deliberately generous, because Hebrew tokenizes badly
+and thinking counts against this ceiling on this model and cannot be turned
+off. The cap is there because `max_tokens` is a budget, not a target: one
+absurd day -- a backfill, a sync that re-reports a term -- must not buy an
+unbounded response. Past the cap the old behaviour resumes, now only at the
+far end.
+
+Items the model is not shown are not counted: consent forms (ADR-0035) and,
+for now, grades.
+

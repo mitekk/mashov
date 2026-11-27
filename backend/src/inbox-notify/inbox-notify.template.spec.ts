@@ -33,6 +33,23 @@ describe('renderInboxMessage', () => {
     expect(lines[2]).toBe('<b>יום ספורט ביום חמישי</b>');
   });
 
+  it('renders no empty bold subject when the mail has no subject', () => {
+    // `<b></b>` is an entity with nothing in it, which Telegram can answer
+    // `can't parse entities` to -- costing a wasted call and a flat retry for
+    // a line that said nothing in the first place.
+    const text = renderInboxMessage(makeMessage({ subject: '   ' }), {});
+
+    expect(text).not.toContain('<b></b>');
+    expect(text).toContain('📬 <b>דואר חדש מבית הספר</b>');
+  });
+
+  it('renders no dangling separator when the mail names no sender', () => {
+    const text = renderInboxMessage(makeMessage({ senderName: '' }), {});
+
+    expect(text).toContain('<i>17/11 09:05</i>');
+    expect(text).not.toContain('· 17/11');
+  });
+
   it("quotes the body, because they are the school's own words", () => {
     const text = renderInboxMessage(makeMessage(), {});
 

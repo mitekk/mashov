@@ -106,6 +106,18 @@ export function boardNoticesUrl(
   return childSectionUrl(baseUrl, studentGuid, 'notices');
 }
 
+/**
+ * The grades section. A grade has no detail route of its own -- `grades` is a
+ * tab on the child's page -- so a grade's own line links here, the same
+ * compromise board notices make.
+ */
+export function gradesSectionUrl(
+  baseUrl: string | null | undefined,
+  studentGuid: string | null | undefined,
+): string | null {
+  return childSectionUrl(baseUrl, studentGuid, 'grades');
+}
+
 /** The behaviour note itself. The route and `getBehaviorDetail` both key the DB id. */
 export function behaviorItemUrl(
   baseUrl: string | null | undefined,

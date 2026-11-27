@@ -367,7 +367,7 @@ describe('Per-child daily digest', () => {
     // A bold emoji-marked title and one bullet per item -- see ADR-0047.
     expect(text).toContain('<b>');
     expect(text).toContain('⚠️');
-    expect(text.split('\n').some((line) => line.startsWith('• '))).toBe(true);
+    expect(text.split('\n').some((line) => line.startsWith('\u200F• '))).toBe(true);
     // The weekday, which is deterministic and the cheapest readability win.
     expect(text.split('\n')[0]).toMatch(/^אבי · (יום \S+|שבת), \d{2}\/\d{2}\/\d{4}$/);
   });
@@ -385,7 +385,11 @@ describe('Per-child daily digest', () => {
 
     const text = sender.sent[0].text;
     expect(text).toContain(`https://mashov.example/children/${CHILD_WITH_NEWS}/behavior/`);
-    expect(text).toContain(`https://mashov.example/children/${CHILD_WITH_NEWS}?section=`);
+    // Items link; headers do not. A header could only point at the section
+    // list, which leaves the parent to find the thing the message was about.
+    for (const line of text.split('\n')) {
+      if (line.startsWith('<b>')) expect(line).not.toContain('<a href');
+    }
     // Every URL is an anchor's href: no bare link, and no /home line.
     expect(text).not.toMatch(/\/home(?!work)/);
     for (const line of text.split('\n')) {

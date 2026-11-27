@@ -2,6 +2,7 @@ import {
   DigestActivityFact,
   DigestBehaviorFact,
   DigestBoardFact,
+  DigestGradeFact,
   DigestHomeworkFact,
   DigestPayload,
   DigestProse,
@@ -14,14 +15,13 @@ import {
   escapeTelegramHtml,
 } from '../telegram/telegram-html';
 import {
-  ChildBehaviorFilter,
-  ChildSection,
   behaviorItemUrl,
   boardNoticesUrl,
-  childSectionUrl,
+  gradesSectionUrl,
   childUrl,
   homeworkItemUrl,
 } from '../telegram/notify-links';
+import { parseIsoDay } from './iso-day';
 
 /**
  * The fixed Hebrew report, as Telegram HTML.
@@ -56,10 +56,16 @@ import {
  * notifier has always linked to `/inbox/<conversationId>` -- and it cost the
  * parent something on every message: told about an unexcused absence, they
  * landed on the home page and had to find the child and the note themselves.
- * So each section header anchors its section and each item line anchors its
- * own detail page, and `studentGuid` reaches this function through
- * `RenderReportOptions` rather than through `DigestPayload`, because that
- * object feeds `buildPrompt` and the PII boundary there is unchanged.
+ * So each item line anchors its own detail page, and `studentGuid` reaches
+ * this function through `RenderReportOptions` rather than through
+ * `DigestPayload`, because that object feeds `buildPrompt` and the PII
+ * boundary there is unchanged.
+ *
+ * A section HEADER anchors nothing. It used to anchor its section, and that
+ * was a worse link than none: it landed the parent on a list and left them to
+ * find the item the message was about -- the exact cost the item anchors exist
+ * to remove -- while making every heading and every bullet blue, which is the
+ * wall of links this feature replaced a wall of grey with.
  *
  * ## The one invariant that makes HTML safe
  *
@@ -145,6 +151,17 @@ export interface RenderReportOptions {
    * then has to search.
    */
   unsentFiles?: UnsentFile[];
+  /**
+   * The due dates the model read out of the assignment texts themselves,
+   * keyed by `digestItemRef(section, id)` -- ISO `YYYY-MM-DD` strings.
+   *
+   * Namespaced refs rather than bare homework ids, because one row carries two
+   * of them on the day it is both newly assigned and estimated-due, and a bare
+   * id would make the two collide. Absent is normal: it is empty whenever the
+   * deterministic renderer produced the prose, and the summary then falls back
+   * to the timetable estimates alone.
+   */
+  explicitDueDates?: Record<string, string>;
 }
 
 export interface UnsentFile {
@@ -157,12 +174,25 @@ export interface UnsentFile {
 const SECTION_TITLES: Record<DigestSectionId, string> = {
   behavior: '⚠️ התנהגות ונוכחות',
   positive: '🌟 חיזוק חיובי',
+  grades: '📊 ציונים חדשים',
   homeworkNew: '📚 שיעורי בית חדשים',
   release: '🕑 שחרור מוקדם',
   activity: '✍️ אישורים שממתינים לך',
   board: '📢 הודעות מלוח המודעות',
   dueTomorrow: '📅 צפי הגשה למחר',
 };
+
+/**
+ * The sections whose lines the template writes and the model never sees.
+ *
+ * `activity` is ADR-0035: consent forms belong to the parent rather than to
+ * the child, and the prose is shared between a child's parents, so the model
+ * is handed none of them. `grades` is here for the narrower reason that
+ * nothing shows it a grade yet -- a model line for one could only be
+ * invention, and `push` routing the section here is what makes that true of
+ * the rendered text and not only of the prompt.
+ */
+const TEMPLATE_OWNED: ReadonlySet<DigestSectionId> = new Set<DigestSectionId>(['activity', 'grades']);
 
 const FILES_TITLE = '📎 קבצים';
 
@@ -171,31 +201,6 @@ const FILES_TITLE = '📎 קבצים';
  * of it; the rest of the line is a weekday and a date this module formats.
  */
 const HEADER_NAME_BUDGET = 120;
-
-/**
- * Where a section's header points.
- *
- * `'child'` means the child's page with no section selected -- as close as the
- * message can get to something that lives in a dialog. `null` means the
- * section genuinely has no web surface, and a dead header is the honest
- * rendering.
- */
-type SectionTarget = { section: ChildSection; behavior?: ChildBehaviorFilter } | 'child' | null;
-
-const SECTION_TARGETS: Record<DigestSectionId, SectionTarget> = {
-  behavior: { section: 'behavior', behavior: 'attention' },
-  positive: { section: 'behavior', behavior: 'positive' },
-  homeworkNew: { section: 'homework' },
-  // An early release lives in a dialog with no URL of its own, so the child's
-  // page is as close as the message can get -- and closer than nothing, which
-  // is what a dead header among six live ones amounts to.
-  release: 'child',
-  // A consent form has no web surface at all: no route, no section, no dialog.
-  // Linking anywhere would take the parent somewhere that cannot answer it.
-  activity: null,
-  board: { section: 'notices' },
-  dueTomorrow: { section: 'homework' },
-};
 
 /** One rendered item: its line, and optionally the teacher's own words. */
 interface ItemBlock {
@@ -223,8 +228,15 @@ export function renderReport(
     `${escapeTelegramHtml(clampLine(payload.childFirstName, HEADER_NAME_BUDGET))} · ${formatHebrewWeekday(payload.reportFor)}, ${formatSchoolDate(payload.reportFor)}`,
   ];
 
-  const headline = line(prose.headline);
-  if (headline) blocks.push(headline);
+  // The TL;DR: the model's one-line summary of the day, and under it the one
+  // question the headline could never answer -- what has to be handed in, and
+  // by when. That line is deterministic for the same reason the due-tomorrow
+  // label is (ADR-0027): the model is forbidden from stating a deadline,
+  // because it cannot tell a date the school published from one the timetable
+  // implies, and a parent must never be told the second is the first.
+  const tldr = [line(prose.headline), submissionSummary(payload, options.explicitDueDates ?? {})]
+    .filter((part) => part.length > 0);
+  if (tldr.length > 0) blocks.push(tldr.join('\n'));
 
   // Two sections from one list. `classification` is written by the sync tasks:
   // a note of praise and an unexcused absence must not share a heading that
@@ -243,9 +255,9 @@ export function renderReport(
     items: ItemBlock[],
     extraLines: string[] = [],
   ): void => {
-    const lines = id === 'activity' ? templateOwned : prose.itemLines;
-    const intro = id === 'activity' ? '' : prose.intros[id];
-    const rendered = section(id, items, lines, intro, base, guid, extraLines);
+    const lines = TEMPLATE_OWNED.has(id) ? templateOwned : prose.itemLines;
+    const intro = TEMPLATE_OWNED.has(id) ? '' : prose.intros[id];
+    const rendered = section(id, items, lines, intro, extraLines);
     if (rendered) blocks.push(rendered);
   };
 
@@ -259,6 +271,19 @@ export function renderReport(
 
   if (positive.length > 0) {
     push('positive', positive.map((fact) => behaviorBlock('positive', fact, base, guid)));
+  }
+
+  if (payload.grades.length > 0) {
+    // Template-owned for now, like the consent section: the model is handed no
+    // grades at all, so anything it wrote about one would describe nothing.
+    // The day grades enter the prompt, drop 'grades' from TEMPLATE_OWNED.
+    push(
+      'grades',
+      payload.grades.map((fact) => ({
+        ref: digestItemRef('grades', fact.id),
+        href: gradesSectionUrl(base, guid),
+      })),
+    );
   }
 
   if (payload.homeworkNew.length > 0) {
@@ -317,8 +342,8 @@ export function renderReport(
 }
 
 /**
- * One section: a bold title, the intro if it earned its place, then a bullet
- * per item with its own anchor.
+ * One section: a bold, unanchored title, the intro if it earned its place,
+ * then a bullet per item with its own anchor.
  *
  * `itemLines` and `introText` are passed in rather than read off the prose, so
  * the caller can route the consent section to the template's own lines --
@@ -330,28 +355,13 @@ function section(
   items: ItemBlock[],
   itemLines: Record<string, string>,
   introText: string | null | undefined,
-  base: string | null,
-  guid: string | null,
   extraLines: string[],
 ): string {
-  const target = SECTION_TARGETS[id];
-  const href =
-    target === 'child'
-      ? childUrl(base, guid)
-      : target
-        ? childSectionUrl(base, guid, target.section, target.behavior ?? 'all')
-        : null;
-  const title = SECTION_TITLES[id];
-
-  // The emoji stays outside the anchor: a marker is not a link, and Telegram
-  // renders an anchored emoji as part of the tappable text.
-  const [marker, ...words] = title.split(' ');
-  const label = words.join(' ');
-  const heading = href
-    ? `<b>${marker} ${anchor(href, label)}</b>`
-    : `<b>${escapeTelegramHtml(title)}</b>`;
-
-  const lines: string[] = [heading];
+  // Bold, and never a link. A header could only ever point at the section
+  // list, which is one tap away from the item the parent actually wants and
+  // leaves them to find it; the item's own bullet is the link that answers the
+  // message. See ADR-0047.
+  const lines: string[] = [`<b>${escapeTelegramHtml(SECTION_TITLES[id])}</b>`];
 
   // The caller passes '' for the consent section: nothing the model wrote
   // about it describes anything it was shown.
@@ -368,7 +378,7 @@ function section(
     // all, by merging the model's over the deterministic ones per ref.
     if (clamped.length === 0) continue;
 
-    lines.push(`• ${item.href ? anchor(item.href, clamped) : escapeTelegramHtml(clamped)}`);
+    lines.push(`${BULLET}${item.href ? anchor(item.href, clamped) : escapeTelegramHtml(clamped)}`);
     rendered += 1;
 
     // The teacher's own words, visibly theirs, and the template's to render --
@@ -381,7 +391,7 @@ function section(
 
   // A section whose every item lost its line is not a section. Counted rather
   // than detected: a model intro that happens to open with a bullet would
-  // satisfy a `startsWith('• ')` scan and keep an itemless heading alive.
+  // satisfy a `startsWith(BULLET)` scan and keep an itemless heading alive.
   if (rendered === 0) return '';
 
   for (const extra of extraLines) {
@@ -390,6 +400,79 @@ function section(
   }
 
   return lines.join('\n');
+}
+
+/**
+ * "What has to be handed in, and by when" -- the one question a parent asks
+ * the message, on one deterministic line in the TL;DR.
+ *
+ * Two sources, in this order of trust:
+ *
+ * 1. a date written in the assignment text itself, which the model extracted
+ *    into `explicitDueDates` (`עד <date>`); and
+ * 2. the next lesson of that group in the timetable (`צפי להגשה <date>`).
+ *
+ * The labels are not interchangeable and the distinction is the whole reason
+ * this line is the template's rather than the model's. Mashov has no due-date
+ * field: the second date is arithmetic over a timetable, and ADR-0027 is a
+ * promise that such a date is always labelled as derived. A model asked to
+ * write this sentence cannot hold that line, because to it both dates are just
+ * dates.
+ *
+ * A date earlier than the day being reported is dropped. A wrong-year reading
+ * of Hebrew text that names no year is the ordinary way one appears, and
+ * telling a parent to hand something in last week is worse than saying nothing.
+ */
+const SUBMISSION_PREFIX = '📌 להגשה:';
+
+/**
+ * The bullet, preceded by a RIGHT-TO-LEFT MARK.
+ *
+ * `•` is a direction-neutral character, so a line that opens with one leaves
+ * the client to guess which end it belongs to -- and Telegram guesses wrong on
+ * a Hebrew line, rendering the bullet hard against the LEFT margin, the end
+ * the eye finishes on rather than the one it starts from. The RLM is a strong
+ * RTL character with no glyph of its own: it makes the bullet part of an RTL
+ * run, which puts it on the right, where the sentence begins. It survives
+ * `stripTelegramHtml`, so the flat fallback render keeps it too.
+ */
+const BULLET = '\u200F\u2022 ';
+
+function submissionSummary(payload: DigestPayload, explicit: Record<string, string>): string {
+  const entries: string[] = [];
+  const seen = new Set<string>();
+
+  const consider = (section: DigestSectionId, fact: DigestHomeworkFact): void => {
+    const stated = parseIsoDay(explicit[digestItemRef(section, fact.id)]);
+    const due = stated ?? fact.estimatedDueDate ?? null;
+    if (!due) return;
+    if (due.getTime() < payload.reportFor.getTime()) return;
+
+    const subject = fact.subjectName.trim();
+    if (subject.length === 0) return;
+
+    const when = stated
+      ? `עד ${formatSchoolDate(due)}`
+      : `צפי להגשה ${formatSchoolDate(due)}`;
+    const entry = `${subject} — ${when}`;
+    // Deduped on what is rendered, not on the ref. One homework row carries
+    // two refs on the day it is both newly assigned and estimated-due, and
+    // two assignments in one subject due on one day are one errand to a
+    // parent -- in both cases the second entry adds a repetition, not a fact.
+    if (seen.has(entry)) return;
+    seen.add(entry);
+    entries.push(entry);
+  };
+
+  for (const fact of payload.homeworkNew) consider('homeworkNew', fact);
+  for (const fact of payload.homeworkDueTomorrow) consider('dueTomorrow', fact);
+
+  if (entries.length === 0) return '';
+
+  // Clamped and escaped exactly once, as one line: the subject names are
+  // upstream text, and the budget is what keeps the chunker's hard cut away
+  // from the tags around this block.
+  return escapeTelegramHtml(clampLine(`${SUBMISSION_PREFIX} ${entries.join(' · ')}`));
 }
 
 /**
@@ -409,7 +492,7 @@ function renderFiles(files: UnsentFile[], base: string | null, guid: string | nu
       file.itemType === 'homework'
         ? homeworkItemUrl(base, guid, file.itemId)
         : behaviorItemUrl(base, guid, file.itemId);
-    lines.push(`• קובץ גדול מדי לשליחה: ${href ? anchor(href, name) : escapeTelegramHtml(name)}`);
+    lines.push(`${BULLET}קובץ גדול מדי לשליחה: ${href ? anchor(href, name) : escapeTelegramHtml(name)}`);
   }
 
   return lines.length > 1 ? lines.join('\n') : '';
@@ -508,6 +591,9 @@ export function deterministicItemLines(payload: DigestPayload): Record<string, s
   for (const fact of payload.board) {
     lines[digestItemRef('board', fact.id)] = boardSentence(fact);
   }
+  for (const fact of payload.grades) {
+    lines[digestItemRef('grades', fact.id)] = gradeSentence(fact);
+  }
 
   return lines;
 }
@@ -596,4 +682,24 @@ function activitySentence(fact: DigestActivityFact): string {
   // printed as a formatted null.
   if (!fact.endAnswerDate) return title;
   return `${title} (יש להשיב עד ${formatSchoolDate(fact.endAnswerDate)})`;
+}
+
+/**
+ * The subject, which assessment it was, the mark, and the day it was sat.
+ *
+ * The date is the point of the parenthesis: `eventDate` and `enteredAt` can be
+ * weeks apart, so a mark that arrives today routinely belongs to a test from
+ * last month, and "92" on its own would attach it to the wrong day in a
+ * parent's head.
+ *
+ * `gradeType` ("מבחן") stands in when the assessment has no name of its own,
+ * which upstream does send. The mark is printed via a template literal rather
+ * than tested for truthiness anywhere: 0 is a real grade, and the row a parent
+ * most needs is the one a falsy check would drop.
+ */
+function gradeSentence(fact: DigestGradeFact): string {
+  const what = fact.gradingEvent.trim() || fact.gradeType.trim();
+  const head = [fact.subjectName.trim(), what].filter((part) => part.length > 0).join(' — ');
+  const mark = head.length > 0 ? `${head}: ${fact.grade}` : `ציון: ${fact.grade}`;
+  return `${mark} (${formatSchoolDate(fact.eventDate)})`;
 }

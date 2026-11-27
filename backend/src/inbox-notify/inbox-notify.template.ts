@@ -93,13 +93,22 @@ export function renderInboxMessage(
     stripMailHtmlToText(message.bodyHtmlSanitized, budget) ||
     stripMailHtmlToText(message.bodyTextPreview, budget);
 
-  const lines = [
-    `📬 <b>${escapeTelegramHtml(INBOX_TITLE)}</b>`,
-    // Quiet, because it is context rather than content: who it is from and
-    // when, on one line the eye can skip.
-    `<i>${escaped(`${message.senderName} · ${formatMailMoment(message.sendTime)}`)}</i>`,
-    `<b>${escaped(message.subject)}</b>`,
-  ];
+  const lines = [`📬 <b>${escapeTelegramHtml(INBOX_TITLE)}</b>`];
+
+  // Quiet, because it is context rather than content: who it is from and when,
+  // on one line the eye can skip. The parts are joined after the empty ones are
+  // dropped: a mail with no sender name would otherwise open with a dangling
+  // separator.
+  const meta = [escaped(message.senderName), formatMailMoment(message.sendTime)]
+    .filter((part) => part.length > 0)
+    .join(' · ');
+  if (meta.length > 0) lines.push(`<i>${meta}</i>`);
+
+  // Omitted rather than rendered empty. `<b></b>` is an entity with nothing in
+  // it, which Telegram can answer `can't parse entities` to -- a wasted call
+  // and a flat retry, spent on a line that said nothing.
+  const subject = escaped(message.subject);
+  if (subject.length > 0) lines.push(`<b>${subject}</b>`);
 
   // The school's own words, visibly theirs -- one quote per paragraph.
   //

@@ -24,6 +24,7 @@ function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
     releases: [],
     activities: [],
     board: [],
+    grades: [],
     ...overrides,
   };
 }
@@ -32,6 +33,15 @@ const NOTICE = {
   id: '4211',
   text: 'ביום חמישי יום ספורט',
   expirationDate: new Date('2026-11-30T00:00:00Z'),
+};
+
+const GRADE = {
+  id: 'grd-1',
+  subjectName: 'חשבון',
+  gradingEvent: 'מבחן בשברים',
+  gradeType: 'מבחן',
+  grade: 92,
+  eventDate: new Date('2026-11-10T00:00:00Z'),
 };
 
 const PRAISE = {
@@ -182,9 +192,24 @@ describe('renderReport structure', () => {
 
     const text = renderReport(payload, modelProse(payload));
 
-    expect(text.split('\n').filter((line) => line.startsWith('• '))).toHaveLength(2);
+    expect(text.split('\n').filter((line) => line.startsWith('\u200F• '))).toHaveLength(2);
     expect(text).toContain('איחור');
     expect(text).toContain('הפרעה');
+  });
+
+  it('opens every bullet with a right-to-left mark, so the bullet sits on the right', () => {
+    // Without it the line begins with a neutral character, and Telegram lands
+    // the bullet at the far LEFT of a Hebrew line -- the end the eye finishes
+    // on, not the one it starts from. One RLM makes the run strongly RTL.
+    const payload = makePayload({
+      behavior: [BEHAVIOR, { ...BEHAVIOR, id: 'beh-2', achvaName: 'הפרעה', subject: 'אנגלית' }],
+    });
+
+    const text = renderReport(payload, modelProse(payload));
+
+    const bullets = text.split('\n').filter((line) => line.includes('• '));
+    expect(bullets).toHaveLength(2);
+    for (const bullet of bullets) expect(bullet.startsWith('\u200F• ')).toBe(true);
   });
 
   it('renders a section intro above the bullets when the model wrote one', () => {
@@ -199,7 +224,7 @@ describe('renderReport structure', () => {
     const intro = lines.indexOf('שני דברים קטנים, שניהם באותו שיעור.');
     expect(intro).toBeGreaterThan(-1);
     expect(lines[intro - 1]).toContain('התנהגות ונוכחות');
-    expect(lines[intro + 1].startsWith('• ')).toBe(true);
+    expect(lines[intro + 1].startsWith('\u200F• ')).toBe(true);
   });
 
   it('renders no intro line when the model left it empty', () => {
@@ -268,10 +293,11 @@ describe('renderReport structure', () => {
     expect(text).not.toContain('צפי הגשה למחר');
   });
 
-  it("anchors the early-release header on the child's page, like every other header", () => {
-    // The release itself lives in a dialog with no URL, but the section header
-    // is a link everywhere else in the message; leaving this one dead made the
-    // header row read as inconsistently tappable.
+  it('leaves every section header plain, because a header links to no specific target', () => {
+    // Deliberately inverted: headers used to anchor their section. A header
+    // link lands the parent on a list and leaves them to find the thing the
+    // message was about, which is the cost the item anchors exist to remove --
+    // and a message of nothing but blue lines reads as a wall of links.
     const payload = makePayload({ releases: [RELEASE] });
 
     const text = renderReport(payload, deterministicProse(payload), {
@@ -279,10 +305,8 @@ describe('renderReport structure', () => {
       studentGuid: GUID,
     });
 
-    const header = text.split('\n').find((line) => line.includes('שחרור מוקדם'));
-    expect(header).toBe(
-      `<b>🕑 <a href="${BASE}/children/${GUID}">שחרור מוקדם</a></b>`,
-    );
+    const header = text.split('\n').find((line) => line.startsWith('<b>🕑'));
+    expect(header).toBe('<b>🕑 שחרור מוקדם</b>');
   });
 
   it('clamps the header line, so even a pathological name cannot break the budget', () => {
@@ -437,6 +461,83 @@ describe('renderReport structure', () => {
     expect(text).not.toContain('תור לרופא');
   });
 
+
+  it('renders a grades section, one bullet per grade', () => {
+    const payload = makePayload({ grades: [GRADE] });
+
+    const text = renderReport(payload, deterministicProse(payload));
+
+    expect(text).toContain('<b>📊 ציונים חדשים</b>');
+    expect(text).toContain('חשבון');
+    expect(text).toContain('מבחן בשברים');
+    expect(text).toContain('92');
+  });
+
+  it('dates a grade by the day the test was sat, not the day it was keyed in', () => {
+    // The two are weeks apart on a real row, and "92" with no date leaves a
+    // parent guessing which assessment it belongs to.
+    const payload = makePayload({ grades: [GRADE] });
+
+    expect(renderReport(payload, deterministicProse(payload))).toContain('10/11/2026');
+  });
+
+  it('names the grade type when the assessment itself has no name', () => {
+    const payload = makePayload({ grades: [{ ...GRADE, gradingEvent: '   ' }] });
+
+    const text = renderReport(payload, deterministicProse(payload));
+
+    expect(text).toContain('מבחן');
+    expect(text).toContain('92');
+  });
+
+  it('points a grade at the grades section, which is as close as a link gets', () => {
+    // There is no per-grade detail route -- `grades` is a tab on the child's
+    // page -- so the bullet links there, exactly as a board notice does.
+    const payload = makePayload({ grades: [GRADE] });
+
+    const text = renderReport(payload, deterministicProse(payload), {
+      publicBaseUrl: BASE,
+      studentGuid: GUID,
+    });
+
+    expect(text).toContain(`${BASE}/children/${GUID}?section=grades&amp;behavior=all`);
+  });
+
+  it('renders the grades section from the template whatever the model wrote', () => {
+    // The model is handed no grades at all, so anything it wrote about one
+    // describes nothing -- the same reasoning as the consent section
+    // (ADR-0035). This flips the day grades enter the prompt.
+    const payload = makePayload({ grades: [GRADE] });
+
+    const text = renderReport(
+      payload,
+      modelProse(payload, {
+        itemLines: { [digestItemRef('grades', 'grd-1')]: 'המצאתי ציון אחר' },
+        intros: { grades: 'המצאתי גם מבוא' },
+      }),
+    );
+
+    expect(text).toContain('92');
+    expect(text).not.toContain('המצאתי');
+  });
+
+  it('renders no grades section when there are no grades', () => {
+    const payload = makePayload({ behavior: [BEHAVIOR] });
+
+    expect(renderReport(payload, deterministicProse(payload))).not.toContain('ציונים חדשים');
+  });
+
+  it('renders a grade of zero as a grade, not as nothing', () => {
+    // `0` is falsy and a real mark; a template that tested the number for
+    // truthiness would drop the one row a parent most needs to see.
+    const payload = makePayload({ grades: [{ ...GRADE, grade: 0 }] });
+
+    const text = renderReport(payload, deterministicProse(payload));
+
+    expect(text).toContain('<b>📊 ציונים חדשים</b>');
+    expect(text).toContain(': 0');
+  });
+
   it('renders a consent form with the deadline to answer by', () => {
     const payload = makePayload({ activities: [ACTIVITY] });
 
@@ -474,7 +575,7 @@ describe('renderReport structure', () => {
     const text = renderReport(payload, deterministicProse(payload));
 
     expect(text).toContain('✍️ אישורים שממתינים לך');
-    expect(text.split('\n').some((line) => line.startsWith('• '))).toBe(true);
+    expect(text.split('\n').some((line) => line.startsWith('\u200F• '))).toBe(true);
   });
 
   it('still renders a consent form with neither a title nor a deadline', () => {
@@ -483,7 +584,7 @@ describe('renderReport structure', () => {
     expect(
       renderReport(payload, deterministicProse(payload))
         .split('\n')
-        .some((line) => line.startsWith('• ')),
+        .some((line) => line.startsWith('\u200F• ')),
     ).toBe(true);
   });
 
@@ -530,13 +631,17 @@ describe('renderReport links', () => {
     expect(rendered()).toContain(`<a href="${BASE}/children/${GUID}/homework/hw-due">`);
   });
 
-  it('links each section header to that section', () => {
+  it('anchors no section header, and so links to no section list', () => {
     const text = rendered();
 
-    expect(text).toContain(`<b>⚠️ <a href="${BASE}/children/${GUID}?section=behavior&amp;behavior=attention">התנהגות ונוכחות</a></b>`);
-    expect(text).toContain(`?section=behavior&amp;behavior=positive`);
-    expect(text).toContain(`?section=homework&amp;behavior=all`);
-    expect(text).toContain(`?section=notices&amp;behavior=all`);
+    expect(text).toContain('<b>⚠️ התנהגות ונוכחות</b>');
+    expect(text).toContain('<b>🌟 חיזוק חיובי</b>');
+    expect(text).toContain('<b>📚 שיעורי בית חדשים</b>');
+    // A board notice has no detail route, so its ITEM still points at the
+    // notices list. No header does.
+    for (const line of text.split('\n')) {
+      if (line.startsWith('<b>')) expect(line).not.toContain('<a href');
+    }
   });
 
   it('links a board notice to the notices section, since it has no detail route', () => {
@@ -637,15 +742,19 @@ describe('renderReport escaping', () => {
     expect(text).toContain('איחור &lt;i&gt;קטן&lt;/i&gt;');
   });
 
-  it('escapes the ampersand in a section link, so the href itself parses', () => {
-    const payload = makePayload({ behavior: [BEHAVIOR] });
+  it('escapes the ampersand in a board notice link, so the href itself parses', () => {
+    // The notices list is the one href with two query params, and so the one
+    // that carries a raw `&` -- which is what Telegram refuses to parse inside
+    // an attribute. (It used to be every section header; headers link to
+    // nothing now, and a board notice has no detail route of its own.)
+    const payload = makePayload({ board: [NOTICE] });
 
     const text = renderReport(payload, deterministicProse(payload), {
       publicBaseUrl: BASE,
       studentGuid: GUID,
     });
 
-    expect(text).toContain('behavior=attention');
+    expect(text).toContain('behavior=all');
     expect(text).not.toMatch(/href="[^"]*[^p]&[^a]/);
   });
 });
@@ -856,5 +965,145 @@ describe('deterministicProse', () => {
     expect(text).toContain('איחור');
     expect(text).toContain('לפתור עמוד 42');
     expect(text).toContain('הגיע באיחור של 10 דקות');
+  });
+});
+
+describe('renderReport submission summary', () => {
+  // "What do I have to get them to hand in, and by when" is the one question a
+  // parent asks the message, and the headline could not answer it: the model
+  // is forbidden from stating a deadline (ADR-0027), so the dates lived in the
+  // due-tomorrow section or nowhere. This line is deterministic and sits in
+  // the TL;DR block, directly under the headline.
+  const EXPLICIT = {
+    id: 'hw-explicit',
+    subjectName: 'אנגלית',
+    homeworkText: 'לכתוב חיבור ולהגיש עד 30/11',
+    remark: null,
+    lessonDate: REPORT_FOR,
+    groupId: 71,
+  };
+
+  const ESTIMATED = {
+    ...HOMEWORK,
+    id: 'hw-estimated',
+    subjectName: 'חשבון',
+    estimatedDueDate: new Date('2026-11-19T00:00:00Z'),
+  };
+
+  function ref(section: 'homeworkNew' | 'dueTomorrow', id: string): string {
+    return digestItemRef(section, id);
+  }
+
+  it('names the subject and the date the assignment text itself stated', () => {
+    const payload = makePayload({ homeworkNew: [EXPLICIT] });
+
+    const text = renderReport(payload, modelProse(payload), {
+      explicitDueDates: { [ref('homeworkNew', 'hw-explicit')]: '2026-11-30' },
+    });
+
+    const lines = text.split('\n');
+    const index = lines.findIndex((line) => line.startsWith('📌'));
+    expect(lines[index]).toBe('📌 להגשה: אנגלית — עד 30/11/2026');
+    // In the TL;DR block: the headline, then this, with no blank line between.
+    expect(lines[index - 1]).toBe('יום רגוע עם הערה אחת');
+  });
+
+  it('labels a date that came from the timetable as an estimate, never as a deadline', () => {
+    // ADR-0027: a derived deadline is always labelled derived. The school
+    // never published this date; the next lesson in the timetable implies it.
+    const payload = makePayload({ homeworkNew: [ESTIMATED] });
+
+    const text = renderReport(payload, modelProse(payload), {});
+
+    expect(text).toContain('📌 להגשה: חשבון — צפי להגשה 19/11/2026');
+    expect(text).not.toContain('עד 19/11/2026');
+  });
+
+  it('prefers the date written in the text over the timetable estimate', () => {
+    const payload = makePayload({ homeworkNew: [ESTIMATED] });
+
+    const text = renderReport(payload, modelProse(payload), {
+      explicitDueDates: { [ref('homeworkNew', 'hw-estimated')]: '2026-11-23' },
+    });
+
+    expect(text).toContain('📌 להגשה: חשבון — עד 23/11/2026');
+    expect(text).not.toContain('19/11/2026');
+  });
+
+  it('covers what is due tomorrow as well as what was handed out today', () => {
+    const due = { ...HOMEWORK, id: 'hw-due', subjectName: 'מדעים', estimatedDueDate: new Date('2026-11-18T00:00:00Z') };
+    const payload = makePayload({ homeworkNew: [EXPLICIT], homeworkDueTomorrow: [due] });
+
+    const text = renderReport(payload, modelProse(payload), {
+      explicitDueDates: { [ref('homeworkNew', 'hw-explicit')]: '2026-11-30' },
+    });
+
+    const summary = text.split('\n').find((line) => line.startsWith('📌')) ?? '';
+    expect(summary).toContain('אנגלית — עד 30/11/2026');
+    expect(summary).toContain('מדעים — צפי להגשה 18/11/2026');
+    expect(summary.split(' · ')).toHaveLength(2);
+  });
+
+  it('says it once for a row that is both newly assigned and due tomorrow', () => {
+    // The same homework carries two refs by design. One assignment, one entry.
+    const both = { ...HOMEWORK, id: 'hw-1', estimatedDueDate: new Date('2026-11-18T00:00:00Z') };
+    const payload = makePayload({ homeworkNew: [both], homeworkDueTomorrow: [both] });
+
+    const text = renderReport(payload, modelProse(payload), {});
+
+    const summary = text.split('\n').find((line) => line.startsWith('📌')) ?? '';
+    expect(summary).toBe('📌 להגשה: חשבון — צפי להגשה 18/11/2026');
+  });
+
+  it('renders no summary line at all when nothing carries a date', () => {
+    const payload = makePayload({ homeworkNew: [HOMEWORK], behavior: [BEHAVIOR] });
+
+    const text = renderReport(payload, modelProse(payload), {});
+
+    expect(text).not.toContain('📌');
+    expect(text).not.toContain('להגשה:');
+  });
+
+  it('ignores a date that has already passed', () => {
+    // A model reading "עד 10/11" out of an older assignment's text must not
+    // produce a TL;DR telling a parent to hand something in last week.
+    const payload = makePayload({ homeworkNew: [EXPLICIT] });
+
+    const text = renderReport(payload, modelProse(payload), {
+      explicitDueDates: { [ref('homeworkNew', 'hw-explicit')]: '2026-11-10' },
+    });
+
+    expect(text).not.toContain('📌');
+  });
+
+  it('ignores an explicit date that is not an ISO day', () => {
+    const payload = makePayload({ homeworkNew: [EXPLICIT] });
+
+    const text = renderReport(payload, modelProse(payload), {
+      explicitDueDates: { [ref('homeworkNew', 'hw-explicit')]: 'מחר' },
+    });
+
+    expect(text).not.toContain('📌');
+  });
+
+  it('escapes a hostile subject name and keeps the line inside the budget', () => {
+    const hostile = { ...HOMEWORK, id: 'hw-hostile', subjectName: `<b>${'ש'.repeat(4000)}</b> & עוד`, estimatedDueDate: new Date('2026-11-19T00:00:00Z') };
+    const payload = makePayload({ homeworkNew: [hostile] });
+
+    const text = renderReport(payload, modelProse(payload), {});
+
+    expect(text).toContain('&lt;b&gt;');
+    expect(text).not.toContain('<b>ש');
+    for (const line of text.split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(TELEGRAM_CHUNK_LIMIT);
+    }
+  });
+
+  it('renders the summary with no model involved at all', () => {
+    const payload = makePayload({ homeworkNew: [ESTIMATED] });
+
+    const text = renderReport(payload, deterministicProse(payload), {});
+
+    expect(text).toContain('📌 להגשה: חשבון — צפי להגשה 19/11/2026');
   });
 });

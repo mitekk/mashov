@@ -135,6 +135,41 @@ describe('DigestCollectorService.collect', () => {
     expect(payload.homeworkDueTomorrow[0].estimatedDueDate).toEqual(TOMORROW);
   });
 
+  it('attaches the next-lesson estimate to a newly assigned item too', async () => {
+    // The submission summary answers "by when" for a fresh assignment from the
+    // timetable, so the estimate has to survive the trip from checker to
+    // template rather than being dropped for everything but due-tomorrow.
+    const harness = makeHarness({ homework: [HOMEWORK_ROW] });
+
+    const payload = await harness.service.collect({
+      studentGuid: 'stu-1',
+      candidates: [
+        candidate({ itemType: 'homework_new', itemId: 'hw-1', estimatedDueDate: TOMORROW }),
+      ],
+      reportFor: REPORT_FOR,
+      userId: 'user-1',
+    });
+
+    expect(payload.homeworkNew[0].estimatedDueDate).toEqual(TOMORROW);
+  });
+
+  it('keeps the two sections\' estimates apart for one row reported in both', async () => {
+    const harness = makeHarness({ homework: [HOMEWORK_ROW] });
+
+    const payload = await harness.service.collect({
+      studentGuid: 'stu-1',
+      candidates: [
+        candidate({ itemType: 'homework_new', itemId: 'hw-1', estimatedDueDate: null }),
+        candidate({ itemType: 'homework_due', itemId: 'hw-1', estimatedDueDate: TOMORROW }),
+      ],
+      reportFor: REPORT_FOR,
+      userId: 'user-1',
+    });
+
+    expect(payload.homeworkNew[0].estimatedDueDate).toBeNull();
+    expect(payload.homeworkDueTomorrow[0].estimatedDueDate).toEqual(TOMORROW);
+  });
+
   it('reports the same homework row as both newly assigned and estimated-due', async () => {
     // Distinct itemTypes in the dedup key allow it, so the collector must too.
     const harness = makeHarness({ homework: [HOMEWORK_ROW] });
