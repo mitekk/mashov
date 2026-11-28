@@ -17,7 +17,8 @@ export type DigestItemType =
   | 'homework_due'
   | 'release'
   | 'activity'
-  | 'message_board';
+  | 'message_board'
+  | 'grade';
 
 /** An item the checker believes has not yet been reported to this child's parents. */
 export interface DigestCandidate {
@@ -128,8 +129,8 @@ export interface DigestHomeworkFact {
  * Two dates on the row, and this is the later-surprising one: `eventDate` is
  * when the test was sat, `enteredAt` when the teacher keyed the mark in, and
  * they can be weeks apart. The sentence prints `eventDate`, because a parent
- * reading "92" today needs to know which test it was; the checker will care
- * about `enteredAt`, since that is when the grade became news.
+ * reading "92" today needs to know which test it was; the checker windows
+ * `enteredAt`, since that is when the grade became news.
  */
 export interface DigestGradeFact {
   /** GradeItem.id. */
@@ -169,9 +170,9 @@ export interface DigestPayload {
   activities: DigestActivityFact[];
   board: DigestBoardFact[];
   /**
-   * New grades. Rendered by the template today; nothing fills this list yet --
-   * the checker and the collector do not look at `GradeItem` at all, so it is
-   * always empty until that is wired.
+   * New grades: marks keyed in by a teacher inside
+   * `DIGEST_GRADE_LOOKBACK_DAYS`. Windowed on `enteredAt` rather than
+   * `eventDate` -- see `DigestGradeFact`.
    */
   grades: DigestGradeFact[];
 }

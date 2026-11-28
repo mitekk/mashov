@@ -158,7 +158,19 @@ describe('SOURCE_POLICY', () => {
   });
 
   it('keeps the digest inputs in the digest set', () => {
-    for (const source of ['homework', 'behavior', 'releases', 'schoolActivities', 'message_board']) {
+    for (const source of [
+      'homework',
+      'behavior',
+      'releases',
+      'schoolActivities',
+      'message_board',
+      // Grades became one when the digest learned to report a new mark. Left
+      // out of the digest set, a mark would reach the table only on a login
+      // or a manual refresh, and the evening message would report it days
+      // late -- `enteredAt` by then outside DIGEST_GRADE_LOOKBACK_DAYS, so
+      // never at all.
+      'grades',
+    ]) {
       expect(policyForSource(source)?.sets).toContain('digest');
     }
   });

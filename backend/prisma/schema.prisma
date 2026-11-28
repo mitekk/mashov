@@ -466,9 +466,13 @@ model GradeItem {
   updatedAt      DateTime @updatedAt
 
   @@unique([studentGuid, schoolYear, gradingEventId])
-  // The only reader is the per-child year-scoped list, newest assessment first.
-  // No year-wide index: grades feed no digest and no feed (yet).
+  // Two readers, two orders. The per-child year-scoped list reads newest
+  // assessment first; the digest checker asks which marks were KEYED IN
+  // recently, which is `enteredAt` and can be weeks from `eventDate`. Without
+  // the second index that rule uses the first two columns and filters a whole
+  // year of a child's grades in memory.
   @@index([studentGuid, schoolYear, eventDate])
+  @@index([studentGuid, schoolYear, enteredAt])
   @@map("grade_item")
 }
 

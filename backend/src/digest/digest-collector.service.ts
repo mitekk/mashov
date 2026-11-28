@@ -7,6 +7,7 @@ import {
   DigestCandidate,
   DigestActivityFact,
   DigestGender,
+  DigestGradeFact,
   DigestHomeworkFact,
   DigestPayload,
   DigestReleaseFact,
@@ -50,11 +51,13 @@ export class DigestCollectorService {
       select: { privateName: true, gender: true },
     });
 
+    const gradeIds = idsOf(candidates, 'grade');
     const releaseIds = idsOf(candidates, 'release').map((id) => Number(id));
     const boardIds = idsOf(candidates, 'message_board').map((id) => Number(id));
     const activityIds = idsOf(candidates, 'activity').map((id) => Number(id));
 
     const behavior = behaviorIds.length > 0 ? await this.readBehavior(behaviorIds) : [];
+    const grades = gradeIds.length > 0 ? await this.readGrades(gradeIds) : [];
     const board = boardIds.length > 0 ? await this.readMessageBoard(studentGuid, boardIds) : [];
     const releases = releaseIds.length > 0 ? await this.readReleases(studentGuid, releaseIds) : [];
     const activities =
@@ -91,10 +94,7 @@ export class DigestCollectorService {
       activities,
       behavior,
       board,
-      // Nothing produces a grade candidate yet: the checker does not look at
-      // `GradeItem`, so there is nothing here to collect. The template already
-      // renders the section, so wiring it is a checker rule plus a read here.
-      grades: [],
+      grades,
       homeworkNew: newIds
         .map((id) => homeworkById.get(id))
         .filter((item): item is DigestHomeworkFact => item !== undefined)
@@ -121,6 +121,34 @@ export class DigestCollectorService {
       },
       orderBy: { eventAt: 'asc' },
     })) as DigestBehaviorFact[];
+  }
+
+  /**
+   * Keyed by `GradeItem.id`, the cuid, because that is what the candidate
+   * carries -- unlike releases and board notices, whose checker rules hash the
+   * upstream id.
+   *
+   * `teacherName` is deliberately not selected. It is the only field of a
+   * grade that names a person and the message has no use for it, so not
+   * reading it is what keeps it out of the prompt by construction.
+   *
+   * Ordered by `eventDate`, newest first: the parent reads the marks in the
+   * order the assessments were sat, which is the date the sentence prints --
+   * not the order the teacher happened to key them in.
+   */
+  private async readGrades(ids: string[]): Promise<DigestGradeFact[]> {
+    return (await this.prisma.gradeItem.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        subjectName: true,
+        gradingEvent: true,
+        gradeType: true,
+        grade: true,
+        eventDate: true,
+      },
+      orderBy: { eventDate: 'desc' },
+    })) as DigestGradeFact[];
   }
 
   /**

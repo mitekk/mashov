@@ -65,7 +65,9 @@ const MAX_TOKENS_CEILING = 16000;
  * The items the model is actually asked to write a line for.
  *
  * Consent forms are not counted: the model is handed none of them (ADR-0035).
- * Neither are grades, which nothing shows it yet.
+ * Neither are grades, which it is never shown either: the section is
+ * template-owned, so counting them would buy output for lines the model does
+ * not write.
  */
 function maxTokensFor(payload: DigestPayload): number {
   const items =

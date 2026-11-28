@@ -99,6 +99,12 @@ services:
       # Mashov sends no creation date and updatedAt churns on every 06:00
       # upsert, so neither can mean "new".
       DIGEST_BOARD_LOOKBACK_DAYS: ${DIGEST_BOARD_LOOKBACK_DAYS:-2}
+      # How recently a teacher must have keyed a mark in for it to count as
+      # news. Measured from GradeItem.enteredAt (the upstream `timestamp`),
+      # NOT from eventDate, which is when the test was sat -- they are weeks
+      # apart on real rows, and the message prints eventDate while the checker
+      # windows enteredAt.
+      DIGEST_GRADE_LOOKBACK_DAYS: ${DIGEST_GRADE_LOOKBACK_DAYS:-2}
       DIGEST_LLM_MODEL: ${DIGEST_LLM_MODEL:-claude-sonnet-5-5}
       DIGEST_LLM_EFFORT: ${DIGEST_LLM_EFFORT:-low}
       DIGEST_LLM_TIMEOUT_MS: ${DIGEST_LLM_TIMEOUT_MS:-30000}

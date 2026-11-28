@@ -32,6 +32,7 @@ import {
   DigestHomeworkFact,
   DigestPayload,
   DigestProse,
+  DigestItemType,
   DigestSummary,
 } from './digest.types';
 import { DigestAttachment, DigestAttachmentResolver } from './digest-attachment.resolver';
@@ -49,7 +50,12 @@ import { parseIsoDay } from './iso-day';
  *
  * Activity hashes are excluded because they embed the owning `userId`, so two
  * parents' claims for the same form hash differently -- and the forms are not
- * in the summarizer's payload anyway. Every other hash is derived from the
+ * in the summarizer's payload anyway. Grade hashes are excluded for the
+ * narrower reason that `buildPrompt` is shown no grades at all: the section is
+ * template-owned (ADR-0047), so a run whose only news is a mark would ask the
+ * model for a headline with no facts to write it from. The day grades enter
+ * the prompt, drop them from here and from `TEMPLATE_OWNED` together. Every
+ * other hash is derived from the
  * child's own row, which is what makes an equal list mean an equal payload
  * for the fields the model is shown. (`childFirstName`, `childGender` and the
  * timetable estimates are re-read per target and are not in any hash; two
@@ -59,9 +65,14 @@ import { parseIsoDay } from './iso-day';
  *
  * An empty list means there is nothing for the model to write about.
  */
-function nonActivityHashes(claimed: DigestCandidate[]): string[] {
+const NOT_IN_THE_PROMPT: ReadonlySet<DigestItemType> = new Set<DigestItemType>([
+  'activity',
+  'grade',
+]);
+
+function promptFactHashes(claimed: DigestCandidate[]): string[] {
   return claimed
-    .filter((candidate) => candidate.itemType !== 'activity')
+    .filter((candidate) => !NOT_IN_THE_PROMPT.has(candidate.itemType))
     .map((candidate) => candidate.contentHash)
     .sort();
 }
@@ -633,7 +644,7 @@ export class DigestService {
     payload: DigestPayload,
     summaries: Map<string, DigestSummary>,
   ): Promise<DigestSummary> {
-    const hashes = nonActivityHashes(claimed);
+    const hashes = promptFactHashes(claimed);
     if (hashes.length === 0) {
       return {
         prose: deterministicProse(payload),
@@ -1251,6 +1262,12 @@ function survivingHashes(claimed: DigestCandidate[], narrowed: DigestPayload): S
     ...narrowed.releases.map((fact) => `release:${fact.id}`),
     ...narrowed.activities.map((fact) => `activity:${fact.id}`),
     ...narrowed.board.map((fact) => `message_board:${fact.id}`),
+    // The prefix must equal the `DigestItemType` member exactly: the filter
+    // below compares `${candidate.itemType}:${candidate.itemId}`. Omit this
+    // line and every grade claim is non-surviving, so `settleUnsent` releases
+    // it and the same mark is re-claimed and re-sent on all of the day's
+    // ticks, forever.
+    ...narrowed.grades.map((fact) => `grade:${fact.id}`),
   ]);
 
   return new Set(
@@ -1274,6 +1291,7 @@ function countItems(payload: DigestPayload): number {
     ...payload.releases.map((fact) => `release:${fact.id}`),
     ...payload.activities.map((fact) => `activity:${fact.id}`),
     ...payload.board.map((fact) => `board:${fact.id}`),
+    ...payload.grades.map((fact) => `grade:${fact.id}`),
   ]);
   return ids.size;
 }
