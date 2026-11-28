@@ -333,6 +333,31 @@ describe('DigestSummarizerService.summarize', () => {
     expect(createMock.mock.calls[0][0].max_tokens).toBe(4000);
   });
 
+  it('does not count grades towards the ceiling', async () => {
+    // The closing line of ADR-0047's max_tokens addendum. The ceiling scales
+    // with the items the model is asked to write a line for, and it is shown
+    // no grades at all -- so twenty marks must not buy output for a section
+    // the model never writes.
+    respondWith(JSON.stringify(GOOD_OUTPUT));
+
+    await makeService().summarize(
+      makePayload({
+        behavior: [],
+        homeworkNew: [],
+        grades: Array.from({ length: 20 }, (_, index) => ({
+          id: `grade-${index}`,
+          subjectName: 'חשבון',
+          gradingEvent: 'מבחן בשברים',
+          gradeType: 'מבחן',
+          grade: 92,
+          eventDate: REPORT_FOR,
+        })),
+      }),
+    );
+
+    expect(createMock.mock.calls[0][0].max_tokens).toBe(4000);
+  });
+
   it('caps the ceiling, so one absurd day cannot buy an unbounded response', async () => {
     respondWith(JSON.stringify(GOOD_OUTPUT));
 
@@ -570,6 +595,15 @@ describe('buildPrompt with releases and activities', () => {
     remark: 'אבקש לשחרר את אבי, יש לו תור לרופא',
   };
 
+  const GRADE = {
+    id: 'grade-1',
+    subjectName: 'חשבון',
+    gradingEvent: 'מבחן בשברים',
+    gradeType: 'מבחן',
+    grade: 92,
+    eventDate: new Date('2026-10-27T00:00:00Z'),
+  };
+
   const ACTIVITY = {
     id: '7',
     title: 'טיול שנתי לגליל',
@@ -604,6 +638,32 @@ describe('buildPrompt with releases and activities', () => {
 
     expect(prompt).not.toContain('טיול שנתי לגליל');
     expect(prompt).not.toContain('אישורים שממתינים');
+  });
+
+  it('never tells the model about a grade', () => {
+    // Grades are template-owned (ADR-0047): the model is shown none of them,
+    // so a line it wrote about one could only be invention. Enforced here
+    // rather than only at the call site, because this function is the PII
+    // boundary.
+    const prompt = buildPrompt({ ...makePayload(), grades: [GRADE] });
+
+    expect(prompt).not.toContain('מבחן בשברים');
+    expect(prompt).not.toContain('92');
+    expect(prompt).not.toContain('grades:');
+    expect(prompt).not.toContain('ציונים חדשים');
+  });
+
+  it("never sends the grading teacher's name, even if one is on the fact", () => {
+    // `DigestGradeFact` has no `teacherName` and the collector does not read
+    // the column, so this is the hostile cast: the field cannot arrive
+    // through the types, and the prompt must not carry it if it ever does.
+    const prompt = buildPrompt({
+      ...makePayload(),
+      grades: [{ ...GRADE, teacherName: 'מורה רחל לוי' }],
+    } as unknown as DigestPayload);
+
+    expect(prompt).not.toContain('מורה רחל לוי');
+    expect(prompt).not.toContain('רחל');
   });
 
   it('asks for a headline, intros and one entry per item', () => {
@@ -692,6 +752,13 @@ describe('buildPrompt with releases and activities', () => {
   it('never asks the model to write a consent-form line either', () => {
     expect(JSON.stringify(OUTPUT_SCHEMA)).not.toContain('activity');
   });
+
+  it('never asks the model to write a grade line either', () => {
+    // The intro-keys test above pins the list; this is the same guarantee
+    // stated where a future edit to the schema would trip over it.
+    expect(JSON.stringify(OUTPUT_SCHEMA)).not.toContain('grades');
+  });
+
 });
 
 describe('buildPrompt refs', () => {

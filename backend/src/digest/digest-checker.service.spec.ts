@@ -54,6 +54,8 @@ interface MockOptions {
   mutedCodes?: string;
   board?: Record<string, unknown>[];
   boardLookbackDays?: string;
+  grades?: Record<string, unknown>[];
+  gradeLookbackDays?: string;
 }
 
 function makeHarness(options: MockOptions = {}) {
@@ -138,6 +140,19 @@ function makeHarness(options: MockOptions = {}) {
         ),
       ),
     },
+    // Honours the enteredAt floor, as Postgres would. The window is the whole
+    // rule, so a mock that answered every row would report "ignores a grade
+    // entered weeks ago" as passing while every mark in the year came back.
+    gradeItem: {
+      findMany: jest.fn().mockImplementation(({ where }) =>
+        Promise.resolve(
+          (options.grades ?? []).filter((row) => {
+            const since = where?.enteredAt?.gte as Date | undefined;
+            return !since || (row.enteredAt as Date) >= since;
+          }),
+        ),
+      ),
+    },
     schoolActivity: {
       findMany: jest.fn().mockImplementation(({ where }) =>
         Promise.resolve(
@@ -159,6 +174,7 @@ function makeHarness(options: MockOptions = {}) {
       if (key === 'DIGEST_DUE_LOOKBACK_DAYS') return '14';
       if (key === 'DIGEST_MUTED_BEHAVIOR_CODES') return options.mutedCodes;
       if (key === 'DIGEST_BOARD_LOOKBACK_DAYS') return options.boardLookbackDays;
+      if (key === 'DIGEST_GRADE_LOOKBACK_DAYS') return options.gradeLookbackDays;
       return undefined;
     }),
   } as unknown as ConfigService;
@@ -889,5 +905,81 @@ describe('DigestCheckerService message board', () => {
     );
 
     expect(first.candidates[0].contentHash).not.toBe(edited.candidates[0].contentHash);
+  });
+});
+
+/**
+ * A mark keyed in this morning for a test sat three weeks ago -- the ordinary
+ * shape of a real row, not an edge case. `enteredAt` is what makes it news;
+ * `eventDate` is what the message prints.
+ */
+function gradeRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'grade-1',
+    subjectName: 'חשבון',
+    gradingEvent: 'מבחן בשברים',
+    gradeType: 'מבחן',
+    grade: 92,
+    eventDate: new Date('2026-10-27T00:00:00Z'),
+    enteredAt: new Date('2026-11-17T07:30:00Z'),
+    ...overrides,
+  };
+}
+
+describe('DigestCheckerService grades', () => {
+  it('reports a grade entered inside the window', async () => {
+    const harness = makeHarness({ behavior: [], grades: [gradeRow()] });
+
+    const result = await check(harness);
+
+    expect(result.candidates).toEqual([
+      expect.objectContaining({ itemType: 'grade', itemId: 'grade-1' }),
+    ]);
+  });
+
+  it('ignores a grade entered weeks ago', async () => {
+    // The assessment may be recent, but the parent was told when the mark was
+    // keyed in. Windowing eventDate instead would re-announce a mark the day
+    // the test's own date drifted into range.
+    const harness = makeHarness({
+      behavior: [],
+      grades: [gradeRow({ enteredAt: new Date('2026-10-28T07:30:00Z') })],
+    });
+
+    expect((await check(harness)).candidates).toEqual([]);
+  });
+
+  it('honours DIGEST_GRADE_LOOKBACK_DAYS', async () => {
+    const old = gradeRow({ enteredAt: new Date('2026-11-10T07:30:00Z') });
+
+    expect((await check(makeHarness({ behavior: [], grades: [old] }))).candidates).toEqual([]);
+    expect(
+      (await check(makeHarness({ behavior: [], grades: [old], gradeLookbackDays: '30' })))
+        .candidates,
+    ).toHaveLength(1);
+  });
+
+  it('hashes the mark, so a corrected grade is reported again', async () => {
+    // The only digest input that gets corrected upstream after it is reported.
+    // Reachable because the sync upsert rewrites `enteredAt` from the upstream
+    // timestamp on every pass, so a corrected mark moves its own date forward
+    // and re-enters the lookback on its own.
+    const first = await check(makeHarness({ behavior: [], grades: [gradeRow()] }));
+    const corrected = await check(
+      makeHarness({ behavior: [], grades: [gradeRow({ grade: 94 })] }),
+    );
+
+    expect(first.candidates[0].contentHash).not.toBe(corrected.candidates[0].contentHash);
+  });
+
+  it('carries enteredAt as the item date, not eventDate', async () => {
+    // itemDate is what `activeFrom` suppression compares and what the
+    // re-query window is measured from. Carrying eventDate would suppress a
+    // mark for a test sat before the parent signed up, which is news.
+    const harness = makeHarness({ behavior: [], grades: [gradeRow()] });
+
+    const result = await check(harness);
+
+    expect(result.candidates[0].itemDate).toEqual(new Date('2026-11-17T07:30:00Z'));
   });
 });

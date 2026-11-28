@@ -214,6 +214,25 @@ SELECT
   false, now(), now()
 FROM local_digest_day, local_digest_year;
 
+-- 6. A mark a teacher keyed in this morning for a test sat three weeks ago.
+--    The two dates are the point of it: the checker windows `enteredAt`
+--    (DIGEST_GRADE_LOOKBACK_DAYS, default 2), while the message prints
+--    `eventDate` -- so a seed whose dates were the same would hide a producer
+--    that windowed the wrong one. `teacherName` is set so you can confirm it
+--    reaches neither the message nor the model: it is never selected.
+DELETE FROM grade_item WHERE "studentGuid" = 'local-digest-guid';
+INSERT INTO grade_item (
+  id, "studentGuid", "schoolYear", "gradingEventId", grade, "gradingPeriod",
+  "gradeTypeId", "gradeType", "gradingEvent", "groupId", "groupName",
+  "subjectName", "teacherName", "eventDate", "enteredAt", "updatedAt"
+)
+SELECT
+  'local-digest-grade', 'local-digest-guid', school_year, 7701, 92, 1,
+  1, 'מבחן', 'מבחן בשברים', 404, 'חשבון ה1',
+  'חשבון', 'מורה רחל לוי',
+  today - interval '21 days', now(), now()
+FROM local_digest_day, local_digest_year;
+
 -- A fresh successful sync for this child, under the per-child source name the
 -- sync tasks actually write (`homework:<guid>`). Without it the digest treats
 -- a quiet day as a stalled sync and reports skipped_stale instead.
@@ -233,4 +252,5 @@ SELECT
   (SELECT count(*) FROM timetable_entry WHERE "studentGuid" = 'local-digest-guid') AS timetable,
   (SELECT count(*) FROM student_release WHERE "studentGuid" = 'local-digest-guid') AS releases,
   (SELECT count(*) FROM school_activity WHERE "userId" = 'local-digest-user') AS activities,
+  (SELECT count(*) FROM grade_item WHERE "studentGuid" = 'local-digest-guid') AS grades,
   (SELECT count(*) FROM digest_reported_item WHERE "studentGuid" = 'local-digest-guid') AS already_reported;

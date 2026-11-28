@@ -383,3 +383,57 @@ far end.
 Items the model is not shown are not counted: consent forms (ADR-0035) and,
 for now, grades.
 
+
+## Addendum, 2026-11-27: grades wired, producer side
+
+The template has rendered a grades section since the addendum above; nothing
+filled `DigestPayload.grades`, so the section never appeared. The producer now
+exists: a `grade` member of `DigestItemType`, a checker rule, a collector read,
+and the two bookkeeping sets in `digest.service.ts`. The three things that
+addendum deliberately left open are decided here, each with the mechanism that
+makes it work.
+
+**`enteredAt` is the news date; `eventDate` stays the printed one.**
+`GradesTask` writes `enteredAt` from the upstream `timestamp` -- when the
+teacher keyed the mark in -- and `eventDate` from upstream `eventDate`, when
+the test was sat. They are weeks apart on real rows. `gradesEnteredRecently`
+windows `enteredAt` (`DIGEST_GRADE_LOOKBACK_DAYS`, default 2, matching the
+board's), because that is when the grade became news; `gradeSentence` is
+unchanged and still prints `eventDate`, because a parent reading "92" today
+needs to know which test it was. The candidate carries `itemDate:
+row.enteredAt`, which is both what the `activeFrom` suppression in `check()`
+compares and what the re-query window is measured from. Windowing `eventDate`
+instead would have missed a mark entered today for last month's test, and
+re-announced one the day its own date drifted into range.
+
+**A correction re-reports, because the mark is in the content hash.**
+`hashFields('grade', [id, String(grade), gradingEvent])` -- the same contract
+`message_board` has for an edited notice. What makes it *reachable*, and not a
+rule that can never fire, is that the sync upsert rewrites `enteredAt` from the
+upstream timestamp on **every** pass: a corrected mark moves its own date
+forward and re-enters the lookback window on its own. A hash change behind a
+frozen date would be unreachable; the date is not frozen.
+
+**The index.** `GradeItem` was indexed `[studentGuid, schoolYear, eventDate]`
+only, under a comment reading "No year-wide index: grades feed no digest and no
+feed (yet)" -- now false, and replaced.
+`@@index([studentGuid, schoolYear, enteredAt])` is added in
+`20261130000000_grade_item_entered_at_index`. Without it the rule matches on
+the first two columns and then filters a whole school year of one child's
+grades in memory, on every run, seven times a day per child.
+
+Two further notes:
+
+- **The sync set.** `grades` was `sets: ['full']`, so
+  `NotificationWindowTask.digestLead` (cron `50 10-18`, `taskSet: 'digest'`)
+  never fetched it: a new mark would have reached the table only on a login or
+  a manual refresh, and since the digest windows `enteredAt`, "days late" means
+  "never". It is now `sets: ['digest', 'full']`, with the 6h TTL unchanged.
+  `SYNC_SOURCES_BEHIND_THE_DIGEST` is deliberately **not** touched -- a failed
+  grades fetch must not turn a real behaviour report into `skipped_stale`.
+- **Grades stay out of the prompt.** `buildPrompt` is shown none of them and
+  the section stays in `TEMPLATE_OWNED`, so `maxTokensFor` still does not count
+  them, and a run whose only news is a mark does not reach the model at all --
+  the grade hashes are excluded from `promptFactHashes` for that reason, beside
+  the consent forms. The day grades enter the prompt, drop them from both
+  places together.

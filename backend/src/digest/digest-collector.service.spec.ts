@@ -25,6 +25,15 @@ const HOMEWORK_ROW = {
   lessonDate: REPORT_FOR,
 };
 
+const GRADE_ROW = {
+  id: 'grade-1',
+  subjectName: 'חשבון',
+  gradingEvent: 'מבחן בשברים',
+  gradeType: 'מבחן',
+  grade: 92,
+  eventDate: new Date('2026-10-27T00:00:00Z'),
+};
+
 function makeHarness(
   options: {
     behavior?: unknown[];
@@ -32,6 +41,8 @@ function makeHarness(
     activities?: unknown[];
     board?: unknown[];
     boardFindMany?: jest.Mock;
+    grades?: unknown[];
+    gradeFindMany?: jest.Mock;
   } = {},
 ) {
   const prisma = {
@@ -55,6 +66,9 @@ function makeHarness(
     },
     messageBoardItem: {
       findMany: options.boardFindMany ?? jest.fn().mockResolvedValue(options.board ?? []),
+    },
+    gradeItem: {
+      findMany: options.gradeFindMany ?? jest.fn().mockResolvedValue(options.grades ?? []),
     },
   } as unknown as PrismaService;
 
@@ -313,5 +327,64 @@ describe('DigestCollectorService message board', () => {
     });
 
     expect(boardFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('DigestCollectorService grades', () => {
+  it('builds the grades section from the claimed candidates', async () => {
+    const harness = makeHarness({ grades: [GRADE_ROW] });
+
+    const payload = await harness.service.collect({
+      studentGuid: 'stu-1',
+      candidates: [candidate({ itemType: 'grade', itemId: 'grade-1' })],
+      reportFor: REPORT_FOR,
+      userId: 'user-1',
+    });
+
+    expect(payload.grades).toEqual([
+      {
+        id: 'grade-1',
+        subjectName: 'חשבון',
+        gradingEvent: 'מבחן בשברים',
+        gradeType: 'מבחן',
+        grade: 92,
+        eventDate: new Date('2026-10-27T00:00:00Z'),
+      },
+    ]);
+  });
+
+  it('issues no grade query when no grade was claimed', async () => {
+    const gradeFindMany = jest.fn();
+    const harness = makeHarness({ behavior: [BEHAVIOR_ROW], gradeFindMany });
+
+    await harness.service.collect({
+      studentGuid: 'stu-1',
+      candidates: [candidate()],
+      reportFor: REPORT_FOR,
+      userId: 'user-1',
+    });
+
+    expect(gradeFindMany).not.toHaveBeenCalled();
+  });
+
+  it('selects no teacher name, guid, or raw payload from the grades table', async () => {
+    // `teacherName` is the only field of a grade that names a person. The
+    // message has no use for it, and not reading it is what keeps it out of
+    // the prompt by construction rather than by discipline.
+    const harness = makeHarness({ grades: [GRADE_ROW] });
+
+    await harness.service.collect({
+      studentGuid: 'stu-1',
+      candidates: [candidate({ itemType: 'grade', itemId: 'grade-1' })],
+      reportFor: REPORT_FOR,
+      userId: 'user-1',
+    });
+
+    const select = (
+      harness.prisma as unknown as { gradeItem: { findMany: jest.Mock } }
+    ).gradeItem.findMany.mock.calls[0][0].select;
+    expect(select.teacherName).toBeUndefined();
+    expect(select.rawPayload).toBeUndefined();
+    expect(select.studentGuid).toBeUndefined();
   });
 });

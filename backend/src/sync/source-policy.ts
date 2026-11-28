@@ -174,12 +174,19 @@ export const SOURCE_POLICY: SourcePolicy[] = [
   policy({ source: 'releases', task: 'releases', syncTtlMinutes: 45, staleThresholdMinutes: DAY, sets: ['digest', 'full'] }),
   policy({ source: 'schoolActivities', task: 'schoolActivities', syncTtlMinutes: 12 * HOUR, staleThresholdMinutes: DAY, sets: ['digest', 'full'] }),
 
-  // Grades. A read of our own Postgres (`children.service.ts:getGrades`), so
-  // it is freshened when the ציונים section is opened rather than on a cron:
-  // it arrived with a `*/12` cron of its own, which is 120 requests per child
-  // per day for assessments a teacher posts a few times a term. The reported
-  // threshold stays at the 24h it shipped with.
-  policy({ source: 'grades', task: 'grades', syncTtlMinutes: 6 * HOUR, staleThresholdMinutes: DAY, sets: ['full'], perStudent: true }),
+  // Grades: a page tab AND a digest input, since the digest reports a newly
+  // entered mark. It is not on a cron of its own -- it arrived with a `*/12`
+  // one, which is 120 requests per child per day for assessments a teacher
+  // posts a few times a term -- but it has to be in the `digest` set: the
+  // notification window's lead task is what fetches ahead of the evening
+  // runs, and without it a new mark would land only on a login or a manual
+  // refresh. The digest windows `enteredAt`, so "days late" means "never".
+  // The 6h TTL is what keeps the cost down; the reported threshold stays at
+  // the 24h it shipped with.
+  //
+  // Deliberately NOT added to SYNC_SOURCES_BEHIND_THE_DIGEST: a failed grades
+  // fetch must not turn a real behaviour report into `skipped_stale`.
+  policy({ source: 'grades', task: 'grades', syncTtlMinutes: 6 * HOUR, staleThresholdMinutes: DAY, sets: ['digest', 'full'], perStudent: true }),
 
   // Notices: a page tab AND a digest input.
   policy({ source: 'message_board', task: 'messageBoard', syncTtlMinutes: 12 * HOUR, staleThresholdMinutes: DAY, sets: ['digest', 'full'], perStudent: true }),

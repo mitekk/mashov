@@ -34,6 +34,22 @@ function duePayloadItem(id: string, estimated: Date | null) {
   };
 }
 
+/** A mark keyed in today for a test sat three weeks ago. */
+const GRADE_FACT = {
+  id: 'grade-1',
+  subjectName: 'חשבון',
+  gradingEvent: 'מבחן בשברים',
+  gradeType: 'מבחן',
+  grade: 92,
+  eventDate: new Date('2026-10-27T00:00:00Z'),
+};
+
+const GRADE_CANDIDATE: DigestCandidate = {
+  itemType: 'grade',
+  itemId: 'grade-1',
+  contentHash: 'hash-grade',
+};
+
 function makePayload(overrides: Partial<DigestPayload> = {}): DigestPayload {
   return {
     childFirstName: 'אבי',
@@ -2081,5 +2097,74 @@ describe('DigestService.runAll dismissal gate', () => {
     await harness.service.runAll({ now: NOW });
 
     expect(harness.gateFor).toHaveBeenCalledWith('stu-1', 2027, TODAY);
+  });
+});
+
+describe('DigestService grades', () => {
+  it('confirms a grade claim that made it into the report', async () => {
+    // `survivingHashes` keys on `${itemType}:${itemId}`, so the prefix there
+    // has to be the `DigestItemType` member exactly. Get it wrong and every
+    // grade claim is non-surviving: `settleUnsent` releases it, and the same
+    // grade is re-claimed and re-sent on every one of the day's ticks,
+    // forever. Silent in production, loud on the parent's phone.
+    const harness = makeHarness({
+      candidates: [GRADE_CANDIDATE],
+      payload: makePayload({ behavior: [], grades: [GRADE_FACT] }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).toBe('sent');
+    expect(confirmCalls(harness.updateMany)).toHaveLength(1);
+    expect(confirmCalls(harness.updateMany)[0][0].where.contentHash.in).toEqual(['hash-grade']);
+    expect(harness.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('counts a grade in the report it sent', async () => {
+    const harness = makeHarness({
+      candidates: [BEHAVIOR_CANDIDATE, GRADE_CANDIDATE],
+      payload: makePayload({ grades: [GRADE_FACT] }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].itemCount).toBe(2);
+  });
+
+  it('releases a grade whose row vanished between the check and the collect', async () => {
+    // Only `homework_due` can defer, so an unsent grade falls to `toRelease`
+    // -- which is right: nothing re-queries it on a future date, and a
+    // confirmed row would bury the mark permanently.
+    const harness = makeHarness({
+      candidates: [GRADE_CANDIDATE],
+      payload: makePayload({ behavior: [], grades: [] }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(results[0].status).not.toBe('sent');
+    expect(deferralCalls(harness.updateMany)).toHaveLength(0);
+    expect(confirmCalls(harness.updateMany)).toHaveLength(0);
+    expect(harness.deleteMany).toHaveBeenCalled();
+  });
+
+  it('does not call the model for a run with nothing but grades', async () => {
+    // The direct analogue of the consent-form case. Grades are
+    // template-owned and are not in the prompt at all, so on a day whose only
+    // news is a mark the prompt would carry no facts beyond the child's
+    // gender and the date -- and a headline written from nothing is a
+    // headline invented.
+    const harness = makeHarness({
+      candidates: [GRADE_CANDIDATE],
+      payload: makePayload({ behavior: [], grades: [GRADE_FACT] }),
+    });
+
+    const results = await harness.service.runAll({ now: NOW });
+
+    expect(harness.summarizer.summarize).not.toHaveBeenCalled();
+    expect(results[0].status).toBe('sent');
+    expect(results[0].usedLlm).toBe(false);
+    // The section is still there, from the deterministic line.
+    expect(harness.send.mock.calls[0][1]).toContain('מבחן בשברים');
   });
 });

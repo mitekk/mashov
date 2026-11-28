@@ -69,6 +69,19 @@ const DEFAULT_MUTED_BEHAVIOR_CODES = [18];
  */
 const DEFAULT_BOARD_LOOKBACK_DAYS = 2;
 
+/**
+ * How recently a mark must have been keyed in to count as news.
+ *
+ * Measured from `enteredAt`, which GradesTask writes from the upstream
+ * `timestamp` -- when the teacher entered the mark -- and not from
+ * `eventDate`, which is when the test was sat. They are weeks apart on real
+ * rows, so windowing `eventDate` would both miss a mark entered today for a
+ * test sat last month and re-announce one the day its own date drifted into
+ * range. Two days covers the gap between the grades fetch and the evening
+ * runs, plus a weekend -- the same reasoning as the board's.
+ */
+const DEFAULT_GRADE_LOOKBACK_DAYS = 2;
+
 export interface DigestCheckInput {
   studentGuid: string;
   schoolYear: number;
@@ -132,6 +145,13 @@ interface BoardCandidateRow {
   firstSeenAt: Date;
 }
 
+interface GradeCandidateRow {
+  id: string;
+  grade: number;
+  gradingEvent: string;
+  enteredAt: Date;
+}
+
 interface HomeworkCandidateRow {
   id: string;
   groupId: number;
@@ -193,6 +213,7 @@ export class DigestCheckerService {
       ...(await this.releasesSoon(studentGuid, yearScope, todayStart, tomorrowStart)),
       ...(await this.activitiesAwaitingAnswer(userId, yearScope, todayStart)),
       ...(await this.boardNoticesRecently(studentGuid, yearScope, now, todayStart)),
+      ...(await this.gradesEnteredRecently(studentGuid, yearScope, now)),
       // activeFrom is a timestamp (now() when the recipient was created) while
       // lessonDate is a date at UTC midnight. Comparing them directly
       // suppressed every homework item on the sign-up day while still
@@ -505,6 +526,51 @@ export class DigestCheckerService {
       // the same contract every other input here has.
       contentHash: hashFields('message_board', [String(row.eventId), row.eventText]),
       itemDate: row.firstSeenAt,
+    }));
+  }
+
+  /**
+   * Marks a teacher keyed in over the last few days.
+   *
+   * No second condition, unlike the board's: a grade does not expire, and the
+   * year scope plus the `enteredAt` window already keep a historical backfill
+   * out -- a backfilled row carries the upstream timestamp it was entered
+   * with, not now().
+   */
+  private async gradesEnteredRecently(
+    studentGuid: string,
+    yearScope: ReturnType<typeof schoolYearScope>,
+    now: Date,
+  ): Promise<InternalCandidate[]> {
+    // `now.getTime()` rather than a day-granular subtraction, because
+    // `enteredAt` is a real timestamp and not a UTC-midnight date.
+    const enteredSince = new Date(
+      now.getTime() -
+        this.readDays('DIGEST_GRADE_LOOKBACK_DAYS', DEFAULT_GRADE_LOOKBACK_DAYS) *
+          24 *
+          60 *
+          60 *
+          1000,
+    );
+
+    const rows = (await this.prisma.gradeItem.findMany({
+      where: { studentGuid, ...yearScope, enteredAt: { gte: enteredSince } },
+      // `teacherName` and `rawPayload` are deliberately not read: the only
+      // field of a grade that names a person, and the whole upstream row.
+      select: { id: true, grade: true, gradingEvent: true, enteredAt: true },
+    })) as GradeCandidateRow[];
+
+    return rows.map((row) => ({
+      itemType: 'grade' as DigestItemType,
+      // The cuid, not `gradingEventId`: `DigestGradeFact.id` is documented as
+      // `GradeItem.id`, and the collector re-reads by it.
+      itemId: row.id,
+      // The mark is in the hash, so a teacher correcting it re-reports it --
+      // the same contract an edited board notice has. Reachable rather than
+      // theoretical: the sync upsert rewrites `enteredAt` on every pass, so a
+      // corrected mark moves its own date forward and re-enters this window.
+      contentHash: hashFields('grade', [row.id, String(row.grade), row.gradingEvent]),
+      itemDate: row.enteredAt,
     }));
   }
 

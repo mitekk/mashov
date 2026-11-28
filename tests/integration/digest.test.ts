@@ -34,6 +34,7 @@ import {
   jerusalemDayBounds,
   mashovDayFromJsDate,
 } from '../../backend/src/digest/digest-deadline.service';
+import { formatSchoolDate } from '../../backend/src/digest/digest-report.template';
 import type { PrismaService } from '../../backend/src/prisma/prisma.service';
 import type { TelegramSendOptions } from '../../backend/src/digest/senders/digest-sender.interface';
 import type { ConfigService } from '../../backend/node_modules/@nestjs/config';
@@ -899,6 +900,214 @@ describe('Digest releases and school activities', () => {
     const sender = new CapturingSender();
     const results = await makeService(prisma, sender).runAll({ now: NOW });
 
+    expect(results.every((result) => result.status === 'skipped_empty')).toBe(true);
+  });
+});
+
+/**
+ * Grades — the producer side, end to end against a real Postgres.
+ *
+ * Two things here only a real database shows. The checker windows
+ * `enteredAt` while the message prints `eventDate`, and the two are weeks
+ * apart on a real row — a mocked Prisma that ignores its own where-clause
+ * cannot tell the two apart. And a grade is the first digest input that gets
+ * **corrected** upstream after it is reported, which is the content hash and
+ * the dedup unique key doing their job, not application code.
+ */
+describe('Digest grades', () => {
+  let prisma: PrismaClient;
+
+  beforeAll(async () => {
+    prisma = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    await prisma.$connect();
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  const GUIDS = [CHILD_WITH_NEWS, QUIET_CHILD];
+  /** Three weeks before the test was marked — the ordinary shape of a row. */
+  const EVENT_DATE = new Date(todayStart.getTime() - 21 * 24 * 60 * 60 * 1000);
+  const TEACHER = 'מורה רחל לוי';
+
+  async function seedGrade(overrides: Record<string, unknown> = {}) {
+    return prisma.gradeItem.create({
+      data: {
+        studentGuid: CHILD_WITH_NEWS,
+        schoolYear: SCHOOL_YEAR,
+        gradingEventId: 7701,
+        grade: 92,
+        gradingPeriod: 1,
+        gradeTypeId: 1,
+        gradeType: 'מבחן',
+        gradingEvent: 'מבחן בשברים',
+        groupId: 70,
+        groupName: 'חשבון ג1',
+        subjectName: 'חשבון',
+        teacherName: TEACHER,
+        eventDate: EVENT_DATE,
+        // Keyed in this morning: inside DIGEST_GRADE_LOOKBACK_DAYS, which is
+        // what makes it news, while eventDate is long outside it.
+        enteredAt: new Date(todayStart.getTime() + 7 * 60 * 60 * 1000),
+        ...overrides,
+      },
+    });
+  }
+
+  beforeEach(async () => {
+    await prisma.gradeItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.digestReportedItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.digestDelivery.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.digestRecipient.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.homeworkItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.behaviorItem.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.studentRelease.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.schoolActivity.deleteMany({ where: { userId: USER_ID } });
+    await prisma.studentConnection.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.student.deleteMany({ where: { studentGuid: { in: GUIDS } } });
+    await prisma.householdConnection.deleteMany({ where: { id: CONNECTION_ID } });
+    await prisma.appUser.deleteMany({ where: { id: USER_ID } });
+
+    // Hooks do not cross describe blocks, so this household is built here
+    // rather than inherited — the same reason the releases block says so.
+    await prisma.appUser.create({
+      data: {
+        id: USER_ID,
+        mashovUserId: MASHOV_USER_ID,
+        semel: 998877,
+        username: 'digest-test',
+        displayName: 'Digest Test',
+      },
+    });
+
+    await prisma.householdConnection.create({
+      data: {
+        id: CONNECTION_ID,
+        userId: USER_ID,
+        schoolCode: 998877,
+        schoolYear: SCHOOL_YEAR,
+        username: 'digest-test-login',
+        encryptedPassword: 'not-a-real-secret',
+        active: true,
+      },
+    });
+
+    for (const [guid, privateName] of [
+      [CHILD_WITH_NEWS, 'אבי'],
+      [QUIET_CHILD, 'נועה'],
+    ]) {
+      await prisma.student.create({
+        data: {
+          studentGuid: guid,
+          privateName,
+          familyName: 'כהן',
+          fullName: `${privateName} כהן`,
+          classCode: 'ג',
+          classNum: 3,
+          gender: privateName === 'נועה' ? 'נ' : 'ז',
+          isActive: true,
+        },
+      });
+
+      await prisma.studentConnection.create({
+        data: {
+          studentGuid: guid,
+          householdConnectionId: CONNECTION_ID,
+          firstSeenAt: new Date(),
+          lastSeenInRosterAt: new Date(),
+        },
+      });
+
+      await prisma.digestRecipient.create({
+        data: {
+          userId: USER_ID,
+          studentGuid: guid,
+          channel: 'telegram',
+          address: `chat-${guid}`,
+          enabled: true,
+          activeFrom: new Date(todayStart.getTime() - 30 * 24 * 60 * 60 * 1000),
+        },
+      });
+    }
+  });
+
+  it('reports a newly entered mark, dated by the assessment and with no teacher named', async () => {
+    await seedGrade();
+
+    const sender = new CapturingSender();
+    const results = await makeService(prisma, sender).runAll({
+      now: NOW,
+      studentGuid: CHILD_WITH_NEWS,
+    });
+
+    expect(sender.sent).toHaveLength(1);
+    const text = sender.sent[0].text;
+    expect(text).toContain('📊 ציונים חדשים');
+    // The date in the parenthesis is eventDate, when the test was sat, and
+    // not enteredAt: "92" against this morning would attach the mark to the
+    // wrong day in a parent's head. Asserted as one string, because the
+    // header legitimately carries today's date too.
+    expect(text).toContain(`חשבון — מבחן בשברים: 92 (${formatSchoolDate(EVENT_DATE)})`);
+    // teacherName is on the row and is never selected, so it cannot be here.
+    expect(text).not.toContain(TEACHER);
+    expect(text).not.toContain('רחל');
+
+    const sent = results.find((result) => result.studentGuid === CHILD_WITH_NEWS);
+    expect(sent?.status).toBe('sent');
+    expect(sent?.itemCount).toBe(1);
+  });
+
+  it('sends the same mark once, however many times the day runs', async () => {
+    await seedGrade();
+
+    const sender = new CapturingSender();
+    const service = makeService(prisma, sender);
+
+    await service.runAll({ now: NOW, studentGuid: CHILD_WITH_NEWS });
+    expect(sender.sent).toHaveLength(1);
+
+    const second = await service.runAll({ now: NOW, studentGuid: CHILD_WITH_NEWS });
+
+    expect(sender.sent).toHaveLength(1);
+    expect(second.find((r) => r.studentGuid === CHILD_WITH_NEWS)?.status).toBe('skipped_empty');
+  });
+
+  it('re-reports a mark a teacher has corrected', async () => {
+    await seedGrade();
+
+    const sender = new CapturingSender();
+    const service = makeService(prisma, sender);
+
+    await service.runAll({ now: NOW, studentGuid: CHILD_WITH_NEWS });
+    expect(sender.sent).toHaveLength(1);
+
+    // The mark is in the content hash, which is part of the dedup unique key,
+    // so a correction is a new row. Reachable in production because the sync
+    // upsert rewrites `enteredAt` from the upstream timestamp on every pass —
+    // a corrected mark moves its own date forward and re-enters the lookback.
+    await prisma.gradeItem.updateMany({
+      where: { studentGuid: CHILD_WITH_NEWS, gradingEventId: 7701 },
+      data: { grade: 94 },
+    });
+
+    const second = await service.runAll({ now: NOW, studentGuid: CHILD_WITH_NEWS });
+
+    expect(second.find((r) => r.studentGuid === CHILD_WITH_NEWS)?.status).toBe('sent');
+    expect(sender.sent).toHaveLength(2);
+    expect(sender.sent[1].text).toContain('94');
+  });
+
+  it('ignores a mark keyed in weeks ago', async () => {
+    await seedGrade({
+      gradingEventId: 7702,
+      enteredAt: new Date(todayStart.getTime() - 20 * 24 * 60 * 60 * 1000),
+    });
+
+    const sender = new CapturingSender();
+    const results = await makeService(prisma, sender).runAll({ now: NOW });
+
+    expect(sender.sent).toHaveLength(0);
     expect(results.every((result) => result.status === 'skipped_empty')).toBe(true);
   });
 });
